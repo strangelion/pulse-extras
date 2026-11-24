@@ -64,11 +64,13 @@ const Job = struct {
     fn init() error{ContainmentFailed}!Job {
         const handle = CreateJobObjectW(null, null) orelse return error.ContainmentFailed;
         errdefer _ = CloseHandle(handle);
-        const limits: ExtendedLimits = .{ .basic = .{
-            // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | ACTIVE_PROCESS
-            .flags = 0x2000 | 0x8,
-            .active_process_limit = 16,
-        } };
+        const limits: ExtendedLimits = .{
+            .basic = .{
+                // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | ACTIVE_PROCESS
+                .flags = 0x2000 | 0x8,
+                .active_process_limit = 16,
+            },
+        };
         if (SetInformationJobObject(handle, 9, &limits, @sizeOf(ExtendedLimits)) == 0) return error.ContainmentFailed;
         return .{ .handle = handle };
     }
