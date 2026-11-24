@@ -4,6 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -24,6 +25,11 @@ ASSETS = {
 }
 
 
+def valid_jj_version(output: str) -> bool:
+    # Official cli/build.rs appends one or more Git commit hashes when available.
+    return re.fullmatch(rf"jj {re.escape(JJ_VERSION)}(?:-[0-9a-fA-F]{{7,64}})*", output.strip()) is not None
+
+
 def install_jj():
     suffix, expected, exe = ASSETS[platform.system()]
     name = f"jj-v{JJ_VERSION}-{suffix}"
@@ -40,8 +46,10 @@ def install_jj():
     if len(candidates) != 1:
         raise SystemExit(f"Expected one JJ executable, found {candidates}")
     binary = candidates[0]
-    if subprocess.check_output([str(binary), "--version"], text=True).strip() != f"jj {JJ_VERSION}":
-        raise SystemExit("Unexpected JJ version")
+    actual = subprocess.check_output([str(binary), "--version"], text=True, timeout=30).strip()
+    print(f"Verified archive SHA-256; JJ reports {actual!r}", flush=True)
+    if not valid_jj_version(actual):
+        raise SystemExit(f"Unexpected JJ version: {actual!r}; expected {JJ_VERSION} with optional commit hash")
     with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as out:
         out.write(str(binary.parent) + "\n")
 

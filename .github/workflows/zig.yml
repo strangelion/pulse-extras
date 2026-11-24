@@ -27,6 +27,8 @@ jobs:
       - run: zig version
       - name: Check Python scripts compile
         run: python -m compileall -q scripts
+      - name: Test CI helper scripts
+        run: python -m unittest discover -s scripts -p 'test_*.py'
       - name: Install pinned Jujutsu CLI
         run: python scripts/ci_vcs.py jj
       - name: Check Git and JJ tools
