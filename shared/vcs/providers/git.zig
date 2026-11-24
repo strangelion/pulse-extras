@@ -146,7 +146,7 @@ pub const Git = struct {
             .stdout_limit = parse_limit,
             .stderr_limit = 64 * 1024,
         }) catch |err| return mapRunError(err);
-        defer outcome.deinit(self.runner.allocator);
+        defer outcome.deinit();
 
         if (!outcome.succeeded()) return mapFailure(outcome.stderr);
 
@@ -193,6 +193,9 @@ fn mapRunError(err: run.Error) contract.Error {
         error.TimedOut => error.Timeout,
         error.OutputTooLong => error.Parse,
         error.OutOfMemory => error.OutOfMemory,
+        error.PermissionDenied => error.Permission,
+        error.InvalidRequest, error.Io => error.Io,
+        error.OutputBudgetExceeded => error.OutOfMemory,
     };
 }
 
@@ -246,7 +249,7 @@ test "records without a known type are ignored, not counted" {
 }
 
 test "provider declares only implemented capabilities" {
-    var runner = run.Runner.init(std.testing.allocator);
+    var runner = run.Runner.init(std.testing.allocator, std.testing.io);
     var git = Git.init(&runner, identity.Path.init("git") catch unreachable, .{ .ctx = undefined, .lookup = fakeLookup });
     const api = git.provider();
     try std.testing.expect(api.supports(.status));
@@ -260,11 +263,11 @@ fn fakeLookup(_: *anyopaque, _: []const u8) detect.EntryType {
 }
 
 test "reads a real repository end to end when git is installed" {
-    const io = run.io();
+    const io = std.testing.io;
     const path_value = test_config.path;
     if (path_value.len == 0) return cli.integrationUnavailable(.git);
 
-    var runner = run.Runner.init(std.testing.allocator);
+    var runner = run.Runner.init(std.testing.allocator, std.testing.io);
     var scratch: [identity.max_path_bytes + 64]u8 = undefined;
     const report = cli.detect(io, .git, path_value, &scratch, &runner) orelse return cli.integrationUnavailable(.git);
     if (report.version == null) return cli.integrationUnavailable(.git);
@@ -304,7 +307,7 @@ test "reads a real repository end to end when git is installed" {
 
 fn expectSuccess(runner: *run.Runner, argv: []const []const u8) !void {
     var outcome = try runner.run(.{ .argv = argv, .timeout_ns = 20 * std.time.ns_per_s });
-    defer outcome.deinit(runner.allocator);
+    defer outcome.deinit();
     if (!outcome.succeeded()) {
         std.debug.print("command failed: {s}\n{s}\n", .{ argv[0], outcome.stderr });
         return error.TestCommandFailed;

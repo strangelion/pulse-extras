@@ -124,13 +124,17 @@ network access.
 
 ## 4. Runtime, cancellation and DLL lifecycle
 
-The current shared/process/run.zig has a DLL-local static std.Io.Threaded/shared_io,
-uses page_allocator and Runner.deinit is a no-op. This is an outstanding lifetime
-risk, not a proven leak or crash. Inspect actual Zig 0.17.1 std.Io.Threaded requirements,
-including any process-wide state, before choosing explicit ownership/injection. Do
-not create uncontrolled independent process-wide facilities just because the source
-is linked into different DLLs. No background execution after unload. Refactor with
-the real process runner, not a parallel unused module.
+RT0 candidate: shared/process/run.zig removes the DLL-local static Threaded I/O
+and injects a caller-owned std.Io. Tests use the stdlib test I/O owner.
+The serialized runner does not own the I/O lifetime. Its logical output quota
+reserves requested stdout/stderr caps until Outcome.deinit, which frees the
+matching allocator's buffers and returns the reservation; error paths undo
+reservations. Default quota 16 MiB; per-request finite deadline required.
+The owner must remain at a stable address until all outputs are destroyed and
+checkDrained succeeds. No independent worker/scheduler or thread-safe allocator
+is introduced. CI and actual host runtime ownership remain to be verified.
+Do not create uncontrolled process-wide I/O facilities or claim DLL unload
+safety before proving host callback/worker drain.
 
 State machine: uninitialized -> initialized -> active -> stopping -> inactive;
 destroy is terminal, including partially initialized and failed-activation cases.

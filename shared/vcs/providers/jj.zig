@@ -75,21 +75,25 @@ pub const Jj = struct {
     pub fn summarize(self: *Jj, workspace: *const identity.Workspace) contract.Error!contract.Snapshot {
         if (workspace.kind != .jj) return error.Unsupported;
 
-        var revision_out = try self.query(&.{
-            self.executable.slice(), "--ignore-working-copy", "--no-pager", "--color=never",
-            "-R",                    workspace.root.slice(),  "log",        "-r",
-            "@",                     "--no-graph",            "-T",         revision_template,
-        });
-        defer revision_out.deinit(self.runner.allocator);
-        if (!revision_out.succeeded()) return mapFailure(revision_out.stderr);
+        const revision = blk: {
+            var revision_out = try self.query(&.{
+                self.executable.slice(), "--ignore-working-copy", "--no-pager", "--color=never",
+                "-R",                    workspace.root.slice(),  "log",        "-r",
+                "@",                     "--no-graph",            "-T",         revision_template,
+            });
+            defer revision_out.deinit();
+            if (!revision_out.succeeded()) return mapFailure(revision_out.stderr);
+            const parsed = parseRevision(revision_out.stdout);
+            if (parsed.commit_id == null or parsed.change_id.slice().len == 0) return error.Parse;
+            break :blk parsed;
+        };
 
         var diff_out = try self.query(&.{
             self.executable.slice(), "--ignore-working-copy", "--no-pager", "--color=never",
             "-R",                    workspace.root.slice(),  "diff",       "--summary",
         });
-        defer diff_out.deinit(self.runner.allocator);
+        defer diff_out.deinit();
 
-        const revision = parseRevision(revision_out.stdout);
         var snapshot = contract.Snapshot{
             .availability = .ready,
             .workspace = workspace.*,
@@ -140,6 +144,9 @@ fn mapRunError(err: run.Error) contract.Error {
         error.TimedOut => error.Timeout,
         error.OutputTooLong => error.Parse,
         error.OutOfMemory => error.OutOfMemory,
+        error.PermissionDenied => error.Permission,
+        error.InvalidRequest, error.Io => error.Io,
+        error.OutputBudgetExceeded => error.OutOfMemory,
     };
 }
 
@@ -175,7 +182,7 @@ test "counts diff summary lines and ignores headers" {
 }
 
 test "provider declares only read capabilities" {
-    var runner = run.Runner.init(std.testing.allocator);
+    var runner = run.Runner.init(std.testing.allocator, std.testing.io);
     var jj = Jj.init(&runner, identity.Path.init("jj") catch unreachable, .{ .ctx = undefined, .lookup = fakeLookup });
     const api = jj.provider();
     try std.testing.expect(api.supports(.status));
@@ -184,11 +191,11 @@ test "provider declares only read capabilities" {
 }
 
 test "reads a real jj repository without creating snapshots" {
-    const io = run.io();
+    const io = std.testing.io;
     const path_value = test_config.path;
     if (path_value.len == 0) return cli.integrationUnavailable(.jj);
 
-    var runner = run.Runner.init(std.testing.allocator);
+    var runner = run.Runner.init(std.testing.allocator, std.testing.io);
     var scratch: [identity.max_path_bytes + 64]u8 = undefined;
     const report = cli.detect(io, .jj, path_value, &scratch, &runner) orelse return cli.integrationUnavailable(.jj);
     if (report.version == null) return cli.integrationUnavailable(.jj);
@@ -202,21 +209,21 @@ test "reads a real jj repository without creating snapshots" {
         .argv = &.{ report.path.slice(), "git", "init", root },
         .timeout_ns = 20 * std.time.ns_per_s,
     });
-    defer init_outcome.deinit(runner.allocator);
+    defer init_outcome.deinit();
     if (!init_outcome.succeeded()) return error.TestCommandFailed;
 
     const workspace = try identity.Workspace.init(.jj, root, root);
     var jj = Jj.init(&runner, report.path, .{ .ctx = undefined, .lookup = fakeLookup });
     const op_args: []const []const u8 = &.{ report.path.slice(), "--ignore-working-copy", "--no-pager", "--color=never", "-R", root, "op", "log", "--no-graph", "-T", "id ++ \"\\n\"" };
     var before = try jj.query(op_args);
-    defer before.deinit(runner.allocator);
+    defer before.deinit();
     try std.testing.expect(before.succeeded());
     const dirty = try tmp.dir.createFile(io, "unsnapshotted.txt", .{});
     try dirty.writeStreamingAll(io, "not yet snapshotted\n");
     dirty.close(io);
     const snapshot = try jj.summarize(&workspace);
     var after = try jj.query(op_args);
-    defer after.deinit(runner.allocator);
+    defer after.deinit();
     try std.testing.expect(after.succeeded());
     try std.testing.expectEqualStrings(before.stdout, after.stdout);
     try std.testing.expectEqual(contract.Availability.ready, snapshot.availability);

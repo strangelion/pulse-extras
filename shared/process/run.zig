@@ -5,11 +5,14 @@
 //! stdin from `NUL`/`/dev/null`, so a tool that unexpectedly prompts fails
 //! instead of hanging on a terminal.
 //!
-//! Zig 0.17 moved process spawning onto `std.Io`; this module owns one
-//! `std.Io.Threaded` instance so callers do not have to thread an `Io` value
-//! through their APIs. The runner is not thread-safe: create one per worker.
+//! The caller owns the I/O runtime and must keep it alive until all work
+//! and results have drained. Runner is serialized, not thread-safe. It must
+//! remain at a stable address while an Outcome is alive. No global I/O state.
 
 const std = @import("std");
+const Budget = @import("runtime_budget").Budget;
+
+pub const default_output_budget: usize = 16 * 1024 * 1024;
 
 pub const Request = struct {
     argv: []const []const u8,
@@ -26,8 +29,6 @@ pub const Status = enum {
     exited,
     /// Terminated by a signal (POSIX) or an unknown status (Windows).
     signalled,
-    /// The timeout expired and the child was killed.
-    timed_out,
 };
 
 pub const Outcome = struct {
@@ -36,9 +37,14 @@ pub const Outcome = struct {
     stdout: []u8,
     stderr: []u8,
 
-    pub fn deinit(self: *Outcome, allocator: std.mem.Allocator) void {
-        allocator.free(self.stdout);
-        allocator.free(self.stderr);
+    owner: *Runner,
+    reservation: usize,
+
+    /// Owned value: do not copy or deinit twice. Owner must outlive it.
+    pub fn deinit(self: *Outcome) void {
+        self.owner.allocator.free(self.stdout);
+        self.owner.allocator.free(self.stderr);
+        self.owner.output_budget.release(self.reservation);
         self.* = undefined;
     }
 
@@ -56,50 +62,42 @@ pub const Error = error{
     OutputTooLong,
     /// The child did not finish within `timeout_ns`.
     TimedOut,
+    InvalidRequest,
+    OutputBudgetExceeded,
+    PermissionDenied,
+    Io,
 } || std.mem.Allocator.Error;
-
-/// `std.Io.Threaded` keeps process-wide state (signal handlers, worker pool),
-/// so the whole process shares one instance instead of creating one per call.
-var shared_threaded: std.Io.Threaded = undefined;
-var shared_io: ?std.Io = null;
-var shared_lock: std.atomic.Mutex = .unlocked;
-
-fn sharedIo() std.Io {
-    while (!shared_lock.tryLock()) std.atomic.spinLoopHint();
-    defer shared_lock.unlock();
-    if (shared_io) |value| return value;
-    shared_threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
-    shared_io = shared_threaded.io();
-    return shared_io.?;
-}
-
-/// Shared `Io` for callers that need filesystem access without threading an
-/// `Io` value through their APIs (for example CLI discovery).
-pub fn io() std.Io {
-    return sharedIo();
-}
 
 pub const Runner = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
+    output_budget: Budget,
 
-    pub fn init(allocator: std.mem.Allocator) Runner {
-        return .{ .allocator = allocator };
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) Runner {
+        return initWithBudget(allocator, io, default_output_budget);
     }
 
-    /// Kept for symmetry; the shared I/O instance lives for the whole process.
-    pub fn deinit(self: *Runner) void {
-        _ = self;
+    pub fn initWithBudget(allocator: std.mem.Allocator, io: std.Io, output_limit: usize) Runner {
+        return .{ .allocator = allocator, .io = io, .output_budget = Budget.init(output_limit) };
     }
 
-    /// Runs `request.argv` and collects bounded output.
+    /// All results must be freed before the runner or its I/O owner goes away.
+    /// This does not stop external workers: the caller owns their lifecycle.
+    pub fn checkDrained(self: *const Runner) error{OutstandingOutputs}!void {
+        if (self.output_budget.used != 0) return error.OutstandingOutputs;
+    }
+
+    /// Reserve both output caps until the owned outcome is released.
+    /// This bounds logical output capacity, not total child/allocator memory.
     pub fn run(self: *Runner, request: Request) Error!Outcome {
+        if (request.argv.len == 0 or request.argv[0].len == 0 or request.timeout_ns == 0) return error.InvalidRequest;
+        const reservation = std.math.add(usize, request.stdout_limit, request.stderr_limit) catch return error.OutputBudgetExceeded;
+        self.output_budget.reserve(reservation) catch return error.OutputBudgetExceeded;
+        errdefer self.output_budget.release(reservation);
         const cwd: std.process.Child.Cwd = if (request.cwd) |path| .{ .path = path } else .inherit;
-        const timeout: std.Io.Timeout = if (request.timeout_ns == 0)
-            .none
-        else
-            .{ .duration = .{ .raw = .fromNanoseconds(request.timeout_ns), .clock = .boot } };
+        const timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromNanoseconds(request.timeout_ns), .clock = .boot } };
 
-        const result = std.process.run(self.allocator, sharedIo(), .{
+        const result = std.process.run(self.allocator, self.io, .{
             .argv = request.argv,
             .cwd = cwd,
             .environ_map = request.environ_map,
@@ -107,11 +105,12 @@ pub const Runner = struct {
             .stderr_limit = std.Io.Limit.limited(request.stderr_limit),
             .timeout = timeout,
         }) catch |err| switch (err) {
-            error.FileNotFound, error.AccessDenied, error.InvalidExe, error.NameTooLong => return error.SpawnFailed,
+            error.FileNotFound, error.InvalidExe, error.NameTooLong => return error.SpawnFailed,
+            error.AccessDenied => return error.PermissionDenied,
             error.StreamTooLong => return error.OutputTooLong,
             error.Timeout => return error.TimedOut,
             error.OutOfMemory => return error.OutOfMemory,
-            else => return error.SpawnFailed,
+            else => return error.Io,
         };
 
         const status: Status = switch (result.term) {
@@ -126,6 +125,8 @@ pub const Runner = struct {
             },
             .stdout = result.stdout,
             .stderr = result.stderr,
+            .owner = self,
+            .reservation = reservation,
         };
     }
 };
@@ -133,17 +134,16 @@ pub const Runner = struct {
 const testing = std.testing;
 
 test "runner reports a missing executable instead of hanging" {
-    var runner = Runner.init(testing.allocator);
-    defer runner.deinit();
+    var runner = Runner.init(testing.allocator, testing.io);
     try testing.expectError(error.SpawnFailed, runner.run(.{
         .argv = &.{"pulse-extras-does-not-exist-9f3a"},
         .timeout_ns = 5 * std.time.ns_per_s,
     }));
+    try runner.checkDrained();
 }
 
 test "runner captures output and exit status" {
-    var runner = Runner.init(testing.allocator);
-    defer runner.deinit();
+    var runner = Runner.init(testing.allocator, testing.io);
     const command: []const u8 = if (@import("builtin").os.tag == .windows) "cmd" else "sh";
     const args: []const []const u8 = if (@import("builtin").os.tag == .windows)
         &.{ "cmd", "/c", "echo hello" }
@@ -153,15 +153,14 @@ test "runner captures output and exit status" {
         error.SpawnFailed => return error.SkipZigTest,
         else => return err,
     };
-    defer outcome.deinit(testing.allocator);
+    defer outcome.deinit();
     try testing.expect(outcome.succeeded());
     try testing.expect(std.mem.indexOf(u8, outcome.stdout, "hello") != null);
     _ = command;
 }
 
 test "runner enforces the output cap" {
-    var runner = Runner.init(testing.allocator);
-    defer runner.deinit();
+    var runner = Runner.init(testing.allocator, testing.io);
     // Fixed-size output: the child exits on its own, so a limit hit cannot
     // deadlock on a full pipe (that only happens with unbounded writers).
     var filler: [600]u8 = undefined;
@@ -178,4 +177,31 @@ test "runner enforces the output cap" {
         &.{ "sh", "-c", line };
     const result = runner.run(.{ .argv = argv, .stdout_limit = 64, .timeout_ns = 5 * std.time.ns_per_s });
     try testing.expectError(error.OutputTooLong, result);
+    try runner.checkDrained();
+}
+
+test "runner rejects unbounded deadline and overbudget requests before spawn" {
+    var runner = Runner.initWithBudget(testing.allocator, testing.io, 1024);
+    try testing.expectError(error.InvalidRequest, runner.run(.{ .argv = &.{}, .timeout_ns = 1 }));
+    try testing.expectError(error.InvalidRequest, runner.run(.{ .argv = &.{"never-start"}, .timeout_ns = 0 }));
+    try testing.expectError(error.OutputBudgetExceeded, runner.run(.{ .argv = &.{"never-start"}, .stdout_limit = 1024, .stderr_limit = 1 }));
+    try testing.expectError(error.OutputBudgetExceeded, runner.run(.{ .argv = &.{"never-start"}, .stdout_limit = std.math.maxInt(usize), .stderr_limit = 1 }));
+    try runner.checkDrained();
+}
+
+test "owned output holds and releases a reservation" {
+    var runner = Runner.initWithBudget(testing.allocator, testing.io, 2048);
+    const args: []const []const u8 = if (@import("builtin").os.tag == .windows)
+        &.{ "cmd", "/c", "echo hello" }
+    else
+        &.{ "sh", "-c", "echo hello" };
+    {
+        var outcome = try runner.run(.{ .argv = args, .stdout_limit = 1024, .stderr_limit = 1024 });
+        defer outcome.deinit();
+        try testing.expect(outcome.succeeded());
+        try testing.expectError(error.OutstandingOutputs, runner.checkDrained());
+        try testing.expectError(error.OutputBudgetExceeded, runner.run(.{ .argv = args, .stdout_limit = 1, .stderr_limit = 0 }));
+    }
+    try runner.checkDrained();
+    try testing.expectEqual(@as(usize, 2048), runner.output_budget.peak);
 }
