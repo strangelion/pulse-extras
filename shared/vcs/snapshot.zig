@@ -5,7 +5,7 @@
 //! before the invalidation can be discarded instead of published.
 
 const std = @import("std");
-const identity = @import("identity.zig");
+const identity = @import("vcs_identity");
 
 /// `now_ms` is injected so tests do not sleep and callers can use a monotonic
 /// clock from any thread.

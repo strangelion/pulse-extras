@@ -5,9 +5,9 @@
 //! one at a time in later phases, each with a plan and confirmation.
 
 const std = @import("std");
-const capabilities = @import("capabilities.zig");
-const detect = @import("detect.zig");
-const identity = @import("identity.zig");
+const capabilities = @import("vcs_capabilities");
+const detect = @import("vcs_detect");
+const identity = @import("vcs_identity");
 
 pub const Error = error{
     CliMissing,
@@ -57,6 +57,20 @@ pub const Text = struct {
     }
 };
 
+/// Counts are coarse on purpose: every VCS can answer "how many changed
+/// paths", while staging/changelists are provider-specific capabilities.
+pub const Changes = struct {
+    /// Index / staging area entries (Git) or equivalent prepared changes.
+    staged: u32 = 0,
+    /// Worktree modifications not yet staged (or not yet in a changelist).
+    modified: u32 = 0,
+    untracked: u32 = 0,
+    conflicted: u32 = 0,
+    /// Distance to the upstream ref, only when the provider reports it.
+    ahead: u32 = 0,
+    behind: u32 = 0,
+};
+
 /// What a read-only summary can say. Absent fields carry the reason through
 /// `availability` instead of pretending the repository is empty.
 pub const Snapshot = struct {
@@ -65,6 +79,7 @@ pub const Snapshot = struct {
     revision: ?identity.RevisionId = null,
     /// Branch, bookmark, stream or trunk-relative path, depending on the VCS.
     reference: Text = .{},
+    changes: Changes = .{},
     /// Human-readable detail for errors and partial states; never parsed.
     detail: Text = .{},
 };

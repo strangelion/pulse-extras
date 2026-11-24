@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const identity = @import("identity.zig");
+const identity = @import("vcs_identity");
 const run = @import("pulse_process");
 
 pub const Tool = enum {

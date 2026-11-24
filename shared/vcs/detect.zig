@@ -6,7 +6,7 @@
 //! touches the network, so it is safe to call from a UI thread.
 
 const std = @import("std");
-const identity = @import("identity.zig");
+const identity = @import("vcs_identity");
 
 pub const max_depth = 64;
 pub const max_candidates = 8;
