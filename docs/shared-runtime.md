@@ -128,9 +128,10 @@ network access.
 RT0 candidate: shared/process/run.zig removes the DLL-local static Threaded I/O
 and injects a caller-owned std.Io. Tests use the stdlib test I/O owner.
 The serialized runner does not own the I/O lifetime. Its logical output quota
-reserves requested stdout/stderr caps until Outcome.deinit, which frees the
-matching allocator's buffers and returns the reservation; error paths undo
-reservations. Default quota 16 MiB; per-request finite deadline required.
+reserves requested stdout/stderr caps during execution, then releases the
+unused capacity on completion and retains only actual output bytes until
+Outcome.deinit. Matching allocator buffers are freed on deinit; error paths
+undo reservations. The live-outcome count still bounds zero-byte results. Default quota 16 MiB; per-request finite deadline required.
 The owner must remain at a stable address until all outputs are destroyed and
 checkDrained succeeds. The next RT0 candidate wraps the Runner allocator with
 shared/runtime/allocator.zig: a separate 32 MiB requested-live-byte quota, with
@@ -328,3 +329,29 @@ Reuse pinned Zig's documented `std.Io.concurrent`, `Future.await` and `Future.ca
 ### Format and input ownership follow-up
 
 CI 45448198471 stopped at zig fmt on shared/process/run.zig and shared/runtime/allocator.zig (extra blank lines). Remove the identified whitespace; CI now checks formatting before installing VCS tools and, on failure, prints the exact formatter diff from its disposable checkout and fails, without committing formatting changes or running tests on an altered tree. The latest candidate also validates synchronous/asynchronous request bounds before allocation/spawn, deep-copies explicit environment maps with the same bounded allocator, and drains pending futures even on test assertion failure. Do not log environment contents. A trusted environment policy, actual process-tree containment and real host acceptance remain outstanding. Previous runtime baseline 6a9083a passed Windows/Ubuntu CI 45447221739; the async candidate requires new full CI.
+
+### RT0 resource retention and diagnostics follow-up
+
+The Runner now returns unused stdout/stderr reservation capacity immediately
+on completion (actual returned lengths remain reserved); the bounded allocator
+continues accounting separately for allocated bytes. Repeated short commands
+no longer each hold their entire requested output cap until their result is freed.
+Owner-thread diagnostics expose state, pending flag, locked allocator snapshot,
+and completed/failed admitted-execution counts and output reservations only
+when no future is pending. Worker-owned counters are unavailable (null) before
+join, not read concurrently or reported as zero. No secret, path, argv, payload,
+logging daemon, periodic sampling or new allocation is required. Completion means
+a process result was returned, not necessarily zero exit; failed counts admitted
+execution errors only, not policy rejections.
+
+Add opt-in explicit_local admission: fully qualified local executable and cwd,
+explicit environment map, no drive-relative/UNC/device paths on Windows. Both
+modes enforce configured finite maximum duration (initial default 5 minutes;
+product profiles may choose shorter or longer), input bounds and environment
+name validation. Configure only while idle. This is lexical validation, not
+trusted binary identity, ACL verification, reparse containment or environment
+allowlisting. Compatibility mode preserves current provider/test call sites;
+production VCS adoption requires actual trusted executable resolution and
+controlled environment/cwd, not automatic promotion of compatibility mode.
+Process tree containment is still not implemented. Do not claim that Future
+cancel or the output quota proves descendant cleanup.

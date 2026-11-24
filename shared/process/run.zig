@@ -13,7 +13,8 @@
 
 const std = @import("std");
 const Budget = @import("runtime_budget").Budget;
-const BoundedAllocator = @import("runtime_allocator").BoundedAllocator;
+const runtime_allocator = @import("runtime_allocator");
+const BoundedAllocator = runtime_allocator.BoundedAllocator;
 
 pub const default_output_budget: usize = 16 * 1024 * 1024;
 pub const default_memory_budget: usize = 32 * 1024 * 1024;
@@ -22,6 +23,11 @@ pub const max_async_arguments: usize = 128;
 pub const max_async_argument_bytes: usize = 64 * 1024;
 pub const max_environment_entries: usize = 256;
 pub const max_environment_bytes: usize = 128 * 1024;
+pub const default_max_timeout_ns: u64 = 5 * 60 * std.time.ns_per_s;
+
+/// Explicit-path mode is an admission constraint, not a trust verdict.
+/// Callers must still verify the executable and control its configuration.
+pub const ExecutionPolicy = enum { compatibility, explicit_local };
 
 pub const Request = struct {
     argv: []const []const u8,
@@ -88,6 +94,22 @@ pub const Error = error{
 pub const Runner = struct {
     pub const State = enum { active, stopping, stopped };
 
+    pub const OutputStats = struct {
+        reserved_bytes: usize,
+        peak_reserved_bytes: usize,
+        live_outcomes: usize,
+        completed: usize,
+        failed: usize,
+    };
+
+    pub const Diagnostics = struct {
+        state: State,
+        pending: bool,
+        memory: runtime_allocator.Stats,
+        // Worker-owned counters must not be read before join.
+        output: ?OutputStats,
+    };
+
     const Pending = struct {
         future: std.Io.Future(Error!Outcome),
         arguments: std.heap.ArenaAllocator,
@@ -106,6 +128,10 @@ pub const Runner = struct {
     live_outcomes: usize = 0,
     state: State = .active,
     pending: ?Pending = null,
+    policy: ExecutionPolicy = .compatibility,
+    max_timeout_ns: u64 = default_max_timeout_ns,
+    completed: usize = 0,
+    failed: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Runner {
         return initWithBudget(allocator, io, default_output_budget);
@@ -117,6 +143,33 @@ pub const Runner = struct {
 
     pub fn initWithLimits(allocator: std.mem.Allocator, io: std.Io, output_limit: usize, memory_limit: usize) Runner {
         return .{ .memory = BoundedAllocator.init(allocator, memory_limit), .io = io, .output_budget = Budget.init(output_limit) };
+    }
+
+    /// Configure only while idle; no background mutation of admission rules.
+    pub fn configure(self: *Runner, policy: ExecutionPolicy, max_timeout_ns: u64) Error!void {
+        if (self.state != .active) return error.Stopped;
+        if (self.pending != null or self.live_outcomes != 0) return error.Busy;
+        if (max_timeout_ns == 0) return error.InvalidRequest;
+        self.policy = policy;
+        self.max_timeout_ns = max_timeout_ns;
+    }
+
+    /// Owner-thread diagnostic snapshot, without paths, output or credentials.
+    /// While a future is outstanding only lock-protected memory stats are read.
+    /// No allocation, polling timer or wait for a running command.
+    pub fn diagnostics(self: *Runner) Diagnostics {
+        return .{
+            .state = self.state,
+            .pending = self.pending != null,
+            .memory = self.memory.stats(),
+            .output = if (self.pending != null) null else .{
+                .reserved_bytes = self.output_budget.used,
+                .peak_reserved_bytes = self.output_budget.peak,
+                .live_outcomes = self.live_outcomes,
+                .completed = self.completed,
+                .failed = self.failed,
+            },
+        };
     }
 
     /// All results must be freed before the runner or its I/O owner goes away.
@@ -151,7 +204,12 @@ pub const Runner = struct {
     /// Validate before copying inputs or starting a child. Both entry paths
     /// enforce identical limits. No unbounded argv/environment traversal.
     fn validateRequest(self: *Runner, request: Request) Error!usize {
-        if (request.argv.len == 0 or request.argv.len > max_async_arguments or request.argv[0].len == 0 or request.timeout_ns == 0) return error.InvalidRequest;
+        if (request.argv.len == 0 or request.argv.len > max_async_arguments or request.argv[0].len == 0 or request.timeout_ns == 0 or request.timeout_ns > self.max_timeout_ns) return error.InvalidRequest;
+        if (self.policy == .explicit_local) {
+            if (!isLocalAbsolute(request.argv[0])) return error.InvalidRequest;
+            if (!isLocalAbsolute(request.cwd orelse return error.InvalidRequest)) return error.InvalidRequest;
+            if (request.environ_map == null) return error.InvalidRequest;
+        }
         var total: usize = 0;
         for (request.argv) |arg| {
             if (arg.len > max_async_argument_bytes - total or std.mem.indexOfScalar(u8, arg, 0) != null) return error.InvalidRequest;
@@ -167,12 +225,16 @@ pub const Runner = struct {
         return reservation;
     }
 
-    /// Reserve both output caps until the owned outcome is released.
-    /// This bounds logical output capacity, not total child/allocator memory.
+    /// Reserve both output caps during execution, then retain only actual
+    /// output bytes until the result is released. The allocator independently
+    /// accounts for requested memory, including temporary buffers.
     fn runInternal(self: *Runner, request: Request) Error!Outcome {
         const reservation = try self.validateRequest(request);
         self.output_budget.reserve(reservation) catch return error.OutputBudgetExceeded;
         errdefer self.output_budget.release(reservation);
+        errdefer {
+            self.failed +|= 1;
+        }
         const cwd: std.process.Child.Cwd = if (request.cwd) |path| .{ .path = path } else .inherit;
         const timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromNanoseconds(request.timeout_ns), .clock = .boot } };
 
@@ -193,7 +255,17 @@ pub const Runner = struct {
             else => return error.Io,
         };
 
+        // Defense in depth: the stdlib should already enforce these caps.
+        if (result.stdout.len > request.stdout_limit or result.stderr.len > request.stderr_limit) {
+            const allocator = self.memory.allocator();
+            allocator.free(result.stdout);
+            allocator.free(result.stderr);
+            return error.OutputTooLong;
+        }
+        const retained = result.stdout.len + result.stderr.len;
+        self.output_budget.release(reservation - retained);
         self.live_outcomes += 1;
+        self.completed +|= 1;
         const status: Status = switch (result.term) {
             .exited => .exited,
             else => .signalled,
@@ -207,7 +279,7 @@ pub const Runner = struct {
             .stdout = result.stdout,
             .stderr = result.stderr,
             .owner = self,
-            .reservation = reservation,
+            .reservation = retained,
         };
     }
 
@@ -297,6 +369,15 @@ pub const Runner = struct {
     }
 };
 
+/// Intentionally reject drive-relative/root-relative and device/UNC paths
+/// in strict Windows mode. This is lexical validation, not ACL/reparse proof.
+fn isLocalAbsolute(path: []const u8) bool {
+    if (@import("builtin").os.tag == .windows) {
+        return path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and (path[2] == '\\' or path[2] == '/');
+    }
+    return path.len != 0 and path[0] == '/';
+}
+
 fn validateEnvironment(environment: *const std.process.Environ.Map) error{InvalidRequest}!void {
     var entries = environment.iterator();
     var count: usize = 0;
@@ -310,7 +391,7 @@ fn validateEnvironment(environment: *const std.process.Environ.Map) error{Invali
         bytes += key.len;
         if (value.len > max_environment_bytes - bytes) return error.InvalidRequest;
         bytes += value.len;
-        if (std.mem.indexOfScalar(u8, key, 0) != null or std.mem.indexOfScalar(u8, value, 0) != null) return error.InvalidRequest;
+        if (std.mem.indexOfScalar(u8, key, 0) != null or std.mem.indexOfScalar(u8, key, '=') != null or std.mem.indexOfScalar(u8, value, 0) != null) return error.InvalidRequest;
     }
 }
 
@@ -376,7 +457,7 @@ test "runner rejects unbounded deadline and overbudget requests before spawn" {
     try runner.checkDrained();
 }
 
-test "owned output holds and releases a reservation" {
+test "owned output retains actual bytes and releases the unused capacity" {
     var runner = Runner.initWithBudget(testing.allocator, testing.io, 2048);
     const args: []const []const u8 = if (@import("builtin").os.tag == .windows)
         &.{ "cmd", "/c", "echo hello" }
@@ -387,10 +468,20 @@ test "owned output holds and releases a reservation" {
         defer outcome.deinit();
         try testing.expect(outcome.succeeded());
         try testing.expectError(error.OutstandingOutputs, runner.checkDrained());
-        try testing.expectError(error.OutputBudgetExceeded, runner.run(.{ .argv = args, .stdout_limit = 1, .stderr_limit = 0 }));
+        const stats = runner.diagnostics().output.?;
+        try testing.expectEqual(outcome.stdout.len + outcome.stderr.len, stats.reserved_bytes);
+        try testing.expect(stats.reserved_bytes < 2048);
+        try testing.expectEqual(@as(usize, 1), stats.live_outcomes);
+        // A second request can use capacity returned by the first completion.
+        var next = try runner.run(.{ .argv = args, .stdout_limit = 1024, .stderr_limit = 512 });
+        defer next.deinit();
+        try testing.expect(next.succeeded());
     }
     try runner.checkDrained();
-    try testing.expectEqual(@as(usize, 2048), runner.output_budget.peak);
+    const stats = runner.diagnostics().output.?;
+    try testing.expectEqual(@as(usize, 2048), stats.peak_reserved_bytes);
+    try testing.expectEqual(@as(usize, 0), stats.reserved_bytes);
+    try testing.expectEqual(@as(usize, 2), stats.completed);
 }
 
 test "stop rejects admissions without invalidating outstanding results" {
@@ -479,6 +570,10 @@ test "async task owns input and transfers output only once" {
     try testing.expectError(error.Busy, runner.start(.{ .argv = argv }));
     try testing.expectError(error.Busy, runner.run(.{ .argv = argv }));
     try testing.expectError(error.Busy, runner.checkDrained());
+    const pending_stats = runner.diagnostics();
+    try testing.expect(pending_stats.pending);
+    try testing.expect(pending_stats.output == null);
+    try testing.expectError(error.Busy, runner.configure(.explicit_local, default_max_timeout_ns));
     {
         var outcome = try runner.awaitPending();
         defer outcome.deinit();
@@ -580,4 +675,47 @@ test "oversized and malformed explicit environments are rejected before copy" {
     try environment.put("PULSE_RUNTIME_TEST", oversized);
     try testing.expectError(error.InvalidRequest, runner.start(.{ .argv = &.{"never-start"}, .environ_map = &environment }));
     try runner.checkDrained();
+}
+
+test "execution policy rejects inherited environment and relative paths before spawn" {
+    var runner = Runner.init(testing.allocator, testing.io);
+    try testing.expectError(error.InvalidRequest, runner.configure(.explicit_local, 0));
+    try runner.configure(.explicit_local, std.time.ns_per_s);
+    const exe = if (@import("builtin").os.tag == .windows) "C:\\never-start.exe" else "/never-start";
+    const cwd = if (@import("builtin").os.tag == .windows) "C:\\workspace" else "/workspace";
+    var environment = std.process.Environ.Map.init(testing.allocator);
+    defer environment.deinit();
+    try testing.expectError(error.InvalidRequest, runner.run(.{ .argv = &.{"never-start"}, .cwd = cwd, .environ_map = &environment, .timeout_ns = 1 }));
+    try testing.expectError(error.InvalidRequest, runner.start(.{ .argv = &.{exe}, .cwd = ".", .environ_map = &environment, .timeout_ns = 1 }));
+    try testing.expectError(error.InvalidRequest, runner.start(.{ .argv = &.{exe}, .cwd = cwd, .timeout_ns = 1 }));
+    try testing.expectError(error.InvalidRequest, runner.run(.{ .argv = &.{exe}, .cwd = cwd, .environ_map = &environment, .timeout_ns = 2 * std.time.ns_per_s }));
+    try testing.expectEqual(@as(usize, 5 * 1024 * 1024), try runner.validateRequest(.{ .argv = &.{exe}, .cwd = cwd, .environ_map = &environment, .timeout_ns = 1 }));
+    try runner.checkDrained();
+    try testing.expectEqual(@as(usize, 0), runner.diagnostics().output.?.completed);
+}
+
+test "local absolute path validation does not accept Windows drive-relative or device paths" {
+    if (@import("builtin").os.tag == .windows) {
+        try testing.expect(isLocalAbsolute("C:\\tool.exe"));
+        try testing.expect(!isLocalAbsolute("C:tool.exe"));
+        try testing.expect(!isLocalAbsolute("\\tool.exe"));
+        try testing.expect(!isLocalAbsolute("\\\\server\\share\\tool.exe"));
+        try testing.expect(!isLocalAbsolute("\\\\?\\C:\\tool.exe"));
+    } else {
+        try testing.expect(isLocalAbsolute("/usr/bin/tool"));
+        try testing.expect(!isLocalAbsolute("./tool"));
+    }
+    try testing.expect(!isLocalAbsolute(""));
+}
+
+test "diagnostics distinguish execution failures from rejected admissions" {
+    var runner = Runner.init(testing.allocator, testing.io);
+    try testing.expectError(error.InvalidRequest, runner.run(.{ .argv = &.{} }));
+    try testing.expectError(error.SpawnFailed, runner.run(.{ .argv = &.{"pulse-extras-does-not-exist-9f3a"} }));
+    try runner.checkDrained();
+    const stats = runner.diagnostics();
+    try testing.expectEqual(@as(usize, 1), stats.output.?.failed);
+    try testing.expectEqual(@as(usize, 0), stats.output.?.completed);
+    try testing.expectEqual(@as(usize, 0), stats.memory.live_bytes);
+    try testing.expect(!stats.pending);
 }

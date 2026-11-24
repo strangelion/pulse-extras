@@ -99,3 +99,5 @@ See [Forge design](forge-architecture.md). Do not block VCS or other independent
 ## Delivery and reporting
 
 Synchronize remote main without overwriting local work. Read existing docs and code before changes. Commit logically related fixes after local tests; add CI coverage with new features. Report exact commands, results, CI scope, actual host evidence, resource measurements, remaining gaps and next work. See [testing.md](testing.md) for the reduced/full CI policy. Do not create AGENTS.md or duplicate design documents.
+
+RT0 follow-up candidate: retain only actual completed output bytes, expose safe owner-thread diagnostics, validate explicit local paths/environment and maximum deadlines. CI verification and trusted resolver adoption precede VCS panel integration. Do not add a global service or claim descendant ownership before an actual tested process-tree backend exists.
