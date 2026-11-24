@@ -11,7 +11,7 @@ Zig-first, fixed stable toolchain, Windows x64 MSVC ABI. No Cargo or C++ build p
 - shared/vcs: implemented provider contract, capabilities, identities, detection, risk tiers, CLI discovery, bounded cache and Git/JJ/SVN read-only summaries. Full identity resolution, cache isolation and asynchronous panel integration are outstanding. See [vcs-architecture.md](vcs-architecture.md).
 - extensions/abi-probe: lifecycle probe used to verify entry/activate/deactivate/destroy on a real host.
 - extensions/hello-panel: first UI extension — command, `pulse.context` subscription, `pulse.ui.model` panel, `pulse.ui.mount` workspace/sidebar placement.
-- Future independent extensions: Convert, Inspect, Data, DevKit, Compare. Heavy parsing, external commands and untrusted input should use isolated workers where practical.
+- Future independent extensions: Convert, Inspect, Data, DevKit, Compare and Forge. Heavy parsing, external commands and untrusted input should use isolated workers where practical. [Forge](forge-architecture.md) is a separate proposed authoring CLI/MCP and optional native panel; untrusted generated code requires OS-enforced containment, not just a separate Pulse profile. Direct integration into the built-in AI requires an upstream public interface.
 
 ## Safety
 
@@ -25,7 +25,7 @@ Use explicit allocation ownership, bounded resources, clear error unions and cle
 4. Validate real Pulse install, enable, restart, upgrade and rollback in isolated profiles. A C harness is not real host acceptance.
 5. Track cold/warm build time, cache and output size, runtime memory and UI responsiveness. Establish baselines before setting thresholds; no claims without measurements.
 
-Use no private signing keys in Git or logs. Independent packages under strangelion.*; preserve Apache-2.0, audit third-party licenses, sign official manifest bytes, publish releases and submit catalog metadata to the upstream registry.
+Use no private signing keys in Git or logs. Independent packages under strangelion.*; preserve Apache-2.0, audit third-party licenses, sign official manifest bytes, publish releases and submit catalog metadata to the upstream registry. See [release design](release.md) for the proposed shared packaging pipeline, independent versions, selection and protected signing. No release workflow exists yet.
 
 ## Development discipline
 

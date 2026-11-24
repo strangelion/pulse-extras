@@ -41,6 +41,14 @@ The last full verified CI baseline is [c330c24 / run 45421511648](https://github
 - [ ] Support English/Chinese, light/dark, DPI and resize; no private host API, duplicate native Git badges or background writes.
 - [ ] Produce an isolated-installable `strangelion.vcs-0.1.0.pulse-ext` candidate. Verify on real Pulse: non-repo, Git/JJ/colocated/SVN, missing CLI, rapid navigation, large repo, close/reopen, disable during query, exit, upgrade/rollback. Record screenshots/logs, build hash, process and memory evidence. Mark unrun cases NOT VERIFIED.
 
+## R — Shared packaging and release (after first P2 acceptance)
+
+- [ ] After the first real VCS package passes isolated host acceptance, implement reusable official package/verify helpers and per-extension version descriptors.
+- [ ] Add one manually dispatched Release workflow with single/selected/all eligible extensions, dry-run by default, then protected draft/publish modes. Full CI and relevant host evidence must match the released source/artifact. Keep each extension independently versioned.
+- [ ] Validate signing with test keys, protected production key handling, collision/partial failure recovery and official registry metadata. Confirm registry acceptance; no automatic official catalog publication.
+
+See [release design](release.md). This is a separate milestone after P2, not blocked by completion of all VCS backends or write operations. No production publication before the relevant gates pass.
+
 ## P3 — Read-only advanced functions
 
 - [ ] Changed-file list, paged history, bounded file/revision diff and revision content.
@@ -52,7 +60,7 @@ The last full verified CI baseline is [c330c24 / run 45421511648](https://github
 
 Implement one operation at a time with risk classification, explicit plan/confirmation, revalidation, advisory shared-store locking, external-change detection, bounded execution, cancellation and partial-failure recovery. Do not promise universal undo. No destructive or remote operations by default. Follow official Pulse file-mutation rules and verify actual integration before exposing writes.
 
-## P5 — Other independent extensions and release
+## P5 — Other independent extensions
 
 | ID | First deliverable | Explicit exclusions |
 | --- | --- | --- |
@@ -61,10 +69,20 @@ Implement one operation at a time with risk classification, explicit plan/confir
 | strangelion.data | SQLite schema and bounded NPY/NPZ metadata | No arbitrary SQL writes |
 | strangelion.devkit | Project detection and toolchain inventory | No automatic install or build scripts |
 | strangelion.compare | Recursive read-only content comparison | No sync/deletion until safety review |
+| strangelion.forge | AI-assisted Zig author CLI/MCP, then optional native panel | No automatic execution of untrusted code or publication; native AI tool integration requires upstream support |
 
 Recheck upstream source, roadmap, SDK and registry for overlap before implementing each extension. Pulse already has basic Git and SVN status, native lock detection, common previews and archive integration. Coordinate 3D/OCR/remote features with upstream.
 
-Release requires full manual CI, relevant actual host tests, license/security review, official packaging/signing, per-extension versioning and registry submission. Keep secrets out of Git/CI logs. Apache-2.0 and Zig-first remain unchanged.
+Release follows milestone R and [release.md](release.md). Keep secrets out of Git/CI logs. Apache-2.0 and Zig-first remain unchanged.
+
+## F — Forge authoring tooling (after shared runtime/package foundations)
+
+- [ ] Standalone Zig author CLI and MCP: SDK discovery, trusted templates, project changes, restricted build/test, verified export.
+- [ ] Bounded Agent integration and diagnostics with deterministic tests, explicit authorization and OS-level isolation for generated code.
+- [ ] Native Forge panel with user-configured external Agent, review, progress/cancel and isolated preview only when containment is verified.
+- [ ] Discuss typed AI tool registration and permissions with upstream; direct native assistant integration remains unsupported by the pinned public SDK.
+
+See [Forge design](forge-architecture.md). Do not block VCS or other independent packages on Forge, and do not create placeholder projects. A single natural-language request is a development task, not permission for unreviewed native execution or release.
 
 ## Delivery and reporting
 

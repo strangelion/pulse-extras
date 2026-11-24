@@ -22,6 +22,7 @@ explicit non-claims. Registry acceptance and shipping extensions are still open.
 | Data | Database and scientific data preview | Planned |
 | DevKit | Project and toolchain management | Planned |
 | Compare | Recursive directory comparison | Planned |
+| Forge | AI-assisted Zig extension authoring (separate MCP, optional native panel) | Design only; built-in AI integration needs upstream support ([design](docs/forge-architecture.md)) |
 
 ## Build and test
 
@@ -45,6 +46,8 @@ Python 3 is used only by CI and SDK verification tools.
 - [Testing and CI coverage](docs/testing.md)
 - [VCS architecture and capability matrix](docs/vcs-architecture.md)
 - [Roadmap](docs/roadmap.md)
+- [Forge authoring architecture](docs/forge-architecture.md)
+- [Unified extension release design](docs/release.md)
 - [SDK pin](sdk/upstream.toml)
 - [CI](https://github.com/strangelion/pulse-extras/actions)
 - [Official extension registry](https://github.com/jimmgreen/pulse-extensions)
