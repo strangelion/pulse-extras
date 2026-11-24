@@ -138,6 +138,7 @@ const Modules = struct {
             .imports = &.{
                 .{ .name = "vcs_identity", .module = vcs_identity },
                 .{ .name = "pulse_process", .module = process_mod },
+                .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
         });
         const vcs_snapshot = b.createModule(.{
@@ -157,6 +158,7 @@ const Modules = struct {
                 .{ .name = "vcs_identity", .module = vcs_identity },
                 .{ .name = "vcs_provider", .module = vcs_provider },
                 .{ .name = "pulse_process", .module = process_mod },
+                .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
         });
         const vcs_jj = b.createModule(.{
@@ -170,6 +172,7 @@ const Modules = struct {
                 .{ .name = "vcs_identity", .module = vcs_identity },
                 .{ .name = "vcs_provider", .module = vcs_provider },
                 .{ .name = "pulse_process", .module = process_mod },
+                .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
         });
         const vcs_svn = b.createModule(.{
@@ -183,6 +186,7 @@ const Modules = struct {
                 .{ .name = "vcs_identity", .module = vcs_identity },
                 .{ .name = "vcs_provider", .module = vcs_provider },
                 .{ .name = "pulse_process", .module = process_mod },
+                .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
         });
         var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod, .vcs_capabilities = vcs_capabilities, .vcs_identity = vcs_identity, .vcs_risk = vcs_risk, .vcs_detect = vcs_detect, .vcs_provider = vcs_provider, .vcs_cli = vcs_cli, .vcs_snapshot = vcs_snapshot, .vcs_git = vcs_git, .vcs_jj = vcs_jj, .vcs_svn = vcs_svn };

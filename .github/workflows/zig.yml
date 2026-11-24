@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   checks:
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -23,12 +23,25 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - run: python scripts/install_zig.py
-      - run: zig version
       - name: Check Python scripts compile
         run: python -m compileall -q scripts
       - name: Test CI helper scripts
         run: python -m unittest discover -s scripts -p 'test_*.py'
+      - name: Restore Zig archive cache
+        id: zig-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/pulse-zig-archives
+          key: zig-archive-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.zig-version', 'scripts/zig-downloads.json') }}
+      - name: Install and verify pinned Zig
+        run: python scripts/install_zig.py
+      - name: Save verified Zig archive immediately
+        if: steps.zig-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/pulse-zig-archives
+          key: ${{ steps.zig-cache.outputs.cache-primary-key }}
+      - run: zig version
       - name: Install pinned Jujutsu CLI
         run: python scripts/ci_vcs.py jj
       - name: Check Git and JJ tools

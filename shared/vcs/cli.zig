@@ -172,12 +172,22 @@ test "locate finds an executable in a PATH-like value" {
     const file = try tmp.dir.createFile(io, Tool.git.exeName(), .{});
     file.close(io);
 
-    var path_buffer: [4096]u8 = undefined;
-    const path_value = try std.fmt.bufPrint(&path_buffer, ".zig-cache" ++ std.fs.path.sep_str ++ "tmp" ++ std.fs.path.sep_str ++ "{s}{c}ignored", .{
-        tmp.sub_path,
-        std.fs.path.delimiter,
-    });
+    var directory_buffer: [4096]u8 = undefined;
+    const directory = try std.fmt.bufPrint(&directory_buffer, ".zig-cache" ++ std.fs.path.sep_str ++ "tmp" ++ std.fs.path.sep_str ++ "{s}", .{tmp.sub_path});
     var scratch: [identity.max_path_bytes + 64]u8 = undefined;
+    if (builtin.os.tag != .windows) {
+        // A regular file is not executable on POSIX. Do not weaken locate().
+        try std.testing.expect(locate(io, .git, directory, &scratch) == null);
+        var fixture_buffer: [4096]u8 = undefined;
+        const fixture = try std.fmt.bufPrint(&fixture_buffer, "{s}" ++ std.fs.path.sep_str ++ "{s}", .{ directory, Tool.git.exeName() });
+        var runner = run.Runner.init(std.testing.allocator);
+        defer runner.deinit();
+        var outcome = try runner.run(.{ .argv = &.{ "chmod", "700", fixture } });
+        defer outcome.deinit(runner.allocator);
+        try std.testing.expect(outcome.succeeded());
+    }
+    var path_buffer: [4096]u8 = undefined;
+    const path_value = try std.fmt.bufPrint(&path_buffer, "{s}{c}ignored", .{ directory, std.fs.path.delimiter });
     const found = locate(io, .git, path_value, &scratch) orelse return error.TestExpectedPath;
     try std.testing.expect(std.mem.endsWith(u8, found.slice(), Tool.git.exeName()));
 }
