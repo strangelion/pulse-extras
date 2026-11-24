@@ -2,14 +2,21 @@
 
 ## P0 — Zig compatibility (blocking)
 
-- [ ] Confirm CI format, native tests and x64 DLL builds.
-- [ ] Confirm C loader tests using the exact pinned upstream header.
-- [ ] Verify official package tooling and isolated real Pulse host load/unload.
+- [x] Confirm CI format, native tests and x64 DLL builds.
+- [x] Confirm C loader tests using the exact pinned upstream header.
+- [x] Verify official package tooling and isolated real Pulse host load, activate,
+      deactivate and unload (2026-11-24, Pulse 1.0.61; see `docs/host-compatibility.md`).
 - [ ] Confirm Zig-built packages are accepted by the registry maintainer.
-- [ ] Establish public SDK binding generation/checking and safe commands/context wrappers.
+- [x] Establish public SDK binding generation/checking and safe commands wrappers
+      (`scripts/generate_bindings.py`, `shared/pulse/{abi,host,commands,ui_model,ui_mount}.zig`).
 - [ ] Measure build time, cache size and runtime memory baselines.
 
 ## P1 — Independent extensions
+
+- [x] Build the minimal `strangelion.hello-panel` extension: command registration,
+      `pulse.ui.model` panel and `pulse.ui.mount` workspace placement, verified end
+      to end on the real host (2026-11-24, see `docs/host-compatibility.md`).
+- [ ] Add a directory-context panel and secondary-sidebar placement.
 
 | ID | First deliverable | Explicit exclusions |
 | --- | --- | --- |

@@ -28,9 +28,12 @@ jobs:
       - run: zig fmt --check build.zig shared extensions
       - run: zig build test --summary all
       - run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
-      - name: Fetch pinned C ABI
+      - name: Fetch pinned native SDK headers
         if: runner.os == 'Windows'
         run: python scripts/fetch_sdk.py
+      - name: Verify generated bindings match the pinned SDK
+        if: runner.os == 'Windows'
+        run: python scripts/generate_bindings.py --check
       - name: Verify actual DLL against C ABI
         if: runner.os == 'Windows'
         shell: pwsh

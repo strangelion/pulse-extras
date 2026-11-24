@@ -6,10 +6,16 @@ Independent modular native extensions for [Pulse File Manager](https://github.co
 
 ## Status
 
-Experimental bootstrap. The ABI probe is a no-op DLL, not a production extension. Real Pulse installation, packaging and registry acceptance are not yet verified.
+Pre-release. The ABI probe is a test package, not a production extension, but
+its full native lifecycle is now verified on a real Pulse 1.0.61 host: installed
+into an isolated store with the official tools, loaded, activated, deactivated,
+unloaded, and its registered command dispatched from the host UI. See
+[host compatibility](docs/host-compatibility.md) for the evidence and the
+explicit non-claims. Registry acceptance and shipping extensions are still open.
 
 | Extension | Scope | Status |
 | --- | --- | --- |
+| Hello Panel | Smallest `pulse.ui.model` + `pulse.ui.mount` panel (SDK smoke test) | Verified on Pulse 1.0.61 |
 | VCS | Git / Jujutsu advanced management | Planned |
 | Convert | File conversion | Planned |
 | Inspect | Binary and package inspection | Planned |
@@ -28,7 +34,10 @@ zig build test --summary all
 zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
 ```
 
-The DLL is installed under zig-out/. CI also checks the pinned upstream C header and exercises the Windows DLL through a C loader harness. Python 3 is used only by CI and SDK verification tools.
+The DLL is installed under zig-out/. CI also checks the pinned upstream headers,
+regenerates the bindings with `zig translate-c` (`python
+scripts/generate_bindings.py --check`), and exercises the Windows DLL through a C
+loader harness. Python 3 is used only by CI and SDK verification tools.
 
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)

@@ -1,7 +1,53 @@
+# Published upstream baseline used for reproducible builds and CI.
+# The installed Pulse host can be newer than the published source; its embedded
+# SDK is snapshotted separately by scripts/host_sdk.py (see [host]).
 repository = "https://github.com/jimmgreen/pulse"
 revision = "b32436831a066e18448b2810bef4bf989024fc68"
 sdk_preview = 3
 pulse_source_version = "1.0.60"
 abi_header_blob = "a4f247e41a50361e4f1c5f30bafc7c6c33b0d1ef"
 target = "x86_64-windows-msvc"
-host_verified = false
+
+# Real-host acceptance flag. Set only after an isolated-store install,
+# activation, deactivation and unload were verified on a real Pulse host; the
+# evidence for the 2026-11-24 run is in docs/host-compatibility.md.
+host_verified = true
+
+# Published header digests (sha256) of the pinned revision. They are what
+# `scripts/fetch_sdk.py` downloads and what `scripts/generate_bindings.py`
+# feeds to translate-c; a digest mismatch aborts instead of building on drift.
+[headers]
+abi = "b56be7fd458c78b2befabce385b0824590df86edfb3bc69a4c9dd98c05c9ef70"
+context = "2e66723d4293f672a3a609dcf44e3f828c6cdc183de883e757e8eedcfef5e26f"
+commands = "3386f018530ac1bfb55a74dd6c848d633fc0040b9516f0333ab156f0adadcf38"
+dispatch = "9b183e0ea52e8733715c4215895d59c6e784decef224d178ed6b8015c6a0e4f5"
+preview = "5cfa4394f7fb8e70899bdca5ac41bc04672049fab797fbadc0fe2d8c52a8b4a8"
+ui = "241ab6be688be6f7f18a73b4ffbe49405137466d147e0fa0360ba3580ae80f88"
+ui_model = "6dab4e8b05cf1fc1551ccdf9e75cecd6fc142ddefe512aa4043b7fb85583e689"
+ui_data = "8f5add6b2b9692a8402de214d71035051de1fb73801abf723653b01c9ea3cff2"
+ui_mount = "d67508a965972dca328b46c6e12213536d61afad66c41f51e2c74105639f923f"
+ui_events = "03c3f6986fab18b1dd0c6eb708aff9b869d0cb5810c8f24854e9569d21b09591"
+dialogs = "4c6a92ca753bd35c438c6f50b97103f14ff7fe4e0879c94d2004838618250e6c"
+directories = "4c231ddd6c2e24bf0c5ece6cba08de1ecd4ed600bb4d63d057a2fed4a1756995"
+fileops = "6de0d83978b7083b98a77670d9ff8be8feaefc173d029c3bb7b7a917db8b71a1"
+files = "ec3a30be6e0f9733bbd04c67d483221d5b0fd61a99b1d9229e32912da280802c"
+resources = "bc029891506dc23939484d9726d2ab538d587782c540277f4bb56ab89d25e382"
+settings_pages = "84b19931ce0145100413f251240999750d8a40c1faaecbf58f1940f2d906f526"
+staging = "f33b5b7f178cac58fd13eb4ee65341875aa23e01a2ce1012e936befe8ee3ba14"
+tasks = "b237523c8395d030a3b40e80e46b66618d5ef6d28d53bc1c2395a3467772fc92"
+
+# Authoritative SDK of the locally installed host, captured from
+# `pulse.exe --extension-api --extension-check` by scripts/host_sdk.py.
+# Regenerate with:
+#   python scripts/host_sdk.py extract --pulse <pulse.exe> --out .local/host-sdk
+#   python scripts/host_sdk.py verify --pulse <pulse.exe> --baseline .local/host-sdk
+[host]
+version = "1.0.61"
+binary_sha256 = "c10bdf77c32c59f1e09ad9fd12f285105a084d1e15a280108381620621f1382a"
+abi_version = 1
+sdk_preview = 3
+interface_count = 23
+header_count = 19
+catalog_sha256 = "31d204e96e831bd49d71c60a0f0831ae3f42ec2ae8416b1adb02699f09c8b755"
+contract_identity_sha256 = "ce00eacfa5699d2dd5a67d54d6e26f5e4f717f6a87e277a1e5de2f4561a8e246"
+sdk_snapshot_verified = true
