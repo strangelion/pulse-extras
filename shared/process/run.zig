@@ -15,6 +15,9 @@ const std = @import("std");
 const Budget = @import("runtime_budget").Budget;
 const runtime_allocator = @import("runtime_allocator");
 const BoundedAllocator = runtime_allocator.BoundedAllocator;
+const windows_tree = @import("process_windows_tree");
+const trust = @import("process_trust");
+const event_log = @import("runtime_event_log");
 
 pub const default_output_budget: usize = 16 * 1024 * 1024;
 pub const default_memory_budget: usize = 32 * 1024 * 1024;
@@ -27,7 +30,8 @@ pub const default_max_timeout_ns: u64 = 5 * 60 * std.time.ns_per_s;
 
 /// Explicit-path mode is an admission constraint, not a trust verdict.
 /// Callers must still verify the executable and control its configuration.
-pub const ExecutionPolicy = enum { compatibility, explicit_local };
+pub const ExecutionPolicy = enum { compatibility, explicit_local, approved_local };
+pub const TreePolicy = enum { direct_child, windows_job };
 
 pub const Request = struct {
     argv: []const []const u8,
@@ -81,6 +85,10 @@ pub const Error = error{
     /// The child did not finish within `timeout_ns`.
     TimedOut,
     InvalidRequest,
+    ContainmentFailed,
+    ContainmentUnavailable,
+    UnapprovedExecutable,
+    UnapprovedEnvironment,
     Stopped,
     Busy,
     Cancelled,
@@ -129,6 +137,9 @@ pub const Runner = struct {
     state: State = .active,
     pending: ?Pending = null,
     policy: ExecutionPolicy = .compatibility,
+    tree_policy: TreePolicy = .direct_child,
+    approval: ?trust.Approval = null,
+    log: event_log.Log = .{},
     max_timeout_ns: u64 = default_max_timeout_ns,
     completed: usize = 0,
     failed: usize = 0,
@@ -149,9 +160,30 @@ pub const Runner = struct {
     pub fn configure(self: *Runner, policy: ExecutionPolicy, max_timeout_ns: u64) Error!void {
         if (self.state != .active) return error.Stopped;
         if (self.pending != null or self.live_outcomes != 0) return error.Busy;
-        if (max_timeout_ns == 0) return error.InvalidRequest;
+        if (max_timeout_ns == 0 or policy == .approved_local) return error.InvalidRequest;
+        self.approval = null;
         self.policy = policy;
         self.max_timeout_ns = max_timeout_ns;
+    }
+
+    /// Approval is an explicit caller decision; never auto-approve PATH.
+    pub fn configureApproved(self: *Runner, approval: trust.Approval, max_timeout_ns: u64) Error!void {
+        try self.configure(.explicit_local, max_timeout_ns);
+        self.approval = approval;
+        self.policy = .approved_local;
+    }
+
+    pub fn configureTree(self: *Runner, policy: TreePolicy) Error!void {
+        if (self.state != .active) return error.Stopped;
+        if (self.pending != null or self.live_outcomes != 0) return error.Busy;
+        if (policy == .windows_job and (@import("builtin").os.tag != .windows or @import("builtin").cpu.arch != .x86_64)) return error.ContainmentUnavailable;
+        self.tree_policy = policy;
+    }
+
+    /// Copy a redacted event only when worker-owned log state is available.
+    pub fn diagnosticEvent(self: *Runner, index: usize) error{Busy}!?event_log.Record {
+        if (self.pending != null) return error.Busy;
+        return self.log.get(index);
     }
 
     /// Owner-thread diagnostic snapshot, without paths, output or credentials.
@@ -205,10 +237,15 @@ pub const Runner = struct {
     /// enforce identical limits. No unbounded argv/environment traversal.
     fn validateRequest(self: *Runner, request: Request) Error!usize {
         if (request.argv.len == 0 or request.argv.len > max_async_arguments or request.argv[0].len == 0 or request.timeout_ns == 0 or request.timeout_ns > self.max_timeout_ns) return error.InvalidRequest;
-        if (self.policy == .explicit_local) {
+        if (self.policy != .compatibility) {
             if (!isLocalAbsolute(request.argv[0])) return error.InvalidRequest;
             if (!isLocalAbsolute(request.cwd orelse return error.InvalidRequest)) return error.InvalidRequest;
             if (request.environ_map == null) return error.InvalidRequest;
+        }
+        if (self.policy == .approved_local) {
+            const approval = self.approval orelse return error.UnapprovedExecutable;
+            if (!std.mem.eql(u8, approval.path, request.argv[0])) return error.UnapprovedExecutable;
+            try trust.validateEnvironment(request.environ_map.?);
         }
         var total: usize = 0;
         for (request.argv) |arg| {
@@ -238,20 +275,45 @@ pub const Runner = struct {
         const cwd: std.process.Child.Cwd = if (request.cwd) |path| .{ .path = path } else .inherit;
         const timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromNanoseconds(request.timeout_ns), .clock = .boot } };
 
-        const result = std.process.run(self.memory.allocator(), self.io, .{
+        const options: std.process.RunOptions = .{
             .argv = request.argv,
             .cwd = cwd,
             .environ_map = request.environ_map,
             .stdout_limit = std.Io.Limit.limited(request.stdout_limit),
             .stderr_limit = std.Io.Limit.limited(request.stderr_limit),
             .timeout = timeout,
-        }) catch |err| switch (err) {
+        };
+        if (self.approval) |approval| {
+            approval.verify(self.io, request.argv[0]) catch |err| switch (err) {
+                error.Canceled => return error.Cancelled,
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.UnapprovedExecutable,
+            };
+        }
+        const result = (if (self.tree_policy == .windows_job)
+            windows_tree.run(self.memory.allocator(), self.io, options, request.timeout_ns)
+        else
+            std.process.run(self.memory.allocator(), self.io, options)) catch |err| switch (err) {
             error.FileNotFound, error.InvalidExe, error.NameTooLong => return error.SpawnFailed,
             error.AccessDenied => return error.PermissionDenied,
             error.StreamTooLong => return error.OutputTooLong,
-            error.Timeout => return error.TimedOut,
-            error.Canceled => return error.Cancelled,
-            error.OutOfMemory => return error.OutOfMemory,
+            error.ContainmentFailed => {
+                self.log.add(.{ .kind = .cleanup_failure, .count = 1 });
+                return error.ContainmentFailed;
+            },
+            error.ContainmentUnavailable => return error.ContainmentUnavailable,
+            error.Timeout => {
+                self.log.add(.{ .kind = .timeout, .count = 1 });
+                return error.TimedOut;
+            },
+            error.Canceled => {
+                self.log.add(.{ .kind = .cancelled, .count = 1 });
+                return error.Cancelled;
+            },
+            error.OutOfMemory => {
+                self.log.add(.{ .kind = .allocation_limit, .count = 1 });
+                return error.OutOfMemory;
+            },
             else => return error.Io,
         };
 
@@ -266,6 +328,7 @@ pub const Runner = struct {
         self.output_budget.release(reservation - retained);
         self.live_outcomes += 1;
         self.completed +|= 1;
+        self.log.add(.{ .kind = .admitted, .count = retained });
         const status: Status = switch (result.term) {
             .exited => .exited,
             else => .signalled,
@@ -718,4 +781,34 @@ test "diagnostics distinguish execution failures from rejected admissions" {
     try testing.expectEqual(@as(usize, 0), stats.output.?.completed);
     try testing.expectEqual(@as(usize, 0), stats.memory.live_bytes);
     try testing.expect(!stats.pending);
+}
+
+test "Windows job policy is explicit and uses the real Runner path" {
+    var runner = Runner.init(testing.allocator, testing.io);
+    if (@import("builtin").os.tag != .windows or @import("builtin").cpu.arch != .x86_64) {
+        try testing.expectError(error.ContainmentUnavailable, runner.configureTree(.windows_job));
+        return;
+    }
+    try runner.configureTree(.windows_job);
+    {
+        var outcome = try runner.run(.{ .argv = &.{ "cmd", "/d", "/c", "echo owned-tree" } });
+        defer outcome.deinit();
+        try testing.expect(outcome.succeeded());
+        try testing.expect(std.mem.indexOf(u8, outcome.stdout, "owned-tree") != null);
+        try testing.expectError(error.Busy, runner.configureTree(.direct_child));
+    }
+    try runner.checkDrained();
+    try testing.expectEqual(event_log.Kind.admitted, (try runner.diagnosticEvent(0)).?.kind);
+}
+
+test "approved policy rejects unapproved path and environment before launch" {
+    var runner = Runner.init(testing.allocator, testing.io);
+    const exe = if (@import("builtin").os.tag == .windows) "C:\\approved.exe" else "/approved";
+    const cwd = if (@import("builtin").os.tag == .windows) "C:\\workspace" else "/workspace";
+    try runner.configureApproved(.{ .path = exe, .digest = @splat(0) }, std.time.ns_per_s);
+    var map = std.process.Environ.Map.init(testing.allocator);
+    defer map.deinit();
+    try map.put("LD_PRELOAD", "not-allowed");
+    try testing.expectError(error.UnapprovedEnvironment, runner.run(.{ .argv = &.{exe}, .cwd = cwd, .environ_map = &map, .timeout_ns = 1 }));
+    try runner.checkDrained();
 }

@@ -5,6 +5,7 @@
 //! Only the serialized owner may call these methods.
 
 const std = @import("std");
+const Group = @import("runtime_group").Group;
 
 pub fn LatestTask(comptime Input: type, comptime Output: type, comptime work: fn (Input) Output) type {
     return struct {
@@ -23,6 +24,7 @@ pub fn LatestTask(comptime Input: type, comptime Output: type, comptime work: fn
         };
 
         io: std.Io,
+        group: ?*Group = null,
         state: State = .active,
         queued: ?Input = null,
         running: ?Active = null,
@@ -31,22 +33,31 @@ pub fn LatestTask(comptime Input: type, comptime Output: type, comptime work: fn
             return .{ .io = io };
         }
 
-        pub fn submit(self: *Self, input: Input) error{Stopped}!Admission {
+        pub fn initWithGroup(io: std.Io, group: *Group) Self {
+            return .{ .io = io, .group = group };
+        }
+
+        pub fn submit(self: *Self, input: Input) error{ Stopped, ResourceBusy }!Admission {
             if (self.state != .active) return error.Stopped;
             const admission: Admission = if (self.queued == null) .queued else .replaced;
+            if (admission == .queued) {
+                if (self.group) |group| try group.reserveQueued();
+            }
             self.queued = input;
             return admission;
         }
 
         /// Failed concurrency admission preserves the queued request.
         /// Never execute work inline as a fallback.
-        pub fn startNext(self: *Self) error{ Stopped, Busy, ConcurrencyUnavailable }!bool {
+        pub fn startNext(self: *Self) error{ Stopped, Busy, ResourceBusy, ConcurrencyUnavailable }!bool {
             if (self.state != .active) return error.Stopped;
             if (self.running != null) return error.Busy;
             const input = self.queued orelse return false;
+            if (self.group) |group| try group.reserveRunning();
+            errdefer if (self.group) |group| group.releaseRunning();
             const future = try self.io.concurrent(work, .{input});
             self.running = .{ .input = input, .future = future };
-            self.queued = null;
+            self.clearQueued();
             return true;
         }
 
@@ -56,6 +67,7 @@ pub fn LatestTask(comptime Input: type, comptime Output: type, comptime work: fn
             const result = active.future.await(self.io);
             const input = active.input;
             self.running = null;
+            if (self.group) |group| group.releaseRunning();
             return .{ .input = input, .result = result };
         }
 
@@ -65,10 +77,14 @@ pub fn LatestTask(comptime Input: type, comptime Output: type, comptime work: fn
             const result = active.future.cancel(self.io);
             const input = active.input;
             self.running = null;
+            if (self.group) |group| group.releaseRunning();
             return .{ .input = input, .result = result };
         }
 
         pub fn clearQueued(self: *Self) void {
+            if (self.queued != null) {
+                if (self.group) |group| group.releaseQueued();
+            }
             self.queued = null;
         }
 
@@ -135,4 +151,18 @@ test "stop drops queued work and requires joining active work" {
     try slot.finishStop();
     try slot.finishStop();
     try std.testing.expectEqual(TestSlot.State.stopped, slot.state);
+}
+
+test "latest-only group charges replacement once and returns all reservations" {
+    var group = Group.init(std.testing.allocator, 0, 1, 1);
+    var slot = TestSlot.initWithGroup(std.testing.io, &group);
+    defer slot.shutdown();
+    _ = try slot.submit(1);
+    _ = try slot.submit(2);
+    try std.testing.expectEqual(@as(usize, 1), group.diagnostics().queued);
+    try std.testing.expect(try slot.startNext());
+    try std.testing.expectEqual(@as(usize, 1), group.diagnostics().running);
+    _ = try slot.submit(3);
+    slot.shutdown();
+    try group.checkDrained();
 }

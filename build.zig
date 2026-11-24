@@ -21,7 +21,7 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
-    all: [25]std.Build.Module.Import = undefined,
+    all: [31]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
@@ -106,10 +106,43 @@ const Modules = struct {
             .optimize = optimize,
             .imports = &.{.{ .name = "runtime_budget", .module = runtime_budget }},
         });
+        const runtime_group = b.createModule(.{
+            .root_source_file = b.path("shared/runtime/group.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "runtime_allocator", .module = runtime_allocator }},
+        });
+        const runtime_fifo_task = b.createModule(.{
+            .root_source_file = b.path("shared/runtime/fifo_task.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "runtime_group", .module = runtime_group }},
+        });
+        const runtime_event_log = b.createModule(.{
+            .root_source_file = b.path("shared/runtime/event_log.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const runtime_temp_store = b.createModule(.{
+            .root_source_file = b.path("shared/runtime/temp_store.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const process_windows_tree = b.createModule(.{
+            .root_source_file = b.path("shared/process/windows_tree.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const process_trust = b.createModule(.{
+            .root_source_file = b.path("shared/process/trust.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
         const runtime_latest_task = b.createModule(.{
             .root_source_file = b.path("shared/runtime/latest_task.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{.{ .name = "runtime_group", .module = runtime_group }},
         });
         const process_mod = b.createModule(.{
             .root_source_file = b.path("shared/process/run.zig"),
@@ -118,6 +151,9 @@ const Modules = struct {
             .imports = &.{
                 .{ .name = "runtime_budget", .module = runtime_budget },
                 .{ .name = "runtime_allocator", .module = runtime_allocator },
+                .{ .name = "process_windows_tree", .module = process_windows_tree },
+                .{ .name = "process_trust", .module = process_trust },
+                .{ .name = "runtime_event_log", .module = runtime_event_log },
             },
         });
         const vcs_capabilities = b.createModule(.{
@@ -173,6 +209,7 @@ const Modules = struct {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "runtime_latest_task", .module = runtime_latest_task },
+                .{ .name = "runtime_group", .module = runtime_group },
                 .{ .name = "vcs_identity", .module = vcs_identity },
                 .{ .name = "vcs_provider", .module = vcs_provider },
                 .{ .name = "vcs_snapshot", .module = vcs_snapshot },
@@ -238,6 +275,12 @@ const Modules = struct {
             .{ .name = "runtime_budget", .module = runtime_budget },
             .{ .name = "runtime_allocator", .module = runtime_allocator },
             .{ .name = "runtime_latest_task", .module = runtime_latest_task },
+            .{ .name = "runtime_group", .module = runtime_group },
+            .{ .name = "runtime_fifo_task", .module = runtime_fifo_task },
+            .{ .name = "runtime_event_log", .module = runtime_event_log },
+            .{ .name = "runtime_temp_store", .module = runtime_temp_store },
+            .{ .name = "process_windows_tree", .module = process_windows_tree },
+            .{ .name = "process_trust", .module = process_trust },
             .{ .name = "pulse_process", .module = process_mod },
             .{ .name = "pulse_text", .module = text_mod },
             .{ .name = "vcs_capabilities", .module = vcs_capabilities },
@@ -314,6 +357,12 @@ pub fn build(b: *std.Build) void {
         "shared/runtime/budget.zig",
         "shared/runtime/allocator.zig",
         "shared/runtime/latest_task.zig",
+        "shared/runtime/group.zig",
+        "shared/runtime/fifo_task.zig",
+        "shared/runtime/event_log.zig",
+        "shared/runtime/temp_store.zig",
+        "shared/process/windows_tree.zig",
+        "shared/process/trust.zig",
         "shared/pulse/abi.zig",
         "shared/pulse/text.zig",
         "shared/pulse/host.zig",

@@ -11,6 +11,7 @@ const identity = @import("vcs_identity");
 const contract = @import("vcs_provider");
 const snapshot = @import("vcs_snapshot");
 const latest = @import("runtime_latest_task");
+const Group = @import("runtime_group").Group;
 const capabilities = @import("vcs_capabilities");
 const detect = @import("vcs_detect");
 
@@ -41,15 +42,21 @@ pub const Session = struct {
         return .{ .slot = Slot.init(io), .cache = Cache.init(ttl_ms, now) };
     }
 
-    pub fn request(self: *Session, provider: contract.Provider, workspace: *const identity.Workspace) error{ Stopped, Unsupported }!Slot.Admission {
-        if (self.slot.state != .active) return error.Stopped;
-        if (provider.kind != workspace.kind or !provider.supports(.status)) return error.Unsupported;
-        const generation = self.cache.beginRequest();
-        self.cache.markStale(workspace);
-        return self.slot.submit(.{ .provider = provider, .workspace = workspace.*, .generation = generation });
+    pub fn initWithGroup(io: std.Io, ttl_ms: i64, now: *const fn () i64, group: *Group) Session {
+        return .{ .slot = Slot.initWithGroup(io, group), .cache = Cache.init(ttl_ms, now) };
     }
 
-    pub fn startNext(self: *Session) error{ Stopped, Busy, ConcurrencyUnavailable }!bool {
+    pub fn request(self: *Session, provider: contract.Provider, workspace: *const identity.Workspace) error{ Stopped, Unsupported, ResourceBusy }!Slot.Admission {
+        if (self.slot.state != .active) return error.Stopped;
+        if (provider.kind != workspace.kind or !provider.supports(.status)) return error.Unsupported;
+        const generation = self.cache.currentGeneration() +% 1;
+        const admission = try self.slot.submit(.{ .provider = provider, .workspace = workspace.*, .generation = generation });
+        _ = self.cache.beginRequest();
+        self.cache.markStale(workspace);
+        return admission;
+    }
+
+    pub fn startNext(self: *Session) error{ Stopped, Busy, ResourceBusy, ConcurrencyUnavailable }!bool {
         return self.slot.startNext();
     }
 
@@ -189,4 +196,28 @@ test "cancel preserves newer queued work and stopping prevents publication" {
     try session.finishStop();
     try std.testing.expect(session.lookup(&latest_key) == .missing);
     try std.testing.expectError(error.Stopped, session.request(fake.provider(.git), &first));
+}
+
+test "two sessions share admission quotas without invalidating rejected requests" {
+    var fake: Fake = .{};
+    var group = Group.init(std.testing.allocator, 0, 1, 1);
+    var first = Session.initWithGroup(std.testing.io, 500, clock, &group);
+    var second = Session.initWithGroup(std.testing.io, 500, clock, &group);
+    defer first.shutdown();
+    defer second.shutdown();
+    const a = try identity.Workspace.init(.git, "a", "a");
+    const b = try identity.Workspace.init(.jj, "b", "b");
+    _ = try first.request(fake.provider(.git), &a);
+    try std.testing.expectError(error.ResourceBusy, second.request(fake.provider(.jj), &b));
+    try std.testing.expectEqual(@as(u64, 0), second.cache.currentGeneration());
+    try std.testing.expect(try first.startNext());
+    _ = try second.request(fake.provider(.jj), &b);
+    try std.testing.expectError(error.ResourceBusy, second.startNext());
+    try std.testing.expect((try first.awaitActive()) == .published);
+    try std.testing.expect(try second.startNext());
+    try std.testing.expect((try second.awaitActive()) == .published);
+    first.shutdown();
+    try std.testing.expect(second.lookup(&b) == .fresh);
+    second.shutdown();
+    try group.checkDrained();
 }

@@ -38,3 +38,5 @@ Use the pinned Zig version's installed standard library and compile each API cha
 ## Reuse and dependencies
 
 Use existing host functions, OS APIs and mature installed tools first. Add pinned source submodules only for audited dependencies actually needed by a real product; reference-only repositories are not build inputs. Keep current SDK verification. Follow [product scope](product-scope.md) for licensing, source delivery, dependency review and targeted Agent development.
+
+RT0 candidate adds optional Windows process-tree execution, approved executable digest/environment admission, caller-owned aggregate Group, bounded FIFO in addition to latest-only tasks, redacted event ring and owned temporary file quota. All are internal Zig modules; no mandatory service or cross-DLL shared mutable memory. Pending CI and actual consumer/host acceptance; see shared-runtime.md.
