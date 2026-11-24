@@ -43,6 +43,7 @@ and DLL builds. Manual runs and all other changes run full CI. See [testing](doc
 Python 3 is used only by CI and SDK verification tools.
 
 - [Architecture](docs/architecture.md)
+- [Shared Runtime: memory, lifecycle and resource safety](docs/shared-runtime.md)
 - [Testing and CI coverage](docs/testing.md)
 - [VCS architecture and capability matrix](docs/vcs-architecture.md)
 - [Roadmap](docs/roadmap.md)

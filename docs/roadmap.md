@@ -26,7 +26,7 @@ The last full verified CI baseline is [c330c24 / run 45421511648](https://github
 
 ## P1.5 — Required hardening before background panel integration
 
-- [ ] Make Process Runtime ownership explicit; bounded queue, concurrent task limits, cancellation, timeouts, output caps and process-tree cleanup. Join workers before DLL unload. Test repeated init/shutdown, infinite output, cancellation, timeout and partial failure. Never terminate unrelated processes.
+- [ ] Implement RT0 of the [Shared Runtime contract](shared-runtime.md): explicit scoped ownership, standard allocator budgets, resource cleanup, cancellation, bounded queue and process-tree teardown. Remove unsafe DLL-local process-lifetime assumptions from the existing runner; prove workers/callbacks drained before unload. Test OOM/partial init, repeated lifecycle, infinite output, cancellation and timeout. Never terminate unrelated processes. Reuse source modules across independent DLL instances, not a central GC/service.
 - [ ] Resolve trusted absolute executable paths and supported CLI versions; constrain environment/config/interactive prompts. Verify passive commands' actual side effects instead of trusting names.
 - [ ] Cache key must include provider, repository and workspace. Enforce generation checks on submission, document thread/ownership rules, prevent stale results and dangling borrowed pointers.
 - [ ] Separate true zero/empty from unknown/not queried/unsupported/stale/partial/error. Resolve actual worktrees/shared metadata rather than assuming markers prove colocation.
@@ -36,6 +36,7 @@ The last full verified CI baseline is [c330c24 / run 45421511648](https://github
 ## P2 — First real VCS extension
 
 - [ ] Create independent `extensions/vcs`, ID `strangelion.vcs`; keep ABI Probe and Hello Panel independent.
+- [ ] RT1: consume applicable shared runtime primitives in the actual VCS panel; establish measured resource budgets, owned allocation/handle baselines and multi-cycle teardown evidence. Do not postpone VCS for a speculative generic framework.
 - [ ] Provide current-directory repository/CLI detection, multi-provider/workspace selector, native status panel, conflict counts, data age, manual refresh, cancellation and useful errors.
 - [ ] Use public Pulse context, tasks/dispatch and native UI APIs as required. All potentially blocking work off UI thread; cancel/discard obsolete requests, stop when panel closes, safely drain before deactivation/unload.
 - [ ] Support English/Chinese, light/dark, DPI and resize; no private host API, duplicate native Git badges or background writes.
@@ -71,7 +72,7 @@ Implement one operation at a time with risk classification, explicit plan/confir
 | strangelion.compare | Recursive read-only content comparison | No sync/deletion until safety review |
 | strangelion.forge | AI-assisted Zig author CLI/MCP, then optional native panel | No automatic execution of untrusted code or publication; native AI tool integration requires upstream support |
 
-Recheck upstream source, roadmap, SDK and registry for overlap before implementing each extension. Pulse already has basic Git and SVN status, native lock detection, common previews and archive integration. Coordinate 3D/OCR/remote features with upstream.
+RT2: all new products reuse the shared runtime contract; extend it only for proven needs, track bundled runtime revisions and rebuild/test/release affected consumers after fixes. Test independent instances and mixed-version coexistence. Recheck upstream source, roadmap, SDK and registry for overlap before implementing each extension. Pulse already has basic Git and SVN status, native lock detection, common previews and archive integration. Coordinate 3D/OCR/remote features with upstream.
 
 Release follows milestone R and [release.md](release.md). Keep secrets out of Git/CI logs. Apache-2.0 and Zig-first remain unchanged.
 

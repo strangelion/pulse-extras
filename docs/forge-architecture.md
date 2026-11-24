@@ -65,8 +65,9 @@ External Agent / optional native Forge panel
 ```
 
 Zig-first. Implement the author runtime and standalone CLI/MCP service before the native
-panel. Reuse tested shared/process and public SDK wrappers; extend only where the authoring
-workflow requires it. Official Python author tools may remain build-time dependencies.
+panel. Reuse the tested [Shared Runtime](shared-runtime.md), shared/process and public SDK
+wrappers; extend only where the authoring workflow requires it. Runtime budgets and process
+ownership are not a substitute for OS-enforced containment of generated code. Official Python author tools may remain build-time dependencies.
 No Rust/Cargo, AGENTS.md, private SDK access or duplicate AI runtime. Do not create empty
 directories now. A future layout may separate tools/forge, shared/authoring and extensions/forge;
 select the actual boundaries when implementing. The trusted UI/DLL must never load arbitrary

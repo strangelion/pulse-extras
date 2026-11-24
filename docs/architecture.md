@@ -8,6 +8,7 @@ Zig-first, fixed stable toolchain, Windows x64 MSVC ABI. No Cargo or C++ build p
 - shared/pulse: safe wrappers over the raw bindings — `abi` (status codes, string views), `host` (table held by value, validated queries), `context`, `commands`, `ui_model`, `ui_mount`, `text` (UTF-8-safe copying).
 - shared/diagnostics: opt-in file logger used by acceptance runs; no telemetry, no environment dumps.
 - shared/process: initial structured-argv runner with timeout and output caps; cancellation, process-tree ownership and DLL-safe runtime teardown are outstanding.
+- shared/runtime and shared/memory (planned): common deterministic resource ownership, budget, cancellation, task and lifecycle primitives, compiled into each product DLL with independent instance state. Reuse the existing runner and standard allocators; no GC, mandatory shared DLL or background service. See [Shared Runtime](shared-runtime.md).
 - shared/vcs: implemented provider contract, capabilities, identities, detection, risk tiers, CLI discovery, bounded cache and Git/JJ/SVN read-only summaries. Full identity resolution, cache isolation and asynchronous panel integration are outstanding. See [vcs-architecture.md](vcs-architecture.md).
 - extensions/abi-probe: lifecycle probe used to verify entry/activate/deactivate/destroy on a real host.
 - extensions/hello-panel: first UI extension — command, `pulse.context` subscription, `pulse.ui.model` panel, `pulse.ui.mount` workspace/sidebar placement.
@@ -16,6 +17,8 @@ Zig-first, fixed stable toolchain, Windows x64 MSVC ABI. No Cargo or C++ build p
 ## Safety
 
 Use explicit allocation ownership, bounded resources, clear error unions and cleanup. Never free host-owned memory, retain borrowed callback data, or cross ABI with unwinding. Zig safety checks can still terminate a process; they are not a sandbox or a substitute for worker isolation. Use ReleaseSafe for production DLLs unless evidence supports another mode. No unbounded I/O on UI threads. Respect the owner thread and drain callbacks/workers before unload. Never execute inspected binaries or interpolate shell commands. Do not upload user data or change files during passive browsing. Generated user files must use supported Pulse confirmation/staging; unsupported mutations remain disabled pending design review.
+
+All product extensions must follow the [Shared Runtime contract](shared-runtime.md) and reuse applicable tested primitives. Keep allocation, SDK callbacks, external handles and worker ownership explicit. ReleaseSafe and per-plugin budgets are not a sandbox or host-wide memory guarantee. Use measured limits and OS-enforced containment for untrusted execution.
 
 ## Regression gates
 

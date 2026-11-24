@@ -32,7 +32,12 @@ Determine the exact schema during implementation; do not duplicate version truth
 The descriptor records independent version, release eligibility and channel policy. Tag example:
 `vcs/v0.1.0`; asset: `strangelion.vcs-0.1.0.pulse-ext`. Treat published versions/tags as immutable.
 Shared library changes may require new versions of affected packages, never a forced version bump
-for unaffected ones. Do not create empty descriptors now.
+for unaffected ones. Each build records its bundled [Shared Runtime](shared-runtime.md) source/API
+revision and relevant hashes alongside Zig/SDK pins. Runtime is linked into independent DLLs,
+not a hot-updated global component. For a runtime fix identify all affected released consumers,
+rebuild/test/accept and independently release their new versions; older installed packages retain
+the old implementation until updated. Verify mixed-version coexistence; no raw allocator or
+mutable object sharing across DLLs. Do not create empty descriptors now.
 
 ## 3. One manually dispatched workflow
 

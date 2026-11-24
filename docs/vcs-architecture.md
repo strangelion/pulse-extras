@@ -158,6 +158,11 @@ invariance with tests on a dirty tree. The current test covers the provider's
 
 ## Process execution
 
+VCS is the first real consumer of the planned [Shared Runtime](shared-runtime.md). Reuse its
+scoped allocation, budgets, cancellation, generation and teardown primitives; keep repository
+semantics and cache identity policy in the VCS layer. Do not add a second scheduler/allocator
+framework or treat an allocator limit as a host-wide memory cap.
+
 All CLI access goes through `shared/process/run.zig`. Structured argv, timeout
 and bounded output are implemented; trusted executable resolution, cancellation,
 process-tree teardown, environment control and noninteractive enforcement remain
