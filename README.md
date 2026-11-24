@@ -15,7 +15,7 @@ explicit non-claims. Registry acceptance and shipping extensions are still open.
 
 | Extension | Scope | Status |
 | --- | --- | --- |
-| Hello Panel | Smallest `pulse.ui.model` + `pulse.ui.mount` panel (SDK smoke test) | Verified on Pulse 1.0.61 |
+| Hello Panel | Command + `pulse.context` panel, workspace and sidebar placement | Verified on Pulse 1.0.61 |
 | VCS | Git / Jujutsu advanced management | Planned |
 | Convert | File conversion | Planned |
 | Inspect | Binary and package inspection | Planned |

@@ -180,6 +180,42 @@ debugging time and are worth recording:
   duration of the `create` call. Building them in a helper frame that returns
   the `PulseUiModelTree` by value leaves dangling pointers and fails validation.
 
+### Context subscription and sidebar placement (2026-11-24, fourth pass)
+
+The hello panel now reads `pulse.context` and can be mounted in the secondary
+sidebar. Verified logs:
+
+```
+ui.context=0
+ui.model.create=0
+placement-request=2    # workspace
+ui.mount.set=0
+panel-open
+panel-refresh=3        # context revision after navigating to 下载
+...
+deactivate
+panel-close
+destroy
+```
+
+and with `HELLO_PANEL_PLACEMENT=sidebar`:
+
+```
+placement-request=1    # sidebar
+ui.mount.set=0
+panel-refresh=3
+```
+
+- The first snapshot arrives synchronously during activation; the subscription
+  then coalesces navigation/selection changes and each change re-renders the
+  panel through `pulse.ui.model.update`. Strings are copied into plugin-owned
+  buffers because the host snapshot is borrowed.
+- `pulse.ui.mount.set(panel, sidebar)` is honoured: the panel docked in the
+  right-hand sidebar and stayed live across navigation.
+- A second `create` in the same activation returns `PULSE_ERROR_STATE` (5):
+  this host allows one panel per activation. Multi-panel extensions must create
+  panels across separate activations until upstream documents a different rule.
+
 Not claimed:
 
 - Crash containment, hang isolation, or thread guarantees for plugin code.

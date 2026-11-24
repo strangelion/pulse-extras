@@ -16,7 +16,9 @@
 - [x] Build the minimal `strangelion.hello-panel` extension: command registration,
       `pulse.ui.model` panel and `pulse.ui.mount` workspace placement, verified end
       to end on the real host (2026-11-24, see `docs/host-compatibility.md`).
-- [ ] Add a directory-context panel and secondary-sidebar placement.
+- [x] Add a `pulse.context` directory/selection panel and verify secondary-sidebar
+      placement (`HELLO_PANEL_PLACEMENT=sidebar`, 2026-11-24).
+- [ ] Verify light theme, non-100% DPI and panel resize behaviour.
 
 | ID | First deliverable | Explicit exclusions |
 | --- | --- | --- |
