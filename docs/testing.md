@@ -1,6 +1,6 @@
 # CI and local testing
 
-The Zig regression workflow runs on Windows and Linux. It checks formatting, Python 3.12 script syntax, Zig unit tests, native provider integration tests, Windows x64 DLL builds, and (on Windows) pinned SDK binding regeneration and C ABI loader tests.
+The full Zig regression workflow runs on Windows and Linux. It checks formatting, Python 3.12 script syntax, Zig unit tests, native provider integration tests, Windows x64 DLL builds, and (on Windows) pinned SDK binding regeneration and C ABI loader tests. Reduced scopes are defined below.
 
 | Coverage | Windows | Linux |
 | --- | --- | --- |
@@ -23,3 +23,19 @@ The workflow restores the original Zig archive with actions/cache v5. The locked
 ## Reproducible SDK bindings
 
 The generator normalizes standalone translate-c source-location comments for known SDK headers and the compiler's stdint.h. Absolute installation paths are not part of the ABI. All declarations, diagnostic expressions, header hashes, and source line/column numbers remain subject to exact comparison. A failed check prints a bounded unified diff to identify any remaining differences without weakening the gate.
+
+## Change-aware CI
+
+The same workflow is triggered on every push, pull request and manual dispatch. A small Ubuntu scope job classifies all changed paths; the final Regression gate reports success only when the required jobs succeed (or the code jobs are intentionally skipped for docs). No path-filtered workflow is left pending.
+
+| Scope | Changes | Required checks |
+| --- | --- | --- |
+| docs | Only README.md and Markdown under docs/ | Classifier tests and scope/gate only; no Zig install or functional tests |
+| vcs | Only Zig source under shared/vcs/ plus allowed Markdown | Both OSes: Python checks, Zig format, all unit/real-repository integration tests and ReleaseSafe DLL build; no Windows SDK regeneration or C loader |
+| full | Everything else, mixed/unknown changes, tags, new/rewritten branches, unavailable/empty diff, manual dispatch | All existing checks including SDK regeneration and Windows C loader |
+
+Push scope uses the entire before-to-after diff, not just the last commit. PR scope compares the checked-out merge tree against its base SHA. Renames are considered as old and new paths; unavailable diffs default to full. The classifier is tested in scripts/test_ci_scope.py. Workflow, build.zig, toolchain/SDK locks, SDK wrappers, process runner, extensions, scripts and test changes always require full CI. A new build dependency on documentation requires revisiting the allowlist.
+
+A docs-only green gate validates scope only, not earlier commits or code. Reduced VCS checks do not prove the omitted ABI tests. Run the workflow manually (full) before release, after a series of reduced runs, or when a prior code check failed. There is no scheduled cache keepalive or extra periodic workflow. If configuring branch protection, use the stable **Regression gate** check after its first run; do not require an intentionally omitted individual step. Existing protection settings are not changed by this workflow.
+
+Last historical full baseline: [run 45421511648](https://github.com/strangelion/pulse-extras/actions/runs/45421511648), c330c24. Ubuntu 83/83; Windows 81/83 with two optional SVN integrations skipped; both DLL builds, binding check and 16 C loader cycles passed. Host-specific tests remain manual. The cache-hit installation phase was about 5–7 seconds excluding cache restore, versus 380–599 seconds cold. Do not add large compiler caches without measurements.

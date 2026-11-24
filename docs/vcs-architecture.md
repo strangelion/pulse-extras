@@ -5,9 +5,9 @@ Every provider speaks the same contract, but each keeps its own vocabulary and
 semantics — a Subversion revision number, a Jujutsu change id and a Perforce
 changelist are not modelled as a Git commit.
 
-This document is the design contract. It does not claim any provider is
-implemented; the capability matrix below records the target, and
-`docs/roadmap.md` records what actually shipped.
+This document distinguishes the target contract from the implemented subset.
+The capability matrix is a design target, not an implementation claim; see the
+implementation status below and [roadmap.md](roadmap.md) for remaining work.
 
 ## Layers
 
@@ -101,9 +101,9 @@ before it is advertised at runtime.
 - `ChangeIdentity` — the local change: git index/worktree change, jj change,
   svn changelist, p4 pending changelist.
 
-Colocated git+jj repositories expose one workspace with two metadata stores.
-Detection reports both providers; the UI picks one primary view and the
-operation guard serialises writes across both.
+Same-root Git/JJ markers identify a colocation candidate, not proof of shared
+storage. Resolve the actual workspace and Git store before grouping identities
+or serialising writes; nested repositories must stay distinct.
 
 ## Detection
 
@@ -130,18 +130,18 @@ workspaces; the UI must let the user choose instead of guessing.
 | --- | --- | --- |
 | `passive_read` | status, log, diff, cat | allowed |
 | `refresh` | commands that may write VCS metadata (jj snapshot) | allowed only when proven side-effect free for the detected version, otherwise explicit user action |
-| `network_read` | fetch/ls-remote queries | allowed with timeout, no credentials prompts |
-| `local_metadata_write` | svn update, hg pull into store | requires an `OperationPlan` |
-| `working_tree_write` | checkout, merge, revert | requires plan + confirmation |
-| `remote_write` | push, submit | requires plan + confirmation |
-| `history_rewrite` | rebase, jj abandon/squash, svn commit of deletions | requires plan + explicit warning |
+| `network_read` | ls-remote queries | explicit authorization, timeout, no credentials prompts |
+| `local_metadata_write` | git fetch, hg pull into store | requires an `OperationPlan` |
+| `working_tree_write` | checkout, merge, revert, svn update | requires plan + confirmation |
+| `remote_write` | push, submit, svn commit | requires plan + confirmation |
+| `history_rewrite` | rebase, jj abandon/squash | requires plan + explicit warning |
 | `destructive` | reset --hard, clean, force push | disabled by default |
 
 Read-only mode disables every command that cannot be proven passive for the
 detected CLI version. Jujutsu is the sharp edge: many query commands snapshot
-the working copy. The provider must use the documented read-only forms and
-prove it with tests (`jj status` on a dirty tree must not create a new
-operation, verified against the installed version's docs).
+the working copy. The provider must use documented passive forms and prove
+invariance with tests on a dirty tree. The current test covers the provider's
+`--ignore-working-copy` queries on JJ 0.46.0, not arbitrary `jj status` commands.
 
 ## Concurrency and invalidation
 
@@ -158,10 +158,10 @@ operation, verified against the installed version's docs).
 
 ## Process execution
 
-All CLI access goes through `shared/process/run.zig`: structured argv (never a
-shell string), absolute executable resolution, timeout, cancellation, output
-caps, separated stdout/stderr, explicit environment, no interactive prompts,
-and no credential logging.
+All CLI access goes through `shared/process/run.zig`. Structured argv, timeout
+and bounded output are implemented; trusted executable resolution, cancellation,
+process-tree teardown, environment control and noninteractive enforcement remain
+required work. The runner is not yet validated for DLL unload.
 
 Preferred machine-readable output per provider: `git --porcelain=v2 -z`,
 `jj --template`/JSON, `svn --xml`, `hg --template`/JSON, `p4 -ztag`, Plastic
@@ -187,9 +187,10 @@ core logic, and malformed output is a typed error, not an empty result.
    risk model, tests.
 3. Read-only Git, then Jujutsu, then Subversion — three different models prove
    the contract.
-4. Mercurial, Perforce.
-5. Plastic, Sapling, Fossil, and the long tail, only with a real need.
-6. Write operations, one at a time, with plan + confirmation + regression.
+4. Runtime/cache/data hardening, actual native VCS panel and real host acceptance.
+5. History, file diffs and revision previews; then Mercurial and Perforce.
+6. Plastic, Sapling, Fossil, and the long tail, only with a real need.
+7. Write operations, one at a time, with plan + confirmation + regression.
 
 ## Implementation status (2026-11-24)
 
@@ -202,28 +203,40 @@ Implemented and covered by `zig build test`:
   and workspace identities that keep the two roots separate.
 - `shared/vcs/risk.zig` — risk levels and the default read-only policy.
 - `shared/vcs/detect.zig` — injected-probe marker walk (no filesystem, no CLI),
-  git worktree marker files, colocated git+jj.
+  git worktree marker files and same-root Git/JJ colocation candidates.
 - `shared/vcs/provider.zig` — vtable contract, typed errors, availability enum.
 - `shared/vcs/cli.zig` — `PATH` lookup, `--version` parsing, a "present but
   unrecognised" state that is unsupported rather than guessed.
 - `shared/vcs/snapshot.zig` — bounded cache with fresh/stale/missing lookups and
   generation counters for discarding in-flight results.
 - `shared/vcs/providers/git.zig` — read-only `git status --porcelain=v2
-  --branch -z`: branch, upstream, ahead/behind, staged/modified/untracked/
+  --branch -z` with `--no-optional-locks`: branch, upstream, ahead/behind, staged/modified/untracked/
   conflicted counts, detached HEAD. Parsing is unit-tested from a fixture and
   the provider is tested end to end against a temporary repository when `git`
   is installed.
 
 - `shared/vcs/providers/jj.zig` — revision (change id, commit id, bookmarks,
   conflict flag) and diff summary through `--ignore-working-copy`. Verified on
-  jj 0.46.0 that two queries leave the operation log unchanged (2 entries before
-  and after), so an open panel cannot create snapshots. Documented degradation:
+  jj 0.46.0 that the tested summary leaves the operation log unchanged even with
+  an unsnapshotted file. This is provider-query evidence, not a host-panel test. Documented degradation:
   edits that were never snapshotted are invisible, and the summary says so
   through `detail`.
 - `shared/vcs/providers/svn.zig` — working-copy revision, `relative-url` and
-  `svn status --xml` item counts. **Not verified against a real server or
-  working copy on this machine** (`svn` is not installed); the integration test
-  skips and only the XML parser and error mapping are covered locally.
+  `svn status --xml` item counts. Ubuntu CI now tests a real local working copy
+  prepared with svnadmin; Windows SVN integration remains explicitly skipped.
+  No remote SVN server acceptance is claimed.
 
 Not implemented yet: history, file diffs, Hg/P4 providers, any write operation,
 and the provider panel.
+
+### Current capabilities vs target
+
+| Capability | Git | JJ | SVN |
+| --- | --- | --- | --- |
+| Marker detection | Implemented | Implemented | Implemented |
+| Read-only status summary | CI verified | CI verified (recorded snapshot) | CI verified (Ubuntu local working copy) |
+| History / file diff / revision preview | Pending | Pending | Pending |
+| Write operations | Disabled | Disabled | Disabled |
+| Native VCS panel / real host | Pending | Pending | Pending |
+
+Baseline: [full CI run 45421511648](https://github.com/strangelion/pulse-extras/actions/runs/45421511648), commit c330c24. Known limits: cache key is currently root-only; caller generation checks are not atomic submission; Git/JJ snapshots and per-field availability need strengthening; SVN counts still need safe structured parsing and distinct semantics. The roadmap sets the implementation order and acceptance gates.

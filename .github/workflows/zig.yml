@@ -9,7 +9,26 @@ permissions:
   contents: read
 
 jobs:
+  scope:
+    name: Detect change scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      level: ${{ steps.scope.outputs.level }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Test change classifier
+        run: python3 -m unittest discover -s scripts -p 'test_ci_scope.py'
+      - name: Determine CI scope
+        id: scope
+        run: python3 scripts/ci_scope.py
+
   checks:
+    needs: scope
+    if: needs.scope.outputs.level != 'docs'
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -63,13 +82,13 @@ jobs:
           PULSE_REQUIRE_JJ: '1'
       - run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
       - name: Fetch pinned native SDK headers
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
         run: python scripts/fetch_sdk.py
       - name: Verify generated bindings match the pinned SDK
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
         run: python scripts/generate_bindings.py --check
       - name: Verify actual DLL against C ABI
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
         shell: pwsh
         run: |
           zig cc -std=c11 -target x86_64-windows-gnu -I.sdk-cache/include tests/abi/loader.c -o zig-out/abi-loader.exe
@@ -78,3 +97,34 @@ jobs:
           if ($dll.Count -ne 1) { throw "Expected one ABI probe DLL" }
           & ./zig-out/abi-loader.exe $dll[0].FullName
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  gate:
+    name: Regression gate
+    if: always()
+    needs: [scope, checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm required checks completed
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          LEVEL: ${{ needs.scope.outputs.level }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+        shell: bash
+        run: |
+          if [[ "$SCOPE_RESULT" != success ]]; then
+            echo "::error::Change classification did not succeed"
+            exit 1
+          fi
+          case "$LEVEL:$CHECKS_RESULT" in
+            docs:skipped)
+              echo "Documentation-only change; code checks not run."
+              ;;
+            vcs:success|full:success)
+              echo "Required $LEVEL regression checks passed."
+              ;;
+            *)
+              echo "::error::Unexpected scope/check status: $LEVEL:$CHECKS_RESULT"
+              exit 1
+              ;;
+          esac

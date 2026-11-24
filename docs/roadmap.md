@@ -1,56 +1,71 @@
 # Roadmap / 开发路线
 
-## P0 — Zig compatibility (blocking)
+## Baseline (2026-11-24)
 
-- [x] Confirm CI format, native tests and x64 DLL builds.
-- [x] Confirm C loader tests using the exact pinned upstream header.
-- [x] Verify official package tooling and isolated real Pulse host load, activate,
-      deactivate and unload (2026-11-24, Pulse 1.0.61; see `docs/host-compatibility.md`).
-- [ ] Confirm Zig-built packages are accepted by the registry maintainer.
-- [x] Establish public SDK binding generation/checking and safe commands wrappers
-      (`scripts/generate_bindings.py`, `shared/pulse/{abi,host,commands,ui_model,ui_mount}.zig`).
-- [ ] Measure build time, cache size and runtime memory baselines.
+The last full verified CI baseline is [c330c24 / run 45421511648](https://github.com/strangelion/pulse-extras/actions/runs/45421511648): Ubuntu 83/83 tests, Windows 81 passed and 2 SVN integrations skipped, 6/6 Windows DLL build steps on both runners, pinned SDK regeneration, and 16 C ABI loader lifecycle cycles. Both Zig archive caches hit. These are historical results, not a claim that later commits or real VCS host integration have passed.
 
-## P1 — Independent extensions
+## P0 — Zig and SDK compatibility
 
-- [x] Build the minimal `strangelion.hello-panel` extension: command registration,
-      `pulse.ui.model` panel and `pulse.ui.mount` workspace placement, verified end
-      to end on the real host (2026-11-24, see `docs/host-compatibility.md`).
-- [x] Add a `pulse.context` directory/selection panel and verify secondary-sidebar
-      placement (`HELLO_PANEL_PLACEMENT=sidebar`, 2026-11-24).
-- [ ] Verify light theme, non-100% DPI and panel resize behaviour.
+- [x] Pinned Zig 0.17.1, public Pulse 1.0.60 SDK / Preview 3, x64 MSVC ABI.
+- [x] Reproducible generated bindings and independent Windows C loader.
+- [x] Recorded isolated Pulse 1.0.61 ABI Probe load, activation, deactivation and unload; see [host evidence](host-compatibility.md).
+- [x] Hello Panel command, context updates, workspace and sidebar placement verified in the recorded host run.
+- [x] Hash-verified Zig archive caching; both runners demonstrated cache hits.
+- [ ] Full host-header ABI proof: 56 structures compared, 25 not verifiable with available host headers.
+- [ ] Registry maintainer acceptance of Zig packages, theme/DPI/resize and upgrade/rollback coverage.
+- [ ] Runtime memory and latency baselines (CI timing alone is not a runtime benchmark).
+
+## P1 — Multi-VCS foundation (implemented subset)
+
+- [x] Provider contract, capability/risk models, bounded identity types, marker detection and CLI discovery.
+- [x] Bounded snapshot cache and generation counter primitives.
+- [x] Git, JJ and SVN read-only status summaries; Git and JJ real temporary repositories on both CI OSes, SVN actual local working copy on Ubuntu.
+- [x] Git rename-source parsing regression, same-root Git/JJ candidate detection, JJ operation-log invariance test.
+- [ ] History, file-level diff, complete repository identity and provider-specific field availability.
+- [ ] Windows SVN integration (currently skipped explicitly).
+
+## P1.5 — Required hardening before background panel integration
+
+- [ ] Make Process Runtime ownership explicit; bounded queue, concurrent task limits, cancellation, timeouts, output caps and process-tree cleanup. Join workers before DLL unload. Test repeated init/shutdown, infinite output, cancellation, timeout and partial failure. Never terminate unrelated processes.
+- [ ] Resolve trusted absolute executable paths and supported CLI versions; constrain environment/config/interactive prompts. Verify passive commands' actual side effects instead of trusting names.
+- [ ] Cache key must include provider, repository and workspace. Enforce generation checks on submission, document thread/ownership rules, prevent stale results and dangling borrowed pointers.
+- [ ] Separate true zero/empty from unknown/not queried/unsupported/stale/partial/error. Resolve actual worktrees/shared metadata rather than assuming markers prove colocation.
+- [ ] Pin JJ multi-query snapshots to one operation when supported; distinguish recorded snapshot from disk changes. Test Git optional-lock/config effects. Use bounded safe SVN XML parsing and distinct SVN semantics, including attributes, tree conflicts and mixed revisions.
+- [ ] Add deterministic tests with each fix; use current SDK contracts and installed Zig stdlib. Do not delay actual feature delivery with unused wrappers or empty providers.
+
+## P2 — First real VCS extension
+
+- [ ] Create independent `extensions/vcs`, ID `strangelion.vcs`; keep ABI Probe and Hello Panel independent.
+- [ ] Provide current-directory repository/CLI detection, multi-provider/workspace selector, native status panel, conflict counts, data age, manual refresh, cancellation and useful errors.
+- [ ] Use public Pulse context, tasks/dispatch and native UI APIs as required. All potentially blocking work off UI thread; cancel/discard obsolete requests, stop when panel closes, safely drain before deactivation/unload.
+- [ ] Support English/Chinese, light/dark, DPI and resize; no private host API, duplicate native Git badges or background writes.
+- [ ] Produce an isolated-installable `strangelion.vcs-0.1.0.pulse-ext` candidate. Verify on real Pulse: non-repo, Git/JJ/colocated/SVN, missing CLI, rapid navigation, large repo, close/reopen, disable during query, exit, upgrade/rollback. Record screenshots/logs, build hash, process and memory evidence. Mark unrun cases NOT VERIFIED.
+
+## P3 — Read-only advanced functions
+
+- [ ] Changed-file list, paged history, bounded file/revision diff and revision content.
+- [ ] Git refs/tags/worktrees; JJ change/bookmark/workspace/operation log; SVN revision/attributes.
+- [ ] Mercurial, then Perforce once the panel and first three providers pass acceptance. Server fixtures are not real server acceptance.
+- [ ] Plastic, Sapling, Fossil and other VCS only as justified. Do not advertise unimplemented capabilities.
+
+## P4 — Write operations (disabled until reviewed)
+
+Implement one operation at a time with risk classification, explicit plan/confirmation, revalidation, advisory shared-store locking, external-change detection, bounded execution, cancellation and partial-failure recovery. Do not promise universal undo. No destructive or remote operations by default. Follow official Pulse file-mutation rules and verify actual integration before exposing writes.
+
+## P5 — Other independent extensions and release
 
 | ID | First deliverable | Explicit exclusions |
 | --- | --- | --- |
-| strangelion.vcs | Multi-VCS manager; read-only Git, Jujutsu and Subversion first (see [vcs-architecture.md](vcs-architecture.md)) | No duplicate host Git badges, no automatic snapshots or writes |
 | strangelion.convert | PNG/JPEG batch conversion to new files via staging | No in-place replacement |
 | strangelion.inspect | Read-only PE metadata and signature inspection | No execution or malware verdict |
 | strangelion.data | SQLite schema and bounded NPY/NPZ metadata | No arbitrary SQL writes |
 | strangelion.devkit | Project detection and toolchain inventory | No automatic install or build scripts |
 | strangelion.compare | Recursive read-only content comparison | No sync/deletion until safety review |
 
-Recheck upstream source, roadmap, SDK and registry for overlap before implementation. Pulse already has Git status/pull/push, SVN status, native lock detection, common previews and archive integration.
+Recheck upstream source, roadmap, SDK and registry for overlap before implementing each extension. Pulse already has basic Git and SVN status, native lock detection, common previews and archive integration. Coordinate 3D/OCR/remote features with upstream.
 
-## P2 — Multi-VCS foundation
+Release requires full manual CI, relevant actual host tests, license/security review, official packaging/signing, per-extension versioning and registry submission. Keep secrets out of Git/CI logs. Apache-2.0 and Zig-first remain unchanged.
 
-- [x] Design provider contract, capability model, identity model, detection, risk
-      tiers and process execution (`docs/vcs-architecture.md`).
-- [x] Implement `shared/vcs`: capabilities, identities, risk policy, detection,
-      provider contract, CLI discovery and bounded snapshot cache.
-- [ ] Read-only Git provider: `status` with branch/ahead-behind/change counts is
-      implemented and tested against a real temporary repository; references,
-      history and diffs are still open.
-- [x] Read-only Jujutsu provider; `--ignore-working-copy` verified to leave the
-      operation log unchanged (jj 0.46.0).
-- [~] Read-only Subversion provider: revision, relative URL and status counts
-      implemented; **not verified locally** because `svn` is not installed
-      (integration test skips).
-- [ ] Mercurial and Perforce after the first three pass the shared contract.
-- [ ] Provider-aware panel using `pulse.context` + `pulse.ui.model`.
+## Delivery and reporting
 
-Writes stay disabled until each operation has a plan, confirmation and
-regression tests. Centralised and distributed VCS keep their own vocabulary.
-
-## P3 — Release
-
-Add fixture-based regressions, bounded workers as needed, actual host acceptance, license and security review, signing and registry submission. No production release before relevant gates pass.
+Synchronize remote main without overwriting local work. Read existing docs and code before changes. Commit logically related fixes after local tests; add CI coverage with new features. Report exact commands, results, CI scope, actual host evidence, resource measurements, remaining gaps and next work. See [testing.md](testing.md) for the reduced/full CI policy. Do not create AGENTS.md or duplicate design documents.

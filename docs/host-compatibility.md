@@ -49,7 +49,7 @@ current GitHub `main`) exposes 16 interfaces. The installed host exposes 23.
 | Added | `pulse.diagnostics` v1, `pulse.icons` v2, `pulse.pickers` v1, `pulse.search` v1, `pulse.shell` v1, `pulse.tray` v1, `pulse.workbench` v2 |
 | Version bump | `pulse.commands` 1 -> 2, `pulse.dialogs` 1 -> 2 |
 | Same version, new content | `pulse.tasks` (task actions, optional progress tail), `pulse.ui.model` (adds `PULSE_UI_MODEL_CANVAS = 41`, `COUNT` 41 -> 42) |
-| Unchanged core | `abi.h`, entry point `PulsePluginEntryV1`, preview export `PulsePluginSdkPreview`, ABI version 1, SDK preview 3 |
+| Reported core compatibility | entry point `PulsePluginEntryV1`, preview export `PulsePluginSdkPreview`, ABI version 1, SDK preview 3; host does not publish `abi.h` for mechanical comparison |
 
 No published branch matches the host: `main` has 16 interfaces and
 `sdk/preview3-dialogs` has 20. The 1.0.61 SDK is therefore newer than any
@@ -63,8 +63,9 @@ public revision; the host binary is the only authoritative source.
 - **Runtime target includes the installed 1.0.61 host.** The host declares the
   append-only rule itself (`stability.prefixTableRule`: existing fields keep
   identical index, name, type, size and byte offset; new fields append at the
-  tail with a larger `size` and `version`). Every changed table in 1.0.61 only
-  appends fields or adds guarded optional tails, so V1 tables remain valid.
+  tail with a larger `size` and `version`). Mechanical comparison below verifies
+  the available headers only; missing headers and untested interfaces are not
+  independently proven compatible by that comparison.
 - **The extension asks for V1 tables** and treats newer interfaces through
   capability detection. Upgrading the pin is a separate, evidence-driven change
   once upstream publishes a matching revision.
@@ -222,8 +223,9 @@ Not claimed:
 - That the palette hotkey (`Ctrl+Shift+K`) is usable in every environment: it is
   taken by the Microsoft Pinyin IME soft-keyboard hotkey on this machine
   (`RegisterHotKey` returns `ERROR_HOTKEY_ALREADY_REGISTERED` = 1409).
-- Panel behaviour beyond one stack/text/button tree: virtual lists, data tables,
-  secondary sidebar placement and DPI/theme variants are still unimplemented.
+- Panel behaviour beyond the recorded stack/text/button and secondary-sidebar
+  context panel: virtual lists, data tables, DPI/theme variants and resize remain
+  unverified. The VCS panel itself has not been built or accepted on the host.
 
 ## Gaps (explicit)
 

@@ -16,7 +16,7 @@ explicit non-claims. Registry acceptance and shipping extensions are still open.
 | Extension | Scope | Status |
 | --- | --- | --- |
 | Hello Panel | Command + `pulse.context` panel, workspace and sidebar placement | Verified on Pulse 1.0.61 (2026-11-24) |
-| VCS | Multi-VCS manager: Git / Jujutsu / Subversion first | Planned (design in [VCS architecture](docs/vcs-architecture.md)) |
+| VCS | Multi-VCS manager: Git / Jujutsu / Subversion first | Read-only summary providers tested; native VCS panel and production package pending ([architecture](docs/vcs-architecture.md)) |
 | Convert | File conversion | Planned |
 | Inspect | Binary and package inspection | Planned |
 | Data | Database and scientific data preview | Planned |
@@ -34,10 +34,12 @@ zig build test --summary all
 zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
 ```
 
-The DLL is installed under zig-out/. CI also checks the pinned upstream headers,
-regenerates the bindings with `zig translate-c` (`python
-scripts/generate_bindings.py --check`), and exercises the Windows DLL through a C
-loader harness. Python 3 is used only by CI and SDK verification tools.
+The DLLs are installed under zig-out/. Full CI also checks the pinned upstream headers,
+regenerates bindings with `zig translate-c` (`python scripts/generate_bindings.py --check`),
+and exercises the Windows DLL through a C loader harness. Documentation-only changes
+use a lightweight scope check; isolated VCS code changes run both-platform regression
+and DLL builds. Manual runs and all other changes run full CI. See [testing](docs/testing.md).
+Python 3 is used only by CI and SDK verification tools.
 
 - [Architecture](docs/architecture.md)
 - [Testing and CI coverage](docs/testing.md)
