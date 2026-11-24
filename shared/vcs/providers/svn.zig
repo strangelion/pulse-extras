@@ -8,6 +8,7 @@
 const std = @import("std");
 const capabilities = @import("vcs_capabilities");
 const cli = @import("vcs_cli");
+const test_config = @import("vcs_test_config");
 const detect = @import("vcs_detect");
 const identity = @import("vcs_identity");
 const contract = @import("vcs_provider");
