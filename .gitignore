@@ -1,68 +1,28 @@
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
+# Rust and local build artifacts
+/target/
+/dist/
+/build/
+/build-*/
+/cmake-build-*/
+*.dll
+*.exe
 *.pdb
-
-# Compiled Dynamic libraries
+*.lib
+*.obj
+*.o
 *.so
 *.dylib
-*.dll
-*.so.*
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# Build directories
-[Bb]uild/
-[Bb]uild-*/
-cmake-build-*/
-
-# CMake generated files
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
-install_manifest.txt
-compile_commands.json
-
-# Temporary files
 *.tmp
 *.log
 *.bak
 *.swp
-
-# vcpkg
-vcpkg_installed/
-
-# debug information files
-*.dwo
-
-# test output & cache
-Testing/
 .cache/
+# Local credentials, signing keys and machine-specific profiles
+.env
+.env.*
+*.private.blob
+*.pem
+*.pfx
+/signing/
+/profiles/
+/.local/

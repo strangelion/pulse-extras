@@ -1,0 +1,7 @@
+# Source reference, not a claim of compatibility.
+repository = "https://github.com/jimmgreen/pulse"
+revision = "b32436831a066e18448b2810bef4bf989024fc68"
+sdk_preview = 3
+pulse_source_version = "1.0.60"
+target = "x86_64-pc-windows-msvc"
+host_verified = false
