@@ -190,3 +190,29 @@ core logic, and malformed output is a typed error, not an empty result.
 4. Mercurial, Perforce.
 5. Plastic, Sapling, Fossil, and the long tail, only with a real need.
 6. Write operations, one at a time, with plan + confirmation + regression.
+
+## Implementation status (2026-11-24)
+
+Implemented and covered by `zig build test`:
+
+- `shared/vcs/capabilities.zig` — declared capability set plus
+  `resolve(declared, cli, state)` so the UI can degrade instead of offering a
+  command that will fail.
+- `shared/vcs/identity.zig` — bounded paths, per-kind revision ids, repository
+  and workspace identities that keep the two roots separate.
+- `shared/vcs/risk.zig` — risk levels and the default read-only policy.
+- `shared/vcs/detect.zig` — injected-probe marker walk (no filesystem, no CLI),
+  git worktree marker files, colocated git+jj.
+- `shared/vcs/provider.zig` — vtable contract, typed errors, availability enum.
+- `shared/vcs/cli.zig` — `PATH` lookup, `--version` parsing, a "present but
+  unrecognised" state that is unsupported rather than guessed.
+- `shared/vcs/snapshot.zig` — bounded cache with fresh/stale/missing lookups and
+  generation counters for discarding in-flight results.
+- `shared/vcs/providers/git.zig` — read-only `git status --porcelain=v2
+  --branch -z`: branch, upstream, ahead/behind, staged/modified/untracked/
+  conflicted counts, detached HEAD. Parsing is unit-tested from a fixture and
+  the provider is tested end to end against a temporary repository when `git`
+  is installed.
+
+Not implemented yet: history, file diffs, JJ/SVN/Hg/P4 providers, any write
+operation, and the provider panel.

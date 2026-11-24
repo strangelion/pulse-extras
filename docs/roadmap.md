@@ -35,9 +35,11 @@ Recheck upstream source, roadmap, SDK and registry for overlap before implementa
 
 - [x] Design provider contract, capability model, identity model, detection, risk
       tiers and process execution (`docs/vcs-architecture.md`).
-- [ ] Implement `shared/vcs`: capabilities, identities, risk policy, detection.
-- [ ] Read-only Git provider (status, references, history, diff) with contract
-      and temp-repository tests.
+- [x] Implement `shared/vcs`: capabilities, identities, risk policy, detection,
+      provider contract, CLI discovery and bounded snapshot cache.
+- [ ] Read-only Git provider: `status` with branch/ahead-behind/change counts is
+      implemented and tested against a real temporary repository; references,
+      history and diffs are still open.
 - [ ] Read-only Jujutsu provider; prove query commands create no new operation.
 - [ ] Read-only Subversion provider; validate the centralised model.
 - [ ] Mercurial and Perforce after the first three pass the shared contract.
