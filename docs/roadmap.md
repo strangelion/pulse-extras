@@ -40,8 +40,11 @@ Recheck upstream source, roadmap, SDK and registry for overlap before implementa
 - [ ] Read-only Git provider: `status` with branch/ahead-behind/change counts is
       implemented and tested against a real temporary repository; references,
       history and diffs are still open.
-- [ ] Read-only Jujutsu provider; prove query commands create no new operation.
-- [ ] Read-only Subversion provider; validate the centralised model.
+- [x] Read-only Jujutsu provider; `--ignore-working-copy` verified to leave the
+      operation log unchanged (jj 0.46.0).
+- [~] Read-only Subversion provider: revision, relative URL and status counts
+      implemented; **not verified locally** because `svn` is not installed
+      (integration test skips).
 - [ ] Mercurial and Perforce after the first three pass the shared contract.
 - [ ] Provider-aware panel using `pulse.context` + `pulse.ui.model`.
 

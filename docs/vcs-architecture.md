@@ -214,5 +214,16 @@ Implemented and covered by `zig build test`:
   the provider is tested end to end against a temporary repository when `git`
   is installed.
 
-Not implemented yet: history, file diffs, JJ/SVN/Hg/P4 providers, any write
-operation, and the provider panel.
+- `shared/vcs/providers/jj.zig` — revision (change id, commit id, bookmarks,
+  conflict flag) and diff summary through `--ignore-working-copy`. Verified on
+  jj 0.46.0 that two queries leave the operation log unchanged (2 entries before
+  and after), so an open panel cannot create snapshots. Documented degradation:
+  edits that were never snapshotted are invisible, and the summary says so
+  through `detail`.
+- `shared/vcs/providers/svn.zig` — working-copy revision, `relative-url` and
+  `svn status --xml` item counts. **Not verified against a real server or
+  working copy on this machine** (`svn` is not installed); the integration test
+  skips and only the XML parser and error mapping are covered locally.
+
+Not implemented yet: history, file diffs, Hg/P4 providers, any write operation,
+and the provider panel.
