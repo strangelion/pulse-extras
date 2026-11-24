@@ -59,9 +59,13 @@ pub const Mount = struct {
         return subscription;
     }
 
+    /// `STATE` means the host already dropped the subscription; same outcome.
     pub fn unsubscribe(self: Mount, subscription: u64) host_mod.Error!void {
         const unsubscribe_fn = self.table.unsubscribe orelse return error.Unavailable;
-        try host_mod.mapStatus(unsubscribe_fn(self.table.context, subscription));
+        host_mod.mapStatus(unsubscribe_fn(self.table.context, subscription)) catch |err| switch (err) {
+            error.State => return,
+            else => return err,
+        };
     }
 };
 

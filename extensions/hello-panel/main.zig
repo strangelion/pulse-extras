@@ -14,6 +14,7 @@ const context = @import("pulse_context");
 const ui_model = @import("pulse_ui_model");
 const ui_mount = @import("pulse_ui_mount");
 const diag = @import("pulse_diagnostics");
+const text = @import("pulse_text");
 
 const allocator = std.heap.page_allocator;
 
@@ -22,7 +23,7 @@ const command_close = "hello-panel.close";
 const panel_title = "Pulse Hello Panel";
 
 const Instance = struct {
-    host: *const abi.HostV1,
+    host: host_mod.Host,
     commands: commands.TableV1 = std.mem.zeroes(commands.TableV1),
     model: ui_model.TableV1 = std.mem.zeroes(ui_model.TableV1),
     mount: ui_mount.TableV1 = std.mem.zeroes(ui_mount.TableV1),
@@ -53,36 +54,28 @@ fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv
     const name = abi.slice(command) orelse return;
     diag.status("panel-command", panel_id);
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
-    if (std.mem.eql(u8, name, command_close)) closePanel(instance);
-}
-
-/// Copies `prefix + value` into `buffer` without splitting a UTF-8 codepoint.
-fn compose(buffer: []u8, prefix: []const u8, value: []const u8) []const u8 {
-    const head = @min(prefix.len, buffer.len);
-    @memcpy(buffer[0..head], prefix[0..head]);
-    const room = buffer.len - head;
-    var take = @min(value.len, room);
-    // A truncated tail must not start inside a continuation byte.
-    while (take > 0 and take < value.len and (value[take] & 0xC0) == 0x80) take -= 1;
-    @memcpy(buffer[head .. head + take], value[0..take]);
-    return buffer[0 .. head + take];
+    if (std.mem.eql(u8, name, command_close)) {
+        closePanel(instance) catch |err| diag.status("panel-command-close-failed", @intFromError(err));
+    }
 }
 
 /// The snapshot is borrowed: everything kept here is copied into `Instance`.
 fn applySnapshot(instance: *Instance, snapshot: *const context.Snapshot) void {
-    if (snapshot.size < @offsetOf(context.Snapshot, "loading")) return;
+    if (!context.validSnapshot(snapshot)) return;
     const directory = context.directory(snapshot) orelse "";
     const name = context.selectionName(snapshot) orelse "";
-    const dir = compose(&instance.line_directory, "目录：", directory);
+    const dir = text.appendTruncated(&instance.line_directory, "目录：", directory);
     instance.line_directory_len = dir.len;
-    const selected = compose(&instance.line_selection, "选中：", name);
+    const selected = text.appendTruncated(&instance.line_selection, "选中：", name);
     instance.line_selection_len = selected.len;
     instance.revision = snapshot.revision;
 }
 
 fn onContextChange(user: ?*anyopaque, snapshot: [*c]const context.Snapshot) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
-    applySnapshot(instance, &snapshot.*);
+    const value = snapshot orelse return;
+    if (!context.validSnapshot(value)) return;
+    applySnapshot(instance, value);
     refreshPanels(instance);
 }
 
@@ -173,7 +166,7 @@ fn refreshPanels(instance: *Instance) void {
 }
 
 fn readContext(instance: *Instance) void {
-    const status = context.query(instance.host, &instance.context);
+    const status = context.query(instance.host.raw(), &instance.context);
     diag.status("ui.context", status);
     if (status != abi.ok) return;
     if (instance.context.size < @sizeOf(context.TableV1) or instance.context.version < context.version_1) return;
@@ -188,22 +181,31 @@ fn requestedPlacement() ui_mount.Placement {
     if (comptime builtin.os.tag != .windows) return .workspace;
     const environment = std.process.Environ{ .block = .global };
     const value = environment.getWindows(std.unicode.wtf8ToWtf16LeStringLiteral("HELLO_PANEL_PLACEMENT")) orelse return .workspace;
-    var buffer: [32]u8 = undefined;
-    const length = std.unicode.wtf16LeToWtf8(&buffer, value);
-    if (std.ascii.eqlIgnoreCase(buffer[0..length], "sidebar")) return .sidebar;
-    return .workspace;
+    return placementFromValue(value);
+}
+
+/// Compares the environment value directly as UTF-16, so an arbitrarily long
+/// value is simply "not sidebar" instead of being truncated into a match.
+fn placementFromValue(value: []const u16) ui_mount.Placement {
+    const sidebar = std.unicode.wtf8ToWtf16LeStringLiteral("sidebar");
+    if (value.len != sidebar.len) return .workspace;
+    for (value, sidebar) |left, right| {
+        if (left > 0x7F or right > 0x7F) return .workspace;
+        if (std.ascii.toLower(@intCast(left)) != std.ascii.toLower(@intCast(right))) return .workspace;
+    }
+    return .sidebar;
 }
 
 fn openPanel(instance: *Instance) host_mod.Error!void {
     if (instance.panel != null) return;
     var table: ui_model.TableV1 = undefined;
-    const status = ui_model.query(instance.host, &table);
+    const status = ui_model.query(instance.host.raw(), &table);
     diag.status("ui.model", status);
     if (status != abi.ok) return host_mod.mapStatus(status);
     const create = table.create orelse return error.Unavailable;
     instance.model = table;
     var mount: ui_mount.TableV1 = undefined;
-    const mount_status = ui_mount.query(instance.host, &mount);
+    const mount_status = ui_mount.query(instance.host.raw(), &mount);
     diag.status("ui.mount", mount_status);
     if (mount_status == abi.ok) instance.mount = mount;
     readContext(instance);
@@ -233,7 +235,13 @@ fn openPanel(instance: *Instance) host_mod.Error!void {
         const subscribed = subscribe(table.context, panel_id, abi.view(command_close), onCommand, instance, &subscription);
         diag.status("ui.model.subscribe", subscribed);
         if (subscribed != abi.ok) {
-            panel.close();
+            // Partial activation: the panel exists, its command subscription
+            // does not. Close it; if the host refuses, keep the panel so
+            // deactivate/destroy can retry instead of leaking live callbacks.
+            if (panel.close()) |_| {} else |close_err| {
+                diag.status("cleanup-close-failed", @intFromError(close_err));
+                instance.panel = panel;
+            }
             return host_mod.mapStatus(subscribed);
         }
         instance.subscription = subscription;
@@ -259,27 +267,51 @@ fn openPanel(instance: *Instance) host_mod.Error!void {
     diag.event("panel-open");
 }
 
-fn closePanel(instance: *Instance) void {
+/// Releases everything the panel owns. Every host call is checked: a failed
+/// unsubscribe or close keeps the handle so a later retry can succeed, and the
+/// caller learns about the failure instead of assuming cleanup happened.
+fn closePanel(instance: *Instance) host_mod.Error!void {
+    var failure: ?host_mod.Error = null;
     if (instance.context_subscription != 0) {
         if (instance.context.unsubscribe) |unsubscribe| {
-            host_mod.mapStatus(unsubscribe(instance.context.context, instance.context_subscription)) catch {};
+            if (host_mod.mapStatus(unsubscribe(instance.context.context, instance.context_subscription))) |_| {
+                instance.context_subscription = 0;
+            } else |err| switch (err) {
+                // The host already dropped the subscription with the attachment.
+                error.State => instance.context_subscription = 0,
+                else => {
+                    diag.status("context-unsubscribe-failed", @intFromError(err));
+                    failure = err;
+                },
+            }
+        } else {
+            diag.event("context-unsubscribe-missing");
+            failure = error.Unavailable;
         }
-        instance.context_subscription = 0;
     }
     if (instance.panel) |*panel| {
         if (instance.subscription != 0) {
-            panel.unsubscribe(instance.subscription) catch {};
-            instance.subscription = 0;
+            if (panel.unsubscribe(instance.subscription)) |_| {
+                instance.subscription = 0;
+            } else |err| {
+                diag.status("panel-unsubscribe-failed", @intFromError(err));
+                if (failure == null) failure = err;
+            }
         }
-        panel.close();
-        instance.panel = null;
-        diag.event("panel-close");
+        if (panel.close()) |_| {
+            instance.panel = null;
+            diag.event("panel-close");
+        } else |err| {
+            diag.status("panel-close-failed", @intFromError(err));
+            if (failure == null) failure = err;
+        }
     }
+    if (failure) |err| return err;
 }
 
 fn registerOpenCommand(instance: *Instance) void {
     var table: commands.TableV1 = undefined;
-    const status = commands.query(instance.host, &table);
+    const status = commands.query(instance.host.raw(), &table);
     diag.status("ui.commands", status);
     if (status != abi.ok) return;
     instance.commands = table;
@@ -307,14 +339,23 @@ fn activate(raw: ?*anyopaque) callconv(.c) abi.Status {
 fn deactivate(raw: ?*anyopaque) callconv(.c) void {
     diag.event("deactivate");
     const instance: *Instance = @ptrCast(@alignCast(raw orelse return));
-    closePanel(instance);
+    closePanel(instance) catch |err| {
+        diag.status("deactivate-close-failed", @intFromError(err));
+        return; // stay active: the host may still call panel callbacks
+    };
     instance.active = false;
 }
 
 fn destroy(raw: ?*anyopaque) callconv(.c) void {
     diag.event("destroy");
     const instance: *Instance = @ptrCast(@alignCast(raw orelse return));
-    closePanel(instance);
+    closePanel(instance) catch |err| {
+        // Closing failed, so the host may still call callbacks with this
+        // instance as userdata. Leaking one small instance is the only safe
+        // option; freeing it here would be a use-after-free.
+        diag.status("destroy-close-failed", @intFromError(err));
+        return;
+    };
     allocator.destroy(instance);
 }
 
@@ -343,8 +384,9 @@ export fn PulsePluginEntryV1(host_ptr: ?*const abi.HostV1, out_ptr: ?*abi.Plugin
     const out = out_ptr orelse return abi.error_abi;
     if (host.size < @sizeOf(abi.HostV1) or out.size < @sizeOf(abi.PluginV1)) return abi.error_abi;
     if (host.version != abi.abi_version or out.version != abi.abi_version) return abi.error_abi;
+    const validated = host_mod.Host.init(host) catch |err| return statusOf(err);
     const instance = allocator.create(Instance) catch return abi.error_initialization;
-    instance.* = .{ .host = host };
+    instance.* = .{ .host = validated };
     registerOpenCommand(instance);
     out.* = .{
         .size = @sizeOf(abi.PluginV1),
@@ -357,33 +399,47 @@ export fn PulsePluginEntryV1(host_ptr: ?*const abi.HostV1, out_ptr: ?*abi.Plugin
     return abi.ok;
 }
 
-test "compose keeps UTF-8 boundaries when truncating" {
-    var buffer: [8]u8 = undefined;
-    // "目录：" is 9 bytes, so a 8-byte buffer must cut before the third
-    // character instead of emitting a broken sequence.
-    const line = compose(&buffer, "", "目录");
-    try std.testing.expect(std.unicode.utf8ValidateSlice(line));
-    try std.testing.expect(line.len <= buffer.len);
+test "placement parsing ignores oversized and non-ASCII values" {
+    const testing = std.testing;
+    try testing.expectEqual(ui_mount.Placement.sidebar, placementFromValue(std.unicode.wtf8ToWtf16LeStringLiteral("sidebar")));
+    try testing.expectEqual(ui_mount.Placement.sidebar, placementFromValue(std.unicode.wtf8ToWtf16LeStringLiteral("SideBar")));
+    try testing.expectEqual(ui_mount.Placement.workspace, placementFromValue(std.unicode.wtf8ToWtf16LeStringLiteral("sidebar ")));
+    try testing.expectEqual(ui_mount.Placement.workspace, placementFromValue(std.unicode.wtf8ToWtf16LeStringLiteral("工作区")));
+
+    var long: [4096]u16 = undefined;
+    @memset(&long, 'a');
+    try testing.expectEqual(ui_mount.Placement.workspace, placementFromValue(&long));
 }
 
-test "entry rejects short tables and never returns an instance" {
+fn unavailableInterface(_: ?*anyopaque, _: abi.StringView, _: u32, _: ?*anyopaque, _: u32) callconv(.c) abi.Status {
+    return abi.error_unavailable;
+}
+
+test "entry validates the host table before allocating an instance" {
     var host = abi.HostV1{ .size = @sizeOf(abi.HostV1), .version = abi.abi_version, .context = null, .query_interface = null };
     var out = std.mem.zeroes(abi.PluginV1);
     out.size = @sizeOf(abi.PluginV1);
     out.version = abi.abi_version;
-    try std.testing.expectEqual(abi.ok, PulsePluginEntryV1(&host, &out));
-    try std.testing.expect(out.instance != null);
-    // No interfaces are reachable, so activation must fail cleanly instead of
-    // pretending a panel exists.
-    try std.testing.expectEqual(abi.error_unavailable, out.activate.?(out.instance));
-    out.deactivate.?(out.instance);
-    out.destroy.?(out.instance);
+    // A host without query_interface cannot provide any interface, so entry
+    // refuses instead of handing out a plugin that can never activate.
+    try std.testing.expectEqual(abi.error_unavailable, PulsePluginEntryV1(&host, &out));
+    try std.testing.expect(out.instance == null);
 
     host.size = 8;
-    var rejected = std.mem.zeroes(abi.PluginV1);
-    rejected.size = @sizeOf(abi.PluginV1);
-    rejected.version = abi.abi_version;
-    try std.testing.expectEqual(abi.error_abi, PulsePluginEntryV1(&host, &rejected));
-    try std.testing.expect(rejected.instance == null);
+    try std.testing.expectEqual(abi.error_abi, PulsePluginEntryV1(&host, &out));
+    try std.testing.expect(out.instance == null);
+
+    host.size = @sizeOf(abi.HostV1);
+    host.query_interface = &unavailableInterface;
+    var accepted = std.mem.zeroes(abi.PluginV1);
+    accepted.size = @sizeOf(abi.PluginV1);
+    accepted.version = abi.abi_version;
+    try std.testing.expectEqual(abi.ok, PulsePluginEntryV1(&host, &accepted));
+    try std.testing.expect(accepted.instance != null);
+    // No interfaces are reachable, so activation reports the real reason.
+    try std.testing.expectEqual(abi.error_unavailable, accepted.activate.?(accepted.instance));
+    accepted.deactivate.?(accepted.instance);
+    accepted.destroy.?(accepted.instance);
+
     try std.testing.expectEqual(@as(u32, 3), PulsePluginSdkPreview());
 }

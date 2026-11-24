@@ -6,6 +6,7 @@
 const std = @import("std");
 const raw = @import("pulse_raw");
 const abi = @import("pulse_abi");
+const host_mod = @import("pulse_host");
 
 pub const interface_name: []const u8 = raw.PULSE_COMMANDS_INTERFACE_NAME;
 pub const version_1: u32 = raw.PULSE_COMMANDS_VERSION_1;
@@ -62,6 +63,63 @@ pub fn descriptor(id: []const u8, title: []const u8, invoke: InvokeFn) Descripto
     };
 }
 
+fn validId(id: []const u8) bool {
+    if (id.len == 0 or id.len > 64) return false;
+    for (id) |byte| {
+        const ok = (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z') or
+            (byte >= '0' and byte <= '9') or byte == '.' or byte == '_' or byte == '-';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+fn validTitle(title: []const u8) bool {
+    if (title.len == 0 or title.len > 128) return false;
+    for (title) |byte| {
+        if (byte < 0x20 or byte == 0x7F) return false;
+    }
+    return true;
+}
+
+/// Checks everything the host would otherwise reject at registration time.
+/// Doing it here keeps a bad descriptor from failing silently inside the host.
+pub fn validateDescriptor(item: *const Descriptor) host_mod.Error!void {
+    if (item.size != @sizeOf(Descriptor)) return error.Argument;
+    const id = abi.slice(item.id) orelse return error.Argument;
+    const title = abi.slice(item.title) orelse return error.Argument;
+    if (!validId(id) or !validTitle(title)) return error.Argument;
+    if (item.kinds == 0 or (item.kinds & ~@as(u32, 7)) != 0) return error.Argument;
+    if (item.min_selection > item.max_selection or item.max_selection > 4096) return error.Argument;
+    if (item.extension_count > 32) return error.Argument;
+    if (item.invoke == null) return error.Argument;
+}
+
+/// Owned copy of the `pulse.commands` V1 table with the required function
+/// pointers validated up front.
+pub const Table = struct {
+    raw: TableV1,
+
+    pub fn init(host: host_mod.Host) host_mod.Error!Table {
+        const table = try host.query(TableV1, interface_name, version_1);
+        if (table.context == null) return error.Abi;
+        if (table.register_command == null) return error.Unavailable;
+        return .{ .raw = table };
+    }
+
+    pub fn register(self: *const Table, item: *const Descriptor) host_mod.Error!CommandId {
+        try validateDescriptor(item);
+        const register_fn = self.raw.register_command orelse return error.Unavailable;
+        var assigned: CommandId = 0;
+        try host_mod.mapStatus(register_fn(self.raw.context, item, &assigned));
+        return assigned;
+    }
+
+    pub fn unregister(self: *const Table, id: CommandId) host_mod.Error!void {
+        const unregister_fn = self.raw.unregister_command orelse return error.Unavailable;
+        try host_mod.mapStatus(unregister_fn(self.raw.context, id));
+    }
+};
+
 comptime {
     // `PULSE_COMMAND_DESCRIPTOR_SIZE_V1` ends at `detail`; the V1 prefix is 96 bytes.
     if (@sizeOf(Descriptor) != 96) @compileError("PulseCommandDescriptor V1 size must be 96 on x86_64");
@@ -74,6 +132,46 @@ test "descriptor keeps the V1 prefix" {
     const item = descriptor("strangelion.test.ping", "Ping", null);
     try testing.expectEqual(@as(u32, 96), item.size);
     try testing.expectEqualStrings("strangelion.test.ping", abi.slice(item.id).?);
+}
+
+test "descriptor validation rejects host-invalid values" {
+    const testing = std.testing;
+    const good = descriptor("strangelion.test.ping", "Ping", struct {
+        fn invoke(_: ?*anyopaque, _: CommandId, _: [*c]const SelectionSnapshot) callconv(.c) void {}
+    }.invoke);
+    try validateDescriptor(&good);
+
+    var long: [65]u8 = undefined;
+    @memset(&long, 'x');
+    var long_id = good;
+    long_id.id = abi.view(&long);
+    try testing.expectError(error.Argument, validateDescriptor(&long_id));
+
+    var bad_chars = good;
+    bad_chars.id = abi.view("bad id");
+    try testing.expectError(error.Argument, validateDescriptor(&bad_chars));
+
+    var empty_title = good;
+    empty_title.title = abi.view("");
+    try testing.expectError(error.Argument, validateDescriptor(&empty_title));
+
+    var control: [5]u8 = [_]u8{ 'P', 'i', 'n', 'g', 0x0A };
+    var control_title = good;
+    control_title.title = abi.view(&control);
+    try testing.expectError(error.Argument, validateDescriptor(&control_title));
+
+    var no_kinds = good;
+    no_kinds.kinds = 0;
+    try testing.expectError(error.Argument, validateDescriptor(&no_kinds));
+
+    var inverted = good;
+    inverted.min_selection = 5;
+    inverted.max_selection = 1;
+    try testing.expectError(error.Argument, validateDescriptor(&inverted));
+
+    var no_invoke = good;
+    no_invoke.invoke = null;
+    try testing.expectError(error.Argument, validateDescriptor(&no_invoke));
 }
 
 test "query returns unavailable without a host query function" {

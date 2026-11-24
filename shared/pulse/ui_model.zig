@@ -111,18 +111,36 @@ pub const Panel = struct {
         try host_mod.mapStatus(set_states(self.table.context, self.id, states.ptr, @intCast(states.len)));
     }
 
+    /// `PULSE_ERROR_STATE` means the host no longer knows this subscription
+    /// (already removed, or the panel was closed by the host). That is the same
+    /// outcome as a successful release; every other status is a real failure.
     pub fn unsubscribe(self: *Panel, subscription: u64) host_mod.Error!void {
         const unsubscribe_fn = self.table.unsubscribe orelse return error.Unavailable;
-        try host_mod.mapStatus(unsubscribe_fn(self.table.context, subscription));
+        host_mod.mapStatus(unsubscribe_fn(self.table.context, subscription)) catch |err| switch (err) {
+            error.State => return,
+            else => return err,
+        };
     }
 
-    /// Idempotent. After the host accepts `close`, no callback for this panel can run.
-    pub fn close(self: *Panel) void {
+    pub fn isOpen(self: *const Panel) bool {
+        return !self.closed;
+    }
+
+    /// Idempotent. `STATE` means the host already closed the panel (user hit
+    /// the close affordance, or the session was stopped), so the end state is
+    /// the same. Any other status leaves `closed` unset and is retryable: the
+    /// host may still hold callbacks that point at our userdata.
+    pub fn close(self: *Panel) host_mod.Error!void {
         if (self.closed) return;
+        const close_fn = self.table.close orelse return error.Unavailable;
+        host_mod.mapStatus(close_fn(self.table.context, self.id)) catch |err| switch (err) {
+            error.State => {
+                self.closed = true;
+                return;
+            },
+            else => return err,
+        };
         self.closed = true;
-        if (self.table.close) |close_fn| {
-            _ = close_fn(self.table.context, self.id);
-        }
     }
 };
 
@@ -143,10 +161,40 @@ test "node helpers keep size and property flags" {
     try testing.expectEqual(@as(u32, 2), stack.children.count);
 }
 
-test "closed panels refuse further calls" {
-    var panel = Panel{ .table = std.mem.zeroes(TableV1), .id = 1 };
-    panel.close();
-    panel.close();
+test "close failures stay retryable and never mark the panel closed" {
+    const testing = std.testing;
+    var state = CloseState{};
+    var table = std.mem.zeroes(TableV1);
+    table.size = @sizeOf(TableV1);
+    table.version = version_1;
+    table.context = &state;
+    table.close = &CloseState.close;
+    var panel = Panel{ .table = table, .id = 1 };
+
+    // STATE means "the host already closed it": same end state, no retry.
+    try panel.close();
+    try testing.expect(!panel.isOpen());
+    try testing.expectEqual(@as(u32, 1), state.calls);
+
     var tree: Tree = std.mem.zeroes(Tree);
-    try std.testing.expectError(error.State, panel.update(&tree));
+    try testing.expectError(error.State, panel.update(&tree));
+}
+
+const CloseState = struct {
+    calls: u32 = 0,
+
+    fn close(context: ?*anyopaque, _: u64) callconv(.c) abi.Status {
+        const self: *CloseState = @ptrCast(@alignCast(context orelse return abi.error_argument));
+        self.calls += 1;
+        return abi.error_state;
+    }
+};
+
+test "close without a host function is unavailable, not a silent success" {
+    var table = std.mem.zeroes(TableV1);
+    table.size = @sizeOf(TableV1);
+    table.version = version_1;
+    var panel = Panel{ .table = table, .id = 1 };
+    try std.testing.expectError(error.Unavailable, panel.close());
+    try std.testing.expect(panel.isOpen());
 }

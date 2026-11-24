@@ -10,7 +10,8 @@ const Modules = struct {
     ui_mount: *std.Build.Module,
     diagnostics: *std.Build.Module,
     process: *std.Build.Module,
-    all: [9]std.Build.Module.Import = undefined,
+    text: *std.Build.Module,
+    all: [10]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) Modules {
         const raw = b.createModule(.{
@@ -40,7 +41,13 @@ const Modules = struct {
             .imports = &.{
                 .{ .name = "pulse_raw", .module = raw },
                 .{ .name = "pulse_abi", .module = abi },
+                .{ .name = "pulse_host", .module = host },
             },
+        });
+        const text_mod = b.createModule(.{
+            .root_source_file = b.path("shared/pulse/text.zig"),
+            .target = target,
+            .optimize = optimize,
         });
         const context_mod = b.createModule(.{
             .root_source_file = b.path("shared/pulse/context.zig"),
@@ -50,6 +57,7 @@ const Modules = struct {
                 .{ .name = "pulse_raw", .module = raw },
                 .{ .name = "pulse_abi", .module = abi },
                 .{ .name = "pulse_host", .module = host },
+                .{ .name = "pulse_text", .module = text_mod },
             },
         });
         const ui_model = b.createModule(.{
@@ -82,7 +90,7 @@ const Modules = struct {
             .target = target,
             .optimize = optimize,
         });
-        var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod };
+        var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod };
         modules.all = .{
             .{ .name = "pulse_raw", .module = raw },
             .{ .name = "pulse_abi", .module = abi },
@@ -93,6 +101,7 @@ const Modules = struct {
             .{ .name = "pulse_ui_mount", .module = ui_mount },
             .{ .name = "pulse_diagnostics", .module = diagnostics },
             .{ .name = "pulse_process", .module = process_mod },
+            .{ .name = "pulse_text", .module = text_mod },
         };
         return modules;
     }
@@ -143,6 +152,8 @@ pub fn build(b: *std.Build) void {
         "extensions/hello-panel/main.zig",
         "shared/diagnostics/probe_log.zig",
         "shared/process/run.zig",
+        "shared/pulse/abi.zig",
+        "shared/pulse/text.zig",
         "shared/pulse/host.zig",
         "shared/pulse/commands.zig",
         "shared/pulse/context.zig",

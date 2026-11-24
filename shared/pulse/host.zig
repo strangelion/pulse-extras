@@ -48,15 +48,25 @@ fn validateTable(comptime T: type) void {
     }
 }
 
-/// A validated host table. Copyable, cheap, and safe to keep for the plugin lifetime.
+/// A validated host table, held **by value**.
+///
+/// The ABI only promises that the pointer passed to `PulsePluginEntryV1` stays
+/// valid until `destroy`; keeping a copy means a host that reuses or mutates
+/// that memory cannot change the function pointers we call. Only the opaque
+/// `context` value is shared, and the host owns it for the plugin lifetime.
 pub const Host = struct {
-    table: *const abi.HostV1,
+    table: abi.HostV1,
 
-    pub fn init(table: *const abi.HostV1) Error!Host {
-        if (table.size < @sizeOf(abi.HostV1)) return error.Abi;
-        if (table.version != abi.abi_version) return error.Abi;
-        _ = table.query_interface orelse return error.Unavailable;
-        return .{ .table = table };
+    pub fn init(source: *const abi.HostV1) Error!Host {
+        if (source.size < @sizeOf(abi.HostV1)) return error.Abi;
+        if (source.version != abi.abi_version) return error.Abi;
+        if (source.query_interface == null) return error.Unavailable;
+        return .{ .table = source.* };
+    }
+
+    /// Raw pointer to the copied table, for wrappers that take `*const HostV1`.
+    pub fn raw(self: *const Host) *const abi.HostV1 {
+        return &self.table;
     }
 
     /// Requests an interface table by name and version. The returned table is a
@@ -85,6 +95,51 @@ pub const Host = struct {
         };
     }
 };
+
+test "host keeps a by-value copy of the table" {
+    const testing = std.testing;
+    var table = abi.HostV1{ .size = @sizeOf(abi.HostV1), .version = 1, .context = null, .query_interface = &fakeQuery };
+    const host = try Host.init(&table);
+    // Mutating the caller's copy must not change what the wrapper calls.
+    table.query_interface = null;
+    table.version = 99;
+    try testing.expect(host.raw().query_interface != null);
+    try testing.expectEqual(@as(u32, 1), host.raw().version);
+    const fake = try host.query(FakeTable, "pulse.fake", 1);
+    try testing.expectEqual(@as(u32, 7), fake.marker);
+}
+
+test "query rejects short tables and lower versions" {
+    const testing = std.testing;
+    var table = abi.HostV1{ .size = @sizeOf(abi.HostV1), .version = 1, .context = null, .query_interface = &shortQuery };
+    const host = try Host.init(&table);
+    try testing.expectError(error.Abi, host.query(FakeTable, "pulse.fake", 1));
+
+    table.query_interface = &oldVersionQuery;
+    const host2 = try Host.init(&table);
+    try testing.expectError(error.Abi, host2.query(FakeTable, "pulse.fake", 2));
+    try testing.expectEqual(@as(?FakeTable, null), try host2.queryOptional(FakeTable, "pulse.fake", 2));
+}
+
+test "queryOptional maps an unavailable interface to null" {
+    const testing = std.testing;
+    var table = abi.HostV1{ .size = @sizeOf(abi.HostV1), .version = 1, .context = null, .query_interface = &fakeQuery };
+    const host = try Host.init(&table);
+    try testing.expectEqual(@as(?FakeTable, null), try host.queryOptional(FakeTable, "pulse.missing", 1));
+}
+
+fn shortQuery(_: ?*anyopaque, _: abi.StringView, _: u32, out_table: ?*anyopaque, _: u32) callconv(.c) abi.Status {
+    const out: *FakeTable = @ptrCast(@alignCast(out_table orelse return abi.error_argument));
+    out.* = .{ .size = 8, .version = 1, .context = null, .marker = 0 };
+    return abi.ok;
+}
+
+fn oldVersionQuery(_: ?*anyopaque, _: abi.StringView, _: u32, out_table: ?*anyopaque, out_size: u32) callconv(.c) abi.Status {
+    if (out_size < @sizeOf(FakeTable)) return abi.error_argument;
+    const out: *FakeTable = @ptrCast(@alignCast(out_table orelse return abi.error_argument));
+    out.* = .{ .size = @sizeOf(FakeTable), .version = 1, .context = null, .marker = 0 };
+    return abi.ok;
+}
 
 test "host validation rejects short and mismatched tables" {
     const testing = std.testing;

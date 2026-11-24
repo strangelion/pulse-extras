@@ -7,6 +7,7 @@ const std = @import("std");
 const raw = @import("pulse_raw");
 const abi = @import("pulse_abi");
 const host_mod = @import("pulse_host");
+const text = @import("pulse_text");
 
 pub const interface_name = raw.PULSE_CONTEXT_INTERFACE_NAME;
 pub const version_1: u32 = @intCast(raw.PULSE_CONTEXT_VERSION_1);
@@ -39,13 +40,38 @@ comptime {
 
 pub fn query(host: *const abi.HostV1, out: *TableV1) abi.Status {
     out.* = std.mem.zeroes(TableV1);
-    return host.query_interface.?(
+    const query_interface = host.query_interface orelse return abi.error_unavailable;
+    return query_interface(
         host.context,
         abi.view(interface_name),
         version_1,
-        out,
-        @sizeOf(TableV1),
+        @ptrCast(out),
+        @intCast(@sizeOf(TableV1)),
     );
+}
+
+/// A host snapshot is only safe to read when it advertises at least the V1 size.
+pub fn validSnapshot(snapshot: *const Snapshot) bool {
+    return snapshot.size >= @sizeOf(Snapshot);
+}
+
+/// A host selection snapshot is only safe to read when it advertises at least
+/// the V1 size; entry strings are borrowed for the callback duration.
+pub fn validSelection(snapshot: *const SelectionSnapshot) bool {
+    return snapshot.size >= @sizeOf(SelectionSnapshot);
+}
+
+pub fn entryPath(entry: *const SelectionEntry) ?[]const u8 {
+    return abi.slice(entry.path);
+}
+
+pub fn entryName(entry: *const SelectionEntry) ?[]const u8 {
+    return abi.slice(entry.name);
+}
+
+/// Copies a borrowed host string, stopping on a UTF-8 codepoint boundary.
+pub fn copyBorrowed(source: []const u8, buffer: []u8) []const u8 {
+    return text.copyTruncated(buffer, source);
 }
 
 pub const Error = host_mod.Error;
@@ -78,10 +104,15 @@ pub const Table = struct {
         if (id.* == 0) return error.State;
     }
 
+    /// `STATE` means the host already dropped the subscription (attachment
+    /// gone); treat it as released, everything else as a real failure.
     pub fn unsubscribe(self: *const Table, id: SubscriptionId) Error!void {
         const unsubscribe_fn = self.raw.unsubscribe orelse return error.Unavailable;
         if (id == 0) return;
-        try host_mod.mapStatus(unsubscribe_fn(self.raw.context, id));
+        host_mod.mapStatus(unsubscribe_fn(self.raw.context, id)) catch |err| switch (err) {
+            error.State => return,
+            else => return err,
+        };
     }
 
     /// Reads the already loaded selection snapshot. Returns `error.State` while
@@ -98,16 +129,6 @@ pub fn directory(snapshot: *const Snapshot) ?[]const u8 {
 
 pub fn selectionName(snapshot: *const Snapshot) ?[]const u8 {
     return abi.slice(snapshot.selection_name);
-}
-
-/// Copies a borrowed host string into `buffer`, returning the slice that was
-/// written. Truncated results are still valid UTF-8 boundaries only when the
-/// caller passes a generous buffer; callers that need exactness should check
-/// `source.len <= buffer.len` first.
-pub fn copyBorrowed(source: []const u8, buffer: []u8) []const u8 {
-    const length = @min(source.len, buffer.len);
-    @memcpy(buffer[0..length], source[0..length]);
-    return buffer[0..length];
 }
 
 const testing = std.testing;
@@ -148,6 +169,38 @@ test "get delivers a borrowed snapshot" {
     try t.get(&Probe.onChange, &probe);
     try testing.expectEqual(@as(u64, 7), probe.revision);
     try testing.expectEqualStrings("C:\\work", probe.directory[0..probe.directory_len]);
+}
+
+test "query without a host query function returns unavailable" {
+    const host = abi.HostV1{ .size = @sizeOf(abi.HostV1), .version = 1, .context = null, .query_interface = null };
+    var table: TableV1 = undefined;
+    try testing.expectEqual(abi.error_unavailable, query(&host, &table));
+}
+
+test "table init rejects short or unsupported tables" {
+    const host = abi.HostV1{ .size = @sizeOf(abi.HostV1), .version = 1, .context = null, .query_interface = &shortTable };
+    try testing.expectError(error.Abi, Table.init(&host));
+}
+
+fn shortTable(_: ?*anyopaque, _: abi.StringView, _: u32, out_table: ?*anyopaque, _: u32) callconv(.c) abi.Status {
+    const out: *TableV1 = @ptrCast(@alignCast(out_table orelse return abi.error_argument));
+    out.* = std.mem.zeroes(TableV1);
+    out.size = 8;
+    out.version = version_1;
+    out.get = &fakeContext;
+    return abi.ok;
+}
+
+test "snapshot and selection size guards" {
+    var snapshot = std.mem.zeroes(Snapshot);
+    try testing.expect(!validSnapshot(&snapshot));
+    snapshot.size = @sizeOf(Snapshot);
+    try testing.expect(validSnapshot(&snapshot));
+
+    var selection = std.mem.zeroes(SelectionSnapshot);
+    try testing.expect(!validSelection(&selection));
+    selection.size = @sizeOf(SelectionSnapshot);
+    try testing.expect(validSelection(&selection));
 }
 
 test "subscription id must be non-zero" {
