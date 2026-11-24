@@ -137,7 +137,8 @@ fn mapRunError(err: run.Error) contract.Error {
         error.OutOfMemory => error.OutOfMemory,
         error.PermissionDenied => error.Permission,
         error.InvalidRequest, error.Io => error.Io,
-        error.Stopped => error.Cancelled,
+        error.Stopped, error.Cancelled => error.Cancelled,
+        error.Busy, error.ConcurrencyUnavailable, error.NoPendingTask => error.Io,
         error.OutputBudgetExceeded => error.ResourceLimit,
     };
 }

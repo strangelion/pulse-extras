@@ -1,6 +1,6 @@
 # Shared Runtime / 共享内存与资源管理运行时
 
-Status: **design and implementation requirements**, not an implemented runtime.
+Status: **partial RT0 implementation on the experiment branch; remaining design and acceptance gates below**.
 This document is the common contract for every Pulse Extras product extension.
 It belongs to P1.5 and does not replace the provider contract, public SDK or
 release design. Build the minimum needed by VCS first, then evolve from measured
@@ -139,8 +139,18 @@ A short lock protects only accounting; the backing allocator must support its
 callers' concurrency. Peak includes in-flight/failed reservations, not RSS or
 allocator metadata. Runner remains serialized. requestStop closes admission;
 finishStop rejects live outcomes or allocations and is idempotent after drain.
-This is not interruption of a running command, cancellation or a worker join.
-CI and actual host runtime ownership remain to be verified.
+The next candidate adds a single pending std.Io.concurrent future per Runner.
+Start owns bounded argv/cwd copies (128 arguments, 64 KiB of input bytes),
+rejects borrowed explicit environment maps, and refuses any simultaneous live
+outcomes. Await/cancel joins before freeing the input arena and consumes output
+once. A canceled I/O operation maps to Cancelled; raced completion is freed
+and reported separately. Stop closes admission, then explicit cancel/join is
+required before finishStop. No detached work or extra resident pool. This is
+one stdlib task's cooperative cancellation, not guaranteed OS process-tree
+termination. The I/O owner must outlive the task and enforce finite concurrency.
+Run/await/cancel remain unsuitable for host UI callbacks. Actual VCS provider
+summary orchestration, trusted environment policy, job-object containment and
+real host runtime ownership remain to be verified.
 Do not create uncontrolled process-wide I/O facilities or claim DLL unload
 safety before proving host callback/worker drain.
 
@@ -307,3 +317,7 @@ additional files or passing mock tests.
 ### Runtime check implementation (RT0 candidate)
 
 Unit tests cover budget overflow, exact capacity, backing OOM rollback, failed and successful resize/remap, zero-byte allocations, alignment-sized allocations, independent owners, output/error cleanup, finite single-child timeout, stop/admission/drain and 12 repeated runs. These are ordinary full CI tests; no new resident service or dependency. Do not infer process-tree cleanup, true concurrency stress, cross-DLL ownership, memory safety of arbitrary native libraries, or real-host unload from them. Extend acceptance with an owned process-tree harness and actual host lifecycle before enabling asynchronous UI. For multi-plugin coordination evaluate supported host API/IPC, independent resource domains and measured duplication only after real consumers exist; no hidden global DLL state.
+
+### Single pending job acceptance (candidate)
+
+Reuse pinned Zig's documented `std.Io.concurrent`, `Future.await` and `Future.cancel` ([0.17.1 API](https://izrino.github.io/zig-docs/en/0.17.1/std/Io/)). Tests cover stack-backed argv copy, busy/duplicate admission, one-time outcome transfer, OOM input rollback, single-child cancellation, stopping with an outstanding job, independent runners and concurrent allocator accounting. Await and cancel are serialized owner operations; no concurrent call to the same Future. A running process may finish before cancellation, in which case discard its result without claiming it was killed. `finishStop` fails while a pending task exists. Before UI integration prove cancellation on actual Windows host, bound the whole child tree from creation, test descendants retaining inherited pipes, and implement owner-thread completion delivery. Never kill by reused PID or scan/terminate unrelated processes.

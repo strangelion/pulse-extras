@@ -7,7 +7,9 @@
 //!
 //! The caller owns the I/O runtime and must keep it alive until all work
 //! and results have drained. Runner is serialized, not thread-safe. It must
-//! remain at a stable address while an Outcome is alive. No global I/O state.
+//! remain at a stable address while an Outcome or pending task is alive.
+//! A single owner controls admission, await, cancel and stop; it must not
+//! access worker-owned fields while pending. No global I/O state.
 
 const std = @import("std");
 const Budget = @import("runtime_budget").Budget;
@@ -16,6 +18,8 @@ const BoundedAllocator = @import("runtime_allocator").BoundedAllocator;
 pub const default_output_budget: usize = 16 * 1024 * 1024;
 pub const default_memory_budget: usize = 32 * 1024 * 1024;
 pub const max_live_outcomes: usize = 8;
+pub const max_async_arguments: usize = 128;
+pub const max_async_argument_bytes: usize = 64 * 1024;
 
 pub const Request = struct {
     argv: []const []const u8,
@@ -69,6 +73,10 @@ pub const Error = error{
     TimedOut,
     InvalidRequest,
     Stopped,
+    Busy,
+    Cancelled,
+    ConcurrencyUnavailable,
+    NoPendingTask,
     OutputBudgetExceeded,
     PermissionDenied,
     Io,
@@ -77,11 +85,23 @@ pub const Error = error{
 pub const Runner = struct {
     pub const State = enum { active, stopping, stopped };
 
+    const Pending = struct {
+        future: std.Io.Future(Error!Outcome),
+        arguments: std.heap.ArenaAllocator,
+    };
+
+    pub const CancelResult = union(enum) {
+        cancelled,
+        completed_discarded,
+        failed: Error,
+    };
+
     memory: BoundedAllocator,
     io: std.Io,
     output_budget: Budget,
     live_outcomes: usize = 0,
     state: State = .active,
+    pending: ?Pending = null,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Runner {
         return initWithBudget(allocator, io, default_output_budget);
@@ -97,29 +117,36 @@ pub const Runner = struct {
 
     /// All results must be freed before the runner or its I/O owner goes away.
     /// This does not stop external workers: the caller owns their lifecycle.
-    pub fn checkDrained(self: *Runner) error{ OutstandingOutputs, OutstandingAllocations }!void {
+    pub fn checkDrained(self: *Runner) error{ Busy, OutstandingOutputs, OutstandingAllocations }!void {
+        if (self.pending != null) return error.Busy;
         if (self.live_outcomes != 0 or self.output_budget.used != 0) return error.OutstandingOutputs;
         try self.memory.checkDrained();
     }
 
-    /// Owner-thread admission stop. Not interruption of an active run.
-    /// No further requests may start; outstanding outcomes remain valid.
+    /// Owner-thread admission stop. Call cancelPending separately to request
+    /// interruption and join a pending task. Outstanding outcomes remain valid.
     pub fn requestStop(self: *Runner) void {
         if (self.state == .active) self.state = .stopping;
     }
 
     /// Call after any externally owned workers have joined. Refuse to declare
     /// shutdown complete while results or allocator reservations remain.
-    pub fn finishStop(self: *Runner) error{ NotStopping, OutstandingOutputs, OutstandingAllocations }!void {
+    pub fn finishStop(self: *Runner) error{ NotStopping, Busy, OutstandingOutputs, OutstandingAllocations }!void {
         if (self.state == .active) return error.NotStopping;
         try self.checkDrained();
         self.state = .stopped;
     }
 
-    /// Reserve both output caps until the owned outcome is released.
-    /// This bounds logical output capacity, not total child/allocator memory.
+    /// Synchronous owner-thread entry; never run on a Pulse UI callback.
     pub fn run(self: *Runner, request: Request) Error!Outcome {
         if (self.state != .active) return error.Stopped;
+        if (self.pending != null) return error.Busy;
+        return self.runInternal(request);
+    }
+
+    /// Reserve both output caps until the owned outcome is released.
+    /// This bounds logical output capacity, not total child/allocator memory.
+    fn runInternal(self: *Runner, request: Request) Error!Outcome {
         if (request.argv.len == 0 or request.argv[0].len == 0 or request.timeout_ns == 0) return error.InvalidRequest;
         if (self.live_outcomes >= max_live_outcomes) return error.OutputBudgetExceeded;
         const reservation = std.math.add(usize, request.stdout_limit, request.stderr_limit) catch return error.OutputBudgetExceeded;
@@ -140,6 +167,7 @@ pub const Runner = struct {
             error.AccessDenied => return error.PermissionDenied,
             error.StreamTooLong => return error.OutputTooLong,
             error.Timeout => return error.TimedOut,
+            error.Canceled => return error.Cancelled,
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.Io,
         };
@@ -160,6 +188,78 @@ pub const Runner = struct {
             .owner = self,
             .reservation = reservation,
         };
+    }
+
+    /// Exactly one pending job per Runner. The caller-provided I/O runtime
+    /// supplies concurrency; no private pool/thread is created here.
+    /// Copy arguments before submitting. Explicit env maps are currently
+    /// rejected rather than retaining borrowed mutable environment data.
+    /// No outcome may be live across a pending job, since the worker owns the
+    /// runner's output counters until joined.
+    pub fn start(self: *Runner, request: Request) Error!void {
+        if (self.state != .active) return error.Stopped;
+        if (self.pending != null) return error.Busy;
+        if (self.live_outcomes != 0) return error.Busy;
+        if (request.environ_map != null or request.argv.len == 0 or request.argv.len > max_async_arguments or request.argv[0].len == 0 or request.timeout_ns == 0) return error.InvalidRequest;
+        var total: usize = 0;
+        for (request.argv) |arg| {
+            if (std.mem.indexOfScalar(u8, arg, 0) != null) return error.InvalidRequest;
+            total = std.math.add(usize, total, arg.len) catch return error.InvalidRequest;
+            if (total > max_async_argument_bytes) return error.InvalidRequest;
+        }
+        if (request.cwd) |cwd| {
+            if (std.mem.indexOfScalar(u8, cwd, 0) != null) return error.InvalidRequest;
+            if (cwd.len > max_async_argument_bytes - total) return error.InvalidRequest;
+        }
+        var arguments = std.heap.ArenaAllocator.init(self.memory.allocator());
+        errdefer arguments.deinit();
+        const allocator = arguments.allocator();
+        const argv = try allocator.alloc([]const u8, request.argv.len);
+        for (request.argv, argv) |arg, *owned| owned.* = try allocator.dupe(u8, arg);
+        var owned = request;
+        owned.argv = argv;
+        if (request.cwd) |cwd| owned.cwd = try allocator.dupe(u8, cwd);
+
+        // After submission the owner must not read/write worker-owned fields.
+        // The copied Request points only to this arena; its lifetime extends
+        // until the future is joined, including all error/cancel paths.
+        const future = try self.io.concurrent(runInternal, .{ self, owned });
+        self.pending = .{ .future = future, .arguments = arguments };
+    }
+
+    /// Join the task, transfer the owned result once, and release input copies.
+    /// Never call this blocking operation from the Pulse UI thread.
+    pub fn awaitPending(self: *Runner) Error!Outcome {
+        const pending = if (self.pending) |*value| value else return error.NoPendingTask;
+        const result = pending.future.await(self.io);
+        pending.arguments.deinit();
+        self.pending = null;
+        if (self.state != .active) {
+            if (result) |value| {
+                var outcome = value;
+                outcome.deinit();
+            } else |_| {}
+            return error.Stopped;
+        }
+        return result;
+    }
+
+    /// Request cancellation and join. Cancellation is cooperative: a raced
+    /// completion still owns a result, so release it rather than leak it.
+    /// Return actual completion/failure rather than inventing a cancellation.
+    /// This joins one stdlib task, not a Windows Job Object/process tree.
+    pub fn cancelPending(self: *Runner) Error!CancelResult {
+        const pending = if (self.pending) |*value| value else return error.NoPendingTask;
+        const result = pending.future.cancel(self.io);
+        pending.arguments.deinit();
+        self.pending = null;
+        if (result) |value| {
+            var outcome = value;
+            outcome.deinit();
+            return .completed_discarded;
+        } else |err| {
+            return if (err == error.Cancelled) .cancelled else .{ .failed = err };
+        }
     }
 };
 
@@ -307,4 +407,78 @@ test "repeated runs return tracked allocation and reservation counts to zero" {
         try testing.expect(outcome.succeeded());
     }
     try second.checkDrained();
+}
+
+
+test "async task owns input and transfers output only once" {
+    var runner = Runner.init(testing.allocator, testing.io);
+    var message: [32]u8 = undefined;
+    const original = try std.fmt.bufPrint(&message, "echo owned-input", .{});
+    const argv: []const []const u8 = if (@import("builtin").os.tag == .windows)
+        &.{ "cmd", "/d", "/c", original }
+    else
+        &.{ "sh", "-c", original };
+    try runner.start(.{ .argv = argv });
+    // No lifetime dependency on the caller's stack-backed argument.
+    @memset(&message, 'x');
+    try testing.expectError(error.Busy, runner.start(.{ .argv = argv }));
+    try testing.expectError(error.Busy, runner.run(.{ .argv = argv }));
+    try testing.expectError(error.Busy, runner.checkDrained());
+    {
+        var outcome = try runner.awaitPending();
+        defer outcome.deinit();
+        try testing.expect(outcome.succeeded());
+        try testing.expect(std.mem.indexOf(u8, outcome.stdout, "owned-input") != null);
+        try testing.expectError(error.NoPendingTask, runner.awaitPending());
+        try testing.expectError(error.Busy, runner.start(.{ .argv = argv }));
+    }
+    try runner.checkDrained();
+}
+
+test "async admission failure releases input arena and permits retry" {
+    var runner = Runner.initWithLimits(testing.allocator, testing.io, 2048, 0);
+    try testing.expectError(error.OutOfMemory, runner.start(.{ .argv = &.{"never-start"}, .stdout_limit = 1024, .stderr_limit = 1024 }));
+    try runner.checkDrained();
+    try testing.expectError(error.NoPendingTask, runner.cancelPending());
+    try testing.expectError(error.InvalidRequest, runner.start(.{ .argv = &.{"bad\x00arg"} }));
+}
+
+test "async cancellation joins and releases resources; stop is owner-local" {
+    var first = Runner.init(testing.allocator, testing.io);
+    var second = Runner.init(testing.allocator, testing.io);
+    const slow: []const []const u8 = if (@import("builtin").os.tag == .windows)
+        &.{ "ping.exe", "-n", "5", "127.0.0.1" }
+    else
+        &.{ "sleep", "4" };
+    try first.start(.{ .argv = slow });
+    // Allow the finite single-child fixture to enter blocking I/O.
+    try std.Io.sleep(testing.io, .fromMilliseconds(100), .boot);
+    first.requestStop();
+    try testing.expectError(error.Busy, first.finishStop());
+    const cancellation = try first.cancelPending();
+    try testing.expect(cancellation == .cancelled);
+    try first.finishStop();
+    try testing.expectError(error.Stopped, first.start(.{ .argv = slow }));
+    const quick: []const []const u8 = if (@import("builtin").os.tag == .windows)
+        &.{ "cmd", "/d", "/c", "echo independent" }
+    else
+        &.{ "sh", "-c", "echo independent" };
+    {
+        var outcome = try second.run(.{ .argv = quick });
+        defer outcome.deinit();
+        try testing.expect(outcome.succeeded());
+    }
+    try second.checkDrained();
+}
+
+test "pending stop discards even a successful raced result" {
+    var runner = Runner.init(testing.allocator, testing.io);
+    const args: []const []const u8 = if (@import("builtin").os.tag == .windows)
+        &.{ "cmd", "/d", "/c", "echo hello" }
+    else
+        &.{ "sh", "-c", "echo hello" };
+    try runner.start(.{ .argv = args });
+    runner.requestStop();
+    try testing.expectError(error.Stopped, runner.awaitPending());
+    try runner.finishStop();
 }

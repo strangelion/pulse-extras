@@ -204,3 +204,32 @@ test "zero-length allocation and independent owners do not consume another budge
     try first.checkDrained();
     try second.checkDrained();
 }
+
+
+fn concurrentAllocations(bounded: *BoundedAllocator) error{OutOfMemory}!void {
+    const allocator = bounded.allocator();
+    for (0..128) |index| {
+        const bytes = try allocator.alloc(u8, 64 + index % 32);
+        defer allocator.free(bytes);
+        @memset(bytes, @intCast(index));
+    }
+}
+
+test "bounded allocator accounting supports concurrent callers" {
+    // The test allocator must support worker threads; use the system page
+    // allocator for this small contention test, not the test debug allocator.
+    var bounded = BoundedAllocator.init(std.heap.page_allocator, 4096);
+    var first = try std.Io.concurrent(testing.io, concurrentAllocations, .{&bounded});
+    var second = std.Io.concurrent(testing.io, concurrentAllocations, .{&bounded}) catch |err| {
+        try first.await(testing.io);
+        return err;
+    };
+    const first_result = first.await(testing.io);
+    const second_result = second.await(testing.io);
+    try first_result;
+    try second_result;
+    try bounded.checkDrained();
+    const snapshot = bounded.stats();
+    try testing.expect(snapshot.reserved_peak <= 4096);
+    try testing.expectEqual(@as(usize, 0), snapshot.denied);
+}
