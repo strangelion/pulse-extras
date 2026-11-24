@@ -97,7 +97,8 @@ pub const Jj = struct {
         };
         snapshot.reference = if (revision.bookmarks.slice().len != 0) revision.bookmarks else revision.change_id;
         if (revision.conflicted) snapshot.changes.conflicted = 1;
-        if (diff_out.succeeded()) countDiff(diff_out.stdout, &snapshot.changes);
+        if (!diff_out.succeeded()) return mapFailure(diff_out.stderr);
+        countDiff(diff_out.stdout, &snapshot.changes);
         return snapshot;
     }
 
@@ -184,13 +185,13 @@ test "provider declares only read capabilities" {
 test "reads a real jj repository without creating snapshots" {
     const io = run.io();
     const environ: std.process.Environ = .{ .block = .global };
-    const path_value = environ.getAlloc(std.testing.allocator, "PATH") catch return error.SkipZigTest;
+    const path_value = environ.getAlloc(std.testing.allocator, "PATH") catch return cli.integrationUnavailable(.jj);
     defer std.testing.allocator.free(path_value);
 
     var runner = run.Runner.init(std.testing.allocator);
     var scratch: [identity.max_path_bytes + 64]u8 = undefined;
-    const report = cli.detect(io, .jj, path_value, &scratch, &runner) orelse return error.SkipZigTest;
-    if (report.version == null) return error.SkipZigTest;
+    const report = cli.detect(io, .jj, path_value, &scratch, &runner) orelse return cli.integrationUnavailable(.jj);
+    if (report.version == null) return cli.integrationUnavailable(.jj);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -202,11 +203,22 @@ test "reads a real jj repository without creating snapshots" {
         .timeout_ns = 20 * std.time.ns_per_s,
     });
     defer init_outcome.deinit(runner.allocator);
-    if (!init_outcome.succeeded()) return error.SkipZigTest;
+    if (!init_outcome.succeeded()) return error.TestCommandFailed;
 
     const workspace = try identity.Workspace.init(.jj, root, root);
     var jj = Jj.init(&runner, report.path, .{ .ctx = undefined, .lookup = fakeLookup });
+    const op_args = &.{ report.path.slice(), "--ignore-working-copy", "--no-pager", "--color=never", "-R", root, "op", "log", "--no-graph", "-T", "id ++ \"\\n\"" };
+    var before = try jj.query(op_args);
+    defer before.deinit(runner.allocator);
+    try std.testing.expect(before.succeeded());
+    const dirty = try tmp.dir.createFile(io, "unsnapshotted.txt", .{});
+    try dirty.writeStreamingAll(io, "not yet snapshotted\n");
+    dirty.close(io);
     const snapshot = try jj.summarize(&workspace);
+    var after = try jj.query(op_args);
+    defer after.deinit(runner.allocator);
+    try std.testing.expect(after.succeeded());
+    try std.testing.expectEqualStrings(before.stdout, after.stdout);
     try std.testing.expectEqual(contract.Availability.ready, snapshot.availability);
     try std.testing.expect(snapshot.detail.eql("working copy not snapshotted (read-only query)"));
 }

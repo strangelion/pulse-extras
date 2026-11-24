@@ -122,7 +122,7 @@ def formatted(zig: str, text: str) -> str:
         path = pathlib.Path(work) / "pulse_all.zig"
         path.write_text(text, encoding="utf-8", newline="\n")
         subprocess.run([zig, "fmt", str(path)], check=True, capture_output=True, text=True)
-        return path.read_text(encoding="utf-8", newline="\n")
+        return path.read_text(encoding="utf-8")
 
 
 def main() -> int:

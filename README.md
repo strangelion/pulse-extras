@@ -40,6 +40,7 @@ scripts/generate_bindings.py --check`), and exercises the Windows DLL through a 
 loader harness. Python 3 is used only by CI and SDK verification tools.
 
 - [Architecture](docs/architecture.md)
+- [Testing and CI coverage](docs/testing.md)
 - [VCS architecture and capability matrix](docs/vcs-architecture.md)
 - [Roadmap](docs/roadmap.md)
 - [SDK pin](sdk/upstream.toml)

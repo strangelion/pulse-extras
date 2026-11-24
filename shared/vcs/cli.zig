@@ -186,3 +186,18 @@ test "locate returns null when the tool is absent" {
     const missing = "C:\\definitely-not-a-real-dir" ++ std.fs.path.sep_str ++ "nope";
     try std.testing.expect(locate(run.io(), .jj, missing, &scratch) == null);
 }
+
+/// Optional developer integrations must become mandatory when CI installs tools.
+pub fn integrationUnavailable(tool: Tool) error{ SkipZigTest, RequiredVcsUnavailable } {
+    const environ: std.process.Environ = .{ .block = .global };
+    const key = switch (tool) {
+        .git => "PULSE_REQUIRE_GIT",
+        .jj => "PULSE_REQUIRE_JJ",
+        .svn => "PULSE_REQUIRE_SVN",
+        else => return error.SkipZigTest,
+    };
+    const value = environ.getAlloc(std.testing.allocator, key) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(value);
+    if (std.mem.eql(u8, value, "1")) return error.RequiredVcsUnavailable;
+    return error.SkipZigTest;
+}

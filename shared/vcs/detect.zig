@@ -111,34 +111,29 @@ pub fn detect(start_directory: []const u8, probe: Probe) Result {
     var buffer: [identity.max_path_bytes + 32]u8 = undefined;
     var directory: []const u8 = start_directory;
     var depth: usize = 0;
-    var found_git = false;
-    var found_jj = false;
 
     while (depth < max_depth) : (depth += 1) {
-        var git_here = false;
-        var jj_here = false;
         for (markers) |marker| {
             if (result.find(marker.kind) != null) continue;
             if (!matches(probe, directory, marker, &buffer)) continue;
             const root = identity.Path.init(directory) catch return result;
             result.add(.{ .kind = marker.kind, .root = root });
-            if (marker.kind == .git) git_here = true;
-            if (marker.kind == .jj) jj_here = true;
         }
-        found_git = found_git or git_here;
-        found_jj = found_jj or jj_here;
 
         const parent = std.fs.path.dirname(directory) orelse break;
         if (parent.len == 0 or std.mem.eql(u8, parent, directory)) break;
         directory = parent;
     }
 
-    // A colocated git+jj workspace is reported at the directory that owns both
-    // markers; whichever one the user picks as primary, writes must be
-    // serialised across both.
-    if (found_git and found_jj) {
-        if (result.findMut(.git)) |candidate| candidate.colocated_with = .jj;
-        if (result.findMut(.jj)) |candidate| candidate.colocated_with = .git;
+    // Matching roots are only a colocated candidate, not proof of shared
+    // metadata. Different ancestor roots must never be grouped this way.
+    if (result.findMut(.git)) |git| {
+        if (result.findMut(.jj)) |jj| {
+            if (git.root.eql(jj.root.slice())) {
+                git.colocated_with = .jj;
+                jj.colocated_with = .git;
+            }
+        }
     }
     return result;
 }
@@ -223,4 +218,14 @@ test "reports nothing instead of guessing" {
 test "empty start path is a no-op" {
     const probe = fakeProbe(&.{});
     try std.testing.expectEqual(@as(u8, 0), detect("", probe).len);
+}
+
+test "nested git and jj roots are not colocated candidates" {
+    const probe = fakeProbe(&.{
+        .{ .path = join(&.{ "repo", ".git" }), .kind = .directory },
+        .{ .path = join(&.{ "repo", "nested", ".jj" }), .kind = .directory },
+    });
+    const result = detect(join(&.{ "repo", "nested", "src" }), probe);
+    try std.testing.expect((result.find(.git) orelse return error.TestExpectedGit).colocated_with == null);
+    try std.testing.expect((result.find(.jj) orelse return error.TestExpectedJj).colocated_with == null);
 }

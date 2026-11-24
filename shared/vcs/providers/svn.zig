@@ -188,13 +188,13 @@ test "provider declares only read capabilities" {
 test "a plain directory is reported as not a working copy" {
     const io = run.io();
     const environ: std.process.Environ = .{ .block = .global };
-    const path_value = environ.getAlloc(std.testing.allocator, "PATH") catch return error.SkipZigTest;
+    const path_value = environ.getAlloc(std.testing.allocator, "PATH") catch return cli.integrationUnavailable(.svn);
     defer std.testing.allocator.free(path_value);
 
     var runner = run.Runner.init(std.testing.allocator);
     var scratch: [identity.max_path_bytes + 64]u8 = undefined;
-    const report = cli.detect(io, .svn, path_value, &scratch, &runner) orelse return error.SkipZigTest;
-    if (report.version == null) return error.SkipZigTest;
+    const report = cli.detect(io, .svn, path_value, &scratch, &runner) orelse return cli.integrationUnavailable(.svn);
+    if (report.version == null) return cli.integrationUnavailable(.svn);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -204,4 +204,24 @@ test "a plain directory is reported as not a working copy" {
     const workspace = try identity.Workspace.init(.svn, root, root);
     var svn = Svn.init(&runner, report.path, .{ .ctx = undefined, .lookup = fakeLookup });
     try std.testing.expectError(error.NotConnected, svn.summarize(&workspace));
+}
+
+test "reads a real local SVN working copy prepared by integration CI" {
+    const environ: std.process.Environ = .{ .block = .global };
+    const root = environ.getAlloc(std.testing.allocator, "PULSE_TEST_SVN_WC") catch return cli.integrationUnavailable(.svn);
+    defer std.testing.allocator.free(root);
+    const path_value = environ.getAlloc(std.testing.allocator, "PATH") catch return cli.integrationUnavailable(.svn);
+    defer std.testing.allocator.free(path_value);
+    var runner = run.Runner.init(std.testing.allocator);
+    defer runner.deinit();
+    var scratch: [identity.max_path_bytes + 64]u8 = undefined;
+    const report = cli.detect(run.io(), .svn, path_value, &scratch, &runner) orelse return cli.integrationUnavailable(.svn);
+    if (report.version == null) return cli.integrationUnavailable(.svn);
+    const workspace = try identity.Workspace.init(.svn, root, root);
+    var svn = Svn.init(&runner, report.path, .{ .ctx = undefined, .lookup = fakeLookup });
+    const snapshot = try svn.summarize(&workspace);
+    try std.testing.expectEqual(contract.Availability.ready, snapshot.availability);
+    try std.testing.expect(snapshot.revision != null);
+    try std.testing.expectEqual(@as(u32, 1), snapshot.changes.modified);
+    try std.testing.expectEqual(@as(u32, 1), snapshot.changes.untracked);
 }

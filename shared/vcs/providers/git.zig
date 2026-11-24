@@ -1,8 +1,7 @@
 //! Read-only Git contract.
 //!
-//! Only queries run here. `git status` can refresh the index, which is
-//! metadata the user's tooling already writes; nothing in this file changes
-//! the working tree, commits, or references. Write operations will be added
+//! Queries suppress optional index writes. This is not a sandbox for Git
+//! configuration, filters, or other external helpers. Write operations are added
 //! separately, behind the risk model and an explicit plan.
 
 const std = @import("std");
@@ -31,6 +30,7 @@ const ParseError = error{ Malformed, TooManyFields };
 /// a rename record carries its original path as the next record, which this
 /// parser skips because only counts and branch data are needed.
 pub fn parseStatus(text: []const u8) ParseError!Status {
+    if (text.len != 0 and text[text.len - 1] != 0) return error.Malformed;
     var status = Status{};
     var records = std.mem.splitScalar(u8, text, 0);
     while (records.next()) |record| {
@@ -38,8 +38,12 @@ pub fn parseStatus(text: []const u8) ParseError!Status {
         switch (record[0]) {
             '#' => parseHeader(record, &status) catch continue,
             '1', '2' => {
-                const xy = firstField(record, 1) orelse continue;
-                if (xy.len < 2) continue;
+                const xy = firstField(record, 1) orelse return error.Malformed;
+                if (xy.len != 2) return error.Malformed;
+                if (record[0] == '2') {
+                    const original = records.next() orelse return error.Malformed;
+                    if (original.len == 0) return error.Malformed;
+                }
                 countWorktree(xy, &status.changes);
             },
             'u' => status.changes.conflicted += 1,
@@ -126,9 +130,10 @@ pub const Git = struct {
         if (workspace.kind != .git) return error.Unsupported;
         var outcome = self.runner.run(.{
             .argv = &.{
-                self.executable.slice(), "-C",                       workspace.root.slice(),
-                "status",                "--porcelain=v2",           "--branch",
-                "-z",                    "--untracked-files=normal", "--ignore-submodules=none",
+                self.executable.slice(), "--no-optional-locks", "-C",
+                workspace.root.slice(),  "status",              "--porcelain=v2",
+                "--branch",              "-z",                  "--untracked-files=normal",
+                "--ignore-submodules=none",
             },
             .timeout_ns = 10 * std.time.ns_per_s,
             .stdout_limit = parse_limit,
@@ -250,13 +255,13 @@ fn fakeLookup(_: *anyopaque, _: []const u8) detect.EntryType {
 test "reads a real repository end to end when git is installed" {
     const io = run.io();
     const environ: std.process.Environ = .{ .block = .global };
-    const path_value = environ.getAlloc(std.testing.allocator, "PATH") catch return error.SkipZigTest;
+    const path_value = environ.getAlloc(std.testing.allocator, "PATH") catch return cli.integrationUnavailable(.git);
     defer std.testing.allocator.free(path_value);
 
     var runner = run.Runner.init(std.testing.allocator);
     var scratch: [identity.max_path_bytes + 64]u8 = undefined;
-    const report = cli.detect(io, .git, path_value, &scratch, &runner) orelse return error.SkipZigTest;
-    if (report.version == null) return error.SkipZigTest;
+    const report = cli.detect(io, .git, path_value, &scratch, &runner) orelse return cli.integrationUnavailable(.git);
+    if (report.version == null) return cli.integrationUnavailable(.git);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -298,4 +303,18 @@ fn expectSuccess(runner: *run.Runner, argv: []const []const u8) !void {
         std.debug.print("command failed: {s}\n{s}\n", .{ argv[0], outcome.stderr });
         return error.TestCommandFailed;
     }
+}
+
+test "rename source is a filename, not a status record" {
+    const prefix = "2 R. N... 100644 100644 100644 a b R100 new.txt\x00";
+    const cases = [_][]const u8{ "? old.txt\x00", "u old.txt\x00", "1 M. old.txt\x00", "2 R. old.txt\x00" };
+    for (cases) |original| {
+        var buffer: [128]u8 = undefined;
+        const fixture = try std.fmt.bufPrint(&buffer, "{s}{s}", .{ prefix, original });
+        const result = try parseStatus(fixture);
+        try std.testing.expectEqual(@as(u32, 1), result.changes.staged);
+        try std.testing.expectEqual(@as(u32, 0), result.changes.untracked + result.changes.conflicted + result.changes.modified);
+    }
+    try std.testing.expectError(error.Malformed, parseStatus(prefix));
+    try std.testing.expectError(error.Malformed, parseStatus("? truncated"));
 }
