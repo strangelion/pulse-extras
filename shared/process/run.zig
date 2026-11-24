@@ -108,6 +108,7 @@ pub const Runner = struct {
         live_outcomes: usize,
         completed: usize,
         failed: usize,
+        containment_fault: bool,
     };
 
     pub const Diagnostics = struct {
@@ -143,6 +144,7 @@ pub const Runner = struct {
     max_timeout_ns: u64 = default_max_timeout_ns,
     completed: usize = 0,
     failed: usize = 0,
+    containment_fault: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Runner {
         return initWithBudget(allocator, io, default_output_budget);
@@ -200,14 +202,16 @@ pub const Runner = struct {
                 .live_outcomes = self.live_outcomes,
                 .completed = self.completed,
                 .failed = self.failed,
+                .containment_fault = self.containment_fault,
             },
         };
     }
 
     /// All results must be freed before the runner or its I/O owner goes away.
     /// This does not stop external workers: the caller owns their lifecycle.
-    pub fn checkDrained(self: *Runner) error{ Busy, OutstandingOutputs, OutstandingAllocations }!void {
+    pub fn checkDrained(self: *Runner) error{ Busy, ContainmentFailed, OutstandingOutputs, OutstandingAllocations }!void {
         if (self.pending != null) return error.Busy;
+        if (self.containment_fault) return error.ContainmentFailed;
         if (self.live_outcomes != 0 or self.output_budget.used != 0) return error.OutstandingOutputs;
         try self.memory.checkDrained();
     }
@@ -220,7 +224,7 @@ pub const Runner = struct {
 
     /// Call after any externally owned workers have joined. Refuse to declare
     /// shutdown complete while results or allocator reservations remain.
-    pub fn finishStop(self: *Runner) error{ NotStopping, Busy, OutstandingOutputs, OutstandingAllocations }!void {
+    pub fn finishStop(self: *Runner) error{ NotStopping, Busy, ContainmentFailed, OutstandingOutputs, OutstandingAllocations }!void {
         if (self.state == .active) return error.NotStopping;
         try self.checkDrained();
         self.state = .stopped;
@@ -236,6 +240,7 @@ pub const Runner = struct {
     /// Validate before copying inputs or starting a child. Both entry paths
     /// enforce identical limits. No unbounded argv/environment traversal.
     fn validateRequest(self: *Runner, request: Request) Error!usize {
+        if (self.containment_fault) return error.ContainmentFailed;
         if (request.argv.len == 0 or request.argv.len > max_async_arguments or request.argv[0].len == 0 or request.timeout_ns == 0 or request.timeout_ns > self.max_timeout_ns) return error.InvalidRequest;
         if (self.policy != .compatibility) {
             if (!isLocalAbsolute(request.argv[0])) return error.InvalidRequest;
@@ -296,8 +301,12 @@ pub const Runner = struct {
             std.process.run(self.memory.allocator(), self.io, options)) catch |err| switch (err) {
             error.FileNotFound, error.InvalidExe, error.NameTooLong => return error.SpawnFailed,
             error.AccessDenied => return error.PermissionDenied,
-            error.StreamTooLong => return error.OutputTooLong,
+            error.StreamTooLong => {
+                self.log.add(.{ .kind = .output_limit, .count = 1 });
+                return error.OutputTooLong;
+            },
             error.ContainmentFailed => {
+                self.containment_fault = true;
                 self.log.add(.{ .kind = .cleanup_failure, .count = 1 });
                 return error.ContainmentFailed;
             },
@@ -328,7 +337,7 @@ pub const Runner = struct {
         self.output_budget.release(reservation - retained);
         self.live_outcomes += 1;
         self.completed +|= 1;
-        self.log.add(.{ .kind = .admitted, .count = retained });
+        self.log.add(.{ .kind = .admitted, .count = @intCast(retained) });
         const status: Status = switch (result.term) {
             .exited => .exited,
             else => .signalled,
@@ -811,4 +820,14 @@ test "approved policy rejects unapproved path and environment before launch" {
     try map.put("LD_PRELOAD", "not-allowed");
     try testing.expectError(error.UnapprovedEnvironment, runner.run(.{ .argv = &.{exe}, .cwd = cwd, .environ_map = &map, .timeout_ns = 1 }));
     try runner.checkDrained();
+}
+
+test "containment fault cannot be mistaken for a clean drain or retried" {
+    var runner = Runner.init(testing.allocator, testing.io);
+    runner.containment_fault = true;
+    try testing.expectError(error.ContainmentFailed, runner.run(.{ .argv = &.{"never-start"} }));
+    try testing.expectError(error.ContainmentFailed, runner.checkDrained());
+    runner.requestStop();
+    try testing.expectError(error.ContainmentFailed, runner.finishStop());
+    try testing.expect(runner.diagnostics().output.?.containment_fault);
 }

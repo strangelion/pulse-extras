@@ -139,7 +139,7 @@ fn collect(allocator: std.mem.Allocator, io: std.Io, child: *std.process.Child, 
     defer reader.deinit();
     while (true) {
         const left = try remaining(start, timeout_ms);
-        const timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromNanoseconds(left * std.time.ns_per_ms), .clock = .boot } };
+        const timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromNanoseconds(@as(i96, left) * std.time.ns_per_ms), .clock = .boot } };
         reader.fill(64, timeout) catch |err| switch (err) {
             error.EndOfStream => break,
             else => return err,
@@ -152,11 +152,17 @@ fn collect(allocator: std.mem.Allocator, io: std.Io, child: *std.process.Child, 
         }
     }
     try reader.checkAnyError();
+    if (options.stdout_limit.toInt()) |limit| {
+        if (reader.reader(0).buffered().len > limit) return error.StreamTooLong;
+    }
+    if (options.stderr_limit.toInt()) |limit| {
+        if (reader.reader(1).buffered().len > limit) return error.StreamTooLong;
+    }
     // EOF does not imply the process exited. Apply the same deadline to
     // descendants even if they closed or redirected their standard streams.
     while (try job.active() != 0) {
         const left = try remaining(start, timeout_ms);
-        try std.Io.sleep(io, .fromMilliseconds(@min(left, 10)), .boot);
+        try std.Io.sleep(io, .fromMilliseconds(@intCast(@min(left, 10))), .boot);
     }
     const term = try child.wait(io);
     const stdout = try reader.toOwnedSlice(0);
