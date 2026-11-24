@@ -19,7 +19,8 @@ const Modules = struct {
     vcs_cli: *std.Build.Module,
     vcs_snapshot: *std.Build.Module,
     vcs_git: *std.Build.Module,
-    all: [18]std.Build.Module.Import = undefined,
+    vcs_jj: *std.Build.Module,
+    all: [19]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) Modules {
         const raw = b.createModule(.{
@@ -157,7 +158,20 @@ const Modules = struct {
                 .{ .name = "pulse_process", .module = process_mod },
             },
         });
-        var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod, .vcs_capabilities = vcs_capabilities, .vcs_identity = vcs_identity, .vcs_risk = vcs_risk, .vcs_detect = vcs_detect, .vcs_provider = vcs_provider, .vcs_cli = vcs_cli, .vcs_snapshot = vcs_snapshot, .vcs_git = vcs_git };
+        const vcs_jj = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/providers/jj.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "vcs_capabilities", .module = vcs_capabilities },
+                .{ .name = "vcs_cli", .module = vcs_cli },
+                .{ .name = "vcs_detect", .module = vcs_detect },
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_provider", .module = vcs_provider },
+                .{ .name = "pulse_process", .module = process_mod },
+            },
+        });
+        var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod, .vcs_capabilities = vcs_capabilities, .vcs_identity = vcs_identity, .vcs_risk = vcs_risk, .vcs_detect = vcs_detect, .vcs_provider = vcs_provider, .vcs_cli = vcs_cli, .vcs_snapshot = vcs_snapshot, .vcs_git = vcs_git, .vcs_jj = vcs_jj };
         modules.all = .{
             .{ .name = "pulse_raw", .module = raw },
             .{ .name = "pulse_abi", .module = abi },
@@ -177,6 +191,7 @@ const Modules = struct {
             .{ .name = "vcs_cli", .module = vcs_cli },
             .{ .name = "vcs_snapshot", .module = vcs_snapshot },
             .{ .name = "vcs_git", .module = vcs_git },
+            .{ .name = "vcs_jj", .module = vcs_jj },
         };
         return modules;
     }
@@ -242,6 +257,7 @@ pub fn build(b: *std.Build) void {
         "shared/vcs/cli.zig",
         "shared/vcs/snapshot.zig",
         "shared/vcs/providers/git.zig",
+        "shared/vcs/providers/jj.zig",
     };
     const test_step = b.step("test", "Run native ABI, wrapper and lifecycle regression tests");
     for (test_sources) |source| {
