@@ -10,13 +10,17 @@ permissions:
 
 jobs:
   checks:
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - run: python scripts/install_zig.py
