@@ -16,8 +16,10 @@ The include directory defaults to `.sdk-cache/include` (what CI populates with
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -79,6 +81,33 @@ def verify_abi_header(include: pathlib.Path, pin: dict) -> None:
         )
 
 
+def normalize_source_locations(text: str) -> str:
+    """Normalize only standalone translate-c source-location comments.
+
+    Preserve declarations, diagnostics, line/column numbers and all other
+    text. SDK and compiler header paths vary between installations.
+    """
+    pattern = re.compile(r"(?m)^(?P<indent>[ \t]*)// (?P<path>[^\r\n]+):(?P<line>[0-9]+):(?P<column>[0-9]+)$")
+
+    def replace(match: re.Match[str]) -> str:
+        path = match["path"].replace("\\", "/")
+        if not (path.startswith("/") or re.match(r"^[A-Za-z]:/", path)):
+            return match[0]
+        # Only known headers in the pinned SDK or compiler stdint header.
+        for name in HEADERS:
+            if path.endswith(f"/pulse/{name}.h"):
+                path = f"pulse/{name}.h"
+                break
+        else:
+            if path.endswith("/lib/include/stdint.h"):
+                path = "zig/lib/include/stdint.h"
+            else:
+                return match[0]
+        return f'{match["indent"]}// {path}:{match["line"]}:{match["column"]}'
+
+    return pattern.sub(replace, text)
+
+
 def build_bindings(zig: str, include: pathlib.Path) -> str:
     with tempfile.TemporaryDirectory(prefix="pulse-bindings-") as directory:
         umbrella = pathlib.Path(directory) / "pulse_all.h"
@@ -136,15 +165,24 @@ def main() -> int:
     include = resolve_include(args.include)
     pin = upstream_pin()
     verify_headers(include, pin)
-    content = formatted(args.zig, banner(include, pin) + build_bindings(args.zig, include))
+    content = formatted(args.zig, banner(include, pin) + normalize_source_locations(build_bindings(args.zig, include)))
     output = args.out if args.out.is_absolute() else ROOT / args.out
 
     if args.check:
         if not output.is_file():
             print(f"missing {output}", file=sys.stderr)
             return 1
-        if output.read_text(encoding="utf-8") != content:
+        committed = output.read_text(encoding="utf-8")
+        if committed != content:
             print(f"{output} is stale; run python scripts/generate_bindings.py", file=sys.stderr)
+            diff = list(difflib.unified_diff(
+                committed.splitlines(), content.splitlines(),
+                fromfile="committed", tofile="regenerated", lineterm="",
+            ))
+            for line in diff[:200]:
+                print(line, file=sys.stderr)
+            if len(diff) > 200:
+                print(f"... {len(diff) - 200} additional diff lines", file=sys.stderr)
             return 1
         print(f"{output} is up to date")
         return 0

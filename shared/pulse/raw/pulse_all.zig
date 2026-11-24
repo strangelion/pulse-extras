@@ -1438,7 +1438,7 @@ pub const __int_least8_t = i8;
 pub const __uint_least8_t = u8;
 pub const __int8_t_defined = "";
 pub const __stdint_join3 = @compileError("unable to translate C expr: unexpected token '##'");
-// C:\Users\WangWenXuan\AppData\Local\Microsoft\WinGet\Packages\zig.zig_Microsoft.Winget.Source_8wekyb3d8bbwe\zig-x86_64-windows-0.17.1\lib\include\stdint.h:291:9
+// zig/lib/include/stdint.h:291:9
 pub const __intptr_t_defined = "";
 pub const _INTPTR_T = "";
 pub const _UINTPTR_T = "";
@@ -1523,15 +1523,15 @@ pub const INT_FAST8_MIN = __INT_LEAST8_MIN;
 pub const INT_FAST8_MAX = __INT_LEAST8_MAX;
 pub const UINT_FAST8_MAX = __UINT_LEAST8_MAX;
 pub const __INTN_MIN = @compileError("unable to translate macro: undefined identifier `INT`");
-// C:\Users\WangWenXuan\AppData\Local\Microsoft\WinGet\Packages\zig.zig_Microsoft.Winget.Source_8wekyb3d8bbwe\zig-x86_64-windows-0.17.1\lib\include\stdint.h:764:10
+// zig/lib/include/stdint.h:764:10
 pub const __INTN_MAX = @compileError("unable to translate macro: undefined identifier `INT`");
-// C:\Users\WangWenXuan\AppData\Local\Microsoft\WinGet\Packages\zig.zig_Microsoft.Winget.Source_8wekyb3d8bbwe\zig-x86_64-windows-0.17.1\lib\include\stdint.h:765:10
+// zig/lib/include/stdint.h:765:10
 pub const __UINTN_MAX = @compileError("unable to translate macro: undefined identifier `UINT`");
-// C:\Users\WangWenXuan\AppData\Local\Microsoft\WinGet\Packages\zig.zig_Microsoft.Winget.Source_8wekyb3d8bbwe\zig-x86_64-windows-0.17.1\lib\include\stdint.h:766:9
+// zig/lib/include/stdint.h:766:9
 pub const __INTN_C = @compileError("unable to translate macro: undefined identifier `INT`");
-// C:\Users\WangWenXuan\AppData\Local\Microsoft\WinGet\Packages\zig.zig_Microsoft.Winget.Source_8wekyb3d8bbwe\zig-x86_64-windows-0.17.1\lib\include\stdint.h:767:10
+// zig/lib/include/stdint.h:767:10
 pub const __UINTN_C = @compileError("unable to translate macro: undefined identifier `UINT`");
-// C:\Users\WangWenXuan\AppData\Local\Microsoft\WinGet\Packages\zig.zig_Microsoft.Winget.Source_8wekyb3d8bbwe\zig-x86_64-windows-0.17.1\lib\include\stdint.h:768:9
+// zig/lib/include/stdint.h:768:9
 pub const INTPTR_MIN = -__INTPTR_MAX__ - @as(c_int, 1);
 pub const INTPTR_MAX = __INTPTR_MAX__;
 pub const UINTPTR_MAX = __UINTPTR_MAX__;
@@ -1556,11 +1556,11 @@ pub inline fn UINTMAX_C(v: anytype) @TypeOf(__UINTMAX_C(v)) {
     return __UINTMAX_C(v);
 }
 pub const PULSE_CALL = @compileError("unable to translate C expr: unexpected token '__cdecl'");
-// C:\Users\WangWenXuan\Documents\GitHub\pulse-extras\.sdk-cache\include\pulse\abi.h:5:9
+// pulse/abi.h:5:9
 pub const PULSE_ABI_VERSION_1 = @as(c_uint, 1);
 pub const PULSE_SDK_PREVIEW = @as(c_uint, 3);
 pub const PULSE_PLUGIN_SDK_PREVIEW = @compileError("unable to translate macro: undefined identifier `dllexport`");
-// C:\Users\WangWenXuan\Documents\GitHub\pulse-extras\.sdk-cache\include\pulse\abi.h:62:9
+// pulse/abi.h:62:9
 pub const PULSE_NATIVE_CONTEXT_H = "";
 pub const PULSE_CONTEXT_INTERFACE_NAME = "pulse.context";
 pub const PULSE_CONTEXT_VERSION_1 = @as(c_uint, 1);
