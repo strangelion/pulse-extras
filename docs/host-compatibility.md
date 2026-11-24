@@ -227,6 +227,32 @@ Not claimed:
 
 ## Gaps (explicit)
 
-- Mechanical proof of the append-only claim (field-offset prefix check between
-  the two header sets): **NOT VERIFIED** yet; planned as a scripted check using
-  the Zig-bundled Clang AST dump.
+- Mechanical proof of the append-only claim for the headers the host does not
+  ship: `abi.h`, `dispatch.h`, `ui.h`, `ui_events.h`, `files.h` and
+  `resources.h` stay **NOT VERIFIED** (see below).
+
+## ABI prefix check (2026-11-24)
+
+`scripts/verify_abi_prefix.py` compares the pinned v1.0.60 headers with the
+headers the installed host publishes through `--extension-api --extension-check`
+(12 of 18; the rest fall back to the pinned copies). It translates both sets
+with `zig translate-c -target x86_64-windows-msvc` and rejects any change to a
+field name, field order, field offset, scalar size/alignment or function-pointer
+signature. Appended fields are accepted only because the host keeps a
+`*_SIZE_V1` macro for them and existing offsets are unchanged.
+
+```
+$ python scripts/verify_abi_prefix.py
+host headers: 12 shipped, 6 pinned fallback (abi.h, dispatch.h, ui.h, ui_events.h, files.h, resources.h)
+not verifiable (host did not ship that header): 25 structs
+prefix compatible: 56 public structs from 12 host headers
+```
+
+The only growth found is `PulseTaskProgress` (added `step`, `actions`, `note`,
+`detail`, `assurance`, `log`, `result`, `result_path`), guarded by
+`PULSE_TASK_PROGRESS_SIZE_V1` and embedded as the last field of
+`PulseTaskSnapshot`, so parent offsets remain stable.
+
+`abi.h` is not published by the host at all, so `PulseHostV1`/`PulsePluginV1`
+layout is covered by compile-time asserts and runtime validation, not by this
+check.

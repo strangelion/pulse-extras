@@ -15,8 +15,8 @@ explicit non-claims. Registry acceptance and shipping extensions are still open.
 
 | Extension | Scope | Status |
 | --- | --- | --- |
-| Hello Panel | Command + `pulse.context` panel, workspace and sidebar placement | Verified on Pulse 1.0.61 |
-| VCS | Git / Jujutsu advanced management | Planned |
+| Hello Panel | Command + `pulse.context` panel, workspace and sidebar placement | Verified on Pulse 1.0.61 (2026-11-24) |
+| VCS | Multi-VCS manager: Git / Jujutsu / Subversion first | Planned (design in [VCS architecture](docs/vcs-architecture.md)) |
 | Convert | File conversion | Planned |
 | Inspect | Binary and package inspection | Planned |
 | Data | Database and scientific data preview | Planned |
@@ -40,6 +40,7 @@ scripts/generate_bindings.py --check`), and exercises the Windows DLL through a 
 loader harness. Python 3 is used only by CI and SDK verification tools.
 
 - [Architecture](docs/architecture.md)
+- [VCS architecture and capability matrix](docs/vcs-architecture.md)
 - [Roadmap](docs/roadmap.md)
 - [SDK pin](sdk/upstream.toml)
 - [CI](https://github.com/strangelion/pulse-extras/actions)

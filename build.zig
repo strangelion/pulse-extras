@@ -11,7 +11,12 @@ const Modules = struct {
     diagnostics: *std.Build.Module,
     process: *std.Build.Module,
     text: *std.Build.Module,
-    all: [10]std.Build.Module.Import = undefined,
+    vcs_capabilities: *std.Build.Module,
+    vcs_identity: *std.Build.Module,
+    vcs_risk: *std.Build.Module,
+    vcs_detect: *std.Build.Module,
+    vcs_provider: *std.Build.Module,
+    all: [15]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) Modules {
         const raw = b.createModule(.{
@@ -90,7 +95,38 @@ const Modules = struct {
             .target = target,
             .optimize = optimize,
         });
-        var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod };
+        const vcs_capabilities = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/capabilities.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const vcs_identity = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/identity.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const vcs_risk = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/risk.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const vcs_detect = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/detect.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "vcs_identity", .module = vcs_identity }},
+        });
+        const vcs_provider = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/provider.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "vcs_capabilities", .module = vcs_capabilities },
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_detect", .module = vcs_detect },
+            },
+        });
+        var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod, .vcs_capabilities = vcs_capabilities, .vcs_identity = vcs_identity, .vcs_risk = vcs_risk, .vcs_detect = vcs_detect, .vcs_provider = vcs_provider };
         modules.all = .{
             .{ .name = "pulse_raw", .module = raw },
             .{ .name = "pulse_abi", .module = abi },
@@ -102,6 +138,11 @@ const Modules = struct {
             .{ .name = "pulse_diagnostics", .module = diagnostics },
             .{ .name = "pulse_process", .module = process_mod },
             .{ .name = "pulse_text", .module = text_mod },
+            .{ .name = "vcs_capabilities", .module = vcs_capabilities },
+            .{ .name = "vcs_identity", .module = vcs_identity },
+            .{ .name = "vcs_risk", .module = vcs_risk },
+            .{ .name = "vcs_detect", .module = vcs_detect },
+            .{ .name = "vcs_provider", .module = vcs_provider },
         };
         return modules;
     }
@@ -159,6 +200,11 @@ pub fn build(b: *std.Build) void {
         "shared/pulse/context.zig",
         "shared/pulse/ui_model.zig",
         "shared/pulse/ui_mount.zig",
+        "shared/vcs/capabilities.zig",
+        "shared/vcs/identity.zig",
+        "shared/vcs/risk.zig",
+        "shared/vcs/detect.zig",
+        "shared/vcs/provider.zig",
     };
     const test_step = b.step("test", "Run native ABI, wrapper and lifecycle regression tests");
     for (test_sources) |source| {

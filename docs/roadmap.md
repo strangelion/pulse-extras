@@ -22,7 +22,7 @@
 
 | ID | First deliverable | Explicit exclusions |
 | --- | --- | --- |
-| strangelion.vcs | Read-only Git/JJ summary, history and JJ operation log | No duplicate host Git badges or automatic snapshots/writes |
+| strangelion.vcs | Multi-VCS manager; read-only Git, Jujutsu and Subversion first (see [vcs-architecture.md](vcs-architecture.md)) | No duplicate host Git badges, no automatic snapshots or writes |
 | strangelion.convert | PNG/JPEG batch conversion to new files via staging | No in-place replacement |
 | strangelion.inspect | Read-only PE metadata and signature inspection | No execution or malware verdict |
 | strangelion.data | SQLite schema and bounded NPY/NPZ metadata | No arbitrary SQL writes |
@@ -31,6 +31,21 @@
 
 Recheck upstream source, roadmap, SDK and registry for overlap before implementation. Pulse already has Git status/pull/push, SVN status, native lock detection, common previews and archive integration.
 
-## P2 — Release
+## P2 — Multi-VCS foundation
+
+- [x] Design provider contract, capability model, identity model, detection, risk
+      tiers and process execution (`docs/vcs-architecture.md`).
+- [ ] Implement `shared/vcs`: capabilities, identities, risk policy, detection.
+- [ ] Read-only Git provider (status, references, history, diff) with contract
+      and temp-repository tests.
+- [ ] Read-only Jujutsu provider; prove query commands create no new operation.
+- [ ] Read-only Subversion provider; validate the centralised model.
+- [ ] Mercurial and Perforce after the first three pass the shared contract.
+- [ ] Provider-aware panel using `pulse.context` + `pulse.ui.model`.
+
+Writes stay disabled until each operation has a plan, confirmation and
+regression tests. Centralised and distributed VCS keep their own vocabulary.
+
+## P3 — Release
 
 Add fixture-based regressions, bounded workers as needed, actual host acceptance, license and security review, signing and registry submission. No production release before relevant gates pass.
