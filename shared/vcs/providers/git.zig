@@ -275,9 +275,7 @@ test "reads a real repository end to end when git is installed" {
         "-m",                              "init",
     });
 
-    var adapted_root: [identity.max_path_bytes]u8 = undefined;
-    const absolute = try std.fmt.bufPrint(&adapted_root, ".zig-cache" ++ std.fs.path.sep_str ++ "tmp" ++ std.fs.path.sep_str ++ "{s}", .{tmp.sub_path});
-    const workspace = try identity.Workspace.init(.git, absolute, absolute);
+    const workspace = try identity.Workspace.init(.git, root, root);
 
     var git = Git.init(&runner, report.path, .{ .ctx = undefined, .lookup = fakeLookup });
     const clean = try git.summarize(&workspace);

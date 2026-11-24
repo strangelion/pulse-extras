@@ -55,8 +55,8 @@ pub fn Cache(comptime Value: type) type {
             return .{ .fresh = &entry.value };
         }
 
-        pub fn put(self: *Self, root: []const u8, value: Value) error{OutOfMemory}!u64 {
-            const key = identity.Path.init(root) catch return error.OutOfMemory;
+        pub fn put(self: *Self, root: []const u8, value: Value) error{InvalidKey}!u64 {
+            const key = identity.Path.init(root) catch return error.InvalidKey;
             const now_ms = self.now();
             const generation = self.generation;
 
@@ -65,7 +65,7 @@ pub fn Cache(comptime Value: type) type {
                 return generation;
             }
             if (self.len == max_entries) {
-                const victim = self.oldest() orelse return error.OutOfMemory;
+                const victim = self.oldest() orelse return error.InvalidKey;
                 victim.* = .{ .key = key, .value = value, .stored_at_ms = now_ms, .generation = generation };
                 return generation;
             }
