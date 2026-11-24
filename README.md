@@ -1,36 +1,39 @@
 # Pulse Extras
 
-Modular native extensions for [Pulse File Manager](https://github.com/jimmgreen/pulse).
+Independent modular native extensions for [Pulse File Manager](https://github.com/jimmgreen/pulse).
 
-面向 Pulse 文件管理器的独立社区增强包集合。以 Rust 为主要语言，重视内存安全、可重复构建、回归测试及宿主稳定性。
+面向 Pulse 文件管理器的独立社区增强包集合，以 Zig 为主要语言，优先考虑轻量构建、C ABI 兼容、回归测试与宿主安全。
 
-## Development status / 开发状态
+## Status
 
-Experimental bootstrap. The Rust ABI probe is not a production extension. Windows host loading, packaging, signing and UI acceptance remain unverified.
+Experimental bootstrap. The ABI probe is a no-op DLL, not a production extension. Real Pulse installation, packaging and registry acceptance are not yet verified.
 
 | Extension | Scope | Status |
 | --- | --- | --- |
 | VCS | Git / Jujutsu advanced management | Planned |
-| Convert | File format conversion | Planned |
+| Convert | File conversion | Planned |
 | Inspect | Binary and package inspection | Planned |
 | Data | Database and scientific data preview | Planned |
 | DevKit | Project and toolchain management | Planned |
 | Compare | Recursive directory comparison | Planned |
 
-## Development
+## Build and test
 
-Rust 1.85.1, initially targeting `x86_64-pc-windows-msvc`. No third-party Rust dependencies in the ABI probe.
+Install [Zig 0.17.1](https://ziglang.org/download/). The initial probe has no external Zig package dependencies.
 
 ```powershell
-cargo test --workspace --locked
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo build -p pulse-abi-probe --release --target x86_64-pc-windows-msvc --locked
+zig version
+zig fmt --check build.zig shared extensions
+zig build test --summary all
+zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
 ```
+
+The DLL is installed under zig-out/. CI also checks the pinned upstream C header and exercises the Windows DLL through a C loader harness. Python 3 is used only by CI and SDK verification tools.
 
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)
-- [Upstream SDK pin](sdk/upstream.toml)
+- [SDK pin](sdk/upstream.toml)
+- [CI](https://github.com/strangelion/pulse-extras/actions)
 - [Official extension registry](https://github.com/jimmgreen/pulse-extensions)
 
-This repository is independent of the official Pulse project. Apache-2.0; third-party dependencies retain their respective licenses.
+Independent community project, not affiliated with the official Pulse project. Apache-2.0.

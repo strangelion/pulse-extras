@@ -1,9 +1,13 @@
-# Rust and local build artifacts
-/target/
+/.zig-cache/
+/zig-out/
+/zig-pkg/
+/.sdk-cache/
 /dist/
 /build/
 /build-*/
-/cmake-build-*/
+/profiles/
+/.local/
+__pycache__/
 *.dll
 *.exe
 *.pdb
@@ -12,17 +16,12 @@
 *.o
 *.so
 *.dylib
-*.tmp
 *.log
+*.tmp
 *.bak
-*.swp
-.cache/
-# Local credentials, signing keys and machine-specific profiles
 .env
 .env.*
 *.private.blob
 *.pem
 *.pfx
 /signing/
-/profiles/
-/.local/

@@ -1,0 +1,39 @@
+name: Zig regression
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python scripts/install_zig.py
+      - run: zig version
+      - run: zig fmt --check build.zig shared extensions
+      - run: zig build test --summary all
+      - run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
+      - name: Fetch pinned C ABI
+        if: runner.os == 'Windows'
+        run: python scripts/fetch_sdk.py
+      - name: Verify actual DLL against C ABI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          zig cc -std=c11 -target x86_64-windows-gnu -I.sdk-cache/include tests/abi/loader.c -o zig-out/abi-loader.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dll = @(Get-ChildItem zig-out -Recurse -Filter pulse_abi_probe.dll)
+          if ($dll.Count -ne 1) { throw "Expected one ABI probe DLL" }
+          & ./zig-out/abi-loader.exe $dll[0].FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
