@@ -192,6 +192,7 @@ test "reject error envelopes malformed and oversized frames" {
     try testing.expectError(error.InvalidFrame, decode(testing.allocator, "{}\n{}\n", "a", .hello));
     try testing.expectError(error.InvalidResponse, decode(testing.allocator, "not-json\n", "a", .hello));
     try testing.expectError(error.InvalidResponse, decode(testing.allocator, "{\"id\":\"a\",\"ok\":true}\n", "a", .hello));
-    const too_large = [_]u8{'x'} ** (max_message_bytes + 1);
+    var too_large: [max_message_bytes + 1]u8 = undefined;
+    @memset(&too_large, 'x');
     try testing.expectError(error.InvalidFrame, decode(testing.allocator, &too_large, "a", .hello));
 }
