@@ -21,6 +21,7 @@ pub const Error = error{
     Permission,
     Io,
     OutOfMemory,
+    ResourceLimit,
 };
 
 /// Why a value is missing. `empty` is a real answer; the others are not.

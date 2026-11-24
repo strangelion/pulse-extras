@@ -249,3 +249,5 @@ Baseline: [full CI run 45421511648](https://github.com/strangelion/pulse-extras/
 ## Reuse and scope control
 
 Follow [product scope](product-scope.md): use real Git/JJ/SVN CLIs and existing shared runner; study lazygit/jjui only for validated semantics and UX. Do not duplicate native Pulse Git status decorations or pull/push. No new source dependency or parser framework unless needed by a concrete tested feature and reviewed for license, size and maintenance.
+
+RT0 candidate: cache keys now use provider plus repository/workspace roots, with owner-thread publication and by-value results. Canonical shared-store identity remains open. Process output caps/reservations surface ResourceLimit, not a fabricated empty snapshot or allocator OOM. Known malformed Git fields and invalid UTF-8 are rejected; SVN scheduled adds/replacements are working-copy modifications, not Git staging. Full XML validation, per-field availability, JJ operation pinning, trusted absolute CLI resolution and actual background panel lifecycle remain open. See [Shared Runtime](shared-runtime.md).

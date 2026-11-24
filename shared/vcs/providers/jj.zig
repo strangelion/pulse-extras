@@ -142,11 +142,11 @@ fn mapRunError(err: run.Error) contract.Error {
     return switch (err) {
         error.SpawnFailed => error.CliMissing,
         error.TimedOut => error.Timeout,
-        error.OutputTooLong => error.Parse,
+        error.OutputTooLong => error.ResourceLimit,
         error.OutOfMemory => error.OutOfMemory,
         error.PermissionDenied => error.Permission,
         error.InvalidRequest, error.Io => error.Io,
-        error.OutputBudgetExceeded => error.OutOfMemory,
+        error.OutputBudgetExceeded => error.ResourceLimit,
     };
 }
 

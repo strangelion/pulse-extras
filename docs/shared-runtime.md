@@ -109,8 +109,9 @@ instead of loading an entire object. No automatic fallback to an untracked alloc
 
 Initial existing VCS limits (not a measured overall memory guarantee): process request
 defaults stdout 4 MiB, stderr 1 MiB, timeout 10 seconds; snapshot cache has 8 entries.
-Provider-specific overrides and other allocations must be audited. A zero timeout
-currently maps to no timeout; production interactive work must have a finite deadline.
+Provider-specific overrides and other allocations must be audited. The RT0 candidate
+rejects zero deadlines and caps outstanding output objects at eight per runner, including
+zero-byte reservations. Production interactive work must have a finite deadline.
 Choose actual aggregate budgets after measuring small and large workloads; do not
 promote arbitrary example thresholds to universal limits.
 

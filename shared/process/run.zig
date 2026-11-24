@@ -13,6 +13,7 @@ const std = @import("std");
 const Budget = @import("runtime_budget").Budget;
 
 pub const default_output_budget: usize = 16 * 1024 * 1024;
+pub const max_live_outcomes: usize = 8;
 
 pub const Request = struct {
     argv: []const []const u8,
@@ -45,6 +46,7 @@ pub const Outcome = struct {
         self.owner.allocator.free(self.stdout);
         self.owner.allocator.free(self.stderr);
         self.owner.output_budget.release(self.reservation);
+        self.owner.live_outcomes -= 1;
         self.* = undefined;
     }
 
@@ -72,6 +74,7 @@ pub const Runner = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     output_budget: Budget,
+    live_outcomes: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Runner {
         return initWithBudget(allocator, io, default_output_budget);
@@ -84,13 +87,14 @@ pub const Runner = struct {
     /// All results must be freed before the runner or its I/O owner goes away.
     /// This does not stop external workers: the caller owns their lifecycle.
     pub fn checkDrained(self: *const Runner) error{OutstandingOutputs}!void {
-        if (self.output_budget.used != 0) return error.OutstandingOutputs;
+        if (self.live_outcomes != 0 or self.output_budget.used != 0) return error.OutstandingOutputs;
     }
 
     /// Reserve both output caps until the owned outcome is released.
     /// This bounds logical output capacity, not total child/allocator memory.
     pub fn run(self: *Runner, request: Request) Error!Outcome {
         if (request.argv.len == 0 or request.argv[0].len == 0 or request.timeout_ns == 0) return error.InvalidRequest;
+        if (self.live_outcomes >= max_live_outcomes) return error.OutputBudgetExceeded;
         const reservation = std.math.add(usize, request.stdout_limit, request.stderr_limit) catch return error.OutputBudgetExceeded;
         self.output_budget.reserve(reservation) catch return error.OutputBudgetExceeded;
         errdefer self.output_budget.release(reservation);
@@ -113,6 +117,7 @@ pub const Runner = struct {
             else => return error.Io,
         };
 
+        self.live_outcomes += 1;
         const status: Status = switch (result.term) {
             .exited => .exited,
             else => .signalled,

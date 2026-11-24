@@ -31,16 +31,16 @@ const ParseError = error{ Malformed, TooManyFields };
 /// a rename record carries its original path as the next record, which this
 /// parser skips because only counts and branch data are needed.
 pub fn parseStatus(text: []const u8) ParseError!Status {
-    if (text.len != 0 and text[text.len - 1] != 0) return error.Malformed;
+    if (text.len > parse_limit or (text.len != 0 and text[text.len - 1] != 0)) return error.Malformed;
     var status = Status{};
     var records = std.mem.splitScalar(u8, text, 0);
     while (records.next()) |record| {
         if (record.len == 0) continue;
         switch (record[0]) {
-            '#' => parseHeader(record, &status) catch continue,
+            '#' => try parseHeader(record, &status),
             '1', '2' => {
                 const xy = firstField(record, 1) orelse return error.Malformed;
-                if (xy.len != 2) return error.Malformed;
+                if (xy.len != 2 or std.mem.indexOfScalar(u8, ".MADRCUT", xy[0]) == null or std.mem.indexOfScalar(u8, ".MADRCUT", xy[1]) == null) return error.Malformed;
                 if (record[0] == '2') {
                     const original = records.next() orelse return error.Malformed;
                     if (original.len == 0) return error.Malformed;
@@ -63,15 +63,21 @@ fn parseHeader(record: []const u8, status: *Status) ParseError!void {
     const value = body[split + 1 ..];
     if (std.mem.eql(u8, key, "branch.oid")) {
         if (std.mem.eql(u8, value, "(initial)")) return;
-        status.oid = identity.RevisionId.init(.git, value) catch null;
+        if (value.len != 40 and value.len != 64) return error.Malformed;
+        for (value) |byte| {
+            if (!std.ascii.isDigit(byte) and !(byte >= 'a' and byte <= 'f') and !(byte >= 'A' and byte <= 'F')) return error.Malformed;
+        }
+        status.oid = identity.RevisionId.init(.git, value) catch return error.Malformed;
     } else if (std.mem.eql(u8, key, "branch.head")) {
         if (std.mem.eql(u8, value, "(detached)")) {
             status.detached = true;
             return;
         }
-        status.branch = contract.Text.init(value) catch .{};
+        if (value.len == 0) return error.Malformed;
+        status.branch = contract.Text.init(value) catch return error.Malformed;
     } else if (std.mem.eql(u8, key, "branch.upstream")) {
-        status.upstream = contract.Text.init(value) catch .{};
+        if (value.len == 0) return error.Malformed;
+        status.upstream = contract.Text.init(value) catch return error.Malformed;
     } else if (std.mem.eql(u8, key, "branch.ab")) {
         parseAheadBehind(value, &status.changes);
     }
@@ -151,6 +157,7 @@ pub const Git = struct {
         if (!outcome.succeeded()) return mapFailure(outcome.stderr);
 
         const status = parseStatus(outcome.stdout) catch return error.Parse;
+        if (!status.detached and status.branch.slice().len == 0) return error.Parse;
         var snapshot = contract.Snapshot{
             .availability = .ready,
             .workspace = workspace.*,
@@ -191,11 +198,11 @@ fn mapRunError(err: run.Error) contract.Error {
     return switch (err) {
         error.SpawnFailed => error.CliMissing,
         error.TimedOut => error.Timeout,
-        error.OutputTooLong => error.Parse,
+        error.OutputTooLong => error.ResourceLimit,
         error.OutOfMemory => error.OutOfMemory,
         error.PermissionDenied => error.Permission,
         error.InvalidRequest, error.Io => error.Io,
-        error.OutputBudgetExceeded => error.OutOfMemory,
+        error.OutputBudgetExceeded => error.ResourceLimit,
     };
 }
 
@@ -326,4 +333,11 @@ test "rename source is a filename, not a status record" {
     }
     try std.testing.expectError(error.Malformed, parseStatus(prefix));
     try std.testing.expectError(error.Malformed, parseStatus("? truncated"));
+}
+
+test "malformed known git fields are not silently accepted" {
+    try std.testing.expectError(error.Malformed, parseStatus("# branch.oid not-an-oid\x00"));
+    try std.testing.expectError(error.Malformed, parseStatus("# branch.head \x00"));
+    try std.testing.expectError(error.Malformed, parseStatus("# branch.head bad\xff\x00"));
+    try std.testing.expectError(error.Malformed, parseStatus("1 Z. ignored\x00"));
 }

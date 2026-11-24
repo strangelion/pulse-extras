@@ -185,7 +185,7 @@ test "locate finds an executable in a PATH-like value" {
         var fixture_buffer: [4096]u8 = undefined;
         const fixture = try std.fmt.bufPrint(&fixture_buffer, "{s}" ++ std.fs.path.sep_str ++ "{s}", .{ directory, Tool.git.exeName() });
         var runner = run.Runner.init(std.testing.allocator, std.testing.io);
-            var outcome = try runner.run(.{ .argv = &.{ "chmod", "700", fixture } });
+        var outcome = try runner.run(.{ .argv = &.{ "chmod", "700", fixture } });
         defer outcome.deinit();
         try std.testing.expect(outcome.succeeded());
     }
