@@ -310,7 +310,14 @@ test "reads a real repository end to end when git is installed" {
     try edited.writeStreamingAll(io, "changed\n");
     edited.close(io);
 
-    const dirty = try git.summarize(&workspace);
+    var session = @import("vcs_session").Session.init(std.testing.io, 1000, testSessionClock);
+    defer session.shutdown();
+    _ = try session.request(git.provider(), &workspace);
+    try std.testing.expect(try session.startNext());
+    const publication = try session.awaitActive();
+    if (publication == .failed) return publication.failed;
+    try std.testing.expect(publication == .published);
+    const dirty = session.lookup(&workspace).fresh;
     try std.testing.expectEqual(@as(u32, 1), dirty.changes.modified);
 }
 
@@ -342,4 +349,8 @@ test "malformed known git fields are not silently accepted" {
     try std.testing.expectError(error.Malformed, parseStatus("# branch.head \x00"));
     try std.testing.expectError(error.Malformed, parseStatus("# branch.head bad\xff\x00"));
     try std.testing.expectError(error.Malformed, parseStatus("1 Z. ignored\x00"));
+}
+
+fn testSessionClock() i64 {
+    return 1000;
 }

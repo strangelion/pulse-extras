@@ -221,9 +221,20 @@ test "reads a real local SVN working copy prepared by integration CI" {
     if (report.version == null) return cli.integrationUnavailable(.svn);
     const workspace = try identity.Workspace.init(.svn, root, root);
     var svn = Svn.init(&runner, report.path, .{ .ctx = undefined, .lookup = fakeLookup });
-    const snapshot = try svn.summarize(&workspace);
+    var session = @import("vcs_session").Session.init(std.testing.io, 1000, testSessionClock);
+    defer session.shutdown();
+    _ = try session.request(svn.provider(), &workspace);
+    try std.testing.expect(try session.startNext());
+    const publication = try session.awaitActive();
+    if (publication == .failed) return publication.failed;
+    try std.testing.expect(publication == .published);
+    const snapshot = session.lookup(&workspace).fresh;
     try std.testing.expectEqual(contract.Availability.ready, snapshot.availability);
     try std.testing.expect(snapshot.revision != null);
     try std.testing.expectEqual(@as(u32, 1), snapshot.changes.modified);
     try std.testing.expectEqual(@as(u32, 1), snapshot.changes.untracked);
+}
+
+fn testSessionClock() i64 {
+    return 1000;
 }

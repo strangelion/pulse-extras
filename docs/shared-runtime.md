@@ -355,3 +355,11 @@ production VCS adoption requires actual trusted executable resolution and
 controlled environment/cwd, not automatic promotion of compatibility mode.
 Process tree containment is still not implemented. Do not claim that Future
 cancel or the output quota proves descendant cleanup.
+
+### Bounded latest-only task slot and VCS consumer (RT0 candidate)
+
+`shared/runtime/latest_task.zig` provides one running std.Io future plus one replaceable queued value. Submission replaces only the queued request; no private pool, unbounded queue, periodic timer, or inline fallback on ConcurrencyUnavailable. The caller drives start/join/cancel, owns the I/O, and keeps borrowed contexts alive until removal or join. Values must be copyable and contain no independently owned allocations/handles. Stop drops queued work; finishStop rejects active work; shutdown joins. This is deliberately latest-only, not a general conversion/write job queue. Do not drop non-idempotent operations.
+
+`shared/vcs/session.zig` consumes the slot for whole-provider read-only summaries, not just individual commands. A new request advances cache generation and marks that key's prior result stale. Outdated, cancelled, invalidated and stopping results never publish; current errors stay typed rather than becoming clean snapshots. Verify returned workspace identity before publication. Provider and Runner lifetimes are caller-owned and exclusively reserved until work drains. Do not call Runner diagnostics concurrently while it is used by an external provider worker. Existing real Git/JJ/SVN integration fixtures now exercise session execution and preserve their original assertions. Two slot tests and three session tests cover 1,000-request coalescing, stop, invalidation, failure, cancellation race and generation behavior.
+
+This is host-independent code. Real Pulse UI completion delivery, actual plugin lifecycle, resource plateau and mixed-plugin acceptance are explicitly deferred, not waived. Windows process-tree ownership and descendant/pipe containment remain implementation gates before exposing execution of untrusted repositories or commands in the host. Keep compatibility mode separate from trusted execution policy. No new dependency or workflow.

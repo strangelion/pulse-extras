@@ -21,7 +21,7 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
-    all: [23]std.Build.Module.Import = undefined,
+    all: [25]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
@@ -106,6 +106,11 @@ const Modules = struct {
             .optimize = optimize,
             .imports = &.{.{ .name = "runtime_budget", .module = runtime_budget }},
         });
+        const runtime_latest_task = b.createModule(.{
+            .root_source_file = b.path("shared/runtime/latest_task.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
         const process_mod = b.createModule(.{
             .root_source_file = b.path("shared/process/run.zig"),
             .target = target,
@@ -162,6 +167,19 @@ const Modules = struct {
             .optimize = optimize,
             .imports = &.{.{ .name = "vcs_identity", .module = vcs_identity }},
         });
+        const vcs_session = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/session.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "runtime_latest_task", .module = runtime_latest_task },
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_provider", .module = vcs_provider },
+                .{ .name = "vcs_snapshot", .module = vcs_snapshot },
+                .{ .name = "vcs_capabilities", .module = vcs_capabilities },
+                .{ .name = "vcs_detect", .module = vcs_detect },
+            },
+        });
         const vcs_git = b.createModule(.{
             .root_source_file = b.path("shared/vcs/providers/git.zig"),
             .target = target,
@@ -172,6 +190,7 @@ const Modules = struct {
                 .{ .name = "vcs_detect", .module = vcs_detect },
                 .{ .name = "vcs_identity", .module = vcs_identity },
                 .{ .name = "vcs_provider", .module = vcs_provider },
+                .{ .name = "vcs_session", .module = vcs_session },
                 .{ .name = "pulse_process", .module = process_mod },
                 .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
@@ -186,6 +205,7 @@ const Modules = struct {
                 .{ .name = "vcs_detect", .module = vcs_detect },
                 .{ .name = "vcs_identity", .module = vcs_identity },
                 .{ .name = "vcs_provider", .module = vcs_provider },
+                .{ .name = "vcs_session", .module = vcs_session },
                 .{ .name = "pulse_process", .module = process_mod },
                 .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
@@ -200,6 +220,7 @@ const Modules = struct {
                 .{ .name = "vcs_detect", .module = vcs_detect },
                 .{ .name = "vcs_identity", .module = vcs_identity },
                 .{ .name = "vcs_provider", .module = vcs_provider },
+                .{ .name = "vcs_session", .module = vcs_session },
                 .{ .name = "pulse_process", .module = process_mod },
                 .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
@@ -216,6 +237,7 @@ const Modules = struct {
             .{ .name = "pulse_diagnostics", .module = diagnostics },
             .{ .name = "runtime_budget", .module = runtime_budget },
             .{ .name = "runtime_allocator", .module = runtime_allocator },
+            .{ .name = "runtime_latest_task", .module = runtime_latest_task },
             .{ .name = "pulse_process", .module = process_mod },
             .{ .name = "pulse_text", .module = text_mod },
             .{ .name = "vcs_capabilities", .module = vcs_capabilities },
@@ -225,6 +247,7 @@ const Modules = struct {
             .{ .name = "vcs_provider", .module = vcs_provider },
             .{ .name = "vcs_cli", .module = vcs_cli },
             .{ .name = "vcs_snapshot", .module = vcs_snapshot },
+            .{ .name = "vcs_session", .module = vcs_session },
             .{ .name = "vcs_git", .module = vcs_git },
             .{ .name = "vcs_jj", .module = vcs_jj },
             .{ .name = "vcs_svn", .module = vcs_svn },
@@ -290,6 +313,7 @@ pub fn build(b: *std.Build) void {
         "shared/process/run.zig",
         "shared/runtime/budget.zig",
         "shared/runtime/allocator.zig",
+        "shared/runtime/latest_task.zig",
         "shared/pulse/abi.zig",
         "shared/pulse/text.zig",
         "shared/pulse/host.zig",
@@ -304,6 +328,7 @@ pub fn build(b: *std.Build) void {
         "shared/vcs/provider.zig",
         "shared/vcs/cli.zig",
         "shared/vcs/snapshot.zig",
+        "shared/vcs/session.zig",
         "shared/vcs/providers/git.zig",
         "shared/vcs/providers/jj.zig",
         "shared/vcs/providers/svn.zig",

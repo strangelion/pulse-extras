@@ -223,11 +223,22 @@ test "reads a real jj repository without creating snapshots" {
     const dirty = try tmp.dir.createFile(io, "unsnapshotted.txt", .{});
     try dirty.writeStreamingAll(io, "not yet snapshotted\n");
     dirty.close(io);
-    const snapshot = try jj.summarize(&workspace);
+    var session = @import("vcs_session").Session.init(std.testing.io, 1000, testSessionClock);
+    defer session.shutdown();
+    _ = try session.request(jj.provider(), &workspace);
+    try std.testing.expect(try session.startNext());
+    const publication = try session.awaitActive();
+    if (publication == .failed) return publication.failed;
+    try std.testing.expect(publication == .published);
+    const snapshot = session.lookup(&workspace).fresh;
     var after = try jj.query(op_args);
     defer after.deinit();
     try std.testing.expect(after.succeeded());
     try std.testing.expectEqualStrings(before.stdout, after.stdout);
     try std.testing.expectEqual(contract.Availability.ready, snapshot.availability);
     try std.testing.expect(snapshot.detail.eql("working copy not snapshotted (read-only query)"));
+}
+
+fn testSessionClock() i64 {
+    return 1000;
 }

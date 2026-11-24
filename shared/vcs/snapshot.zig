@@ -77,6 +77,11 @@ pub fn Cache(comptime Value: type) type {
             self.len += 1;
         }
 
+        /// Preserve a prior value as stale while its replacement is queried.
+        pub fn markStale(self: *Self, key: *const identity.Workspace) void {
+            if (self.find(key)) |entry| entry.stale = true;
+        }
+
         pub fn invalidate(self: *Self, key: *const identity.Workspace) void {
             _ = self.beginRequest();
             var index: usize = 0;
