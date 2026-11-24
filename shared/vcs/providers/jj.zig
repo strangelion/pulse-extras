@@ -207,7 +207,7 @@ test "reads a real jj repository without creating snapshots" {
 
     const workspace = try identity.Workspace.init(.jj, root, root);
     var jj = Jj.init(&runner, report.path, .{ .ctx = undefined, .lookup = fakeLookup });
-    const op_args = &.{ report.path.slice(), "--ignore-working-copy", "--no-pager", "--color=never", "-R", root, "op", "log", "--no-graph", "-T", "id ++ \"\\n\"" };
+    const op_args: []const []const u8 = &.{ report.path.slice(), "--ignore-working-copy", "--no-pager", "--color=never", "-R", root, "op", "log", "--no-graph", "-T", "id ++ \"\\n\"" };
     var before = try jj.query(op_args);
     defer before.deinit(runner.allocator);
     try std.testing.expect(before.succeeded());

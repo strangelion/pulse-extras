@@ -130,9 +130,15 @@ pub const Git = struct {
         if (workspace.kind != .git) return error.Unsupported;
         var outcome = self.runner.run(.{
             .argv = &.{
-                self.executable.slice(), "--no-optional-locks", "-C",
-                workspace.root.slice(),  "status",              "--porcelain=v2",
-                "--branch",              "-z",                  "--untracked-files=normal",
+                self.executable.slice(),
+                "--no-optional-locks",
+                "-C",
+                workspace.root.slice(),
+                "status",
+                "--porcelain=v2",
+                "--branch",
+                "-z",
+                "--untracked-files=normal",
                 "--ignore-submodules=none",
             },
             .timeout_ns = 10 * std.time.ns_per_s,
