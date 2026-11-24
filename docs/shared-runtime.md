@@ -132,8 +132,15 @@ reserves requested stdout/stderr caps until Outcome.deinit, which frees the
 matching allocator's buffers and returns the reservation; error paths undo
 reservations. Default quota 16 MiB; per-request finite deadline required.
 The owner must remain at a stable address until all outputs are destroyed and
-checkDrained succeeds. No independent worker/scheduler or thread-safe allocator
-is introduced. CI and actual host runtime ownership remain to be verified.
+checkDrained succeeds. The next RT0 candidate wraps the Runner allocator with
+shared/runtime/allocator.zig: a separate 32 MiB requested-live-byte quota, with
+checked alloc/resize/remap/free, coherent reservation counters and OOM rollback.
+A short lock protects only accounting; the backing allocator must support its
+callers' concurrency. Peak includes in-flight/failed reservations, not RSS or
+allocator metadata. Runner remains serialized. requestStop closes admission;
+finishStop rejects live outcomes or allocations and is idempotent after drain.
+This is not interruption of a running command, cancellation or a worker join.
+CI and actual host runtime ownership remain to be verified.
 Do not create uncontrolled process-wide I/O facilities or claim DLL unload
 safety before proving host callback/worker drain.
 
@@ -296,3 +303,7 @@ Do not create placeholder directories or claim the above is implemented. The
 shared runtime is a continuously maintained foundation, not a separately shipped
 GC. Completion of RT0/RT1 means actual consumers and evidence, not merely
 additional files or passing mock tests.
+
+### Runtime check implementation (RT0 candidate)
+
+Unit tests cover budget overflow, exact capacity, backing OOM rollback, failed and successful resize/remap, zero-byte allocations, alignment-sized allocations, independent owners, output/error cleanup, finite single-child timeout, stop/admission/drain and 12 repeated runs. These are ordinary full CI tests; no new resident service or dependency. Do not infer process-tree cleanup, true concurrency stress, cross-DLL ownership, memory safety of arbitrary native libraries, or real-host unload from them. Extend acceptance with an owned process-tree harness and actual host lifecycle before enabling asynchronous UI. For multi-plugin coordination evaluate supported host API/IPC, independent resource domains and measured duplication only after real consumers exist; no hidden global DLL state.

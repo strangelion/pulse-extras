@@ -202,6 +202,7 @@ fn mapRunError(err: run.Error) contract.Error {
         error.OutOfMemory => error.OutOfMemory,
         error.PermissionDenied => error.Permission,
         error.InvalidRequest, error.Io => error.Io,
+        error.Stopped => error.Cancelled,
         error.OutputBudgetExceeded => error.ResourceLimit,
     };
 }

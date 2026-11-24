@@ -21,7 +21,7 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
-    all: [22]std.Build.Module.Import = undefined,
+    all: [23]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
@@ -100,11 +100,20 @@ const Modules = struct {
             .target = target,
             .optimize = optimize,
         });
+        const runtime_allocator = b.createModule(.{
+            .root_source_file = b.path("shared/runtime/allocator.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "runtime_budget", .module = runtime_budget }},
+        });
         const process_mod = b.createModule(.{
             .root_source_file = b.path("shared/process/run.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "runtime_budget", .module = runtime_budget }},
+            .imports = &.{
+                .{ .name = "runtime_budget", .module = runtime_budget },
+                .{ .name = "runtime_allocator", .module = runtime_allocator },
+            },
         });
         const vcs_capabilities = b.createModule(.{
             .root_source_file = b.path("shared/vcs/capabilities.zig"),
@@ -206,6 +215,7 @@ const Modules = struct {
             .{ .name = "pulse_ui_mount", .module = ui_mount },
             .{ .name = "pulse_diagnostics", .module = diagnostics },
             .{ .name = "runtime_budget", .module = runtime_budget },
+            .{ .name = "runtime_allocator", .module = runtime_allocator },
             .{ .name = "pulse_process", .module = process_mod },
             .{ .name = "pulse_text", .module = text_mod },
             .{ .name = "vcs_capabilities", .module = vcs_capabilities },
@@ -279,6 +289,7 @@ pub fn build(b: *std.Build) void {
         "shared/diagnostics/probe_log.zig",
         "shared/process/run.zig",
         "shared/runtime/budget.zig",
+        "shared/runtime/allocator.zig",
         "shared/pulse/abi.zig",
         "shared/pulse/text.zig",
         "shared/pulse/host.zig",
