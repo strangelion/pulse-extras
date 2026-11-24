@@ -20,8 +20,8 @@ pub const Approval = struct {
     path: []const u8,
     digest: [32]u8,
 
-    /// Path storage is borrowed, immutable and must outlive the configured
-    /// Runner and pending jobs. The caller, not PATH discovery, supplies it.
+    /// Caller supplies an approved path; Runner copies it into OwnedApproval.
+    /// Approval is not inferred from PATH discovery.
     pub fn verify(self: Approval, io: std.Io, requested: []const u8) !void {
         if (!localAbsolute(requested) or !std.mem.eql(u8, requested, self.path)) return error.UnapprovedExecutable;
         if (std.mem.indexOfScalar(u8, requested, 0) != null) return error.UnapprovedExecutable;
@@ -30,6 +30,28 @@ pub const Approval = struct {
         defer file.close(io);
         const actual = try digestFile(io, file);
         if (!std.mem.eql(u8, &actual, &self.digest)) return error.UnapprovedExecutable;
+    }
+};
+
+pub const OwnedApproval = struct {
+    const capacity = 4096;
+    bytes: [capacity]u8 = undefined,
+    len: u16 = 0,
+    digest: [32]u8,
+
+    pub fn init(approval: Approval) error{InvalidApproval}!OwnedApproval {
+        if (approval.path.len > capacity or !localAbsolute(approval.path) or std.mem.indexOfScalar(u8, approval.path, 0) != null) return error.InvalidApproval;
+        var result: OwnedApproval = .{ .len = @intCast(approval.path.len), .digest = approval.digest };
+        @memcpy(result.bytes[0..approval.path.len], approval.path);
+        return result;
+    }
+
+    pub fn slice(self: *const OwnedApproval) []const u8 {
+        return self.bytes[0..self.len];
+    }
+
+    pub fn view(self: *const OwnedApproval) Approval {
+        return .{ .path = self.slice(), .digest = self.digest };
     }
 };
 
@@ -92,4 +114,14 @@ test "environment allowlist rejects injection and credential variables" {
     try validateEnvironment(&map);
     try map.put("LD_PRELOAD", "unexpected");
     try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
+}
+
+test "owned approval copies caller path" {
+    const path = if (builtin.os.tag == .windows) "C:\\approved.exe" else "/approved";
+    var input: [64]u8 = undefined;
+    @memcpy(input[0..path.len], path);
+    const owned = try OwnedApproval.init(.{ .path = input[0..path.len], .digest = @splat(0) });
+    @memset(&input, 'x');
+    try std.testing.expectEqualStrings(path, owned.slice());
+    try std.testing.expectError(error.InvalidApproval, OwnedApproval.init(.{ .path = "relative", .digest = @splat(0) }));
 }

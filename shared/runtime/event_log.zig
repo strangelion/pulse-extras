@@ -33,6 +33,20 @@ pub const Log = struct {
         return self.entries[(self.head + index) % capacity];
     }
 
+    /// Export only typed records; caller owns destination and file rotation.
+    /// No heap allocation. An undersized destination fails without mutating log.
+    pub fn encode(self: *const Log, buffer: []u8) error{NoSpaceLeft}![]const u8 {
+        var used: usize = 0;
+        const header = std.fmt.bufPrint(buffer, "pulse-runtime-log-v1 dropped={d}\n", .{self.dropped}) catch return error.NoSpaceLeft;
+        used += header.len;
+        for (0..self.len) |index| {
+            const record = self.get(index).?;
+            const line = std.fmt.bufPrint(buffer[used..], "{s} {d}\n", .{ @tagName(record.kind), record.count }) catch return error.NoSpaceLeft;
+            used += line.len;
+        }
+        return buffer[0..used];
+    }
+
     pub fn clear(self: *Log) void {
         self.head = 0;
         self.len = 0;
@@ -50,4 +64,14 @@ test "diagnostics retain only the newest bounded records" {
     try std.testing.expect(log.get(64) == null);
     log.clear();
     try std.testing.expect(log.get(0) == null);
+}
+
+test "diagnostic export is bounded and does not mutate records on failure" {
+    var log: Log = .{};
+    log.add(.{ .kind = .timeout, .count = 1 });
+    var small: [4]u8 = undefined;
+    try std.testing.expectError(error.NoSpaceLeft, log.encode(&small));
+    var buffer: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("pulse-runtime-log-v1 dropped=0\ntimeout 1\n", try log.encode(&buffer));
+    try std.testing.expectEqual(@as(usize, 1), log.len);
 }

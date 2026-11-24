@@ -93,6 +93,28 @@ pub const Store = struct {
         if (failed) return error.CleanupFailed;
     }
 
+    /// Replace an owned temporary snapshot only after a complete new write.
+    /// Both files count against the quota during the replacement. On old-file
+    /// deletion failure retain both entries and return the new id explicitly.
+    pub const Rotation = struct {
+        current: u64,
+        retired: ?u64 = null,
+    };
+
+    pub fn rotate(self: *Store, previous: ?u64, bytes: []const u8) !Rotation {
+        if (previous) |id| {
+            if (self.find(id) == null) return error.NotOwned;
+        }
+        if (bytes.len > self.limit - self.used) return error.ResourceLimit;
+        const current = try self.create();
+        errdefer self.remove(current) catch {};
+        try self.append(current, bytes);
+        if (previous) |id| {
+            self.remove(id) catch return .{ .current = current, .retired = id };
+        }
+        return .{ .current = current };
+    }
+
     pub fn checkDrained(self: *const Store) error{OutstandingFiles}!void {
         for (self.entries) |entry| {
             if (entry != null) return error.OutstandingFiles;
@@ -123,4 +145,20 @@ test "temporary store enforces limits and cleans only its own files" {
     var bytes: [4]u8 = undefined;
     try std.testing.expectEqual(@as(usize, 4), try preserved.readPositionalAll(io, &bytes, 0));
     try std.testing.expectEqualStrings("keep", &bytes);
+}
+
+test "rotation preserves old snapshot on admission failure and returns quota on success" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var store = Store.init(std.testing.io, tmp.dir, 8);
+    defer store.cleanup() catch {};
+    const initial = try store.rotate(null, "old");
+    try std.testing.expectError(error.ResourceLimit, store.rotate(initial.current, "123456"));
+    try std.testing.expectEqual(@as(usize, 3), store.used);
+    const replacement = try store.rotate(initial.current, "new!");
+    try std.testing.expect(replacement.retired == null);
+    try std.testing.expectError(error.NotOwned, store.remove(initial.current));
+    try std.testing.expectEqual(@as(usize, 4), store.used);
+    try store.cleanup();
+    try store.checkDrained();
 }

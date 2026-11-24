@@ -105,3 +105,5 @@ RT0 follow-up candidate: retain only actual completed output bytes, expose safe 
 RT0 latest-only task candidate provides one running future plus one replaceable queued request and a real VCS Session consumer. Full CI and existing Git/JJ/SVN fixture checks precede merge. Host-specific acceptance may be scheduled later, but process-tree implementation, trusted resolution, UI completion delivery and host lifecycle checks remain recorded gates; no shipping VCS DLL yet.
 
 RT0 non-host candidate implements Windows job-backed Runner opt-in, approved path/digest and narrow env admission, group budgets, FIFO, typed event ring, owned temporary file store. Validate full CI and follow up on failures; actual host and measured multi-plugin acceptance deferred. Persistent crash recovery/rotation, race-free trusted installation verification and product-level policy integration remain explicit follow-up, not claimed complete.
+
+Deferred real-host checks are enumerated in [shared-runtime-host-acceptance.md](shared-runtime-host-acceptance.md); retain NOT VERIFIED until actual evidence. A merge of the library foundation does not certify production VCS panel distribution.

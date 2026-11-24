@@ -139,7 +139,7 @@ pub const Runner = struct {
     pending: ?Pending = null,
     policy: ExecutionPolicy = .compatibility,
     tree_policy: TreePolicy = .direct_child,
-    approval: ?trust.Approval = null,
+    approval: ?trust.OwnedApproval = null,
     log: event_log.Log = .{},
     max_timeout_ns: u64 = default_max_timeout_ns,
     completed: usize = 0,
@@ -170,8 +170,9 @@ pub const Runner = struct {
 
     /// Approval is an explicit caller decision; never auto-approve PATH.
     pub fn configureApproved(self: *Runner, approval: trust.Approval, max_timeout_ns: u64) Error!void {
+        const owned = trust.OwnedApproval.init(approval) catch return error.InvalidRequest;
         try self.configure(.explicit_local, max_timeout_ns);
-        self.approval = approval;
+        self.approval = owned;
         self.policy = .approved_local;
     }
 
@@ -247,11 +248,6 @@ pub const Runner = struct {
             if (!isLocalAbsolute(request.cwd orelse return error.InvalidRequest)) return error.InvalidRequest;
             if (request.environ_map == null) return error.InvalidRequest;
         }
-        if (self.policy == .approved_local) {
-            const approval = self.approval orelse return error.UnapprovedExecutable;
-            if (!std.mem.eql(u8, approval.path, request.argv[0])) return error.UnapprovedExecutable;
-            try trust.validateEnvironment(request.environ_map.?);
-        }
         var total: usize = 0;
         for (request.argv) |arg| {
             if (arg.len > max_async_argument_bytes - total or std.mem.indexOfScalar(u8, arg, 0) != null) return error.InvalidRequest;
@@ -261,6 +257,11 @@ pub const Runner = struct {
             if (cwd.len == 0 or cwd.len > max_async_argument_bytes - total or std.mem.indexOfScalar(u8, cwd, 0) != null) return error.InvalidRequest;
         }
         if (request.environ_map) |environment| try validateEnvironment(environment);
+        if (self.policy == .approved_local) {
+            const approval = self.approval orelse return error.UnapprovedExecutable;
+            if (!std.mem.eql(u8, approval.slice(), request.argv[0])) return error.UnapprovedExecutable;
+            try trust.validateEnvironment(request.environ_map.?);
+        }
         if (self.live_outcomes >= max_live_outcomes) return error.OutputBudgetExceeded;
         const reservation = std.math.add(usize, request.stdout_limit, request.stderr_limit) catch return error.OutputBudgetExceeded;
         if (reservation > self.output_budget.limit - self.output_budget.used) return error.OutputBudgetExceeded;
@@ -289,9 +290,8 @@ pub const Runner = struct {
             .timeout = timeout,
         };
         if (self.approval) |approval| {
-            approval.verify(self.io, request.argv[0]) catch |err| switch (err) {
+            approval.view().verify(self.io, request.argv[0]) catch |err| switch (err) {
                 error.Canceled => return error.Cancelled,
-                error.OutOfMemory => return error.OutOfMemory,
                 else => return error.UnapprovedExecutable,
             };
         }
