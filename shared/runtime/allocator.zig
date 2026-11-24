@@ -205,7 +205,6 @@ test "zero-length allocation and independent owners do not consume another budge
     try second.checkDrained();
 }
 
-
 fn concurrentAllocations(bounded: *BoundedAllocator) error{OutOfMemory}!void {
     const allocator = bounded.allocator();
     for (0..128) |index| {

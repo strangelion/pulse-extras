@@ -61,6 +61,15 @@ jobs:
           path: ${{ runner.temp }}/pulse-zig-archives
           key: ${{ steps.zig-cache.outputs.cache-primary-key }}
       - run: zig version
+      - name: Check Zig formatting (show exact correction on failure)
+        shell: bash
+        run: |
+          if ! zig fmt --check build.zig shared extensions; then
+            zig fmt build.zig shared extensions || exit 1
+            git --no-pager diff -- build.zig shared extensions
+            echo "::error::Zig formatting differs; apply zig fmt locally before committing."
+            exit 1
+          fi
       - name: Install pinned Jujutsu CLI
         run: python scripts/ci_vcs.py jj
       - name: Check Git and JJ tools
@@ -74,7 +83,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends subversion
           svn --version --quiet
           python scripts/ci_vcs.py svn-fixture
-      - run: zig fmt --check build.zig shared extensions
       - name: Unit and real repository integration tests
         run: zig build test --summary all
         env:

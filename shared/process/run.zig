@@ -20,11 +20,14 @@ pub const default_memory_budget: usize = 32 * 1024 * 1024;
 pub const max_live_outcomes: usize = 8;
 pub const max_async_arguments: usize = 128;
 pub const max_async_argument_bytes: usize = 64 * 1024;
+pub const max_environment_entries: usize = 256;
+pub const max_environment_bytes: usize = 128 * 1024;
 
 pub const Request = struct {
     argv: []const []const u8,
     cwd: ?[]const u8 = null,
-    /// `null` inherits the parent environment; pass a map to restrict it.
+    /// `null` inherits the parent environment. Explicit maps are validated;
+    /// start copies them. Choosing trusted variables remains caller policy.
     environ_map: ?*const std.process.Environ.Map = null,
     timeout_ns: u64 = 10 * std.time.ns_per_s,
     stdout_limit: usize = 4 * 1024 * 1024,
@@ -88,6 +91,7 @@ pub const Runner = struct {
     const Pending = struct {
         future: std.Io.Future(Error!Outcome),
         arguments: std.heap.ArenaAllocator,
+        environment: ?*std.process.Environ.Map,
     };
 
     pub const CancelResult = union(enum) {
@@ -144,12 +148,29 @@ pub const Runner = struct {
         return self.runInternal(request);
     }
 
+    /// Validate before copying inputs or starting a child. Both entry paths
+    /// enforce identical limits. No unbounded argv/environment traversal.
+    fn validateRequest(self: *Runner, request: Request) Error!usize {
+        if (request.argv.len == 0 or request.argv.len > max_async_arguments or request.argv[0].len == 0 or request.timeout_ns == 0) return error.InvalidRequest;
+        var total: usize = 0;
+        for (request.argv) |arg| {
+            if (arg.len > max_async_argument_bytes - total or std.mem.indexOfScalar(u8, arg, 0) != null) return error.InvalidRequest;
+            total += arg.len;
+        }
+        if (request.cwd) |cwd| {
+            if (cwd.len == 0 or cwd.len > max_async_argument_bytes - total or std.mem.indexOfScalar(u8, cwd, 0) != null) return error.InvalidRequest;
+        }
+        if (request.environ_map) |environment| try validateEnvironment(environment);
+        if (self.live_outcomes >= max_live_outcomes) return error.OutputBudgetExceeded;
+        const reservation = std.math.add(usize, request.stdout_limit, request.stderr_limit) catch return error.OutputBudgetExceeded;
+        if (reservation > self.output_budget.limit - self.output_budget.used) return error.OutputBudgetExceeded;
+        return reservation;
+    }
+
     /// Reserve both output caps until the owned outcome is released.
     /// This bounds logical output capacity, not total child/allocator memory.
     fn runInternal(self: *Runner, request: Request) Error!Outcome {
-        if (request.argv.len == 0 or request.argv[0].len == 0 or request.timeout_ns == 0) return error.InvalidRequest;
-        if (self.live_outcomes >= max_live_outcomes) return error.OutputBudgetExceeded;
-        const reservation = std.math.add(usize, request.stdout_limit, request.stderr_limit) catch return error.OutputBudgetExceeded;
+        const reservation = try self.validateRequest(request);
         self.output_budget.reserve(reservation) catch return error.OutputBudgetExceeded;
         errdefer self.output_budget.release(reservation);
         const cwd: std.process.Child.Cwd = if (request.cwd) |path| .{ .path = path } else .inherit;
@@ -192,25 +213,13 @@ pub const Runner = struct {
 
     /// Exactly one pending job per Runner. The caller-provided I/O runtime
     /// supplies concurrency; no private pool/thread is created here.
-    /// Copy arguments before submitting. Explicit env maps are currently
-    /// rejected rather than retaining borrowed mutable environment data.
-    /// No outcome may be live across a pending job, since the worker owns the
-    /// runner's output counters until joined.
+    /// Copy argv, cwd and explicit environment before submitting. No outcome
+    /// may be live across a pending job, since the worker owns output counters.
     pub fn start(self: *Runner, request: Request) Error!void {
         if (self.state != .active) return error.Stopped;
         if (self.pending != null) return error.Busy;
         if (self.live_outcomes != 0) return error.Busy;
-        if (request.environ_map != null or request.argv.len == 0 or request.argv.len > max_async_arguments or request.argv[0].len == 0 or request.timeout_ns == 0) return error.InvalidRequest;
-        var total: usize = 0;
-        for (request.argv) |arg| {
-            if (std.mem.indexOfScalar(u8, arg, 0) != null) return error.InvalidRequest;
-            total = std.math.add(usize, total, arg.len) catch return error.InvalidRequest;
-            if (total > max_async_argument_bytes) return error.InvalidRequest;
-        }
-        if (request.cwd) |cwd| {
-            if (std.mem.indexOfScalar(u8, cwd, 0) != null) return error.InvalidRequest;
-            if (cwd.len > max_async_argument_bytes - total) return error.InvalidRequest;
-        }
+        _ = try self.validateRequest(request);
         var arguments = std.heap.ArenaAllocator.init(self.memory.allocator());
         errdefer arguments.deinit();
         const allocator = arguments.allocator();
@@ -219,12 +228,39 @@ pub const Runner = struct {
         var owned = request;
         owned.argv = argv;
         if (request.cwd) |cwd| owned.cwd = try allocator.dupe(u8, cwd);
+        const environment = if (request.environ_map) |source| try self.copyEnvironment(source) else null;
+        errdefer self.freeEnvironment(environment);
+        owned.environ_map = environment;
 
         // After submission the owner must not read/write worker-owned fields.
         // The copied Request points only to this arena; its lifetime extends
         // until the future is joined, including all error/cancel paths.
         const future = try self.io.concurrent(runInternal, .{ self, owned });
-        self.pending = .{ .future = future, .arguments = arguments };
+        self.pending = .{ .future = future, .arguments = arguments, .environment = environment };
+    }
+
+    fn copyEnvironment(self: *Runner, source: *const std.process.Environ.Map) error{OutOfMemory}!*std.process.Environ.Map {
+        const allocator = self.memory.allocator();
+        const copy = try allocator.create(std.process.Environ.Map);
+        errdefer allocator.destroy(copy);
+        copy.* = std.process.Environ.Map.init(allocator);
+        errdefer copy.deinit();
+        try copy.putAll(source);
+        return copy;
+    }
+
+    fn freeEnvironment(self: *Runner, environment: ?*std.process.Environ.Map) void {
+        if (environment) |owned| {
+            owned.deinit();
+            self.memory.allocator().destroy(owned);
+        }
+    }
+
+    fn releasePendingInputs(self: *Runner) void {
+        const pending = if (self.pending) |*value| value else unreachable;
+        self.freeEnvironment(pending.environment);
+        pending.arguments.deinit();
+        self.pending = null;
     }
 
     /// Join the task, transfer the owned result once, and release input copies.
@@ -232,8 +268,7 @@ pub const Runner = struct {
     pub fn awaitPending(self: *Runner) Error!Outcome {
         const pending = if (self.pending) |*value| value else return error.NoPendingTask;
         const result = pending.future.await(self.io);
-        pending.arguments.deinit();
-        self.pending = null;
+        self.releasePendingInputs();
         if (self.state != .active) {
             if (result) |value| {
                 var outcome = value;
@@ -251,8 +286,7 @@ pub const Runner = struct {
     pub fn cancelPending(self: *Runner) Error!CancelResult {
         const pending = if (self.pending) |*value| value else return error.NoPendingTask;
         const result = pending.future.cancel(self.io);
-        pending.arguments.deinit();
-        self.pending = null;
+        self.releasePendingInputs();
         if (result) |value| {
             var outcome = value;
             outcome.deinit();
@@ -263,7 +297,28 @@ pub const Runner = struct {
     }
 };
 
+fn validateEnvironment(environment: *const std.process.Environ.Map) error{InvalidRequest}!void {
+    var entries = environment.iterator();
+    var count: usize = 0;
+    var bytes: usize = 0;
+    while (entries.next()) |entry| {
+        if (count >= max_environment_entries) return error.InvalidRequest;
+        count += 1;
+        const key = entry.key_ptr.*;
+        const value = entry.value_ptr.*;
+        if (key.len == 0 or key.len > max_environment_bytes - bytes) return error.InvalidRequest;
+        bytes += key.len;
+        if (value.len > max_environment_bytes - bytes) return error.InvalidRequest;
+        bytes += value.len;
+        if (std.mem.indexOfScalar(u8, key, 0) != null or std.mem.indexOfScalar(u8, value, 0) != null) return error.InvalidRequest;
+    }
+}
+
 const testing = std.testing;
+
+fn cleanupPendingForTest(runner: *Runner) void {
+    if (runner.pending != null) _ = runner.cancelPending() catch unreachable;
+}
 
 test "runner reports a missing executable instead of hanging" {
     var runner = Runner.init(testing.allocator, testing.io);
@@ -409,7 +464,6 @@ test "repeated runs return tracked allocation and reservation counts to zero" {
     try second.checkDrained();
 }
 
-
 test "async task owns input and transfers output only once" {
     var runner = Runner.init(testing.allocator, testing.io);
     var message: [32]u8 = undefined;
@@ -419,6 +473,7 @@ test "async task owns input and transfers output only once" {
     else
         &.{ "sh", "-c", original };
     try runner.start(.{ .argv = argv });
+    defer cleanupPendingForTest(&runner);
     // No lifetime dependency on the caller's stack-backed argument.
     @memset(&message, 'x');
     try testing.expectError(error.Busy, runner.start(.{ .argv = argv }));
@@ -451,6 +506,7 @@ test "async cancellation joins and releases resources; stop is owner-local" {
     else
         &.{ "sleep", "4" };
     try first.start(.{ .argv = slow });
+    defer cleanupPendingForTest(&first);
     // Allow the finite single-child fixture to enter blocking I/O.
     try std.Io.sleep(testing.io, .fromMilliseconds(100), .boot);
     first.requestStop();
@@ -478,7 +534,50 @@ test "pending stop discards even a successful raced result" {
     else
         &.{ "sh", "-c", "echo hello" };
     try runner.start(.{ .argv = args });
+    defer cleanupPendingForTest(&runner);
     runner.requestStop();
     try testing.expectError(error.Stopped, runner.awaitPending());
     try runner.finishStop();
+}
+
+test "synchronous and async admission reject invalid input before spawning" {
+    var runner = Runner.init(testing.allocator, testing.io);
+    try testing.expectError(error.InvalidRequest, runner.run(.{ .argv = &.{"never-start\x00"} }));
+    try testing.expectError(error.InvalidRequest, runner.start(.{ .argv = &.{"never-start"}, .cwd = "" }));
+    try testing.expectError(error.OutputBudgetExceeded, runner.start(.{ .argv = &.{"never-start"}, .stdout_limit = std.math.maxInt(usize), .stderr_limit = 1 }));
+    try runner.checkDrained();
+}
+
+test "async environment copy survives source mutation and frees on join" {
+    var runner = Runner.init(testing.allocator, testing.io);
+    var environment = std.process.Environ.Map.init(testing.allocator);
+    defer environment.deinit();
+    try environment.put("PULSE_RUNTIME_TEST", "owned-env");
+    const args: []const []const u8 = if (@import("builtin").os.tag == .windows)
+        &.{ "cmd", "/d", "/c", "echo %PULSE_RUNTIME_TEST%" }
+    else
+        &.{ "sh", "-c", "printf '%s' \"$PULSE_RUNTIME_TEST\"" };
+    try runner.start(.{ .argv = args, .environ_map = &environment });
+    defer cleanupPendingForTest(&runner);
+    try environment.put("PULSE_RUNTIME_TEST", "changed");
+    {
+        var outcome = try runner.awaitPending();
+        defer outcome.deinit();
+        try testing.expect(outcome.succeeded());
+        try testing.expect(std.mem.indexOf(u8, outcome.stdout, "owned-env") != null);
+        try testing.expect(std.mem.indexOf(u8, outcome.stdout, "changed") == null);
+    }
+    try runner.checkDrained();
+}
+
+test "oversized and malformed explicit environments are rejected before copy" {
+    var runner = Runner.init(testing.allocator, testing.io);
+    var environment = std.process.Environ.Map.init(testing.allocator);
+    defer environment.deinit();
+    const oversized = try testing.allocator.alloc(u8, max_environment_bytes);
+    defer testing.allocator.free(oversized);
+    @memset(oversized, 'x');
+    try environment.put("PULSE_RUNTIME_TEST", oversized);
+    try testing.expectError(error.InvalidRequest, runner.start(.{ .argv = &.{"never-start"}, .environ_map = &environment }));
+    try runner.checkDrained();
 }

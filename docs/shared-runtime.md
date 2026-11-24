@@ -140,9 +140,12 @@ callers' concurrency. Peak includes in-flight/failed reservations, not RSS or
 allocator metadata. Runner remains serialized. requestStop closes admission;
 finishStop rejects live outcomes or allocations and is idempotent after drain.
 The next candidate adds a single pending std.Io.concurrent future per Runner.
-Start owns bounded argv/cwd copies (128 arguments, 64 KiB of input bytes),
-rejects borrowed explicit environment maps, and refuses any simultaneous live
-outcomes. Await/cancel joins before freeing the input arena and consumes output
+Both entry paths validate bounded argv/cwd (128 arguments, 64 KiB of input
+bytes), nonempty executable/cwd and embedded NULs, and explicit environment
+maps (256 entries, 128 KiB of key/value bytes). Start copies argv/cwd and any
+explicit environment into owned bounded allocations before submission, refuses
+simultaneous live outcomes and releases inputs only after join. Null environment
+still inherits; a copied environment is not a trusted environment policy. Await/cancel joins before freeing the input arena and consumes output
 once. A canceled I/O operation maps to Cancelled; raced completion is freed
 and reported separately. Stop closes admission, then explicit cancel/join is
 required before finishStop. No detached work or extra resident pool. This is
@@ -321,3 +324,7 @@ Unit tests cover budget overflow, exact capacity, backing OOM rollback, failed a
 ### Single pending job acceptance (candidate)
 
 Reuse pinned Zig's documented `std.Io.concurrent`, `Future.await` and `Future.cancel` ([0.17.1 API](https://izrino.github.io/zig-docs/en/0.17.1/std/Io/)). Tests cover stack-backed argv copy, busy/duplicate admission, one-time outcome transfer, OOM input rollback, single-child cancellation, stopping with an outstanding job, independent runners and concurrent allocator accounting. Await and cancel are serialized owner operations; no concurrent call to the same Future. A running process may finish before cancellation, in which case discard its result without claiming it was killed. `finishStop` fails while a pending task exists. Before UI integration prove cancellation on actual Windows host, bound the whole child tree from creation, test descendants retaining inherited pipes, and implement owner-thread completion delivery. Never kill by reused PID or scan/terminate unrelated processes.
+
+### Format and input ownership follow-up
+
+CI 45448198471 stopped at zig fmt on shared/process/run.zig and shared/runtime/allocator.zig (extra blank lines). Remove the identified whitespace; CI now checks formatting before installing VCS tools and, on failure, prints the exact formatter diff from its disposable checkout and fails, without committing formatting changes or running tests on an altered tree. The latest candidate also validates synchronous/asynchronous request bounds before allocation/spawn, deep-copies explicit environment maps with the same bounded allocator, and drains pending futures even on test assertion failure. Do not log environment contents. A trusted environment policy, actual process-tree containment and real host acceptance remain outstanding. Previous runtime baseline 6a9083a passed Windows/Ubuntu CI 45447221739; the async candidate requires new full CI.
