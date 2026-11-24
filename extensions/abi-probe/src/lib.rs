@@ -33,10 +33,7 @@ unsafe extern "C" fn destroy(instance: *mut c_void) {
 /// The host owns the tables and must destroy each successful instance once.
 #[no_mangle]
 #[allow(non_snake_case)]
-pub unsafe extern "C" fn PulsePluginEntryV1(
-    host: *const HostV1,
-    out: *mut PluginV1,
-) -> Status {
+pub unsafe extern "C" fn PulsePluginEntryV1(host: *const HostV1, out: *mut PluginV1) -> Status {
     if host.is_null() || out.is_null() {
         return ERROR_ABI;
     }
