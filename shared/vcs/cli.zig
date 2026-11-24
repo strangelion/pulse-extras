@@ -8,6 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const identity = @import("vcs_identity");
 const run = @import("pulse_process");
+const test_config = @import("vcs_test_config");
 
 pub const Tool = enum {
     git,
@@ -189,15 +190,11 @@ test "locate returns null when the tool is absent" {
 
 /// Optional developer integrations must become mandatory when CI installs tools.
 pub fn integrationUnavailable(tool: Tool) error{ SkipZigTest, RequiredVcsUnavailable } {
-    const environ: std.process.Environ = .{ .block = .global };
-    const key = switch (tool) {
-        .git => "PULSE_REQUIRE_GIT",
-        .jj => "PULSE_REQUIRE_JJ",
-        .svn => "PULSE_REQUIRE_SVN",
-        else => return error.SkipZigTest,
+    const required = switch (tool) {
+        .git => test_config.require_git,
+        .jj => test_config.require_jj,
+        .svn => test_config.require_svn,
+        else => false,
     };
-    const value = environ.getAlloc(std.testing.allocator, key) catch return error.SkipZigTest;
-    defer std.testing.allocator.free(value);
-    if (std.mem.eql(u8, value, "1")) return error.RequiredVcsUnavailable;
-    return error.SkipZigTest;
+    return if (required) error.RequiredVcsUnavailable else error.SkipZigTest;
 }

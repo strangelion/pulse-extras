@@ -187,9 +187,8 @@ test "provider declares only read capabilities" {
 
 test "a plain directory is reported as not a working copy" {
     const io = run.io();
-    const environ: std.process.Environ = .{ .block = .global };
-    const path_value = environ.getAlloc(std.testing.allocator, "PATH") catch return cli.integrationUnavailable(.svn);
-    defer std.testing.allocator.free(path_value);
+    const path_value = test_config.path;
+    if (path_value.len == 0) return cli.integrationUnavailable(.svn);
 
     var runner = run.Runner.init(std.testing.allocator);
     var scratch: [identity.max_path_bytes + 64]u8 = undefined;
@@ -207,11 +206,10 @@ test "a plain directory is reported as not a working copy" {
 }
 
 test "reads a real local SVN working copy prepared by integration CI" {
-    const environ: std.process.Environ = .{ .block = .global };
-    const root = environ.getAlloc(std.testing.allocator, "PULSE_TEST_SVN_WC") catch return cli.integrationUnavailable(.svn);
-    defer std.testing.allocator.free(root);
-    const path_value = environ.getAlloc(std.testing.allocator, "PATH") catch return cli.integrationUnavailable(.svn);
-    defer std.testing.allocator.free(path_value);
+    const root = test_config.svn_working_copy;
+    if (root.len == 0) return cli.integrationUnavailable(.svn);
+    const path_value = test_config.path;
+    if (path_value.len == 0) return cli.integrationUnavailable(.svn);
     var runner = run.Runner.init(std.testing.allocator);
     defer runner.deinit();
     var scratch: [identity.max_path_bytes + 64]u8 = undefined;

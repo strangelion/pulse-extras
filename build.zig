@@ -21,9 +21,9 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
-    all: [20]std.Build.Module.Import = undefined,
+    all: [21]std.Build.Module.Import = undefined,
 
-    fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) Modules {
+    fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
             .root_source_file = b.path("shared/pulse/raw/pulse_all.zig"),
             .target = target,
@@ -207,6 +207,7 @@ const Modules = struct {
             .{ .name = "vcs_git", .module = vcs_git },
             .{ .name = "vcs_jj", .module = vcs_jj },
             .{ .name = "vcs_svn", .module = vcs_svn },
+            .{ .name = "vcs_test_config", .module = vcs_test_config },
         };
         return modules;
     }
@@ -224,7 +225,16 @@ pub fn build(b: *std.Build) void {
     } });
     const optimize = b.standardOptimizeOption(.{});
 
-    var dll_modules = Modules.add(b, target, optimize);
+    const vcs_test_options = b.addOptions();
+    const environ = &b.graph.environ_map;
+    vcs_test_options.addOption([]const u8, "path", environ.get("PATH") orelse "");
+    vcs_test_options.addOption(bool, "require_git", std.mem.eql(u8, environ.get("PULSE_REQUIRE_GIT") orelse "", "1"));
+    vcs_test_options.addOption(bool, "require_jj", std.mem.eql(u8, environ.get("PULSE_REQUIRE_JJ") orelse "", "1"));
+    vcs_test_options.addOption(bool, "require_svn", std.mem.eql(u8, environ.get("PULSE_REQUIRE_SVN") orelse "", "1"));
+    vcs_test_options.addOption([]const u8, "svn_working_copy", environ.get("PULSE_TEST_SVN_WC") orelse "");
+    const vcs_test_config = vcs_test_options.createModule();
+
+    var dll_modules = Modules.add(b, target, optimize, vcs_test_config);
     const dll = b.addLibrary(.{
         .name = "pulse_abi_probe",
         .linkage = .dynamic,
@@ -251,7 +261,7 @@ pub fn build(b: *std.Build) void {
 
     // Every module also runs its own tests on the host target, so the wrappers
     // are checked even when the probe does not use them yet.
-    var host_modules = Modules.add(b, b.graph.host, .Debug);
+    var host_modules = Modules.add(b, b.graph.host, .Debug, vcs_test_config);
     const test_sources = [_][]const u8{
         "extensions/abi-probe/main.zig",
         "extensions/hello-panel/main.zig",

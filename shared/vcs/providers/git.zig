@@ -260,9 +260,8 @@ fn fakeLookup(_: *anyopaque, _: []const u8) detect.EntryType {
 
 test "reads a real repository end to end when git is installed" {
     const io = run.io();
-    const environ: std.process.Environ = .{ .block = .global };
-    const path_value = environ.getAlloc(std.testing.allocator, "PATH") catch return cli.integrationUnavailable(.git);
-    defer std.testing.allocator.free(path_value);
+    const path_value = test_config.path;
+    if (path_value.len == 0) return cli.integrationUnavailable(.git);
 
     var runner = run.Runner.init(std.testing.allocator);
     var scratch: [identity.max_path_bytes + 64]u8 = undefined;
