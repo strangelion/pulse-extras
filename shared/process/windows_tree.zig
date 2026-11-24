@@ -59,7 +59,7 @@ extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 extern "kernel32" fn Sleep(milliseconds: u32) callconv(.winapi) void;
 
 const Job = struct {
-    handle: Handle,
+    handle: ?Handle,
 
     fn init() error{ContainmentFailed}!Job {
         const handle = CreateJobObjectW(null, null) orelse return error.ContainmentFailed;
@@ -75,21 +75,22 @@ const Job = struct {
         return .{ .handle = handle };
     }
 
-    fn close(self: Job) void {
-        _ = CloseHandle(self.handle);
+    fn close(self: *Job) void {
+        if (self.handle) |handle| _ = CloseHandle(handle);
+        self.handle = null;
     }
 
-    fn active(self: Job) error{ContainmentFailed}!u32 {
+    fn active(self: *const Job) error{ContainmentFailed}!u32 {
         var info: Accounting = undefined;
-        if (QueryInformationJobObject(self.handle, 1, &info, @sizeOf(Accounting), null) == 0) return error.ContainmentFailed;
+        if (QueryInformationJobObject(self.handle orelse return error.ContainmentFailed, 1, &info, @sizeOf(Accounting), null) == 0) return error.ContainmentFailed;
         return info.active_processes;
     }
 
     /// Cleanup is independent of the canceled Zig task. Do not report
     /// confirmed termination unless the job's accounting reaches zero.
-    fn terminateAndDrain(self: Job) error{ContainmentFailed}!void {
+    fn terminateAndDrain(self: *const Job) error{ContainmentFailed}!void {
         if (try self.active() == 0) return;
-        if (TerminateJobObject(self.handle, 1) == 0) return error.ContainmentFailed;
+        if (TerminateJobObject(self.handle orelse return error.ContainmentFailed, 1) == 0) return error.ContainmentFailed;
         const start = GetTickCount64();
         while (try self.active() != 0) {
             if (GetTickCount64() -% start >= 5000) return error.ContainmentFailed;
@@ -109,8 +110,10 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, options: std.process.RunOpt
     if (timeout_ns == 0) return error.Timeout;
     const timeout_ms = (timeout_ns - 1) / std.time.ns_per_ms + 1;
     const start = GetTickCount64();
-    const job = try Job.init();
+    trace("create job");
+    var job = try Job.init();
     defer job.close();
+    trace("spawn suspended");
     var child = try std.process.spawn(io, .{
         .argv = options.argv,
         .cwd = options.cwd,
@@ -121,24 +124,53 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, options: std.process.RunOpt
         .start_suspended = true,
         .create_no_window = true,
     });
-    defer child.kill(io);
+    defer {
+        trace("release child");
+        child.kill(io);
+    }
     // On assignment failure the process remains suspended and child.kill
     // reaps it. Never resume or try a less restrictive launch.
-    if (AssignProcessToJobObject(job.handle, child.id.?) == 0) return error.ContainmentFailed;
-    const result = collect(allocator, io, &child, job, options, start, timeout_ms) catch |err| {
-        try job.terminateAndDrain();
+    trace("assign job");
+    if (AssignProcessToJobObject(job.handle.?, child.id.?) == 0) return error.ContainmentFailed;
+    return collect(allocator, io, &child, &job, options, start, timeout_ms);
+}
+
+// Test-only phase markers: never emit argv, cwd, output or environment.
+fn trace(comptime phase: []const u8) void {
+    if (builtin.is_test) std.debug.print("[windows-tree] " ++ phase ++ "\n", .{});
+}
+
+fn collect(allocator: std.mem.Allocator, io: std.Io, child: *std.process.Child, job: *Job, options: std.process.RunOptions, start: u64, timeout_ms: u64) !std.process.RunResult {
+    // On every failure, terminate the job before canceling and joining
+    // pending pipe reads. The reader must stay alive until then.
+    var streams: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var reader: std.Io.File.MultiReader = undefined;
+    trace("initialize reader");
+    reader.init(allocator, io, streams.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    defer {
+        trace("deinit reader");
+        reader.deinit();
+        trace("reader released");
+    }
+    const result = readAndWait(allocator, io, child, job, &reader, options, start, timeout_ms) catch |err| {
+        trace("terminate and drain job");
+        job.terminateAndDrain() catch {
+            // Kill-on-close remains a best effort if explicit drain failed.
+            // Do not let the caller certify successful containment.
+            job.close();
+            return error.ContainmentFailed;
+        };
+        trace("job drained");
         return err;
     };
     return result;
 }
 
-fn collect(allocator: std.mem.Allocator, io: std.Io, child: *std.process.Child, job: Job, options: std.process.RunOptions, start: u64, timeout_ms: u64) !std.process.RunResult {
+fn readAndWait(allocator: std.mem.Allocator, io: std.Io, child: *std.process.Child, job: *Job, reader: *std.Io.File.MultiReader, options: std.process.RunOptions, start: u64, timeout_ms: u64) !std.process.RunResult {
     _ = try remaining(start, timeout_ms);
+    trace("resume child");
     if (ResumeThread(child.thread_handle) != 1) return error.ContainmentFailed;
-    var streams: std.Io.File.MultiReader.Buffer(2) = undefined;
-    var reader: std.Io.File.MultiReader = undefined;
-    reader.init(allocator, io, streams.toStreams(), &.{ child.stdout.?, child.stderr.? });
-    defer reader.deinit();
+    trace("collect pipe output");
     while (true) {
         const left = try remaining(start, timeout_ms);
         const timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromNanoseconds(@as(i96, left) * std.time.ns_per_ms), .clock = .boot } };
@@ -153,6 +185,7 @@ fn collect(allocator: std.mem.Allocator, io: std.Io, child: *std.process.Child, 
             if (reader.reader(1).buffered().len > limit) return error.StreamTooLong;
         }
     }
+    trace("pipe EOF");
     try reader.checkAnyError();
     if (options.stdout_limit.toInt()) |limit| {
         if (reader.reader(0).buffered().len > limit) return error.StreamTooLong;
@@ -166,7 +199,9 @@ fn collect(allocator: std.mem.Allocator, io: std.Io, child: *std.process.Child, 
         const left = try remaining(start, timeout_ms);
         try std.Io.sleep(io, .fromMilliseconds(@intCast(@min(left, 10))), .boot);
     }
+    trace("job empty, wait root");
     const term = try child.wait(io);
+    trace("root reaped");
     const stdout = try reader.toOwnedSlice(0);
     errdefer allocator.free(stdout);
     const stderr = try reader.toOwnedSlice(1);
@@ -181,7 +216,7 @@ test "Windows job ABI layout" {
     try std.testing.expectEqual(@as(usize, 48), @sizeOf(Accounting));
 }
 
-test "Windows job captures a child and rejects a surviving descendant" {
+test "Windows job captures a child" {
     if (comptime builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
     const a = std.testing.allocator;
     const io = std.testing.io;
@@ -194,9 +229,24 @@ test "Windows job captures a child and rejects a surviving descendant" {
     defer a.free(result.stderr);
     try std.testing.expect(result.term.success());
     try std.testing.expect(std.mem.indexOf(u8, result.stdout, "job-owned") != null);
+}
+
+test "Windows job times out a surviving descendant" {
+    if (comptime builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const io = std.testing.io;
     try std.testing.expectError(error.Timeout, run(a, io, .{
         .argv = &.{ "cmd", "/d", "/c", "start \"\" /b ping.exe -n 20 127.0.0.1 >nul" },
         .stdout_limit = std.Io.Limit.limited(1024),
         .stderr_limit = std.Io.Limit.limited(1024),
     }, 2 * std.time.ns_per_s));
+}
+
+test "Windows job rejects excess output and drains before reader release" {
+    if (comptime builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    try std.testing.expectError(error.StreamTooLong, run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "cmd", "/d", "/c", "echo output-exceeds-limit" },
+        .stdout_limit = std.Io.Limit.limited(1),
+        .stderr_limit = std.Io.Limit.limited(1024),
+    }, 5 * std.time.ns_per_s));
 }

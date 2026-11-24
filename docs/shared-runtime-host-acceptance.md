@@ -29,3 +29,5 @@ Attach logs, exact commands, resource samples and pass/fail per case. For not-ru
 ## Non-host gates still required
 
 CI must validate the actual latest revision, not an earlier green ancestor. Approved-local is a bounded path/digest check, not a race-free trust boundary or sandbox. Do not auto-approve PATH or untrusted VCS configuration. Persistent crash recovery requires an independently established private directory ownership and crash-safe manifest/lock; absent proof, retain unknown files and report them rather than delete by prefix. Current session rotation is not a crash journal. Cross-DLL aggregate runtime is not implemented.
+
+Latest known pre-merge blocker: Windows CI 45453154189 canceled during the aggregate tests; isolated Job Object tests and revised error cleanup ordering must pass before the full Windows regression gate. This is a CI blocker, not a deferred host-only check.

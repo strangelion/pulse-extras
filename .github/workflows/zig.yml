@@ -70,6 +70,18 @@ jobs:
             echo "::error::Zig formatting differs; apply zig fmt locally before committing."
             exit 1
           fi
+      - name: Isolated Windows Job Object tests (phase diagnostics)
+        if: runner.os == 'Windows'
+        timeout-minutes: 4
+        shell: pwsh
+        run: |
+          foreach ($filter in @('Windows job ABI', 'Windows job captures', 'Windows job times out', 'Windows job rejects')) {
+            Write-Host "::group::$filter"
+            zig test shared/process/windows_tree.zig --test-filter "$filter"
+            $status = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            if ($status -ne 0) { exit $status }
+          }
       - name: Install pinned Jujutsu CLI
         run: python scripts/ci_vcs.py jj
       - name: Check Git and JJ tools
@@ -84,6 +96,7 @@ jobs:
           svn --version --quiet
           python scripts/ci_vcs.py svn-fixture
       - name: Unit and real repository integration tests
+        timeout-minutes: 15
         run: zig build test --summary all
         env:
           PULSE_REQUIRE_GIT: '1'
