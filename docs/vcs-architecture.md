@@ -245,3 +245,7 @@ and the provider panel.
 | Native VCS panel / real host | Pending | Pending | Pending |
 
 Baseline: [full CI run 45421511648](https://github.com/strangelion/pulse-extras/actions/runs/45421511648), commit c330c24. Known limits: cache key is currently root-only; caller generation checks are not atomic submission; Git/JJ snapshots and per-field availability need strengthening; SVN counts still need safe structured parsing and distinct semantics. The roadmap sets the implementation order and acceptance gates.
+
+## Reuse and scope control
+
+Follow [product scope](product-scope.md): use real Git/JJ/SVN CLIs and existing shared runner; study lazygit/jjui only for validated semantics and UX. Do not duplicate native Pulse Git status decorations or pull/push. No new source dependency or parser framework unless needed by a concrete tested feature and reviewed for license, size and maintenance.

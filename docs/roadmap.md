@@ -70,18 +70,28 @@ Implement one operation at a time with risk classification, explicit plan/confir
 | strangelion.data | SQLite schema and bounded NPY/NPZ metadata | No arbitrary SQL writes |
 | strangelion.devkit | Project detection and toolchain inventory | No automatic install or build scripts |
 | strangelion.compare | Recursive read-only content comparison | No sync/deletion until safety review |
-| strangelion.forge | AI-assisted Zig author CLI/MCP, then optional native panel | No automatic execution of untrusted code or publication; native AI tool integration requires upstream support |
+| strangelion.companion (candidate) | Existing pet/event bridge or small supported native character prototype | No full pet simulator or generic Agent; validate demand and SDK first |
+| strangelion.forge (conditional) | Reusable templates, constrained recipes, validation and maintenance | No generic coding Agent; separate MCP/panel only with demonstrated value |
 
 RT2: all new products reuse the shared runtime contract; extend it only for proven needs, track bundled runtime revisions and rebuild/test/release affected consumers after fixes. Test independent instances and mixed-version coexistence. Recheck upstream source, roadmap, SDK and registry for overlap before implementing each extension. Pulse already has basic Git and SVN status, native lock detection, common previews and archive integration. Coordinate 3D/OCR/remote features with upstream.
 
-Release follows milestone R and [release.md](release.md). Keep secrets out of Git/CI logs. Apache-2.0 and Zig-first remain unchanged.
+After P2/R, prioritize Convert, a small Companion feasibility experiment, then Inspect, Compare, Data and focused DevKit according to demonstrated demand; VCS advanced functions continue as needed. See [product scope](product-scope.md) for overlap exclusions, research references, dependency policy and low-token delivery. Do not block usable features on a complete platform.
 
-## F — Forge authoring tooling (after shared runtime/package foundations)
+Release follows milestone R and [release.md](release.md). Keep secrets out of Git/CI logs. Project license is AGPL-3.0-only, preserving prior Apache-2.0 grants and upstream/third-party obligations. Zig-first remains unchanged; review source delivery and registry acceptance before distributing.
 
-- [ ] Standalone Zig author CLI and MCP: SDK discovery, trusted templates, project changes, restricted build/test, verified export.
-- [ ] Bounded Agent integration and diagnostics with deterministic tests, explicit authorization and OS-level isolation for generated code.
-- [ ] Native Forge panel with user-configured external Agent, review, progress/cancel and isolated preview only when containment is verified.
-- [ ] Discuss typed AI tool registration and permissions with upstream; direct native assistant integration remains unsupported by the pinned public SDK.
+## C — Companion feasibility (candidate)
+
+- [ ] C0: compare OpenPets/other bridges and installed SDK; validate event/rendering support and minimal resource cost. Stop if redundant or unsupported.
+- [ ] C1: optional connector or small character prototype with data-only skins, actual authorized task states, visibility/pause and bounded assets.
+- [ ] C2: actual user/host acceptance and resource measurements before considering independent renderer or richer offline interaction. See [product scope](product-scope.md#5-companion-feasibility-candidate-no-implementation).
+
+## F — Forge authoring tooling (conditional, after real components/package foundations)
+
+- [ ] F0: reusable author templates and shared components from real products, constrained declarative recipes where supported, deterministic SDK/package validation and migration. Reuse official author tools and existing Pi/DSH/Codex transports; no duplicated general Agent infrastructure.
+- [ ] Benchmark representative tasks against direct Agent authoring: time, tokens, correctness, repair cycles and maintenance. If no material advantage, keep tooling in DevKit/shared scripts.
+- [ ] F1: only if justified, thin standalone Zig author CLI/MCP and bounded Agent integration with explicit authorization and OS-level isolation for generated native code.
+- [ ] F2: optional visual editor/native panel, shareable recipes and compatible preview if verified and demanded.
+- [ ] F3: discuss typed AI tool registration and permissions with upstream; direct native assistant integration remains unsupported by the pinned public SDK.
 
 See [Forge design](forge-architecture.md). Do not block VCS or other independent packages on Forge, and do not create placeholder projects. A single natural-language request is a development task, not permission for unreviewed native execution or release.
 

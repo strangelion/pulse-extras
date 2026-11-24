@@ -12,7 +12,7 @@ Zig-first, fixed stable toolchain, Windows x64 MSVC ABI. No Cargo or C++ build p
 - shared/vcs: implemented provider contract, capabilities, identities, detection, risk tiers, CLI discovery, bounded cache and Git/JJ/SVN read-only summaries. Full identity resolution, cache isolation and asynchronous panel integration are outstanding. See [vcs-architecture.md](vcs-architecture.md).
 - extensions/abi-probe: lifecycle probe used to verify entry/activate/deactivate/destroy on a real host.
 - extensions/hello-panel: first UI extension — command, `pulse.context` subscription, `pulse.ui.model` panel, `pulse.ui.mount` workspace/sidebar placement.
-- Future independent extensions: Convert, Inspect, Data, DevKit, Compare and Forge. Heavy parsing, external commands and untrusted input should use isolated workers where practical. [Forge](forge-architecture.md) is a separate proposed authoring CLI/MCP and optional native panel; untrusted generated code requires OS-enforced containment, not just a separate Pulse profile. Direct integration into the built-in AI requires an upstream public interface.
+- Future independent extensions/candidates: Convert, Inspect, Data, DevKit, Compare, Companion and Forge. Follow [product scope and reuse policy](product-scope.md); do not duplicate existing Pulse functionality or embed a general Agent. Heavy parsing, external commands and untrusted input should use isolated workers where practical. [Forge](forge-architecture.md) starts as reusable author tooling/recipes, with an independent MCP/panel only if justified; untrusted generated code requires OS-enforced containment, not just a separate Pulse profile. Direct integration into the built-in AI requires an upstream public interface.
 
 ## Safety
 
@@ -28,8 +28,12 @@ All product extensions must follow the [Shared Runtime contract](shared-runtime.
 4. Validate real Pulse install, enable, restart, upgrade and rollback in isolated profiles. A C harness is not real host acceptance.
 5. Track cold/warm build time, cache and output size, runtime memory and UI responsiveness. Establish baselines before setting thresholds; no claims without measurements.
 
-Use no private signing keys in Git or logs. Independent packages under strangelion.*; preserve Apache-2.0, audit third-party licenses, sign official manifest bytes, publish releases and submit catalog metadata to the upstream registry. See [release design](release.md) for the proposed shared packaging pipeline, independent versions, selection and protected signing. No release workflow exists yet.
+Use no private signing keys in Git or logs. Independent packages under strangelion.*; use AGPL-3.0-only for project work subject to preserved upstream/prior-license obligations, audit exact third-party licenses, sign official manifest bytes, publish releases and submit catalog metadata to the upstream registry. See [release design](release.md) for the proposed shared packaging pipeline, independent versions, selection and protected signing. No release workflow exists yet.
 
 ## Development discipline
 
 Use the pinned Zig version's installed standard library and compile each API change before pushing. Preserve the existing probes, generated-binding workflow and passing checks. Do not add Rust/Cargo, AGENTS.md, private SDK dependencies or placeholder providers. Follow the scope-specific gates in [testing.md](testing.md); manually run full CI before release or after a sequence of reduced checks. A skipped check is not evidence of passing it.
+
+## Reuse and dependencies
+
+Use existing host functions, OS APIs and mature installed tools first. Add pinned source submodules only for audited dependencies actually needed by a real product; reference-only repositories are not build inputs. Keep current SDK verification. Follow [product scope](product-scope.md) for licensing, source delivery, dependency review and targeted Agent development.

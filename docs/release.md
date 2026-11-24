@@ -21,7 +21,8 @@ here does not automatically make the package available in the store.
 ## 2. Independent package versions
 
 One monorepo, independent packages and SemVer. Example IDs: strangelion.vcs, strangelion.convert,
-strangelion.inspect, strangelion.data, strangelion.devkit, strangelion.compare, strangelion.forge.
+strangelion.inspect, strangelion.data, strangelion.devkit, strangelion.compare,
+and conditional candidates strangelion.companion and strangelion.forge.
 The ABI Probe and Hello Panel remain test/example packages and are not released as products
 by default. No placeholder or incomplete extension is publishable.
 
@@ -128,7 +129,8 @@ Each product release includes at minimum:
 
 - strangelion.<name>-<version>.pulse-ext
 - strangelion.<name>-<version>.sig.json
-- SHA256SUMS.txt and THIRD_PARTY_NOTICES.txt (license as appropriate)
+- SHA256SUMS.txt, AGPL-3.0-only license text and THIRD_PARTY_NOTICES.txt; preserve applicable upstream/dependency/asset licenses and notices
+- Complete corresponding source access for this exact release, including necessary build scripts, dependency sources/pins and modifications as required. A private repository link alone is not sufficient for public recipients; resolve compliant access before publishing.
 - Release notes with supported Pulse/SDK versions, features, limitations, known skipped
   tests, source commit and build/test/host evidence references.
 
@@ -137,6 +139,10 @@ localized descriptions, license, source and official GitHub release download URL
 metadata. Publisher fingerprint and public key are public; private key is not. Do not fabricate
 a successful signature, public download or registry acceptance. No unsigned official-store
 claim. Local dry-run artifact is not a production release.
+
+## License gate
+
+Project license is AGPL-3.0-only going forward, preserving prior Apache-2.0 and third-party rights. Review exact dependency revisions, build options and distribution, upstream SDK/host plugin compatibility, contributor rights, assets and registry acceptance; do not infer compliance from a submodule or IPC boundary. Include source access and applicable AGPL section 13 network-interaction requirements. See [product scope / licensing](product-scope.md#4-license-and-distribution-policy). No automatic repository visibility change or production publication.
 
 ## 6. Implementation sequence and tests
 

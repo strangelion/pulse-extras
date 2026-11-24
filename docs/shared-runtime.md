@@ -203,6 +203,7 @@ Do not implement telemetry or an always-running global dashboard by default.
 | Data | array shape/dtype overflow, compression ratios, SQLite query/row/time limits, bounded page cache |
 | DevKit | trusted toolchains, subprocesses, environment, project-local config, no automatic execution |
 | Compare | directory depth/count, traversal/reparse cycles, streaming hash buffers, handle limits |
+| Companion | bounded decoded assets, frame/animation budget, visibility pause, actual authorized events and idle CPU |
 | Forge | bounded repair jobs, generated code/build scripts untrusted, verified OS containment, network/secret controls |
 
 Every plugin declares actual resource limits and unsupported cases before publishing.

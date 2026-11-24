@@ -1,10 +1,12 @@
 # Pulse Forge / AI 增强包开发工作台
 
-Status: **design only**, not implemented. Proposed package ID: `strangelion.forge`.
-The goal is to turn a natural-language request into an inspectable Zig extension project,
-tested package and optional approved installation, while preserving Pulse's existing AI/MCP
-authorization boundaries. Forge is not a replacement for Pulse AI, not a model provider by
-itself, and not a promise that arbitrary requests can be implemented safely.
+Status: **conditional design only**, not implemented. Proposed package ID: `strangelion.forge`.
+Forge's core value must be reusable components, constrained recipes, compatibility and
+maintenance, not a weaker generic coding Agent. Begin with shared author tools/templates
+and real product components. An independent MCP or native panel is optional and requires
+measured advantage over direct Codex/Pi/DSH authoring. The goal is an inspectable usable
+tool or extension with verified delivery, preserving Pulse's AI/MCP authorization boundaries.
+Forge is not a model provider or a replacement for Pulse AI. See [product scope](product-scope.md).
 
 ## 1. Upstream boundary and feasibility
 
@@ -64,7 +66,7 @@ External Agent / optional native Forge panel
     -> exported package / explicit isolated preview / approved install
 ```
 
-Zig-first. Implement the author runtime and standalone CLI/MCP service before the native
+Zig-first. Implement reusable templates, component contracts and deterministic author tools first; add a thin standalone CLI/MCP only after demonstrating value, before any native
 panel. Reuse the tested [Shared Runtime](shared-runtime.md), shared/process and public SDK
 wrappers; extend only where the authoring workflow requires it. Runtime budgets and process
 ownership are not a substitute for OS-enforced containment of generated code. Official Python author tools may remain build-time dependencies.
@@ -74,6 +76,18 @@ select the actual boundaries when implementing. The trusted UI/DLL must never lo
 generated code into its own production process.
 
 ## 3. Request-to-package pipeline
+
+Prefer the lowest sufficient authoring level. L1: data-only validated configuration of
+precompiled trusted components. L2: bounded composition of allowlisted typed nodes, data
+bindings and workflows with explicit effects, resource limits and user confirmation; no
+arbitrary scripts or access to private host actions. L3: native Zig generation only for
+unsupported advanced behavior, with the containment and review gates below. L1/L2 recipes
+are Forge-specific data contracts, not a claim that Pulse's removed JavaScript runtime or
+legacy declarative API is available. Verify actual native UI/rendering and file operation
+APIs; where required capabilities do not exist, reject or degrade. No model is needed to
+run a validated deterministic recipe. A visual editor, recipe sharing and SDK migration
+are potential differentiators after actual reusable components exist. Preserve permissions
+and schema versions; imported recipes/assets remain untrusted data.
 
 Example: “Create an extension that shows source-language proportions, file count and total
 size for the selected folder and exports CSV.”
@@ -167,25 +181,29 @@ or network permissions.
 
 ## 6. Acceptance and staged delivery
 
-F0: after shared runtime hardening and a real extension/package flow, implement standalone
-Zig author CLI and separate stdio MCP, with a trusted minimal template and export-only pipeline.
-Test request schema, path confinement, stale revisions, cancellation, timeout, output bounds,
-missing tools, unsupported SDK and package integrity. Prove actual generated projects compile.
+F0: after real product/runtime/package foundations, extract tested templates and
+components, deterministic recipe validation and compatibility/migration tools. Benchmark
+representative tasks against direct external Agent development; compare time, token use
+where measured, repair/build count, correctness and maintenance. If no material advantage,
+retain shared/DevKit author tools instead of an independent product.
 
-F1: bounded Agent orchestration and diagnostics; generated fixture project with independent
-expected behavior, test failure/repair, no network/secret access unless approved, and no
-unapproved execution. Exercise injection, malicious build files, resource exhaustion,
-path escapes, crash recovery and log redaction. Use deterministic fixtures for normal CI,
-not paid live model calls; opt-in live-model acceptance is separate.
+F1: only if justified, implement thin Zig author CLI/MCP on top of the existing tools;
+reuse actual external Agent transport and events rather than implementing model login,
+memory, subagents, browsing or context compression. Use bounded orchestration/diagnostics,
+deterministic fixtures and export-only pipeline first. Test path confinement, malicious
+build files, authorization, stale revisions, cancellation, missing tools, SDK drift,
+resource limits, package integrity and actual generated project builds. No unapproved
+execution or paid live model calls in routine CI.
 
-F2: native Forge panel with authorized external Agent integration, progress/cancel/review,
-zh/en, theme/DPI/resize, isolated preview only after containment validation. Test shutdown,
-unload and broken/missing Agent transport. Confirm actual UI and package behavior, not just PID.
+F2: optional visual editor/native Forge panel, shareable versioned recipes, user-approved
+external Agent integration and progress/cancel/review. Preview only after containment
+validation; test theme/DPI/resize, unload, failed transport and actual host behavior.
+Companion recipe support is optional and depends on validated component/event contracts.
 
 F3: upstream proposal for typed AI tool registration and permission integration. Implement
 only against a released/documented interface and revalidate host and registry acceptance.
 
-Forge does not block the first VCS release or the other independent extensions. Each step
-requires source, test commands/results, build and artifact hashes, known gaps and actual
-host evidence where applicable. See [roadmap](roadmap.md), [testing](testing.md) and
-[release design](release.md).
+Forge does not block the first VCS release or other packages. Each step requires source,
+test commands/results, artifact hashes, known gaps and actual host evidence. See
+[roadmap](roadmap.md), [testing](testing.md), [release](release.md) and
+[product scope](product-scope.md).

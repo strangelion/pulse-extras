@@ -47,3 +47,7 @@ See [Shared Runtime](shared-runtime.md) for the ownership, resource limits, canc
 ## Planned release and authoring validation
 
 Ordinary docs/VCS/full scopes remain unchanged. The future [release workflow](release.md) must require full regression on the exact release SHA, selected package tests, hash-bound actual host evidence and protected signing; it must not accept a reduced/docs green gate as full evidence. Dry runs use no production secrets or release writes. [Forge](forge-architecture.md) tests use deterministic fixtures and isolated workers; paid/live model calls and contained real-host preview are opt-in acceptance, not routine CI. A separate profile and C ABI loader do not constitute OS isolation. These are planned gates, not implemented workflow stages.
+
+## Dependency and reuse gates
+
+New submodules/dependency pins, license changes and build integration are FULL scope under the existing conservative classifier. Fetch only audited dependencies needed by selected builds; reference-only repositories and docs checks must not acquire them. Use real engine/CLI/IPC tests and fixture-based authoring, pet event and recipe tests before advertising support. Keep resource/host/containment and benchmark acceptance separate from lightweight routine CI. Release source and exact dependency/license review follow [product scope](product-scope.md) and [release](release.md).

@@ -22,7 +22,8 @@ explicit non-claims. Registry acceptance and shipping extensions are still open.
 | Data | Database and scientific data preview | Planned |
 | DevKit | Project and toolchain management | Planned |
 | Compare | Recursive directory comparison | Planned |
-| Forge | AI-assisted Zig extension authoring (separate MCP, optional native panel) | Design only; built-in AI integration needs upstream support ([design](docs/forge-architecture.md)) |
+| Companion | Optional lightweight file-manager pet / event bridge | Candidate; feasibility and demand not verified ([scope](docs/product-scope.md)) |
+| Forge | Reusable authoring components, bounded recipes and maintenance tooling | Design only; external Agents first, independent product conditional ([design](docs/forge-architecture.md)) |
 
 ## Build and test
 
@@ -43,6 +44,7 @@ and DLL builds. Manual runs and all other changes run full CI. See [testing](doc
 Python 3 is used only by CI and SDK verification tools.
 
 - [Architecture](docs/architecture.md)
+- [Product scope, reuse and dependency policy](docs/product-scope.md)
 - [Shared Runtime: memory, lifecycle and resource safety](docs/shared-runtime.md)
 - [Testing and CI coverage](docs/testing.md)
 - [VCS architecture and capability matrix](docs/vcs-architecture.md)
@@ -53,4 +55,5 @@ Python 3 is used only by CI and SDK verification tools.
 - [CI](https://github.com/strangelion/pulse-extras/actions)
 - [Official extension registry](https://github.com/jimmgreen/pulse-extensions)
 
-Independent community project, not affiliated with the official Pulse project. Apache-2.0.
+Independent community project, not affiliated with the official Pulse project.
+Project license: [AGPL-3.0-only](LICENSE). Existing upstream/third-party notices and prior Apache-2.0 grants are preserved; see [license and dependency policy](docs/product-scope.md#4-license-and-distribution-policy).
