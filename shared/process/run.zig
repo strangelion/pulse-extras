@@ -67,10 +67,16 @@ var shared_lock: std.atomic.Mutex = .unlocked;
 fn sharedIo() std.Io {
     while (!shared_lock.tryLock()) std.atomic.spinLoopHint();
     defer shared_lock.unlock();
-    if (shared_io) |io| return io;
+    if (shared_io) |value| return value;
     shared_threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
     shared_io = shared_threaded.io();
     return shared_io.?;
+}
+
+/// Shared `Io` for callers that need filesystem access without threading an
+/// `Io` value through their APIs (for example CLI discovery).
+pub fn io() std.Io {
+    return sharedIo();
 }
 
 pub const Runner = struct {
