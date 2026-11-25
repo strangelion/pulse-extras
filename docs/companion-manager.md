@@ -368,3 +368,21 @@ is not implemented. Added injected primary collision and independent Python
 SHA-512 reference tests. Inventory bound increases to 131072 native bytes
 (512 records); no extra image allocation, both hash the same input bytes.
 Latest CI pending.
+
+## Public OpenPets market (V3)
+
+Protocol boundary pet_market.zig follows https://docs.openpets.dev/catalog/
+and OpenPetsHQ/openpets packages/pet-format/src/catalog-validation.ts.
+V3 index and paged entries parsed with bounded response size and caller-owned
+scratch budget. URLs restricted to official HTTPS catalog, preview and pet
+ZIP origins/paths; no arbitrary URLs or plugin archives. V1/V2 metadata,
+category, curated flags, base and optional full package URLs are retained.
+SVG and entries declaring a minimum upstream version are conservatively
+non-installable until explicit capability mapping. No remote download or
+networking yet: require TLS, no redirects, size/time quotas, lazy caching,
+validated ZIP extraction, origin/attribution metadata and the existing
+SHA-256/SHA-512 import transaction before exposing install. Never assume
+all public pets are freely redistributable; show source and license where
+provided, do not bundle third-party art. Search-index protocol, live fixture
+verification, UI and network transport remain pending. No plugins or private
+Teams/Studio accounts in scope. Portable tests cover URL and page validation.
