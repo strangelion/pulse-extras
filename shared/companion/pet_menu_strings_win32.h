@@ -30,6 +30,20 @@ static inline pet_language pet_language_resolve(pet_language requested, LANGID s
     return sub == 1 || sub == 3 || sub == 5 ? PET_LANGUAGE_ZH_TW : PET_LANGUAGE_ZH_CN;
 }
 
+/* Preserve native checked-state and other flags, styling only the selected
+ * mutually exclusive option. This works across a separator and does not
+ * turn independent toggles into radio items. Failure leaves the checkmark. */
+static inline BOOL pet_menu_mark_radio(HMENU menu, UINT command) {
+    MENUITEMINFOW info = {0};
+    info.cbSize = sizeof(info);
+    info.fMask = MIIM_FTYPE | MIIM_STATE;
+    if (!GetMenuItemInfoW(menu, command, FALSE, &info) ||
+        !(info.fState & MFS_CHECKED) || (info.fType & MFT_SEPARATOR)) return FALSE;
+    info.fMask = MIIM_FTYPE;
+    info.fType |= MFT_RADIOCHECK;
+    return SetMenuItemInfoW(menu, command, FALSE, &info);
+}
+
 /* Wide strings are independent from the process ANSI code page. */
 static inline pet_menu_strings pet_menu_labels(pet_language requested, LANGID system_ui) {
     switch (pet_language_resolve(requested, system_ui)) {

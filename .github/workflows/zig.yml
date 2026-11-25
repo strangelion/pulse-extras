@@ -231,6 +231,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/companion/pet_package_smoke.py zig-out/bin/pulse-pet-demo.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify opt-in full crash capture against synthetic child
+        if: matrix.lane == 'desktop'
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          zig build pet-crash-capture -Doptimize=ReleaseSafe --summary all
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/bin/pulse-pet-crash-capture.exe "$PWD/zig-out/normal-pet.dmp" --smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path zig-out/normal-pet.dmp) { throw "Normal pet exit wrote a dump" }
+          New-Item -ItemType Directory -Force zig-out/crash-fixture | Out-Null
+          Copy-Item zig-out/bin/pulse-pet-crash-capture.exe zig-out/crash-fixture/
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu tests/companion/pet_crash_fixture_win32.c -o zig-out/crash-fixture/pulse-pet-demo.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/companion/pet_crash_capture_test.py zig-out/crash-fixture/pulse-pet-crash-capture.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test contained companion process supervision
         if: matrix.lane == 'desktop'
         shell: pwsh

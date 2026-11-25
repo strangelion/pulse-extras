@@ -210,9 +210,7 @@ static unsigned pet_menu(const pet_resources *resources, pet_surface *surface, H
      * falsely checked preset. The original checked menu remains fallback. */
     for (unsigned i = 0; i < sizeof(menu_scales) / sizeof(menu_scales[0]); ++i) {
         if (scale == menu_scales[i]) {
-            (void)CheckMenuRadioItem(sizes, MENU_SCALE_50,
-                MENU_SCALE_50 + (UINT)(sizeof(menu_scales) / sizeof(menu_scales[0]) - 1u),
-                MENU_SCALE_50 + i, MF_BYCOMMAND);
+            (void)pet_menu_mark_radio(sizes, MENU_SCALE_50 + i);
             break;
         }
     }
@@ -249,10 +247,10 @@ static unsigned pet_menu(const pet_resources *resources, pet_surface *surface, H
                 destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0;
             }
         }
-        if (!auto_outfit && outfit <= package->meta.outfit_count)
-            (void)CheckMenuRadioItem(outfits, MENU_OUTFIT_FIRST,
-                MENU_OUTFIT_FIRST + package->meta.outfit_count,
-                MENU_OUTFIT_FIRST + outfit, MF_BYCOMMAND);
+        if (auto_outfit && package->meta.rule_count)
+            (void)pet_menu_mark_radio(outfits, MENU_OUTFIT_AUTO);
+        else if (!auto_outfit && outfit <= package->meta.outfit_count)
+            (void)pet_menu_mark_radio(outfits, MENU_OUTFIT_FIRST + outfit);
         if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)outfits, strings.outfit)) {
             destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0;
         }

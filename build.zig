@@ -456,6 +456,18 @@ pub fn build(b: *std.Build) void {
     const pet_step = b.step("pet-demo", "Build and install the experimental standalone Windows companion");
     pet_step.dependOn(&b.addInstallArtifact(pet, .{}).step);
 
+    // Separate, explicitly invoked crash collector; never installed with the default DLLs.
+    const dump_root = b.createModule(.{
+        .target = pet_target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    dump_root.addCSourceFile(.{ .file = b.path("shared/companion/pet_crash_capture_win32.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
+    dump_root.linkSystemLibrary("shell32", .{});
+    dump_root.linkSystemLibrary("advapi32", .{});
+    const dump_capture = b.addExecutable(.{ .name = "pulse-pet-crash-capture", .root_module = dump_root });
+    b.step("pet-crash-capture", "Build the opt-in standalone child crash collector").dependOn(&b.addInstallArtifact(dump_capture, .{}).step);
+
     // Optional GNU supervisor DLL; a versioned C table is the only exported
     // contract. The MSVC settings extension need not link GNU CRT objects.
     const runtime_root = b.createModule(.{

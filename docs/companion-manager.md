@@ -1842,3 +1842,43 @@ and the plugin must not replace its exception filter. An isolated
 child-only dump collector needs explicit opt-in, capped storage, crash
 injection, privacy and teardown validation. Redacted history is not a
 memory dump and cannot prove a host or child crash was captured.
+
+
+### Standalone opt-in crash capture candidate
+
+`zig build pet-demo pet-crash-capture -Doptimize=ReleaseSafe` installs the
+separate console collector next to the standalone pet. Run
+`zig-out/bin/pulse-pet-crash-capture.exe C:\private\new-pet.dmp` only when
+reproducing a pet failure; the selected directory must already exist.
+`--smoke` launches the normal synthetic pet test. `--limit-mib 1..256`
+lowers the per-invocation 256 MiB limit. The collector launches only the
+sibling `pulse-pet-demo.exe`, with an isolated job and no attach-by-PID
+interface, and handles debug events outside the crashing process. First
+chance exceptions are passed through (except the initial debugger
+breakpoint); an unhandled exception requests full memory and thread
+information from system DbgHelp, with the actual fault thread context.
+One output per invocation, CREATE_NEW, protected current-user DACL,
+bounded callback writes, header/size checks and flush; an invalid
+partial file is removed by its owned handle when possible. Exit 0 means
+normal child exit/no dump, 10 means captured crash, 2 means unavailable
+or failure; no raw memory is included in ordinary logs or uploaded.
+Full dumps can contain sensitive memory: use a trusted local directory,
+review before sharing and delete manually when finished. An abrupt
+collector/power failure can leave partial evidence. The ten-minute event
+loop deadline does not guarantee interruption of a blocked DbgHelp call.
+
+The desktop CI candidate tests the real standalone smoke case, a
+synthetic handled exception, second-chance fault, full-memory and
+exception streams, hard cap and refusal to overwrite an existing file.
+No synthetic fault command is compiled into the production pet.
+This is a standalone diagnostic utility, not yet the opt-in managed
+multi-instance host policy/retention integration. Zig panic/forced Job
+termination without a second-chance exception are not guaranteed to
+produce dumps. No claim of passing until the Windows lane is recorded.
+
+The native menu additionally marks scheduled automatic outfit selection
+with the same radio glyph as manual outfits and size presets, preserving
+independent checkmarks. The surface regression exercises native item
+flags; visual Pulse Fluent parity remains unverified and the pinned
+public SDK exposes no standalone Fluent popup renderer. No unsupported
+theme ordinals or custom owner-draw accessibility regressions are added.

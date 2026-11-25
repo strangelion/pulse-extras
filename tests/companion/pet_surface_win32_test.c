@@ -83,9 +83,30 @@ int main(void) {
     uint8_t *out = malloc(PET_FRAME_BYTES);
     pet_surface surface = {0};
     HANDLE thread = NULL;
+    HMENU radio = NULL;
+    MENUITEMINFOW item = {0};
     quota_fixture q = {{0}, {0}, UINT32_MAX, 0};
     const pet_resources budget = {&q, fixture_reserve, fixture_release, fixture_failed, NULL};
     CHECK(atlas && out);
+    radio = CreatePopupMenu();
+    CHECK(radio);
+    CHECK(AppendMenuW(radio, MF_STRING | MF_CHECKED, 517, L"Automatic"));
+    CHECK(AppendMenuW(radio, MF_SEPARATOR, 0, NULL));
+    CHECK(AppendMenuW(radio, MF_STRING, 500, L"Default"));
+    CHECK(AppendMenuW(radio, MF_STRING | MF_CHECKED, 100, L"Independent toggle"));
+    CHECK(pet_menu_mark_radio(radio, 517));
+    CHECK(!pet_menu_mark_radio(radio, 500));
+    CHECK(!pet_menu_mark_radio(radio, 999));
+    item.cbSize = sizeof(item);
+    item.fMask = MIIM_FTYPE | MIIM_STATE;
+    CHECK(GetMenuItemInfoW(radio, 517, FALSE, &item));
+    CHECK((item.fType & MFT_RADIOCHECK) && (item.fState & MFS_CHECKED));
+    CHECK(GetMenuItemInfoW(radio, 500, FALSE, &item));
+    CHECK(!(item.fType & MFT_RADIOCHECK) && !(item.fState & MFS_CHECKED));
+    CHECK(GetMenuItemInfoW(radio, 100, FALSE, &item));
+    CHECK(!(item.fType & MFT_RADIOCHECK) && (item.fState & MFS_CHECKED));
+    CHECK(DestroyMenu(radio));
+    radio = NULL;
     CHECK(!pet_menu_idle_expired(100, 20099));
     CHECK(pet_menu_idle_expired(100, 20100));
     CHECK(!pet_menu_idle_expired(100, 99));
@@ -346,6 +367,7 @@ int main(void) {
     CHECK(fixture_drained(&q));
     rc = 0;
 cleanup:
+    if (radio) DestroyMenu(radio);
     if (thread) {
         WaitForSingleObject(thread, INFINITE);
         CloseHandle(thread);
