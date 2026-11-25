@@ -28,6 +28,14 @@ int main(void) {
         LocalFree(argv);
         if (ignore) { Sleep(INFINITE); return 2; }
         if (!mapping || !event) return 4;
+        /* A normal small commit succeeds; one exceeding the entire
+         * supervised child cap must be denied by the kernel. */
+        void *small = VirtualAlloc(NULL, 65536, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (!small) return 9;
+        if (!VirtualFree(small, 0, MEM_RELEASE)) return 10;
+        void *oversized = VirtualAlloc(NULL, PET_CHILD_COMMIT_LIMIT + 65536,
+            MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (oversized) { VirtualFree(oversized, 0, MEM_RELEASE); return 11; }
         const volatile LONG *slot = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(LONG));
         if (!slot) return 5;
         /* Child must not be able to map writable memory or signal host event. */
@@ -53,6 +61,17 @@ int main(void) {
     CHECK(length && length < 1024);
     CHECK(pet_child_start(&owner, L"relative.exe", &options) == PET_CHILD_INVALID);
     CHECK(pet_child_start(&owner, path, &options) == PET_CHILD_OK);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
+    CHECK(QueryInformationJobObject(owner.job, JobObjectExtendedLimitInformation,
+        &limits, sizeof(limits), NULL));
+    CHECK((limits.BasicLimitInformation.LimitFlags &
+        (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS |
+         JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_JOB_MEMORY)) ==
+        (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS |
+         JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_JOB_MEMORY));
+    CHECK(limits.BasicLimitInformation.ActiveProcessLimit == 1);
+    CHECK(limits.ProcessMemoryLimit == PET_CHILD_COMMIT_LIMIT);
+    CHECK(limits.JobMemoryLimit == PET_CHILD_COMMIT_LIMIT);
     CHECK(pet_child_start(&owner, path, &options) == PET_CHILD_BUSY);
     CHECK(pet_child_start(&other, path, &options) == PET_CHILD_BUSY);
     CHECK(pet_child_status(&owner, &running, &code) == PET_CHILD_OK && running);

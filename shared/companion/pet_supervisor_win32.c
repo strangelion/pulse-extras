@@ -84,9 +84,15 @@ pet_child_result pet_child_start(pet_supervisor *owner, const wchar_t *approved_
     job = CreateJobObjectW(NULL, NULL);
     if (!job) goto cleanup;
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
+    /* Bound committed memory, including decoder/CRT scratch not covered
+     * by the application allocator. Configure before creating the child.
+     * Failure is fail-closed; never start an unbounded replacement. */
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
-        JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+        JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY |
+        JOB_OBJECT_LIMIT_JOB_MEMORY;
     limits.BasicLimitInformation.ActiveProcessLimit = 1;
+    limits.ProcessMemoryLimit = PET_CHILD_COMMIT_LIMIT;
+    limits.JobMemoryLimit = PET_CHILD_COMMIT_LIMIT;
     if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
         result = PET_CHILD_CONTAINMENT_FAILED; goto cleanup;
     }

@@ -2,6 +2,10 @@
 #define PULSE_PET_SUPERVISOR_WIN32_H
 #include "pet_state_win32.h"
 
+/* Experimental supervised child committed-memory ceiling. This is not
+ * the 48 MiB application allocator budget or a working-set limit. */
+#define PET_CHILD_COMMIT_LIMIT ((SIZE_T)128u * 1024u * 1024u)
+
 /* Worker-owned, zero-initialized, noncopyable. One child per supervisor.
  * The host must verify its independently approved executable digest/root
  * ACLs before launch (shared/process/trust.zig); this is containment,

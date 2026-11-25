@@ -1366,3 +1366,28 @@ overflow, zero size, quota denial and exact drain) passed local GCC with
 AddressSanitizer and UndefinedBehaviorSanitizer. Windows compile and
 full real decoder integration require the new CI. No shared atlas or
 cross-process supervisor budget change in this commit.
+
+### Supervisor committed-memory containment checkpoint
+
+The 100-child stress harness launches independent processes, not 100
+instances of the native host. The existing native supervisor admits only
+one child per host process via live_owner; its singleton contract, private
+state channel, atomic job assignment, and confirmed stop semantics remain
+unchanged. Do not conflate benchmark capacity with host multi-pet support.
+
+Set an experimental 128 MiB per-child process/job committed-memory limit
+before creation using Windows Job Object limits. This is a separate OS
+containment layer, not an RSS cap or the existing 48 MiB tracked allocation
+budget. The 128 MiB default leaves provisional headroom for decoder and OS
+allocations; production/complex asset evidence may require revisiting it.
+If kernel configuration fails, fail closed. No new ABI fields or global
+allocator. Native regression checks job flags and limits, successful small
+commit and rejected oversized VirtualAlloc in the supervised fixture.
+No local Windows execution; CI is required to verify the new tests.
+
+Next design boundary: a worker-owned supervisor group should reserve
+per-child committed-memory ceilings before launch, keep reservations until
+confirmed exit, and retain pending termination handles on abandonment.
+Do not simply remove live_owner or release a reservation on a kill request.
+A per-group total cap is not implemented here; direct standalone starts
+and benchmark children are not governed by the supervisor's job limit.
