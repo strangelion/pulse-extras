@@ -326,7 +326,7 @@ changed; the sample pixels are not distributable pet artwork.
 Build on Windows from repository root with the pinned Zig:
 
 ```powershell
-zig build-exe shared/companion/pet_demo.zig shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -target x86_64-windows-gnu -O ReleaseSafe -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 '-femit-bin=pulse-pet-demo.exe'
+zig build-exe -target x86_64-windows-gnu -O ReleaseSafe shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 --dep runtime_allocator -Mroot=shared/companion/pet_demo.zig -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_budget -Mruntime_allocator=shared/runtime/allocator.zig -target x86_64-windows-gnu -O ReleaseSafe -Mruntime_budget=shared/runtime/budget.zig '-femit-bin=pulse-pet-demo.exe'
 .\pulse-pet-demo.exe
 .\pulse-pet-demo.exe --reduced-motion
 .\pulse-pet-demo.exe --webp-v2 C:\path\to\spritesheet.webp
@@ -774,3 +774,30 @@ starts with default. Synchronous WIC and explicitly selected trusted
 folder limitations remain. Regression cases cover missing/extra outfit
 and variant files, dimensions, exact projection and same-size DIB
 replacement. Real visual verification and CI remain required.
+
+## Shared runtime memory domain (companion RT integration, phase 1)
+
+The standalone Zig entry owns one shared/runtime/allocator.zig
+BoundedAllocator (and its runtime_budget dependency) for the entire
+native demo run. pet_memory.zig projects only a C callback bridge and
+opaque owner; all application-owned compressed input, synthetic/base/
+outfit/optional activity RGBA buffers and the 2 MiB bounded JSON scratch
+use the same domain. C frees exactly the original byte length through
+that owner on success, failure and cancellation. No fallback malloc.
+The wrapper is not global and remains alive until synchronous C cleanup
+returns. Exit reports live bytes, live allocations, reservation peak and
+denials once, then requires checkDrained even on an unsuccessful run.
+
+Initial 48 MiB requested-live-byte quota is derived from a V2 current
+atlas (14,057,472 bytes), a candidate of equal size, and at most 16 MiB
+compressed input during switching. Activities are interrupted before
+switching; JSON scratch is a separate admission phase. This is a
+provisional product-specific ceiling, not a measured RSS baseline.
+GDI DIBs, COM/WIC internals, stack storage, argv, registry, file handles
+and OS allocator overhead are outside these counters. Handle quotas,
+OS resource accounting, event log integration and asynchronous task
+ownership remain separate follow-up work. Budget denial is a normal
+allocation failure, not permission to fall back to an untracked heap.
+Tests exercise shared C/Zig quota, denial, backing allocation failure
+and final drain; the existing Windows executable smoke tests also
+require main to drain after native cleanup.

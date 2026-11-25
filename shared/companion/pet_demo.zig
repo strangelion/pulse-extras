@@ -1,4 +1,6 @@
 //! Standalone experimental desktop companion executable, not a Pulse plugin.
+const std = @import("std");
+const memory = @import("pet_memory.zig");
 const animation = @import("animation.zig");
 const assets = @import("pet_assets.zig");
 const activities = @import("pet_activities.zig");
@@ -15,9 +17,9 @@ const ValidateFn = *const fn (u32, [*]const u8, usize) callconv(.c) c_int;
 
 const ActivitySampleFn = *const fn (u32, u32, u64, *Sample) callconv(.c) c_int;
 
-const PackageParseFn = *const fn ([*]const u8, usize, [*]const u8, usize, *package.Package) callconv(.c) c_int;
+const PackageParseFn = *const fn (*const memory.Bridge, [*]const u8, usize, [*]const u8, usize, *package.Package) callconv(.c) c_int;
 
-extern "c" fn pet_demo_run(SampleFn, ValidateFn, ActivitySampleFn, ValidateFn, PackageParseFn) c_int;
+extern "c" fn pet_demo_run(*const memory.Bridge, SampleFn, ValidateFn, ActivitySampleFn, ValidateFn, PackageParseFn) c_int;
 
 fn layoutFor(version: u32) ?assets.Layout {
     return switch (version) {
@@ -74,6 +76,17 @@ fn validateActivity(frames: u32, bytes: [*]const u8, len: usize) callconv(.c) c_
     return 0;
 }
 
+fn parsePackage(bridge: *const memory.Bridge, input: [*]const u8, len: usize, id: [*]const u8, id_len: usize, out: *package.Package) callconv(.c) c_int {
+    return package.parse(bridge.allocator(), input, len, id, id_len, out);
+}
+
 pub fn main() !void {
-    if (pet_demo_run(sampleFrame, validateWebp, sampleActivity, validateActivity, package.parse) != 0) return error.CompanionDemoFailed;
+    var owner = memory.BoundedAllocator.init(std.heap.page_allocator, memory.limit);
+    const bridge = memory.Bridge.init(&owner);
+    const result = pet_demo_run(&bridge, sampleFrame, validateWebp, sampleActivity, validateActivity, parsePackage);
+    const stats = owner.stats();
+    // A single bounded shutdown diagnostic; no per-frame logging.
+    std.debug.print("Companion heap: live={d} allocations={d} peak={d} denied={d}\n", .{ stats.live_bytes, stats.live_allocations, stats.reserved_peak, stats.denied });
+    try owner.checkDrained();
+    if (result != 0) return error.CompanionDemoFailed;
 }

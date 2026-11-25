@@ -383,3 +383,14 @@ CI 45452000441 passed format and reached compilation; Ubuntu rejected the imposs
 ### Windows timeout investigation
 
 Run 45453154189 on 1a62305 passed both format checks and Ubuntu (64/64 build steps, 129/131 tests, two platform skips), but the Windows aggregate test step ran about 29m40s until job cancellation. No individual failing test was identified. Source inspection found a concrete cleanup-order hazard: MultiReader.deinit calls batch.cancel before the outer catch terminates the job. Terminate/drain the job while the reader is still alive, then deinit the reader, then release the child; on failed explicit drain close the kill-on-close job and report containment failure, not success. Add test-only phase markers without user data, and separate child capture, descendant timeout and output-limit cases. CI runs these independently under a short external deadline before VCS setup and still requires the complete suite. This is a candidate fix, not confirmation of root cause; if it hangs in spawn or fill, investigate the pinned stdlib implementation rather than extend timeouts.
+
+### Companion resource profile — first shared allocator consumer
+
+The experimental standalone companion now owns an instance-local shared
+BoundedAllocator with a provisional 48 MiB requested-live-byte cap.
+Its C callback bridge accounts compressed inputs, RGBA atlas/strip
+allocations and the bounded metadata scratch in one domain. Native
+cleanup precedes checkDrained. This does not count WIC/GDI/OS resources,
+stack memory or handles, and is not a host-wide quota. See the companion
+spike for the switch-peak rationale, remaining handle/log/task gates
+and native verification requirements.

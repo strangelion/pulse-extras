@@ -2,6 +2,23 @@
 #define PULSE_PET_DEMO_WIN32_H
 #include "pet_surface_win32.h"
 
+/* Owned by Zig main for this entire synchronous run. C returns the exact
+ * original size to the same domain; no libc fallback. */
+typedef struct {
+    void *context;
+    uint8_t *(*allocate)(void *, size_t);
+    void (*release)(void *, uint8_t *, size_t);
+} pet_memory;
+
+static inline uint8_t *pet_alloc(const pet_memory *memory, size_t bytes) {
+    return bytes ? memory->allocate(memory->context, bytes) : NULL;
+}
+
+static inline void pet_free(const pet_memory *memory, uint8_t *ptr, size_t bytes) {
+    if (ptr) memory->release(memory->context, ptr, bytes);
+}
+
+
 typedef struct {
     uint32_t row, column, wait_ms;
 } pet_demo_sample;
@@ -9,15 +26,15 @@ typedef int (*pet_demo_sample_fn)(uint32_t, uint32_t, uint64_t, int, pet_demo_sa
 typedef int (*pet_demo_validate_fn)(uint32_t, const uint8_t *, size_t);
 
 /* Explicit local file only. No automatic codec installation or discovery.
- * Returns a malloc-owned tightly packed RGBA8 atlas, or NULL on failure.
+ * Returns a memory-domain-owned tightly packed RGBA8 atlas, or NULL on failure.
  * COM initialization and cleanup are internal, UI thread only. */
-uint8_t *pet_demo_load_webp(const wchar_t *path, unsigned version,
+uint8_t *pet_demo_load_webp(const pet_memory *memory, const wchar_t *path, unsigned version,
     pet_demo_validate_fn validate, size_t *decoded_bytes);
 /* The same callback shape takes an activity frame count instead of a
  * Classic version. The activity timeline returns 0 for a frame, 1 for
  * completion, and -1 for invalid metadata. */
 typedef int (*pet_activity_sample_fn)(uint32_t, uint32_t, uint64_t, pet_demo_sample *);
-uint8_t *pet_demo_load_activity(const wchar_t *path, unsigned frames,
+uint8_t *pet_demo_load_activity(const pet_memory *memory, const wchar_t *path, unsigned frames,
     pet_demo_validate_fn validate, size_t *decoded_bytes);
 #define PET_PACKAGE_MAX 16
 #define PET_OUTFIT_SLOTS 17
@@ -40,7 +57,7 @@ typedef struct {
 _Static_assert(sizeof(pet_package_rep) == 88, "package representation ABI");
 _Static_assert(sizeof(pet_package_item) == 1660, "package item ABI");
 _Static_assert(sizeof(pet_package_meta) == 30428, "package metadata ABI");
-typedef int (*pet_package_parse_fn)(const uint8_t *, size_t,
+typedef int (*pet_package_parse_fn)(const pet_memory *, const uint8_t *, size_t,
     const uint8_t *, size_t, pet_package_meta *);
 typedef struct {
     pet_package_meta meta;
@@ -48,15 +65,15 @@ typedef struct {
     HANDLE outfit_files[PET_PACKAGE_MAX];
     HANDLE files[PET_PACKAGE_MAX][PET_OUTFIT_SLOTS];
 } pet_package;
-BOOL pet_package_open(pet_package *package, const wchar_t *folder,
+BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wchar_t *folder,
     const wchar_t *id, pet_package_parse_fn parse,
     pet_demo_validate_fn validate, pet_demo_validate_fn validate_activity);
 void pet_package_close(pet_package *package);
-uint8_t *pet_package_load_atlas(const pet_package *package, unsigned outfit,
+uint8_t *pet_package_load_atlas(const pet_memory *memory, const pet_package *package, unsigned outfit,
     pet_demo_validate_fn validate, size_t *decoded_bytes);
-uint8_t *pet_package_load_activity(const pet_package *package, unsigned index, unsigned outfit,
+uint8_t *pet_package_load_activity(const pet_memory *memory, const pet_package *package, unsigned index, unsigned outfit,
     pet_demo_validate_fn validate, size_t *decoded_bytes);
-int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
+int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_validate_fn validate,
     pet_activity_sample_fn sample_activity, pet_demo_validate_fn validate_activity,
     pet_package_parse_fn parse_package);
 #endif

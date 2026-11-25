@@ -62,10 +62,9 @@ pub fn project(allocator: std.mem.Allocator, input: []const u8, id: []const u8) 
     return result;
 }
 
-pub fn parse(input: [*]const u8, len: usize, id: [*]const u8, id_len: usize, out: *Package) callconv(.c) c_int {
+pub fn parse(allocator: std.mem.Allocator, input: [*]const u8, len: usize, id: [*]const u8, id_len: usize, out: *Package) c_int {
     out.* = .{};
     if (len == 0 or len > assets.max_metadata_bytes or id_len == 0 or id_len > 64) return 1;
-    const allocator = std.heap.page_allocator;
     const scratch = allocator.alloc(u8, 2 * 1024 * 1024) catch return 1;
     defer allocator.free(scratch);
     var fixed = std.heap.FixedBufferAllocator.init(scratch);
@@ -73,14 +72,14 @@ pub fn parse(input: [*]const u8, len: usize, id: [*]const u8, id_len: usize, out
     return 0;
 }
 
-test "bounded C ABI parser accepts the Windows smoke metadata" {
+test "bounded parser accepts the Windows smoke metadata" {
     const input = "{\"id\": \"cat\", \"displayName\": \"Cat\", \"description\": \"Fixture\", \"spritesheetPath\": \"spritesheet.webp\", \"activities\": [{\"id\": \"nap\", \"displayName\": \"Nap\", \"outfitId\": \"default\", \"spritesheetPath\": \"activities/nap.webp\", \"frameCount\": 4, \"fps\": 4}]}";
     var out: Package = .{};
-    try std.testing.expectEqual(@as(c_int, 0), parse(input.ptr, input.len, "cat", 3, &out));
+    try std.testing.expectEqual(@as(c_int, 0), parse(std.testing.allocator, input.ptr, input.len, "cat", 3, &out));
     try std.testing.expectEqual(@as(u32, 1), out.version);
     try std.testing.expectEqual(@as(u32, 1), out.count);
     try std.testing.expectEqualStrings("nap.webp", std.mem.sliceTo(&out.items[0].reps[0].leaf, 0));
-    try std.testing.expectEqual(@as(c_int, 1), parse(input.ptr, input.len, "other", 5, &out));
+    try std.testing.expectEqual(@as(c_int, 1), parse(std.testing.allocator, input.ptr, input.len, "other", 5, &out));
     try std.testing.expectEqual(@as(u32, 0), out.count);
 }
 

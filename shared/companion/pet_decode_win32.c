@@ -8,7 +8,7 @@
 
 #define MAX_COMPRESSED (16u * 1024u * 1024u)
 
-static uint8_t *read_handle(HANDLE file, DWORD limit, DWORD *length) {
+static uint8_t *read_handle(const pet_memory *memory, HANDLE file, DWORD limit, DWORD *length) {
     *length = 0;
     uint8_t *data = NULL;
     BY_HANDLE_FILE_INFORMATION info;
@@ -18,7 +18,7 @@ static uint8_t *read_handle(HANDLE file, DWORD limit, DWORD *length) {
         (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ||
         info.nFileSizeHigh || !info.nFileSizeLow || info.nFileSizeLow > limit ||
         !SetFilePointerEx(file, zero, NULL, FILE_BEGIN)) return NULL;
-    data = malloc(info.nFileSizeLow);
+    data = pet_alloc(memory, info.nFileSizeLow);
     if (!data) return NULL;
     DWORD total = 0;
     while (total < info.nFileSizeLow) {
@@ -32,7 +32,7 @@ static uint8_t *read_handle(HANDLE file, DWORD limit, DWORD *length) {
     if (!ReadFile(file, &extra, 1, &count, NULL) || count) goto cleanup;
     *length = total;
 cleanup:
-    if (!*length) { free(data); data = NULL; }
+    if (!*length) { pet_free(memory, data, info.nFileSizeLow); data = NULL; }
     return data;
 }
 
@@ -46,13 +46,13 @@ static BOOL fixed_path(HANDLE file, wchar_t *resolved, DWORD capacity) {
     return GetDriveTypeW(root) == DRIVE_FIXED;
 }
 
-static uint8_t *read_local(const wchar_t *path, DWORD limit, DWORD *length) {
+static uint8_t *read_local(const pet_memory *memory, const wchar_t *path, DWORD limit, DWORD *length) {
     *length = 0;
     HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL,
         OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
     if (file == INVALID_HANDLE_VALUE) return NULL;
     wchar_t resolved[32768];
-    uint8_t *data = fixed_path(file, resolved, 32768) ? read_handle(file, limit, length) : NULL;
+    uint8_t *data = fixed_path(file, resolved, 32768) ? read_handle(memory, file, limit, length) : NULL;
     CloseHandle(file);
     return data;
 }
@@ -165,7 +165,7 @@ cleanup:
     return ok;
 }
 
-BOOL pet_package_open(pet_package *package, const wchar_t *folder,
+BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wchar_t *folder,
     const wchar_t *id, pet_package_parse_fn parse,
     pet_demo_validate_fn validate, pet_demo_validate_fn validate_activity) {
     if (!package || package->root || !folder || !id || !parse || !validate || !validate_activity)
@@ -205,22 +205,22 @@ BOOL pet_package_open(pet_package *package, const wchar_t *folder,
     if (!join_path(path, 1024, root, L"pet.json") ||
         !(metadata = package_handle(path, FALSE))) goto cleanup;
     stage = "metadata-read";
-    data = read_handle(metadata, 128u * 1024u, &length);
+    data = read_handle(memory, metadata, 128u * 1024u, &length);
     if (!data) goto cleanup;
     stage = "metadata-parse";
-    if (parse(data, length, id8, id_len, &package->meta) ||
+    if (parse(memory, data, length, id8, id_len, &package->meta) ||
         package->meta.count > PET_PACKAGE_MAX || package->meta.outfit_count > PET_PACKAGE_MAX ||
         (package->meta.version != 1 && package->meta.version != 2)) goto cleanup;
-    free(data); data = NULL;
+    pet_free(memory, data, length); data = NULL;
     stage = "base-open";
     if (!join_path(path, 1024, root, L"spritesheet.webp") ||
         !(package->atlas = package_handle(path, FALSE))) goto cleanup;
     stage = "base-read";
-    data = read_handle(package->atlas, MAX_COMPRESSED, &length);
+    data = read_handle(memory, package->atlas, MAX_COMPRESSED, &length);
     if (!data) goto cleanup;
     stage = "base-header";
     if (validate(package->meta.version, data, length)) goto cleanup;
-    free(data); data = NULL;
+    pet_free(memory, data, length); data = NULL;
     inventory_file files[PET_PACKAGE_MAX * PET_OUTFIT_SLOTS];
     unsigned count = 0;
     for (unsigned i = 0; i < package->meta.outfit_count; ++i)
@@ -229,11 +229,11 @@ BOOL pet_package_open(pet_package *package, const wchar_t *folder,
     if (!pin_inventory(root, L"outfits", &package->wardrobe, files, count)) goto cleanup;
     for (unsigned i = 0; i < count; ++i) {
         stage = "outfit-read";
-        data = read_handle(package->outfit_files[i], MAX_COMPRESSED, &length);
+        data = read_handle(memory, package->outfit_files[i], MAX_COMPRESSED, &length);
         if (!data) goto cleanup;
         stage = "outfit-header";
         if (validate(package->meta.version, data, length)) goto cleanup;
-        free(data); data = NULL;
+        pet_free(memory, data, length); data = NULL;
     }
     count = 0;
     for (unsigned i = 0; i < package->meta.count; ++i)
@@ -250,19 +250,19 @@ BOOL pet_package_open(pet_package *package, const wchar_t *folder,
             const pet_package_rep *rep = &package->meta.items[i].reps[j];
             if (!rep->frames) continue;
             stage = "activity-read";
-            data = read_handle(package->files[i][j], 2u * 1024u * 1024u, &length);
+            data = read_handle(memory, package->files[i][j], 2u * 1024u * 1024u, &length);
             if (!data) goto cleanup;
             stage = "activity-size";
             if (length > 16u * 1024u * 1024u - total) goto cleanup;
             stage = "activity-header";
             if (validate_activity(rep->frames, data, length)) goto cleanup;
             total += length;
-            free(data); data = NULL;
+            pet_free(memory, data, length); data = NULL;
         }
     ok = TRUE;
 cleanup:
     if (metadata) CloseHandle(metadata);
-    free(data);
+    pet_free(memory, data, length);
     if (!ok) {
         fprintf(stderr, "Package admission failed at %s.\n", stage);
         pet_package_close(package);
@@ -270,7 +270,7 @@ cleanup:
     return ok;
 }
 
-static uint8_t *decode_static(const wchar_t *path, HANDLE pinned, unsigned kind,
+static uint8_t *decode_static(const pet_memory *memory, const wchar_t *path, HANDLE pinned, unsigned kind,
     UINT width, UINT height, DWORD limit, pet_demo_validate_fn validate,
     size_t *decoded_bytes) {
     if (!decoded_bytes) return NULL;
@@ -278,7 +278,7 @@ static uint8_t *decode_static(const wchar_t *path, HANDLE pinned, unsigned kind,
     if ((!path && !pinned) || !validate) return NULL;
     const UINT stride = width * 4, bytes = stride * height;
     DWORD length = 0;
-    uint8_t *input = pinned ? read_handle(pinned, limit, &length) : read_local(path, limit, &length);
+    uint8_t *input = pinned ? read_handle(memory, pinned, limit, &length) : read_local(memory, path, limit, &length);
     uint8_t *pixels = NULL;
     IWICImagingFactory *factory = NULL;
     IWICStream *stream = NULL;
@@ -314,7 +314,7 @@ static uint8_t *decode_static(const wchar_t *path, HANDLE pinned, unsigned kind,
         &GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, NULL, 0,
         WICBitmapPaletteTypeCustom);
     if (FAILED(hr)) goto cleanup;
-    pixels = malloc(bytes);
+    pixels = pet_alloc(memory, bytes);
     if (!pixels) goto cleanup;
     hr = IWICFormatConverter_CopyPixels(converter, NULL, stride, bytes, pixels);
     if (FAILED(hr)) goto cleanup;
@@ -326,9 +326,9 @@ cleanup:
     if (stream) IWICStream_Release(stream);
     if (factory) IWICImagingFactory_Release(factory);
     if (com) CoUninitialize();
-    free(input);
+    pet_free(memory, input, length);
     if (!*decoded_bytes) {
-        free(pixels);
+        pet_free(memory, pixels, bytes);
         pixels = NULL;
         fprintf(stderr, "WebP asset rejected or local WIC codec unavailable (HRESULT 0x%08lx).\n",
             (unsigned long)(uint32_t)hr);
@@ -336,23 +336,23 @@ cleanup:
     return pixels;
 }
 
-uint8_t *pet_demo_load_webp(const wchar_t *path, unsigned version,
+uint8_t *pet_demo_load_webp(const pet_memory *memory, const wchar_t *path, unsigned version,
     pet_demo_validate_fn validate, size_t *decoded_bytes) {
     if (decoded_bytes) *decoded_bytes = 0;
     if (version != 1 && version != 2) return NULL;
-    return decode_static(path, NULL, version, 1536, version == 1 ? 1872 : 2288,
+    return decode_static(memory, path, NULL, version, 1536, version == 1 ? 1872 : 2288,
         MAX_COMPRESSED, validate, decoded_bytes);
 }
 
-uint8_t *pet_demo_load_activity(const wchar_t *path, unsigned frames,
+uint8_t *pet_demo_load_activity(const pet_memory *memory, const wchar_t *path, unsigned frames,
     pet_demo_validate_fn validate, size_t *decoded_bytes) {
     if (decoded_bytes) *decoded_bytes = 0;
     if (frames < 4 || frames > 32) return NULL;
-    return decode_static(path, NULL, frames, PET_FRAME_WIDTH * frames, PET_FRAME_HEIGHT,
+    return decode_static(memory, path, NULL, frames, PET_FRAME_WIDTH * frames, PET_FRAME_HEIGHT,
         2u * 1024u * 1024u, validate, decoded_bytes);
 }
 
-uint8_t *pet_package_load_atlas(const pet_package *package, unsigned outfit,
+uint8_t *pet_package_load_atlas(const pet_memory *memory, const pet_package *package, unsigned outfit,
     pet_demo_validate_fn validate, size_t *decoded_bytes) {
     if (decoded_bytes) *decoded_bytes = 0;
     if (!package || outfit > PET_PACKAGE_MAX || outfit > package->meta.outfit_count ||
@@ -360,17 +360,17 @@ uint8_t *pet_package_load_atlas(const pet_package *package, unsigned outfit,
     HANDLE file = outfit ? package->outfit_files[outfit - 1] : package->atlas;
     if (!file) return NULL;
     unsigned version = package->meta.version;
-    return decode_static(NULL, file, version, 1536,
+    return decode_static(memory, NULL, file, version, 1536,
         version == 1 ? 1872 : 2288, MAX_COMPRESSED, validate, decoded_bytes);
 }
 
-uint8_t *pet_package_load_activity(const pet_package *package, unsigned index, unsigned outfit,
+uint8_t *pet_package_load_activity(const pet_memory *memory, const pet_package *package, unsigned index, unsigned outfit,
     pet_demo_validate_fn validate, size_t *decoded_bytes) {
     if (decoded_bytes) *decoded_bytes = 0;
     if (!package || index >= PET_PACKAGE_MAX || index >= package->meta.count ||
         outfit >= PET_OUTFIT_SLOTS || outfit > package->meta.outfit_count || !package->files[index][outfit]) return NULL;
     unsigned frames = package->meta.items[index].reps[outfit].frames;
     if (frames < 4 || frames > 32) return NULL;
-    return decode_static(NULL, package->files[index][outfit], frames, PET_FRAME_WIDTH * frames,
+    return decode_static(memory, NULL, package->files[index][outfit], frames, PET_FRAME_WIDTH * frames,
         PET_FRAME_HEIGHT, 2u * 1024u * 1024u, validate, decoded_bytes);
 }

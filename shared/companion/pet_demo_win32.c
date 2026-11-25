@@ -6,6 +6,7 @@
 #include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wchar.h>
 #include <limits.h>
 
@@ -13,10 +14,11 @@
 
 /* Original geometric fixture, not imported art. Fill each cell in advance
  * once; no disk asset or dependency is required for the default demo. */
-static uint8_t *synthetic_atlas(size_t *bytes) {
+static uint8_t *synthetic_atlas(const pet_memory *memory, size_t *bytes) {
     *bytes = (size_t)ATLAS_WIDTH * 2288u * 4u;
-    uint8_t *atlas = calloc(1, *bytes);
+    uint8_t *atlas = pet_alloc(memory, *bytes);
     if (!atlas) return NULL;
+    memset(atlas, 0, *bytes);
     for (unsigned row = 0; row < 11; ++row) {
         for (unsigned col = 0; col < 8; ++col) {
             int bob = (int)(col % 4) * 3;
@@ -241,9 +243,10 @@ static void usage(void) {
         "Left click: interact. Left drag: move. Right click: menu. --smoke: hidden synthetic test.\n", stderr);
 }
 
-int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
+int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_validate_fn validate,
     pet_activity_sample_fn sample_activity, pet_demo_validate_fn validate_activity,
     pet_package_parse_fn parse_package) {
+    if (!memory || !memory->context || !memory->allocate || !memory->release) return 1;
     int rc = 1, argc = 0, reduced = 0, smoke = 0;
     unsigned reaction = PET_STATE_IDLE;
     unsigned version = 2, scale = 100;
@@ -346,7 +349,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
         received_testing = reaction == PET_STATE_TESTING;
     }
     if (package_dir) {
-        if (!pet_package_open(&package, package_dir, package_id, parse_package, validate, validate_activity)) {
+        if (!pet_package_open(memory, &package, package_dir, package_id, parse_package, validate, validate_activity)) {
             fputs("Classic package rejected: metadata, path, inventory or WebP header.\n", stderr);
             goto cleanup;
         }
@@ -376,8 +379,8 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
      * Use the older system-aware API only if the newer context is unavailable. */
     if (!SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
         (void)SetProcessDPIAware();
-    atlas = package_dir ? pet_package_load_atlas(&package, outfit, validate, &bytes) :
-        (path ? pet_demo_load_webp(path, version, validate, &bytes) : synthetic_atlas(&bytes));
+    atlas = package_dir ? pet_package_load_atlas(memory, &package, outfit, validate, &bytes) :
+        (path ? pet_demo_load_webp(memory, path, version, validate, &bytes) : synthetic_atlas(memory, &bytes));
     if (!atlas) goto cleanup;
     if (pet_surface_open_scaled(&surface, topmost, FALSE, scale) != PET_SURFACE_OK) goto cleanup;
     RECT work = {0};
@@ -424,7 +427,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                     /* Opening the menu interrupts optional artwork; restore
                      * the base pose before any live resize. */
                     if (activity || activity_displayed) {
-                        free(activity); activity = NULL; activity_bytes = 0;
+                        pet_free(memory, activity, activity_bytes); activity = NULL; activity_bytes = 0;
                         activity_displayed = 0;
                         reaction = PET_STATE_IDLE;
                         started = GetTickCount64();
@@ -455,12 +458,12 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                         unsigned next = command - MENU_OUTFIT_FIRST;
                         if (next != outfit) {
                             size_t next_bytes = 0;
-                            uint8_t *replacement = pet_package_load_atlas(&package, next, validate, &next_bytes);
+                            uint8_t *replacement = pet_package_load_atlas(memory, &package, next, validate, &next_bytes);
                             pet_demo_sample base = {0};
                             if (replacement && !sample(version, PET_STATE_IDLE, 0, reduced, &base) &&
                                 pet_surface_resize(&surface, scale, replacement, next_bytes, version,
                                     base.row, base.column, x, y, 255) == PET_SURFACE_OK) {
-                                free(atlas);
+                                pet_free(memory, atlas, bytes);
                                 atlas = replacement; bytes = next_bytes;
                                 outfit_failures[outfit] = idle.failed;
                                 outfit = next;
@@ -471,7 +474,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                                 started = GetTickCount64();
                                 last_row = base.row; last_column = base.column;
                             } else {
-                                free(replacement);
+                                pet_free(memory, replacement, next_bytes);
                                 fputs("Outfit switch failed; previous appearance retained.\n", stderr);
                             }
                         }
@@ -485,7 +488,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                         unsigned index = command - MENU_ACTIVITY_FIRST;
                         activity_frames = package.meta.items[index].reps[outfit].frames;
                         activity_fps = package.meta.items[index].reps[outfit].fps;
-                        activity = pet_package_load_activity(&package, index, outfit, validate_activity, &activity_bytes);
+                        activity = pet_package_load_activity(memory, &package, index, outfit, validate_activity, &activity_bytes);
                         if (activity) {
                             active_index = index;
                             activity_started = GetTickCount64();
@@ -495,7 +498,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                         }
                     } else if (command == MENU_INTERACT && !state_slot && !reduced) {
                         if (activity_path) {
-                            activity = pet_demo_load_activity(activity_path, activity_frames,
+                            activity = pet_demo_load_activity(memory, activity_path, activity_frames,
                                 validate_activity, &activity_bytes);
                             if (activity) activity_started = GetTickCount64();
                         }
@@ -534,7 +537,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                     pet_idle_interrupt(&idle);
                     active_index = PET_IDLE_NONE;
                     if (activity) {
-                        free(activity); activity = NULL; activity_bytes = 0;
+                        pet_free(memory, activity, activity_bytes); activity = NULL; activity_bytes = 0;
                         reaction = PET_STATE_IDLE;
                         started = GetTickCount64();
                     }
@@ -615,7 +618,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
         if (choice != PET_IDLE_NONE) {
             activity_frames = package.meta.items[choice].reps[outfit].frames;
             activity_fps = package.meta.items[choice].reps[outfit].fps;
-            activity = pet_package_load_activity(&package, choice, outfit, validate_activity, &activity_bytes);
+            activity = pet_package_load_activity(memory, &package, choice, outfit, validate_activity, &activity_bytes);
             now = GetTickCount64();
             if (activity) {
                 active_index = choice;
@@ -632,7 +635,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                 if (result < 0) pet_idle_failed(&idle, active_index);
                 active_index = PET_IDLE_NONE;
                 pet_idle_interrupt(&idle);
-                free(activity); activity = NULL; activity_bytes = 0;
+                pet_free(memory, activity, activity_bytes); activity = NULL; activity_bytes = 0;
                 reaction = PET_STATE_IDLE;
                 started = now;
                 if (result < 0) fputs("Invalid activity timeline.\n", stderr);
@@ -698,8 +701,8 @@ cleanup:
     if (stop) CloseHandle(stop);
     if (surface.window && GetCapture() == surface.window) ReleaseCapture();
     if (pet_surface_close(&surface) != PET_SURFACE_OK) rc = 1;
-    free(activity);
-    free(atlas);
+    pet_free(memory, activity, activity_bytes);
+    pet_free(memory, atlas, bytes);
     pet_package_close(&package);
     if (argv) LocalFree(argv);
     return rc;
