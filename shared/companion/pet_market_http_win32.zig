@@ -48,7 +48,7 @@ pub const Transport = struct {
     pub fn get(self: *Transport, kind: download.Kind, url: []const u8, sink: *download.Sink) !void {
         if (!download.validUrl(kind, url)) return error.InvalidUrl;
         var context: Context = .{ .sink = sink };
-        const code = pet_market_http_get(@intFromEnum(kind), url.ptr, url.len, sink.cap, &context, Context.header, Context.chunk, Context.canceled, &self.last_os_error);
+        const code = pet_market_http_get(@backingInt(kind), url.ptr, url.len, sink.cap, &context, Context.header, Context.chunk, Context.canceled, &self.last_os_error);
         if (code == 6) return error.CleanupFailed;
         if (context.failure) |err| return err;
         return switch (code) {
@@ -74,7 +74,7 @@ test "native policy matches Zig and canceled transport never connects" {
         .{ .kind = .preview, .url = "https://openpets.dev/pets/cat/p.webp" },
     };
     for (cases) |item| {
-        try std.testing.expectEqual(download.validUrl(item.kind, item.url), pet_market_http_valid(@intFromEnum(item.kind), item.url.ptr, item.url.len) != 0);
+        try std.testing.expectEqual(download.validUrl(item.kind, item.url), pet_market_http_valid(@backingInt(item.kind), item.url.ptr, item.url.len) != 0);
     }
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
