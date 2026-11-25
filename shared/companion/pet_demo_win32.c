@@ -1,4 +1,5 @@
 #include "pet_demo_win32.h"
+#include "pet_config_win32.h"
 #include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,15 +77,39 @@ static int constrain(const pet_surface *surface, POINT anchor, LONG *x, LONG *y)
         pet_clamp_position(&work, surface->width, surface->height, x, y) == PET_SURFACE_OK;
 }
 
+/* Only use explicitly inherited wait handles from a trusted launcher.
+ * The caller must not supply mutexes, auto-reset events or arbitrary handles. */
+static HANDLE parse_stop_handle(const wchar_t *text) {
+    uintptr_t n = 0;
+    if (!text || !*text) return NULL;
+    for (; *text; ++text) {
+        if (*text < L'0' || *text > L'9') return NULL;
+        unsigned digit = (unsigned)(*text - L'0');
+        if (n > (UINTPTR_MAX - digit) / 10) return NULL;
+        n = n * 10 + digit;
+    }
+    if (!n || n > UINTPTR_MAX / 2) return NULL;
+    HANDLE handle = (HANDLE)n;
+    DWORD flags = 0;
+    if (!GetHandleInformation(handle, &flags) || !(flags & HANDLE_FLAG_INHERIT))
+        return NULL;
+    return handle;
+}
+
 static void usage(void) {
-    fputs("pulse-pet-demo [--reduced-motion] [--scale 50..200] [--topmost] [--webp-v1 FILE | --webp-v2 FILE]\n"
+    fputs("pulse-pet-demo [--reduced-motion] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE]\n"
         "Left click: wave. Left drag: move. Right click: exit. --smoke: hidden synthetic test.\n", stderr);
 }
 
 int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
     int rc = 1, argc = 0, reduced = 0, smoke = 0, waving = 0;
     unsigned version = 2, scale = 100;
-    int topmost = 0, scale_set = 0;
+    int topmost = 0, scale_set = 0, topmost_set = 0, reduced_set = 0;
+    int remember = 0, reset_position = 0, stopped = 0;
+    HANDLE stop = NULL;
+    HKEY settings = NULL;
+    pet_config saved = {0, 0, 100, 0};
+    int can_save = 0;
     const wchar_t *path = NULL;
     uint8_t *atlas = NULL;
     size_t bytes = 0;
@@ -93,8 +118,18 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
     if (!argv || !sample || !validate) goto cleanup;
     for (int i = 1; i < argc; ++i) {
         if (wcscmp(argv[i], L"--smoke") == 0 && !smoke) smoke = 1;
-        else if (wcscmp(argv[i], L"--reduced-motion") == 0 && !reduced) reduced = 1;
-        else if (wcscmp(argv[i], L"--topmost") == 0 && !topmost) topmost = 1;
+        else if (!reduced_set && (wcscmp(argv[i], L"--reduced-motion") == 0 ||
+            wcscmp(argv[i], L"--motion") == 0)) {
+            reduced = wcscmp(argv[i], L"--reduced-motion") == 0;
+            reduced_set = 1;
+        } else if (!topmost_set && (wcscmp(argv[i], L"--topmost") == 0 ||
+            wcscmp(argv[i], L"--no-topmost") == 0)) {
+            topmost = wcscmp(argv[i], L"--topmost") == 0;
+            topmost_set = 1;
+        } else if (wcscmp(argv[i], L"--remember") == 0 && !remember) remember = 1;
+        else if (wcscmp(argv[i], L"--reset-position") == 0 && !reset_position) reset_position = 1;
+        else if (wcscmp(argv[i], L"--stop-handle") == 0 && !stop && i + 1 < argc &&
+            (stop = parse_stop_handle(argv[i + 1])) != NULL) ++i;
         else if (wcscmp(argv[i], L"--scale") == 0 && !scale_set && i + 1 < argc &&
             parse_scale(argv[i + 1], &scale)) {
             scale_set = 1;
@@ -108,9 +143,32 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
             goto cleanup;
         }
     }
-    if (smoke && (path || reduced || topmost)) {
+    if ((smoke && (path || reduced_set || topmost_set || remember || reset_position)) ||
+        (reset_position && !remember)) {
         usage();
         goto cleanup;
+    }
+    if (stop) {
+        DWORD state = WaitForSingleObject(stop, 0);
+        if (state == WAIT_OBJECT_0) { rc = 0; goto cleanup; }
+        if (state != WAIT_TIMEOUT) goto cleanup;
+    }
+    if (remember) {
+        LSTATUS status = RegOpenKeyExW(HKEY_CURRENT_USER, PET_CONFIG_KEY, 0,
+            KEY_QUERY_VALUE | KEY_SET_VALUE, &settings);
+        if (status == ERROR_FILE_NOT_FOUND) {
+            /* Defer creation until a clean, visible exit. */
+            can_save = 1;
+        } else if (status == ERROR_SUCCESS) {
+            pet_config_result result = pet_config_load(settings, &saved);
+            can_save = result == PET_CONFIG_OK || result == PET_CONFIG_MISSING;
+            if (result == PET_CONFIG_OK) {
+                if (!scale_set) scale = saved.scale;
+                if (!topmost_set) topmost = (saved.flags & PET_CONFIG_TOPMOST) != 0;
+                if (!reduced_set) reduced = (saved.flags & PET_CONFIG_REDUCED) != 0;
+            }
+        }
+        if (!can_save) fputs("Saved companion settings unavailable or incompatible; using defaults without overwrite.\n", stderr);
     }
     /* Process-local DPI policy before window creation. No host mutation. */
     /* Per-monitor awareness keeps the explicit physical pixel scale stable.
@@ -126,6 +184,12 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
     LONG y = clamp_long((int64_t)work.bottom - surface.height - 24);
     if (pet_clamp_position(&work, surface.width, surface.height, &x, &y) != PET_SURFACE_OK)
         goto cleanup;
+    if (remember && !reset_position && (saved.flags & PET_CONFIG_POSITION)) {
+        x = saved.x; y = saved.y;
+        POINT center = {clamp_long((int64_t)x + surface.width / 2),
+            clamp_long((int64_t)y + surface.height / 2)};
+        if (!constrain(&surface, center, &x, &y)) goto cleanup;
+    }
     POINT press = {0}, cursor = {0};
     LONG press_x = 0, press_y = 0;
     int pressed = 0, dragged = 0;
@@ -134,6 +198,11 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
     int shown = 0, done = 0;
     if (smoke) waving = 1;
     while (!done) {
+        if (stop) {
+            DWORD state = WaitForSingleObject(stop, 0);
+            if (state == WAIT_OBJECT_0) { stopped = 1; break; }
+            if (state != WAIT_TIMEOUT) goto cleanup;
+        }
         MSG message;
         /* Bound message processing per iteration so input cannot starve the
          * timeline or the smoke-test deadline. */
@@ -210,15 +279,28 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
         }
         DWORD wait = point.wait_ms ? point.wait_ms : INFINITE;
         if (smoke && (uint64_t)wait > smoke_end - now) wait = (DWORD)(smoke_end - now);
-        DWORD result = MsgWaitForMultipleObjectsEx(0, NULL, wait, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-        if (result == WAIT_FAILED) goto cleanup;
+        DWORD result = MsgWaitForMultipleObjectsEx(stop ? 1 : 0,
+            stop ? &stop : NULL, wait, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        if (stop && result == WAIT_OBJECT_0) { stopped = 1; break; }
+        if (result == WAIT_FAILED || (stop && result == WAIT_ABANDONED_0)) goto cleanup;
     }
-    if (smoke && frames < 2) {
+    if (smoke && !stopped && frames < 2) {
         fputs("Hidden smoke test did not advance the animation.\n", stderr);
         goto cleanup;
     }
     rc = 0;
+    if (remember && can_save && shown) {
+        if (!settings && RegCreateKeyExW(HKEY_CURRENT_USER, PET_CONFIG_KEY, 0, NULL,
+            REG_OPTION_NON_VOLATILE, KEY_QUERY_VALUE | KEY_SET_VALUE, NULL, &settings,
+            NULL) != ERROR_SUCCESS) settings = NULL;
+        pet_config next = {x, y, scale, PET_CONFIG_POSITION |
+            (topmost ? PET_CONFIG_TOPMOST : 0) | (reduced ? PET_CONFIG_REDUCED : 0)};
+        if (!settings || pet_config_save(settings, &next) != PET_CONFIG_OK)
+            fputs("Companion settings not saved; existing incompatible data preserved.\n", stderr);
+    }
 cleanup:
+    if (settings) RegCloseKey(settings);
+    if (stop) CloseHandle(stop);
     if (surface.window && GetCapture() == surface.window) ReleaseCapture();
     if (pet_surface_close(&surface) != PET_SURFACE_OK) rc = 1;
     free(atlas);

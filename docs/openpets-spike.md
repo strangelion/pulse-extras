@@ -326,7 +326,7 @@ changed; the sample pixels are not distributable pet artwork.
 Build on Windows from repository root with the pinned Zig:
 
 ```powershell
-zig build-exe shared/companion/pet_demo.zig shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c -target x86_64-windows-gnu -O ReleaseSafe -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid '-femit-bin=pulse-pet-demo.exe'
+zig build-exe shared/companion/pet_demo.zig shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -target x86_64-windows-gnu -O ReleaseSafe -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 '-femit-bin=pulse-pet-demo.exe'
 .\pulse-pet-demo.exe
 .\pulse-pet-demo.exe --reduced-motion
 .\pulse-pet-demo.exe --webp-v2 C:\path\to\spritesheet.webp
@@ -380,3 +380,39 @@ pixel conversion, position-only updates, clamp bounds and two hidden smoke
 sizes. Real drag/capture behavior, display topology changes, DPI transitions
 and actual visual quality still need interactive testing. No disk/registry
 position persistence, automatic DPI-dependent size or Pulse supervision yet.
+
+## Opt-in persistence and inherited shutdown signal
+
+Use --remember to load and save the demo's settings under
+HKCU\Software\PulseExtras\CompanionDemo, SettingsV1. A single 24-byte
+versioned REG_BINARY record contains x/y, scale, topmost, reduced motion
+and position validity. No image paths, credentials or arbitrary strings.
+CLI --scale, --topmost/--no-topmost and --reduced-motion/--motion override
+saved values; --reset-position --remember ignores the old location.
+The nearest available monitor work area constrains restored positions.
+A missing key is only created on a clean visible exit. Invalid or unknown
+records are not overwritten; save failures are reported without modifying
+other settings. No writes in smoke mode, no periodic writes, no registry
+flush or promise of crash-durable last position. Concurrent demo instances
+are not synchronized (last valid save wins); a future supervisor must
+enforce one child. The load/check/write sequence is not a CAS against
+concurrent registry edits.
+
+For a trusted future launcher, --stop-handle DECIMAL accepts a valid
+inheritable wait handle already present in the child, intended only for a
+manual-reset event or a parent process handle with SYNCHRONIZE access.
+Do not expose raw handle arguments to untrusted callers. The launch
+side must explicitly allowlist inherited handles and retain its own
+reference. The child waits in MsgWaitForMultipleObjectsEx alongside input
+and frame deadlines; a signal stops it without polling and releases all
+resources. A signaled handle at startup exits before window creation.
+There is no PID lookup, termination of another process, automatic launch
+or parent-crash supervision yet. A process handle can provide parent-exit
+notification; the actual Pulse launcher must still implement ownership
+and job-based cleanup. This is cooperative shutdown, not a hard deadline
+for synchronous image decode or OS calls.
+
+CI tests the configuration record in an isolated volatile registry key
+and the pre-signaled inherited-event startup path with a Windows Python
+launcher. Interactive restore, live stop during rendering and crash
+behavior remain to be verified.

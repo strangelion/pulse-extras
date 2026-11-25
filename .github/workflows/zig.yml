@@ -111,15 +111,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./zig-out/pet-surface-test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test isolated companion configuration record
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_config_win32.c tests/companion/pet_config_win32_test.c -ladvapi32 -o zig-out/pet-config-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/pet-config-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and smoke test standalone desktop companion
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          zig build-exe shared/companion/pet_demo.zig shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c -target x86_64-windows-gnu -O ReleaseSafe -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid '-femit-bin=zig-out/pulse-pet-demo.exe'
+          zig build-exe shared/companion/pet_demo.zig shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -target x86_64-windows-gnu -O ReleaseSafe -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 '-femit-bin=zig-out/pulse-pet-demo.exe'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./zig-out/pulse-pet-demo.exe --smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./zig-out/pulse-pet-demo.exe --smoke --scale 150
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/companion/pet_stop_smoke.py zig-out/pulse-pet-demo.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Fetch pinned native SDK headers
         if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
