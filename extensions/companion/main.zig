@@ -1,5 +1,5 @@
 //! Experimental native Companion settings contribution. All SDK calls
-//! are on the UI thread. No file/network/process work in this DLL yet.
+//! are on the UI thread. Read-only inventory I/O uses a host task.
 const std = @import("std");
 const raw = @import("pulse_raw");
 const abi = @import("pulse_abi");
@@ -7,13 +7,14 @@ const host_mod = @import("pulse_host");
 const ui = @import("pulse_ui_model");
 const mount = @import("pulse_ui_mount");
 const diag = @import("pulse_diagnostics");
+const library = @import("companion_library");
 
 const allocator = std.heap.page_allocator;
 const title = "Pulse Companion";
 const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -29,13 +30,26 @@ const Instance = struct {
     version: u64 = 0,
     loaded: bool = false,
     active: bool = false,
+    tasks: ?raw.PulseTasksV1 = null,
+    task_id: u64 = 0,
+    task_state: u32 = raw.PULSE_TASK_RUNNING,
+    work_done: std.atomic.Value(bool) = .init(false),
+    work_error: ?anyerror = null,
+    work_snapshot: library.Snapshot = .{},
+    library_snapshot: library.Snapshot = .{},
+    library_loaded: bool = false,
+    library_status: []const u8 = "点击读取本地素材清单",
+    library_offset: usize = 0,
     status: []const u8 = "设置尚未读取",
 };
 
 const Content = struct {
     declared: [commands.len]abi.StringView = undefined,
     navigation: [4]ui.Node = undefined,
-    children: [7]ui.Node = undefined,
+    children: [24]ui.Node = undefined,
+    row_text: [16][128]u8 = undefined,
+    row_ids: [16][32]u8 = undefined,
+    library_count: [160]u8 = undefined,
     root: ui.Node = undefined,
     value: [128]u8 = undefined,
 };
@@ -69,7 +83,27 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     content.children[1].role = .{ .present = 1, .value = abi.view("section") };
     var count: usize = 3;
     switch (instance.section) {
-        .library => content.children[2] = label("library.status", "素材库尚未连接已批准的本地存储。导入、删除、标签与预览暂不可用。"),
+        .library => {
+            content.children[2] = label("library.status", instance.library_status);
+            content.children[3] = action("library.reload", "读取素材清单", commands[7], instance.tasks != null and instance.task_id == 0);
+            content.children[4] = action("library.poll", "检查读取结果", commands[8], instance.tasks != null and instance.task_id != 0);
+            count = 5;
+            if (instance.library_loaded) {
+                const snapshot = &instance.library_snapshot;
+                const end = @min(snapshot.count, instance.library_offset + 16);
+                const line = std.fmt.bufPrint(&content.library_count, "清单共 {d} 项 · 当前显示 {d}–{d} · 尚未验证文件", .{ snapshot.count, if (snapshot.count == 0) 0 else instance.library_offset + 1, end }) catch unreachable;
+                content.children[5] = label("library.count", line);
+                content.children[6] = action("library.previous", "上一页", commands[9], instance.library_offset > 0);
+                content.children[7] = action("library.next", "下一页", commands[10], end < snapshot.count);
+                count = 8;
+                for (snapshot.rows[instance.library_offset..end], 0..) |*row, n| {
+                    const id = std.fmt.bufPrint(&content.row_ids[n], "asset-{x}", .{row.id}) catch unreachable;
+                    const body = std.fmt.bufPrint(&content.row_text[n], "#{d}  {s} · {s}", .{ row.id, row.sourceId(), if (row.paired) "双摘要记录" else "待重验" }) catch unreachable;
+                    content.children[count] = label(id, body);
+                    count += 1;
+                }
+            }
+        },
         .running => content.children[2] = label("running.status", "运行管理尚未连接宿主进程监督器。当前不显示实例数量或资源统计。"),
         .market => content.children[2] = label("market.status", "市场服务已独立实现，尚未连接宿主工作线程。搜索、下载和安装暂不可用。"),
         .global => {
@@ -94,6 +128,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
 }
 
 fn refresh(instance: *Instance) void {
+    if (!instance.active) return;
     if (instance.panel) |*panel| {
         var content: Content = undefined;
         var tree: ui.Tree = undefined;
@@ -174,13 +209,96 @@ fn save(instance: *Instance, next: u8) void {
     refresh(instance);
 }
 
+// Host-owned worker. Writes only the private result buffer; no UI call.
+fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callconv(.c) raw.PulseTaskState {
+    const instance: *Instance = @ptrCast(@alignCast(user orelse return raw.PULSE_TASK_FAILED));
+    defer instance.work_done.store(true, .release);
+    if (context == null) return raw.PULSE_TASK_FAILED;
+    const canceled = context[0].cancelled orelse return raw.PULSE_TASK_FAILED;
+    if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
+    library.readDefault(&instance.work_snapshot) catch |err| {
+        instance.work_error = err;
+        return raw.PULSE_TASK_FAILED;
+    };
+    if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
+    return raw.PULSE_TASK_COMPLETED;
+}
+
+fn observe(user: ?*anyopaque, snapshot: [*c]const raw.PulseTaskSnapshot) callconv(.c) void {
+    const instance: *Instance = @ptrCast(@alignCast(user orelse return));
+    if (snapshot == null or snapshot[0].size < @sizeOf(raw.PulseTaskSnapshot) or snapshot[0].id != instance.task_id) return;
+    instance.task_state = snapshot[0].state;
+}
+
+fn pollLibrary(instance: *Instance) void {
+    const tasks = instance.tasks orelse return;
+    if (instance.task_id == 0) return;
+    const get = tasks.get orelse return;
+    const release = tasks.release orelse return;
+    instance.task_state = raw.PULSE_TASK_RUNNING;
+    if (get(tasks.context, instance.task_id, observe, instance) != abi.ok) {
+        instance.library_status = "无法读取任务状态；保留任务所有权";
+        refresh(instance);
+        return;
+    }
+    if (instance.task_state == raw.PULSE_TASK_RUNNING or instance.task_state == raw.PULSE_TASK_CANCELLING) {
+        instance.library_status = "正在读取素材清单";
+        refresh(instance);
+        return;
+    }
+    if (instance.task_state != raw.PULSE_TASK_COMPLETED and instance.task_state != raw.PULSE_TASK_FAILED and instance.task_state != raw.PULSE_TASK_CANCELLED and instance.task_state != raw.PULSE_TASK_PARTIAL) return;
+    if (release(tasks.context, instance.task_id) != abi.ok) {
+        instance.library_status = "任务释放失败；请重试";
+        refresh(instance);
+        return;
+    }
+    instance.task_id = 0;
+    const done = instance.work_done.load(.acquire);
+    if (instance.task_state == raw.PULSE_TASK_COMPLETED and done and instance.work_error == null) {
+        instance.library_snapshot = instance.work_snapshot;
+        instance.library_loaded = true;
+        instance.library_offset = 0;
+        instance.library_status = if (instance.library_snapshot.missing) "固定目录中尚无素材清单（未创建文件）" else "已读取持久化清单；尚未验证素材文件";
+    } else {
+        instance.library_loaded = false;
+        instance.library_status = if (instance.task_state == raw.PULSE_TASK_CANCELLED) "读取已取消" else if (done) if (instance.work_error) |err| @errorName(err) else "读取结果无效" else "读取未完成";
+    }
+    refresh(instance);
+}
+
+fn startLibrary(instance: *Instance) void {
+    const tasks = instance.tasks orelse return;
+    if (instance.task_id != 0) return;
+    const create = tasks.create orelse return;
+    instance.work_done.store(false, .release);
+    instance.work_error = null;
+    instance.work_snapshot = .{};
+    instance.library_loaded = false;
+    const descriptor: raw.PulseTaskDescriptor = .{
+        .size = @sizeOf(raw.PulseTaskDescriptor),
+        .title = abi.view("读取桌宠素材清单"),
+        .type = abi.view("companion.library"),
+        .work = readLibrary,
+        .user = instance,
+    };
+    var id: u64 = 0;
+    if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
+        instance.task_id = id;
+        instance.library_status = "正在读取；点击检查读取结果";
+    } else {
+        instance.library_status = "宿主拒绝读取任务";
+    }
+    refresh(instance);
+}
+
 fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
     if (!instance.active or panel != instance.page) return;
     const name = abi.slice(command) orelse return;
     for (commands, 0..) |candidate, n| {
         if (!std.mem.eql(u8, candidate, name)) continue;
-        if (n >= 4 and instance.section != .global) return;
+        if (n >= 4 and n <= 6 and instance.section != .global) return;
+        if (n >= 7 and instance.section != .library) return;
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
@@ -189,6 +307,16 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             4 => load(instance),
             5 => if (instance.saved > 1) save(instance, instance.saved - 1),
             6 => if (instance.saved < 8) save(instance, instance.saved + 1),
+            7 => startLibrary(instance),
+            8 => pollLibrary(instance),
+            9 => if (instance.library_loaded and instance.library_offset >= 16) {
+                instance.library_offset -= 16;
+                refresh(instance);
+            },
+            10 => if (instance.library_loaded and instance.library_offset + 16 < instance.library_snapshot.count) {
+                instance.library_offset += 16;
+                refresh(instance);
+            },
             else => {},
         }
         return;
@@ -197,6 +325,14 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
 
 fn close(instance: *Instance) host_mod.Error!void {
     instance.active = false;
+    if (instance.task_id != 0) {
+        const tasks = instance.tasks orelse return error.State;
+        const cancel = tasks.cancel orelse return error.Unavailable;
+        host_mod.mapStatus(cancel(tasks.context, instance.task_id)) catch |err| switch (err) {
+            error.State => {},
+            else => return err,
+        };
+    }
     if (instance.pending != 0) {
         const resources = instance.resources orelse return error.State;
         const cancel = resources.cancel_request orelse return error.Unavailable;
@@ -258,7 +394,17 @@ fn open(instance: *Instance) host_mod.Error!void {
     if (instance.resources) |resources| {
         if (resources.settings_get == null or resources.settings_set == null or resources.cancel_request == null) instance.resources = null;
     }
+    if (instance.task_id == 0) {
+        instance.library_loaded = false;
+        instance.library_offset = 0;
+        instance.tasks = try instance.host.queryOptional(raw.PulseTasksV1, raw.PULSE_TASKS_INTERFACE_NAME, raw.PULSE_TASKS_VERSION_1);
+        if (instance.tasks) |tasks| {
+            if (tasks.create == null or tasks.get == null or tasks.release == null or tasks.cancel == null) instance.tasks = null;
+        }
+        instance.library_status = if (instance.tasks != null) "点击读取本地素材清单" else "宿主后台任务接口不可用";
+    }
     instance.active = true;
+    if (instance.task_id != 0) pollLibrary(instance);
     if (instance.resources != null) {
         load(instance);
     } else {
@@ -287,6 +433,8 @@ fn destroy(user: ?*anyopaque) callconv(.c) void {
         diag.status("companion-destroy-failed", @intFromError(err));
         return;
     };
+    // The pinned host keeps the DLL and task userdata alive through stop;
+    // destroy is called only after host task workers/cancel callbacks return.
     allocator.destroy(instance);
 }
 
@@ -323,7 +471,25 @@ test "four section tree declares only real navigation and preference actions" {
         fill(&instance, &content, &tree);
         try std.testing.expectEqual(@as(u32, commands.len), tree.command_count);
         try std.testing.expectEqual(@as(u32, 4), content.children[0].children.count);
-        try std.testing.expectEqual(@as(u32, if (instance.section == .global) 7 else 3), content.root.children.count);
+        try std.testing.expectEqual(@as(u32, if (instance.section == .global) 7 else if (instance.section == .library) 5 else 3), content.root.children.count);
     }
     try std.testing.expectEqual(@as(u32, 0), content.children[6].enabled.value);
+}
+
+test "library view bounds rows and uses stable IDs" {
+    var instance: Instance = .{ .host = undefined };
+    instance.library_loaded = true;
+    instance.library_snapshot.count = 17;
+    for (instance.library_snapshot.rows[0..17], 0..) |*row, n| {
+        row.* = .{ .id = n + 1, .source = @splat('a'), .len = 1, .paired = true };
+    }
+    var content: Content = undefined;
+    var tree: ui.Tree = undefined;
+    fill(&instance, &content, &tree);
+    try std.testing.expectEqual(@as(u32, 24), content.root.children.count);
+    try std.testing.expectEqualStrings("asset-1", abi.slice(content.children[8].id).?);
+    instance.library_offset = 16;
+    fill(&instance, &content, &tree);
+    try std.testing.expectEqual(@as(u32, 9), content.root.children.count);
+    try std.testing.expectEqualStrings("asset-11", abi.slice(content.children[8].id).?);
 }

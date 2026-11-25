@@ -125,6 +125,11 @@ test "real approved helper imports package and reload deduplicates" {
     const final = try inventory.directory(root_path, 1, &final_buf);
     try std.testing.expect(std.meta.eql(source_digest, try helper.probe(final, "fixture-v1")));
     try std.testing.expect(std.meta.eql(source_digest, try helper.probe(source, "fixture-v1")));
+    var snapshot: @import("companion/pet_library_read.zig").Snapshot = .{};
+    try @import("companion/pet_library_read.zig").readAt(std.mem.span(root_wide), &snapshot);
+    try std.testing.expectEqual(@as(usize, 1), snapshot.count);
+    try std.testing.expectEqualStrings("fixture-v1", snapshot.rows[0].sourceId());
+    try std.testing.expect(snapshot.rows[0].paired);
     const duplicate = try store.importPackage(root_wide, &restarted, &helper, source, "fixture-v1");
     try std.testing.expectEqual(@as(u64, 1), duplicate.existing);
     try std.testing.expectEqual(@as(u64, 2), restarted.index.next_id);

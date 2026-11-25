@@ -21,7 +21,7 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
-    all: [31]std.Build.Module.Import = undefined,
+    all: [32]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
@@ -262,8 +262,18 @@ const Modules = struct {
                 .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
         });
+        const companion_library = b.createModule(.{
+            .root_source_file = b.path("shared/companion/pet_library_read.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        if (target.result.os.tag == .windows) {
+            companion_library.linkSystemLibrary("shell32", .{});
+            companion_library.linkSystemLibrary("ole32", .{});
+        }
         var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod, .vcs_capabilities = vcs_capabilities, .vcs_identity = vcs_identity, .vcs_risk = vcs_risk, .vcs_detect = vcs_detect, .vcs_provider = vcs_provider, .vcs_cli = vcs_cli, .vcs_snapshot = vcs_snapshot, .vcs_git = vcs_git, .vcs_jj = vcs_jj, .vcs_svn = vcs_svn };
         modules.all = .{
+            .{ .name = "companion_library", .module = companion_library },
             .{ .name = "pulse_raw", .module = raw },
             .{ .name = "pulse_abi", .module = abi },
             .{ .name = "pulse_host", .module = host },
@@ -428,6 +438,8 @@ pub fn build(b: *std.Build) void {
             .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
         });
         import_root.linkSystemLibrary("winhttp", .{});
+        import_root.linkSystemLibrary("shell32", .{});
+        import_root.linkSystemLibrary("ole32", .{});
         const import_tests = b.addTest(.{ .root_module = import_root });
         import_integration.dependOn(&b.addRunArtifact(import_tests).step);
     }

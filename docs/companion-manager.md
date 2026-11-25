@@ -639,3 +639,22 @@ page-removal error. Ignore settings commands outside the global section;
 show default-vs-saved status accurately; never apply an unconfirmed setting.
 This is an independent simulated host, not a real Pulse renderer or install
 acceptance. No new runtime or OS permissions. CI pending for this change.
+
+## Read-only native library connection
+
+Use the pinned pulse.tasks interface for explicit background inventory reads.
+The Windows known-folder API resolves LocalAppData, then only the fixed
+PulseExtras-Companion/inventory.pci path. This experimental reader never
+creates or writes a root, accepts no UI-supplied path, requires normal
+fixed-drive directories/files and rejects aliases, reparse points and
+hardlinked inventory files. Decode PCI using the existing strict codec;
+show stable local IDs, source IDs and presence of both digest records (not
+proof of file validity). Display 16 rows per page; click to read, then
+check the task result; no automatic refresh yet. Read-only root discovery
+is not ACL approval for writes/launch. No thumbnail, metadata name, tags,
+import/delete/launch or production root initialization in this change.
+Host task owns execution; publish only after terminal/release and acquire
+of the worker result. Cancellation is cooperative and host drains its
+workers before destroy. CI native import fixture now reads actual persisted
+inventory through the reader. Existing DLL ABI fixture updated for new
+navigation commands. Previous actual DLL ABI regression passed; new CI pending.
