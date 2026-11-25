@@ -1071,9 +1071,13 @@ IFileDialog from Zig using STA COM in the helper process. It is not parented
 to Pulse, has a 60-second limit, and returns a bounded path or explicit
 cancel marker. A helper failure offers manual entry. No PowerShell, third-
 party dialog executable, or arbitrary executable is invoked. Existing
-selection prefill and manual input remain. C fixture covers host picker
-accept/cancel; actual Windows fallback interaction needs manual acceptance.
-The rest of the uploaded SDK and harness are not yet migrated or executed.
+selection prefill and manual input remain. The Windows C ABI fixture exercises
+Dialogs V2 nested picker accept/cancel and V1 standalone-picker fallback. The
+Windows desktop lane also builds the approved helper and verifies the bundled
+helper import/durable reload path. These checks do not display the actual
+IFileDialog UI; that fallback still needs manual acceptance. The remaining
+uploaded SDK interfaces and official author harness are not yet migrated or
+executed.
 
 ## Dialogs V2 nested folder picker
 

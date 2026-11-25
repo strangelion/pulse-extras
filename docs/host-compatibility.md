@@ -258,3 +258,11 @@ The only growth found is `PulseTaskProgress` (added `step`, `actions`, `note`,
 `abi.h` is not published by the host at all, so `PulseHostV1`/`PulsePluginV1`
 layout is covered by compile-time asserts and runtime validation, not by this
 check.
+
+## Local Preview 3 reference bundle
+
+The optional local SDK bundle is stored under
+`.local/reference/pulse-sdk/1.0.61-preview3-20261124/`. Its extraction layout,
+header lookup map, archive digest, and Agent instructions are documented in
+[Local SDK reference layout](local-reference.md). This bundle is not the
+reproducible build pin and does not by itself prove real-host UI acceptance.

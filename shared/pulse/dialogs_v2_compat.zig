@@ -1,4 +1,5 @@
 //! Additive Pulse 1.0.61 / Preview 3 pulse.dialogs V2 ABI adapter.
+//! dialogs.h SHA-256: 19d6eef77e85c3541cd0b6fe4c6c84df45f7767b6f87877f79c326bb816dfa0b
 //! The public pinned baseline still provides the frozen V1 prefix only.
 const raw = @import("pulse_raw");
 const abi = @import("pulse_abi");
