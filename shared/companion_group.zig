@@ -161,6 +161,18 @@ pub const Group = struct {
         });
     }
 
+    // Worker tick for one owned instance. Exit is checked before sampling.
+    // A sample racing an exit gets one more reap check; other errors stay
+    // visible and do not release ownership or claim readiness.
+    pub fn refresh(self: *Group, id: u64) !?u32 {
+        if (try self.reap(id)) |code| return code;
+        self.sample(id) catch |err| {
+            if (err == error.Busy) return self.reap(id);
+            return err;
+        };
+        return null;
+    }
+
     pub fn snapshot(self: *Group, offset: usize, out: []model.Instance) !usize {
         return (try self.active()).snapshotPage(offset, out);
     }

@@ -16,7 +16,7 @@ class ScopeTests(unittest.TestCase):
 
     def test_companion_only(self):
         for path in ("shared/companion/pet_demo.zig", "shared/companion/pet_surface_win32.c",
-                     "tests/companion/pet_stress.py", "shared/companion_host.zig"):
+                     "tests/companion/pet_stress.py", "shared/companion_host.zig", "shared/companion_group.zig"):
             self.assertEqual(classify([path, "docs/openpets-spike.md"]), "companion")
 
     def test_mixed_or_shared_is_full(self):

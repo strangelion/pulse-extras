@@ -160,3 +160,22 @@ yet, so creation/sample does not claim running/rendered. No asset-path
 launch, settings page, resource polling timer or dynamic capacity here.
 Added model CPU/binding tests, native two-process sampling assertions
 and actual demo Zig group test. Windows CI remains required.
+
+## CI cost and refresh checkpoint
+
+Supersedes the earlier automatic dual 100-process stress trigger. Routine
+manager/host/UI changes run the scope-classified regression (including
+native two-child fixture and approved child adapter tests); changes to
+the codec, allocator, render runtime or common build inputs automatically
+run only the mixed two-child five-second decoder preflight. Full 100-child
+stress is explicit workflow_dispatch, with the existing selectable profiles,
+count and duration. Before release or substantive performance changes,
+run synthetic-hidden and mixed-hidden manually; visible mode remains a
+separate desktop validation. A skipped stress benchmark is not a pass.
+The companion_group.zig path is explicitly classified as companion.
+CI/classifier modifications themselves require full regression.
+
+Group.refresh(id) is a worker-side poll primitive: check exit/reap first,
+then sample; a sample racing exit retries reap, other errors propagate.
+It does not equate process existence with rendered readiness. No automatic
+timer, readiness channel, asset launch or real settings page in this change.

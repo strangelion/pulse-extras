@@ -1391,3 +1391,14 @@ confirmed exit, and retain pending termination handles on abandonment.
 Do not simply remove live_owner or release a reservation on a kill request.
 A per-group total cap is not implemented here; direct standalone starts
 and benchmark children are not governed by the supervisor's job limit.
+
+### CI policy revision
+
+The heavy independent-process benchmark is now manual-only; a push touching
+the selected runtime/codec/render paths or build inputs runs only the
+two-child mixed decoder preflight. Manager/UI-only edits do not trigger
+the stress workflow. Ordinary scoped unit/native checks remain automatic.
+This supersedes earlier automatic 100-child synthetic/mixed policy notes.
+Manual runs still support all four profiles and upload diagnostics on
+failure. Run full synthetic and mixed stress at performance milestones
+and before release; no claim that omitted tests passed.

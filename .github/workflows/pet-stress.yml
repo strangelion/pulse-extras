@@ -20,7 +20,22 @@ on:
     branches: [experiment/openpets-ipc]
     paths:
       - build.zig
-      - 'shared/companion/**'
+      # Only runtime/codec/render paths need the automatic decoder probe.
+      - 'shared/companion/pet_decode_win32.c'
+      - 'shared/companion/pet_webp_*'
+      - 'shared/companion/pet_assets.zig'
+      - 'shared/companion/pet_package.zig'
+      - 'shared/companion/pet_demo*'
+      - 'shared/companion/pet_surface*'
+      - 'shared/companion/pet_memory.zig'
+      - 'shared/companion/pet_resources*'
+      - 'shared/companion/pet_decode_task.zig'
+      - 'shared/companion/pet_async_bridge.zig'
+      - 'shared/companion/animation.zig'
+      - 'shared/runtime/allocator.zig'
+      - 'shared/runtime/budget.zig'
+      - 'shared/runtime/group.zig'
+      - 'shared/runtime/latest_task.zig'
       - tests/companion/pet_stress.py
       - tests/companion/pet_stress_fixtures.py
       - tests/companion/pet_webp_budget_test.c
@@ -36,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.profile) || '["synthetic-hidden","mixed-hidden"]') }}
+        profile: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.profile) || '["mixed-hidden"]') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -78,6 +93,7 @@ jobs:
           PET_PROFILE: ${{ matrix.profile }}
           PET_COUNT: ${{ inputs.count || 100 }}
           PET_SECONDS: ${{ inputs.seconds || 30 }}
+          PET_MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
         shell: pwsh
         run: |
           $petArgs = @('--count', $env:PET_COUNT, '--seconds', $env:PET_SECONDS, '--output', 'zig-out/pet-stress')
@@ -85,7 +101,8 @@ jobs:
             python tests/companion/pet_stress_fixtures.py zig-out/stress-fixtures
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $sourceArgs = @('--package', 'zig-out/stress-fixtures/fixture-v1', 'fixture-v1', '--webp', '2', 'zig-out/stress-fixtures/fixture-v2.webp')
-            # Exercise both real decode paths before starting up to 100 children.
+            # Automatic pushes stop after this two-child probe.
+            # Manual mixed benchmarks continue to the requested workload.
             # Failure remains a hard failure, with bounded per-child diagnostics.
             python tests/companion/pet_stress.py --count 2 --seconds 5 --output zig-out/pet-codec-probe @sourceArgs
             if ($LASTEXITCODE -ne 0) {
@@ -93,6 +110,10 @@ jobs:
               exit $LASTEXITCODE
             }
             $petArgs += $sourceArgs
+          }
+          if ($env:PET_MANUAL -ne 'true') {
+            Write-Host 'Automatic codec preflight complete; full stress is manual.'
+            exit 0
           }
           if ($env:PET_PROFILE -eq 'mixed-visible') { $petArgs += @('--visible', '--scale', '50') }
           python tests/companion/pet_stress.py @petArgs
