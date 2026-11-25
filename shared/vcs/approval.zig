@@ -360,3 +360,95 @@ test "configured execution gate rejects before attempting nonexistent tool" {
     try std.testing.expectEqual(@as(usize, 0), runner.failed);
     try runner.checkDrained();
 }
+
+// The following integration uses actual Git and Runner, but the installation
+// is supplied by the test environment and the verifier is an explicit fixture.
+// It is NOT evidence of automatic or production installation approval.
+fn testWindowsSpelling(path: *identity.Path) void {
+    if (builtin.os.tag == .windows) {
+        for (path.bytes[0..path.len]) |*byte| {
+            if (byte.* == '/') byte.* = '\\';
+        }
+    }
+}
+
+test "real approved Git command chain rejects altered empty config and revoked grant" {
+    const test_config = @import("vcs_test_config");
+    const process_trust = @import("process_trust");
+    const io = std.testing.io;
+    var scratch: [identity.max_path_bytes + 64]u8 = undefined;
+    var executable = cli.locateCandidate(io, .git, test_config.path, &scratch) orelse return cli.integrationUnavailable(.git);
+    testWindowsSpelling(&executable);
+
+    var repo = std.testing.tmpDir(.{});
+    defer repo.cleanup();
+    var neutral = std.testing.tmpDir(.{});
+    defer neutral.cleanup();
+    var relative_buffer: [identity.max_path_bytes]u8 = undefined;
+    const relative = try std.fmt.bufPrint(&relative_buffer, ".zig-cache" ++ std.fs.path.sep_str ++ "tmp" ++ std.fs.path.sep_str ++ "{s}", .{repo.sub_path});
+    var setup_runner = run.Runner.init(std.testing.allocator, io);
+    {
+        var outcome = try setup_runner.run(.{ .argv = &.{ executable.slice(), "-C", relative, "init", "--quiet", "--template=" }, .timeout_ns = 20 * std.time.ns_per_s });
+        defer outcome.deinit();
+        if (!outcome.succeeded()) return error.TestGitInitFailed;
+    }
+    var setup_fixture: Fixture = .{};
+    var setup_git = git_mod.Git.init(&setup_runner, executable, .{ .ctx = &setup_fixture, .lookup = &Fixture.lookup });
+    const initial = try setup_git.resolveWorkspace(relative);
+    try setup_runner.checkDrained();
+    var root = initial.root;
+    testWindowsSpelling(&root);
+    const parent = std.fs.path.dirname(root.slice()) orelse return error.TestUnexpectedResult;
+    var neutral_buffer: [identity.max_path_bytes]u8 = undefined;
+    const neutral_path = try std.fmt.bufPrint(&neutral_buffer, "{s}" ++ std.fs.path.sep_str ++ "{s}", .{ parent, neutral.sub_path });
+    const empty = try neutral.dir.createFile(io, global_config_name, .{ .exclusive = true });
+    empty.close(io);
+    const work = try repo.dir.createFile(io, "untracked.txt", .{ .exclusive = true });
+    try work.writeStreamingAll(io, "fixture\n");
+    work.close(io);
+    const digest = blk: {
+        const file = try std.Io.Dir.openFileAbsolute(io, executable.slice(), .{ .follow_symlinks = false });
+        defer file.close(io);
+        break :blk try process_trust.digestFile(io, file);
+    };
+
+    var environment = std.process.Environ.Map.init(std.testing.allocator);
+    defer environment.deinit();
+    try configureFixtureEnvironment(&environment, neutral_path);
+    if (builtin.os.tag == .windows and test_config.system_root.len != 0) {
+        try environment.put("SystemRoot", test_config.system_root);
+    }
+    var fixture: Fixture = .{};
+    var runner = run.Runner.init(std.testing.allocator, io);
+    const grant = try Grant.init(executable.slice(), digest, root.slice(), neutral_path, @splat(2), @splat(3));
+    var policy = Policy.init(grant, .{ .ctx = &fixture, .inspect = &Fixture.inspect }, &runner, &environment, .{ .ctx = &fixture, .lookup = &Fixture.lookup });
+    const resolver = policy.resolver();
+    const resolved = (try resolver.resolve(resolver.ctx, &root)) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(resolved.workspace.root.eql(root.slice()));
+    const first = try resolved.provider.summarize(&resolved.workspace);
+    try std.testing.expectEqual(contract.Availability.ready, first.availability);
+    try std.testing.expectEqual(@as(u32, 1), first.changes.untracked);
+    try std.testing.expectEqual(@as(usize, 3), runner.completed);
+    try runner.checkDrained();
+
+    const altered = try neutral.dir.createFile(io, global_config_name, .{});
+    try altered.writeStreamingAll(io, "[core]\nfilemode = true\n");
+    altered.close(io);
+    try std.testing.expectError(error.Permission, resolved.provider.summarize(&resolved.workspace));
+    try std.testing.expectEqual(@as(usize, 3), runner.completed);
+    try runner.checkDrained();
+    const restored = try neutral.dir.createFile(io, global_config_name, .{});
+    restored.close(io);
+    const again = try resolved.provider.summarize(&resolved.workspace);
+    try std.testing.expectEqual(@as(u32, 1), again.changes.untracked);
+    try std.testing.expectEqual(@as(usize, 4), runner.completed);
+    fixture.changed = true;
+    try std.testing.expectError(error.Permission, resolved.provider.summarize(&resolved.workspace));
+    fixture.changed = false;
+    policy.revoke();
+    try std.testing.expectError(error.Permission, resolved.provider.summarize(&resolved.workspace));
+    try std.testing.expectEqual(@as(usize, 4), runner.completed);
+    try runner.checkDrained();
+    runner.requestStop();
+    try runner.finishStop();
+}

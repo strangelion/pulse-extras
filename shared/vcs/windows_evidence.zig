@@ -528,9 +528,116 @@ fn mixObservations(local: Observation, acl: Observation) Observation {
     return .{ .installation = install.finalResult(), .repository = repo.finalResult() };
 }
 
+pub const max_install_files = 32;
+pub const max_install_bytes: u64 = 128 * 1024 * 1024;
+
+/// Explicit finite installation dependency inventory. The independent auditor
+/// supplies the list and approved digests; this module does not discover DLL
+/// search paths or infer completeness from directory contents. Keep immutable
+/// and at a stable address until all verifier users have drained.
+pub const InstallationManifest = struct {
+    const Entry = struct {
+        path: identity.Path,
+        digest: approval.Digest,
+    };
+
+    root: identity.Path,
+    entries: [max_install_files]Entry = undefined,
+    len: usize = 0,
+
+    pub fn init(root: []const u8) Error!InstallationManifest {
+        if (!approval.strictPath(root)) return error.Permission;
+        return .{ .root = identity.Path.init(root) catch return error.Permission };
+    }
+
+    fn containsPath(self: *const InstallationManifest, path: []const u8) bool {
+        const root = self.root.slice();
+        return path.len > root.len and std.mem.startsWith(u8, path, root) and path[root.len] == std.fs.path.sep;
+    }
+
+    pub fn add(self: *InstallationManifest, path: []const u8, digest: approval.Digest) Error!void {
+        if (!approval.strictPath(path) or !self.containsPath(path)) return error.Permission;
+        if (self.len >= max_install_files) return error.ResourceLimit;
+        for (self.entries[0..self.len]) |*entry| {
+            if (entry.path.eql(path)) return error.Permission;
+        }
+        self.entries[self.len] = .{ .path = identity.Path.init(path) catch return error.Permission, .digest = digest };
+        self.len += 1;
+    }
+
+    fn validate(self: *const InstallationManifest, grant: *const approval.Grant) Error!void {
+        if (self.len == 0 or self.len > max_install_files or !approval.strictPath(self.root.slice())) return error.Permission;
+        if (self.root.eql(grant.root.slice()) or self.containsPath(grant.root.slice()) or self.root.eql(grant.neutral_cwd.slice()) or self.containsPath(grant.neutral_cwd.slice())) return error.Permission;
+        const installation = self.root.slice();
+        for ([_][]const u8{ grant.root.slice(), grant.neutral_cwd.slice() }) |other| {
+            if (installation.len > other.len and std.mem.startsWith(u8, installation, other) and installation[other.len] == std.fs.path.sep) return error.Permission;
+        }
+        var found = false;
+        for (self.entries[0..self.len], 0..) |*entry, i| {
+            const path = entry.path.slice();
+            if (!approval.strictPath(path) or !self.containsPath(path)) return error.Permission;
+            for (self.entries[0..i]) |*prior| {
+                if (prior.path.eql(path)) return error.Permission;
+            }
+            if (entry.path.eql(grant.executable.slice())) {
+                if (!std.mem.eql(u8, &entry.digest, &grant.executable_digest)) return error.Permission;
+                found = true;
+            }
+        }
+        if (!found) return error.Permission;
+    }
+
+    /// Audit root and each listed file's ancestors, then hash from the checked
+    /// file handle with write sharing denied. Handles close before child spawn;
+    /// this is not a race-free guarantee against later file replacement.
+    pub fn observe(self: *const InstallationManifest, grant: *const approval.Grant, principals: *const Principals) Error!approval.Digest {
+        if (comptime builtin.os.tag != .windows) return error.Unsupported;
+        try self.validate(grant);
+        var hash = Sha256.init(.{});
+        hash.update("pulse-win-install-manifest-v1");
+        try principals.hashInto(&hash);
+        var walk: AclWalk = .{ .principals = principals, .hash = &hash };
+        (try walkChecked(self.root.slice(), true, false, &walk)).close();
+        hash.update(&.{@intCast(self.len)});
+        var remaining = max_install_bytes;
+        for (self.entries[0..self.len]) |*entry| {
+            const opened = try walkChecked(entry.path.slice(), false, true, &walk);
+            defer opened.close();
+            const actual = try digestOpened(opened, &remaining);
+            if (!std.mem.eql(u8, &actual, &entry.digest)) return error.Permission;
+            var length: [2]u8 = undefined;
+            std.mem.writeInt(u16, &length, entry.path.len, .little);
+            hash.update(&length);
+            hash.update(entry.path.slice());
+            hash.update(&actual);
+        }
+        return hash.finalResult();
+    }
+};
+
+fn digestOpened(opened: Opened, remaining: *u64) Error!approval.Digest {
+    const size = (@as(u64, opened.info.size_high) << 32) | opened.info.size_low;
+    if (size > remaining.*) return error.ResourceLimit;
+    var hash = Sha256.init(.{});
+    var bytes: [16 * 1024]u8 = undefined;
+    var offset: u64 = 0;
+    while (offset < size) {
+        const wanted: u32 = @intCast(@min(size - offset, bytes.len));
+        var read: u32 = 0;
+        if (ReadFile(opened.handle, &bytes, wanted, &read, null) == 0 or read != wanted) return error.Permission;
+        hash.update(bytes[0..read]);
+        offset += read;
+    }
+    var read: u32 = 0;
+    if (ReadFile(opened.handle, &bytes, 1, &read, null) == 0 or read != 0) return error.Permission;
+    remaining.* -= size;
+    return hash.finalResult();
+}
+
 pub const Verifier = struct {
     auditor: approval.Verifier,
     principals: *const Principals,
+    installation: *const InstallationManifest,
 
     pub fn adapter(self: *Verifier) approval.Verifier {
         return .{ .ctx = self, .inspect = &inspect };
@@ -542,7 +649,14 @@ pub const Verifier = struct {
         if (!audit.local_identity_verified or !audit.installation_verified or !audit.repository_configuration_verified or !audit.neutral_environment_verified or !audit.ordinary_metadata_verified) return error.Permission;
         const local = try collect(grant);
         const acl = try aclEvidence(grant, self.principals, environment);
-        return combine(mixObservations(local, acl), audit);
+        var observations = mixObservations(local, acl);
+        const install = try self.installation.observe(grant, self.principals);
+        var hash = Sha256.init(.{});
+        hash.update("pulse-win-install-complete-list-v1");
+        hash.update(&observations.installation);
+        hash.update(&install);
+        observations.installation = hash.finalResult();
+        return combine(observations, audit);
     }
 };
 
@@ -762,4 +876,54 @@ test "Windows native DACL rejects added untrusted write grant" {
     try std.testing.expectError(error.Permission, walk.inspect(opened));
     // Restore restrictive permissions before the temporary directory cleanup.
     try fixtureSetDacl(handle, safe);
+}
+
+test "installation manifest requires exact executable digest and disjoint bounded root" {
+    const install = if (builtin.os.tag == .windows) "C:\\tools" else "/tools";
+    const exe = if (builtin.os.tag == .windows) "C:\\tools\\git.exe" else "/tools/git";
+    const dependency = if (builtin.os.tag == .windows) "C:\\tools\\helper.dll" else "/tools/helper.so";
+    const outside = if (builtin.os.tag == .windows) "C:\\tools-other\\helper.dll" else "/tools-other/helper.so";
+    const root = if (builtin.os.tag == .windows) "C:\\work\\repo" else "/work/repo";
+    const neutral = if (builtin.os.tag == .windows) "C:\\neutral" else "/neutral";
+    const grant = try approval.Grant.init(exe, @splat(1), root, neutral, @splat(2), @splat(3));
+    var manifest = try InstallationManifest.init(install);
+    try manifest.add(dependency, @splat(4));
+    try std.testing.expectError(error.Permission, manifest.validate(&grant));
+    try std.testing.expectError(error.Permission, manifest.add(outside, @splat(4)));
+    try manifest.add(exe, @splat(1));
+    try manifest.validate(&grant);
+    try std.testing.expectError(error.Permission, manifest.add(exe, @splat(1)));
+    manifest.entries[1].digest = @splat(9);
+    try std.testing.expectError(error.Permission, manifest.validate(&grant));
+}
+
+test "Windows dependency digest uses checked handle and bounded total budget" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const file = try tmp.dir.createFile(io, "dependency.bin", .{ .exclusive = true });
+    try file.writeStreamingAll(io, "abc");
+    file.close(io);
+    var cwd: [identity.max_path_bytes]u8 = undefined;
+    var path_buffer: [identity.max_path_bytes]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buffer, "{s}\\.zig-cache\\tmp\\{s}\\dependency.bin", .{ try currentDirectory(&cwd), tmp.sub_path });
+    var expected: approval.Digest = undefined;
+    Sha256.hash("abc", &expected, .{});
+    {
+        const opened = try openChecked(path, false, true);
+        defer opened.close();
+        var remaining: u64 = 2;
+        try std.testing.expectError(error.ResourceLimit, digestOpened(opened, &remaining));
+        remaining = 3;
+        try std.testing.expectEqualSlices(u8, &expected, &(try digestOpened(opened, &remaining)));
+        try std.testing.expectEqual(@as(u64, 0), remaining);
+    }
+    const changed = try tmp.dir.createFile(io, "dependency.bin", .{});
+    try changed.writeStreamingAll(io, "xyz");
+    changed.close(io);
+    const opened = try openChecked(path, false, true);
+    defer opened.close();
+    var remaining: u64 = 3;
+    try std.testing.expect(!std.mem.eql(u8, &expected, &(try digestOpened(opened, &remaining))));
 }

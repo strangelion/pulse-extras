@@ -317,6 +317,8 @@ const Modules = struct {
                 .{ .name = "vcs_git", .module = vcs_git },
                 .{ .name = "vcs_host_query", .module = vcs_host_query },
                 .{ .name = "pulse_process", .module = process_mod },
+                .{ .name = "process_trust", .module = process_trust },
+                .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
         });
         const vcs_windows_evidence = b.createModule(.{
@@ -387,6 +389,7 @@ pub fn build(b: *std.Build) void {
     const vcs_test_options = b.addOptions();
     const environ = &b.graph.environ_map;
     vcs_test_options.addOption([]const u8, "path", environ.get("PATH") orelse "");
+    vcs_test_options.addOption([]const u8, "system_root", environ.get("SystemRoot") orelse environ.get("SYSTEMROOT") orelse "");
     vcs_test_options.addOption(bool, "require_git", std.mem.eql(u8, environ.get("PULSE_REQUIRE_GIT") orelse "", "1"));
     vcs_test_options.addOption(bool, "require_jj", std.mem.eql(u8, environ.get("PULSE_REQUIRE_JJ") orelse "", "1"));
     vcs_test_options.addOption(bool, "require_svn", std.mem.eql(u8, environ.get("PULSE_REQUIRE_SVN") orelse "", "1"));
