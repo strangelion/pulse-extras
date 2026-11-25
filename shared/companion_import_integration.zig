@@ -30,6 +30,7 @@ const FixtureTransport = struct {
 test {
     _ = http;
     _ = http.Downloads;
+    _ = @import("companion_market_cache.zig");
 }
 
 extern "c" fn pet_catalog_store_fixture_open([*]u16, u32) c_int;

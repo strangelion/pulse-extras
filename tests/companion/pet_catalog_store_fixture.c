@@ -81,3 +81,17 @@ int pet_import_fixture_close(const wchar_t *root) {
     }
     return pet_catalog_store_fixture_close(root);
 }
+
+/* Test-only cleanup of the fixed cache namespace in a fresh test root. */
+int pet_market_cache_fixture_close(const wchar_t *root) {
+    wchar_t file[1024];
+    for (unsigned slot = 0; slot < PET_MARKET_CACHE_SLOTS; ++slot) {
+        int n = swprintf(file, 1024, L"%ls\\market-%02u.cache", root, slot);
+        if (n <= 0 || n >= 1024) return 0;
+        if (!DeleteFileW(file) && GetLastError() != ERROR_FILE_NOT_FOUND) return 0;
+    }
+    int n = swprintf(file, 1024, L"%ls\\market.pending", root);
+    if (n <= 0 || n >= 1024) return 0;
+    if (!DeleteFileW(file) && GetLastError() != ERROR_FILE_NOT_FOUND) return 0;
+    return RemoveDirectoryW(root);
+}

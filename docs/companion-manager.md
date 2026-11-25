@@ -562,3 +562,25 @@ root/index for all page fetches and discard provisional rows on failure.
 Tests exercise cross-page selection, duplicate IDs and revision mismatch.
 Previous full parallel-download regression and lightweight stress passed;
 archive-install regression still in progress. New search code awaits CI.
+
+## Persistent bounded market JSON cache
+
+Reuse the Windows private-root atomic record store for a separate disposable
+cache namespace. Reserve root slot 0 plus 31 direct-mapped revision/URL
+slots and a single exclusive pending file. Each record is capped at 4 MiB
+JSON + 2164 bytes envelope (worst case 33 records including pending,
+about 132.07 MiB, excluding filesystem overhead). Collisions evict a cache
+slot, never return another key's bytes. Record exact generation, URL,
+UTC fetch timestamp and SHA-256 of header/key/body. Cache payload is
+revalidated through the same typed market parsers on read and write.
+Root freshness 15 minutes, versioned page freshness 24 hours; explicit
+offline stale read up to seven days, no future timestamps. Unknown or
+corrupt records report errors rather than successful cache hits. A stale
+pending file blocks writes pending explicit recovery; do not delete unknown
+files. No arbitrary filename, recursive scan, archive or thumbnail cache.
+Fixed-slot collisions can cause misses; this is not a complete offline
+catalog guarantee. The approved cache root and UTC clock are provided by
+the caller, actual request/cache orchestration and UI are still pending.
+Add portable codec and Windows durable reload/expiry tests. Prior archive
+installation full regression and stress passed; search regression general
+checks passed and desktop integration was still running. New CI pending.

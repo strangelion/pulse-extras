@@ -29,7 +29,18 @@ static HANDLE root_open(const wchar_t *root) {
     return h;
 }
 
-static BOOL names(const wchar_t *root, uint64_t id, wchar_t *final, wchar_t *temp) {
+static size_t record_limit(uint64_t id, BOOL cache) {
+    if (cache) return id < PET_MARKET_CACHE_SLOTS ? PET_MARKET_CACHE_MAX : 0;
+    return id ? PET_CATALOG_RECORD_MAX : PET_INVENTORY_MAX;
+}
+
+static BOOL names(const wchar_t *root, uint64_t id, BOOL cache, wchar_t *final, wchar_t *temp) {
+    if (cache) {
+        if (id >= PET_MARKET_CACHE_SLOTS) return FALSE;
+        int a = swprintf(final, PATH_CAP, L"%ls\\market-%02u.cache", root, (unsigned)id);
+        int b = swprintf(temp, PATH_CAP, L"%ls\\market.pending", root);
+        return a > 0 && a < (int)PATH_CAP && b > 0 && b < (int)PATH_CAP;
+    }
     if (!id) {
         int a = swprintf(final, PATH_CAP, L"%ls\\inventory.pci", root);
         int b = swprintf(temp, PATH_CAP, L"%ls\\inventory.pending", root);
@@ -46,16 +57,16 @@ static BOOL normal_file(HANDLE h, BY_HANDLE_FILE_INFORMATION *info) {
         info->nNumberOfLinks == 1;
 }
 
-static pet_store_result read_record(const wchar_t *root, uint64_t id,
+static pet_store_result read_record(const wchar_t *root, uint64_t id, BOOL cache,
     uint8_t *out, size_t capacity, size_t *written) {
     if (!written) return PET_STORE_INVALID;
     *written = 0;
-    if (!out || !capacity || capacity > (id ? PET_CATALOG_RECORD_MAX : PET_INVENTORY_MAX)) return PET_STORE_INVALID;
+    if (!out || !capacity || capacity > record_limit(id, cache)) return PET_STORE_INVALID;
     HANDLE dir = root_open(root);
     if (dir == INVALID_HANDLE_VALUE) return PET_STORE_INVALID;
     wchar_t final[PATH_CAP], temp[PATH_CAP];
     pet_store_result result = PET_STORE_INVALID;
-    if (!names(root, id, final, temp)) goto done;
+    if (!names(root, id, cache, final, temp)) goto done;
     HANDLE file = CreateFileW(final, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
         FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     if (file == INVALID_HANDLE_VALUE) {
@@ -79,14 +90,14 @@ done:
     return result;
 }
 
-static pet_store_result write_record(const wchar_t *root, uint64_t id,
+static pet_store_result write_record(const wchar_t *root, uint64_t id, BOOL cache,
     const uint8_t *data, size_t length) {
-    if (!data || !length || length > (id ? PET_CATALOG_RECORD_MAX : PET_INVENTORY_MAX)) return PET_STORE_INVALID;
+    if (!data || !length || length > record_limit(id, cache)) return PET_STORE_INVALID;
     HANDLE dir = root_open(root);
     if (dir == INVALID_HANDLE_VALUE) return PET_STORE_INVALID;
     wchar_t final[PATH_CAP], temp[PATH_CAP];
     pet_store_result result = PET_STORE_INVALID;
-    if (!names(root, id, final, temp)) goto done;
+    if (!names(root, id, cache, final, temp)) goto done;
     HANDLE prior = CreateFileW(final, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, NULL, OPEN_EXISTING,
         FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     if (prior != INVALID_HANDLE_VALUE) {
@@ -124,20 +135,33 @@ done:
 pet_store_result pet_store_read(const wchar_t *root, uint64_t id,
     uint8_t *out, size_t capacity, size_t *written) {
     if (!id) return PET_STORE_INVALID;
-    return read_record(root, id, out, capacity, written);
+    return read_record(root, id, FALSE, out, capacity, written);
 }
 
 pet_store_result pet_store_write(const wchar_t *root, uint64_t id,
     const uint8_t *data, size_t length) {
     if (!id) return PET_STORE_INVALID;
-    return write_record(root, id, data, length);
+    return write_record(root, id, FALSE, data, length);
 }
 
 pet_store_result pet_inventory_read(const wchar_t *root, uint8_t *out,
     size_t capacity, size_t *written) {
-    return read_record(root, 0, out, capacity, written);
+    return read_record(root, 0, FALSE, out, capacity, written);
 }
 
 pet_store_result pet_inventory_write(const wchar_t *root, const uint8_t *data, size_t length) {
-    return write_record(root, 0, data, length);
+    return write_record(root, 0, FALSE, data, length);
+}
+
+/* Fixed disposable cache slots; caller reserves this namespace in a separate
+ * approved private directory. One shared exclusive pending file bounds
+ * leftover interrupted writes and blocks new writes until recovery. */
+pet_store_result pet_market_cache_read(const wchar_t *root, uint32_t slot,
+    uint8_t *out, size_t capacity, size_t *written) {
+    return read_record(root, slot, TRUE, out, capacity, written);
+}
+
+pet_store_result pet_market_cache_write(const wchar_t *root, uint32_t slot,
+    const uint8_t *data, size_t length) {
+    return write_record(root, slot, TRUE, data, length);
 }

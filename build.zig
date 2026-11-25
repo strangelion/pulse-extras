@@ -465,6 +465,7 @@ pub fn build(b: *std.Build) void {
         "shared/companion/pet_import.zig",
         "shared/companion/pet_import_helper.zig",
         "shared/companion/pet_market.zig",
+        "shared/companion/pet_market_cache.zig",
         "shared/companion/pet_market_download.zig",
         "shared/companion/pet_market_tasks.zig",
         "shared/companion/pet_zip.zig",
