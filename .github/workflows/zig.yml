@@ -254,6 +254,15 @@ jobs:
         run: |
           zig test shared/companion/pet_supervisor_win32.c tests/companion/pet_host_fixture.c -target x86_64-windows-gnu -lc -lpsapi --dep runtime_budget '-Mroot=shared/companion_group.zig' '-Mruntime_budget=shared/runtime/budget.zig'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise private companion root ACL and exclusive owner lease
+        if: matrix.lane == 'desktop'
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_private_root_win32.c tests/companion/pet_private_root_win32_test.c -ladvapi32 -o zig-out/pet-private-root-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/pet-private-root-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test durable companion catalog preferences
         if: matrix.lane == 'desktop'
         shell: pwsh

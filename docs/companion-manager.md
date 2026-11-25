@@ -686,3 +686,22 @@ or artwork metadata/thumbnail claim; root ACL initialization still pending.
 Tests cover real persisted preferences, second-tag matching, favorite and
 no-match filtering, and actual System32 known-folder resolution. New CI
 pending. This is read-only, not permission to manage existing user files.
+
+## Private native root admission (Windows)
+
+Add a separate native lease for the future serialized writer. Given the
+already approved canonical LocalAppData parent (fixture parent in CI),
+create only PulseExtras-Companion using an explicit protected DACL with
+one inheritable full-access ACE for the process user and that user as
+owner. Reopen and independently verify fixed-drive canonical path, no
+reparse point, exact owner and protected ACL. Never rewrite a preexisting
+ACL. Hold parent/root without delete sharing and hold a zero-byte,
+single-link, non-reparse owner.lock with exclusive sharing for the entire
+writer lifetime. Existing unsafe lock or root refuses admission, without
+truncation or recursive removal. This serializes cooperating processes;
+it does not protect against the same user/admin or hostile ancestors.
+The root lease is not yet connected to the host DLL: no production root
+created by UI, and caller approval of the parent remains required.
+Add native desktop CI test of creation, second-owner rejection, close and
+reopen, and preservation of unrelated content in an incompatible existing
+root. No production write permissions or release readiness claimed.
