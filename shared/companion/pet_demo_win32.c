@@ -1043,9 +1043,20 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                 pressed, activity_displayed, point.row)) {
                 if (now >= gaze.next) {
                     POINT mouse;
-                    if (GetCursorPos(&mouse))
+                    RECT bounds;
+                    /* Read the actual layered window, not the last requested
+                     * position. GetWindowRect is DPI-virtualized for legacy
+                     * callers; keep cursor and bounds in the same coordinate
+                     * space. In per-monitor mode both are physical pixels. */
+                    const DPI_AWARENESS awareness = GetAwarenessFromDpiAwarenessContext(
+                        GetThreadDpiAwarenessContext());
+                    BOOL cursor_ok = awareness == DPI_AWARENESS_PER_MONITOR_AWARE ?
+                        GetPhysicalCursorPos(&mouse) : GetCursorPos(&mouse);
+                    if (cursor_ok && GetWindowRect(surface.window, &bounds) &&
+                        bounds.right > bounds.left && bounds.bottom > bounds.top)
                         (void)pet_gaze_observe(&gaze, now, mouse.x, mouse.y,
-                            (double)x + surface.width * gaze_x, (double)y + surface.height * gaze_y);
+                            (double)bounds.left + ((double)bounds.right - bounds.left) * gaze_x,
+                            (double)bounds.top + ((double)bounds.bottom - bounds.top) * gaze_y);
                     else {
                         pet_gaze_reset(&gaze);
                         gaze.next = now + PET_GAZE_INTERVAL;
