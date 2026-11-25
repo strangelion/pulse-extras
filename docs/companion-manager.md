@@ -18,7 +18,7 @@ See [runtime and IPC](openpets-spike.md), [shared runtime](shared-runtime.md),
 | Market | Explicit official HTTPS search/filter/detail, base/full install, eight-item queue, bounded concurrency and verified staging; serialized catalog publication. Real network and cancellation/cleanup behavior need acceptance. |
 | Runtime | Digest-pinned helper/runtime, independent Job Object per renderer, 1024 storage slots, configured count/commit budget, readiness ACK, bounded polling, stable session IDs, hide/show, per-instance/all stop. No arbitrary PID attach/kill or automatic restart. |
 | Policy | Saved bounded startup plans, activation opt-in, host-owned login startup, minimize compatibility probe, manual visibility override, configurable batch/grace/deadline. Default off for automatic/minimize/history/dumps. |
-| Diagnostics | Numeric-only export, opt-in PDH1 history, separate full-memory collector and experimental managed watcher/retention. Managed startup regression remains failing; no accepted multi-instance dump claim. |
+| Diagnostics | Numeric-only export, opt-in PDH1 history, separate full-memory collector and experimental managed watcher/retention. Managed synthetic startup/capture/rotation regression passed at 6d63439; actual Pulse integration remains unverified. |
 | Menu | Public Win32 radio/check semantics, mnemonic escaping and theme/DPI invalidation. Exact Pulse Fluent rendering unsupported by pinned public SDK. |
 | Distribution | Existing dev manifest and official multi-file smoke packer. Test and formal acceptance pending; no formal release. |
 
@@ -60,31 +60,23 @@ instead of adding private hooks. The cross-add-on binary runtime remains
   alone does not isolate native data. Use a disposable test account/VM.
   No user-directory sweeps or destructive migration.
 
-## C closeout — current blocker
+## C closeout — automatic regression passed
 
-[Run 45668887992](https://github.com/strangelion/pulse-extras/actions/runs/45668887992)
-on code commit 9adf778: Ubuntu and Windows IPC passed; desktop failed
-at first approved managed watcher startup (native result 4, Win32 31),
-after canonicalizing the short TEMP path. Canonical path repair alone did not resolve it. The debugger can hold
-an extra suspension during initial event delivery; the supervisor now
-releases exactly its own CREATE_SUSPENDED count, accepts only the expected
-one/two counts for monitored children, and keeps unmonitored admission
-unchanged. The fixture checks actual renderer readiness for both children.
-Unexpected counts have numeric phase diagnostics. This is a targeted
-repair candidate, not a proven root cause or passed regression; managed
-crash collection, rotation and downstream checks require a successful rerun. Independent collector passed the earlier regression
-[45667721657](https://github.com/strangelion/pulse-extras/actions/runs/45667721657);
-[45668887999](https://github.com/strangelion/pulse-extras/actions/runs/45668887999)
-passed the automatic lightweight two-child stress preflight, not a 100-pet
-run. A docs-only green gate is not a new code acceptance result.
+[Run 45671169009](https://github.com/strangelion/pulse-extras/actions/runs/45671169009)
+on code commit 6d63439 passed all six jobs (scope, Windows/Linux checks,
+Windows IPC/desktop and Regression gate). The managed watcher startup,
+actual child readiness, full dump and four-slot retention tests passed,
+along with standalone capture, bundled ABI, WebP and import tests.
+This resolves the previously failing regression; actual Pulse UI and
+real-host performance are still NOT VERIFIED. See Git history for the
+canonical path and debugger suspension corrections.
 
 ## Stage D: official test/formal packaging and real-host acceptance
 
-Status: PLANNED / BLOCKED on Stage C code CI. First obtain green full
-regression, including the Windows managed crash tests. Then prepare a verified test package and
-perform real Windows/Pulse acceptance before a formal candidate. No
-production publication or shared-binary dependency work (deferred RT2+)
-is authorized by this plan.
+Status: D1 package preparation. C automatic regression passed at 6d63439;
+require current full regression for every new candidate. Then prepare a
+verified test package and perform actual Windows/Pulse acceptance before
+a formal candidate. No production publication or shared binary work.
 
 ### D0: official package contract and two profiles
 
@@ -145,7 +137,7 @@ expected SHA-256, official re-verification, manifest/entry/member evidence
 binding and exclusive bounded copy. Clean build evidence records pinned Zig,
 SDK pin, host/catalog and author-tool digests. Launch requires explicit
 dedicated-test-user acknowledgement; this flag is not OS isolation.
-Portable fixture tests are included; real Windows packaging is NOT RUN.
+Portable fixture tests passed with full regression at 6d63439. An explicit test-package request in the existing Zig regression workflow now prepares the pinned official v1.0.60 host/author tools after the full gate, runs the same script in package-only mode and uploads the verified archive and evidence. First package run remains to be verified; no host installation of Companion or real-host acceptance in CI.
 
 IMPORTANT: isolated Pulse --store/--profile alone does NOT isolate
 native data. The entry/runtime use real Windows LocalAppData
@@ -192,7 +184,7 @@ from implemented tests, a green docs gate or a historical benchmark.
 | 100 independent visible pets | NOT VERIFIED |
 | High-count instances managed by Pulse | NOT VERIFIED |
 | Long-running stability and resource leaks | NOT VERIFIED |
-| Crash injection and abnormal recovery | Partial; standalone fixture passed, managed startup blocked |
+| Crash injection and abnormal recovery | Standalone and managed synthetic fixtures passed at 6d63439; real-host abnormal recovery pending |
 | Real market parallel downloads | NOT VERIFIED |
 | SDK image rendering and fallback on actual host | NOT VERIFIED |
 | Complete plugin install, upgrade, rollback and uninstall | NOT VERIFIED |

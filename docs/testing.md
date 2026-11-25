@@ -74,7 +74,7 @@ retains diagnostics on failure. The fast ZIP regression precedes the broad
 suite. No failure is converted to a skip.
 
 Only two workflows are needed now: Zig regression (automatic scoped
-correctness, manual full) and Companion stress benchmark (manual independent
+correctness, manual full, explicit test-package job after full gate) and Companion stress benchmark (manual independent
 hidden, synthetic or mixed static WebP, 1–100 processes, 5–180 seconds).
 Do not add hosted-visible, WIC-only or separate release workflows merely
 for D; local harness options remain available for diagnosis. Actual
@@ -82,3 +82,15 @@ visible, host-managed, soak, network and package acceptance belong to
 [Stage D](companion-manager.md#stage-d-official-testformal-packaging-and-real-host-acceptance).
 See [performance.md](performance.md) for historical evidence. A docs-only
 green check does not prove an earlier code change passed.
+
+### Test artifact on request
+
+Manual Zig regression input companion_test_package=true (or an explicit
+[test-package] commit marker on the experimental branch with full scope)
+adds a post-gate package job. The host is the official v1.0.60 installer
+with pinned size/digest and matching upstream source checkout. Only the
+verified unsigned .pulse-ext, evidence and verify log are uploaded for
+14 days. No automatic package generation on ordinary pushes, no signing
+or release write permission, no actual Companion UI acceptance. A failed
+package job remains a failed workflow; the existing regression gate still
+represents correctness only.

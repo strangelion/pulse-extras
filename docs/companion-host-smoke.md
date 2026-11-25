@@ -6,7 +6,31 @@ and [Stage D plan](companion-manager.md#stage-d-official-testformal-packaging-an
 own the status. Earlier smoke experiments are preserved in
 [Git history](https://github.com/strangelion/pulse-extras/blob/78a33f1a54cabb6e880687023692a07aba44163c/docs/companion-host-smoke.md); older read-only statements are historical.
 
-## 1. Prepare isolated Windows environment
+## 1. Obtain the test package
+
+The existing Zig regression workflow accepts the manual input
+companion_test_package=true. After the full required gate passes, the
+Windows package job fetches the exact official v1.0.60 installer pinned
+by size and SHA-256, checks out matching author tools at b324368, uses
+the upstream /PULSETEST mode without optional startup/services, and
+runs the existing package-only script with pinned static libwebp.
+An explicit [test-package] commit marker on the experimental branch
+also requests this job for full-scope changes. Ordinary pushes/PRs do
+not package. On success download companion-dev-test-<source SHA> from
+the Actions run's Artifacts (14 days): companion-dev.pulse-ext,
+build-evidence.json and the official verification log. No release/tag
+or signing. Do not install an artifact from a failed/incomplete run.
+
+Check the exact downloaded archive SHA-256 against the Actions summary
+and evidence. The package was verified against official Pulse 1.0.60,
+not every host version. For another host version, use its matching
+official author tool to verify the same archive before an explicitly
+consented isolated install; record both host identities. The script's
+strict --reuse-from mode requires the original matching host/catalog/
+author-tool identity, so for another host use the official commands
+below rather than weakening that evidence check.
+
+## 2. Prepare isolated Windows environment
 
 Use a disposable VM or dedicated Windows test user with no production
 Companion inventory/dumps. A fresh Pulse --store and --profile do not
@@ -14,7 +38,26 @@ isolate native LocalAppData. Do not run writable cases in the regular
 account. Record exact clean source SHA, pinned Zig, actual host/SDK and
 backend. First require current full code CI, not a docs-only gate.
 
-The existing official author-tool path supports package-only preparation:
+If the artifact is available, local recompilation is unnecessary. In
+the dedicated Windows test account/VM, with the matching official
+author tool and actual host, use these example commands after checking
+the package hash (replace paths and use a fresh store/profile):
+
+```powershell
+$pkg = "C:\Test\companion-dev.pulse-ext"
+$pulse = "C:\Path\To\pulse.exe"
+$author = "C:\Path\To\PulseSdk\tools\extensions\pulse_ext.py"
+$store = "C:\Test\companion-store-01"
+$profile = "C:\Test\companion-profile-01"
+Get-FileHash -Algorithm SHA256 $pkg
+python $author --pulse $pulse --json verify $pkg
+# Continue only if hash and official verify succeed; native consent is explicit.
+python $author --pulse $pulse --json install $pkg --store $store --allow-native
+python $author --pulse $pulse --json enable strangelion.companion-dev --store $store --allow-native
+python $author --pulse $pulse --json run --store $store --profile $profile
+```
+
+Alternatively, the existing official author-tool path supports local package-only preparation:
 
 ```powershell
 python scripts/companion_host_smoke.py --pulse "C:\Path\To\pulse.exe" --sdk-root "C:\Path\To\PulseSdk" --out ".local\companion-d-test-01" --prepare-helper wic --bundle-runtime
@@ -51,7 +94,7 @@ for re-verification only. Combined build/launch remains possible with
 both flags but produces a new artifact. Use the actual tested SHA in
 every acceptance record. D1 has not yet been executed with a real host.
 
-## 2. Execute D cases
+## 3. Execute D cases
 
 Use the manager's D2/D3 matrices. Start with a single built-in pet, then
 permitted test assets, small mixed sessions and only then bounded stress.
@@ -78,7 +121,7 @@ the system rejects admission. See [performance](performance.md) for the
 historical hidden baseline. Keep heavy soak and visual checks off
 routine CI.
 
-## 3. Evidence and recovery
+## 4. Evidence and recovery
 
 Record one result per case (PASS / FAIL / NOT RUN / UNSUPPORTED),
 expected vs observed, exact source/manifest/package hashes, Pulse/Windows
