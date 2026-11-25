@@ -811,3 +811,20 @@ and reopen the group. This is cross-ABI acceptance, not a production module
 loader or real child launch via the host. Production packaging, an independently
 approved module/installation root, worker ownership and settings integration
 are still required. The default DLL install is unchanged.
+
+## Pinned runtime module owner
+
+The worker-side Runtime Owner accepts an independently approved canonical
+installation directory and SHA-256, uses only the fixed bridge DLL name,
+and rejects remote drives, reparse/alias paths, hardlinks and oversized
+images. It pins the root and read-only image, checks SHA-256 before loading,
+restricts dependent DLL search to System32 and rejects preloaded same-name
+modules. After validating the versioned table, it opens the existing Group.
+Close refuses a nonempty group and releases the module before file/root
+handles; cleanup errors retain handles for retry. This is not an ACL approval
+authority or protection from malicious same-process code. Caller must keep the
+owner at a stable address, serialize calls, and provision a trusted root.
+The MSVC fixture now supplies the built bridge digest independently through
+CI, checks wrong-digest refusal and successful open/drain/close/reopen. It
+never launches real pets. The host DLL still does not create a runtime owner;
+production package installation and worker hookup remain pending.
