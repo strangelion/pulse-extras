@@ -19,6 +19,8 @@ on:
   push:
     branches: [experiment/openpets-ipc]
     paths:
+      - build.zig
+      - 'shared/companion/**'
       - tests/companion/pet_stress.py
       - tests/companion/pet_stress_fixtures.py
       - scripts/install_pet_webp.py

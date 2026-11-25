@@ -1321,3 +1321,18 @@ before release. Distribute COPYING/PATENTS with static-linked binaries.
 Fixtures generated and pixel-checked with Pillow locally. Windows/Zig
 compilation and dependency downloading were unavailable locally; require
 CI and dual-source probe before reporting the new backend as working.
+
+### Static backend verification checkpoint
+
+Run 45562483251 failed Windows and Ubuntu at zig fmt, before regression
+execution. Apply the exact formatter diff emitted by the Ubuntu job;
+retain all checks. Run 45562483236 completed pinned archive staging and
+entered compilation at the time of inspection. The repository's V1/V2
+fixtures (164/192 bytes) both match their pinned SHA-256 and were fully
+decoded locally with Pillow. Dimensions 1536x1872/1536x2288 and uniform
+RGBA values (112,75,220,255)/(33,180,84,255) were verified via pixel extrema.
+No new fixture encoding or production runtime change is needed here.
+Include build.zig and shared/companion/** in the benchmark's push paths:
+a decoder or renderer change must trigger its own stress verification,
+not just a harness change. Unrelated extension changes remain excluded.
+Static decoder compilation and mixed readiness are still acceptance gates.
