@@ -205,6 +205,65 @@ pet_surface_result pet_surface_move(pet_surface *surface, LONG x, LONG y) {
         NULL, 0, NULL, 0) ? PET_SURFACE_OK : PET_SURFACE_OS_ERROR;
 }
 
+pet_surface_result pet_surface_resize(pet_surface *surface, unsigned percent,
+    const uint8_t *atlas, size_t atlas_bytes, unsigned version, unsigned row,
+    unsigned column, LONG x, LONG y, BYTE opacity) {
+    pet_surface_result result = check(surface);
+    if (result != PET_SURFACE_OK) return result;
+    if (!surface->primed || percent < PET_MIN_SCALE || percent > PET_MAX_SCALE)
+        return PET_SURFACE_INVALID;
+    unsigned width = PET_FRAME_WIDTH * percent / 100;
+    unsigned height = PET_FRAME_HEIGHT * percent / 100;
+    if (width == surface->width && height == surface->height)
+        return pet_surface_present(surface, atlas, atlas_bytes, version, row, column, x, y, opacity);
+    HDC dc = CreateCompatibleDC(NULL);
+    if (!dc) return PET_SURFACE_OS_ERROR;
+    HBITMAP bitmap = NULL;
+    HGDIOBJ previous = NULL;
+    void *pixels = NULL;
+    BITMAPINFO info = {0};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = (LONG)width;
+    info.bmiHeader.biHeight = -(LONG)height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    result = PET_SURFACE_OS_ERROR;
+    bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, NULL, 0);
+    if (!bitmap || !pixels) goto cleanup;
+    previous = SelectObject(dc, bitmap);
+    if (!previous || previous == HGDI_ERROR) { previous = NULL; goto cleanup; }
+    result = frame_scaled(atlas, atlas_bytes, version, row, column, pixels,
+        (size_t)width * height * 4u, width, height);
+    if (result != PET_SURFACE_OK) goto cleanup;
+    POINT position = {x, y}, origin = {0, 0};
+    SIZE size = {(LONG)width, (LONG)height};
+    BLENDFUNCTION blend = {AC_SRC_OVER, 0, opacity, AC_SRC_ALPHA};
+    HDC desktop = GetDC(NULL);
+    result = PET_SURFACE_OS_ERROR;
+    if (!desktop) goto cleanup;
+    BOOL ok = UpdateLayeredWindow(surface->window, desktop, &position, &size,
+        dc, &origin, 0, &blend, ULW_ALPHA);
+    ReleaseDC(NULL, desktop);
+    if (!ok) goto cleanup;
+
+    SelectObject(surface->memory_dc, surface->previous);
+    DeleteDC(surface->memory_dc);
+    DeleteObject(surface->bitmap);
+    surface->memory_dc = dc;
+    surface->bitmap = bitmap;
+    surface->previous = previous;
+    surface->pixels = pixels;
+    surface->width = width;
+    surface->height = height;
+    return PET_SURFACE_OK;
+cleanup:
+    if (previous) SelectObject(dc, previous);
+    DeleteDC(dc);
+    if (bitmap) DeleteObject(bitmap);
+    return result;
+}
+
 pet_surface_result pet_surface_show(pet_surface *surface, BOOL visible) {
     pet_surface_result result = check(surface);
     if (result != PET_SURFACE_OK) return result;

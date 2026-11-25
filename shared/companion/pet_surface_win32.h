@@ -55,6 +55,12 @@ pet_surface_result pet_clamp_position(const RECT *work, unsigned width,
 pet_surface_result pet_surface_present(pet_surface *surface, const uint8_t *atlas,
     size_t atlas_bytes, unsigned version, unsigned row, unsigned column,
     LONG x, LONG y, BYTE opacity);
+/* Transactional live resize: create a replacement DIB and present the
+ * selected cell before releasing the previous surface. Failure keeps the
+ * old bitmap, size and position. UI thread only. */
+pet_surface_result pet_surface_resize(pet_surface *surface, unsigned percent,
+    const uint8_t *atlas, size_t atlas_bytes, unsigned version, unsigned row,
+    unsigned column, LONG x, LONG y, BYTE opacity);
 pet_surface_result pet_surface_show(pet_surface *surface, BOOL visible);
 pet_surface_result pet_surface_policy(pet_surface *surface, BOOL topmost, BOOL click_through);
 pet_surface_result pet_surface_close(pet_surface *surface);

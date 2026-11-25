@@ -544,3 +544,23 @@ publication, successful child exit and handle release. The CI fixture
 hashes its own freshly built executable only for isolated test approval.
 No Pulse SDK callback, extension entrypoint, asset selection in the
 supervisor or shipping package is enabled by this seam.
+
+## Interactive menu and transactional live resize
+
+Right click now opens a native context menu instead of immediately exiting.
+Size presets (50/75/100/125/150/200 percent), topmost, reduced motion,
+position reset, interaction and explicit exit are supported. The menu
+contains no shell commands or arbitrary paths. Standalone click alternates
+wave and jump; managed pets remain governed by the host channel. Reduced
+motion uses the existing neutral static frame rather than freezing a
+random moving frame. Changes to scale, topmost, reduced motion and
+position persist only with the already opt-in --remember flag.
+Mouse click-through is deliberately not exposed until a separate recovery
+control is available. Size changes allocate one temporary bounded DIB,
+convert the current frame and present it before releasing the prior DIB;
+failure retains the old surface. No repeated atlas decode. CI checks
+invalid resize rollback, successful resize in both directions and pixel
+conversion. Native popup focus/dismissal and interactive resizing require
+desktop retesting. TrackPopupMenuEx is modal and may delay cooperative
+stop until dismissed; the parent's bounded job termination remains the
+fallback. No official Pulse SDK events are claimed by this change.

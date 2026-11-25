@@ -97,9 +97,54 @@ static HANDLE parse_inherited_handle(const wchar_t *text) {
     return handle;
 }
 
+enum {
+    MENU_TOPMOST = 100, MENU_REDUCED, MENU_RESET, MENU_INTERACT,
+    MENU_EXIT, MENU_SCALE_50 = 200, MENU_SCALE_75, MENU_SCALE_100,
+    MENU_SCALE_125, MENU_SCALE_150, MENU_SCALE_200
+};
+
+static const unsigned menu_scales[] = {50, 75, 100, 125, 150, 200};
+
+/* Menu belongs to the pet, not the host. No external commands or hooks.
+ * A modal menu can delay cooperative stop until dismissal; the parent
+ * still owns the bounded job termination fallback. */
+static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
+    int reduced, int managed) {
+    HMENU menu = CreatePopupMenu();
+    HMENU sizes = CreatePopupMenu();
+    if (!menu || !sizes) {
+        if (menu) DestroyMenu(menu);
+        if (sizes) DestroyMenu(sizes);
+        return 0;
+    }
+    const wchar_t *labels[] = {L"50%", L"75%", L"100%", L"125%", L"150%", L"200%"};
+    for (unsigned i = 0; i < sizeof(menu_scales) / sizeof(menu_scales[0]); ++i) {
+        if (!AppendMenuW(sizes, MF_STRING | (scale == menu_scales[i] ? MF_CHECKED : 0),
+            MENU_SCALE_50 + i, labels[i])) {
+            DestroyMenu(sizes); DestroyMenu(menu); return 0;
+        }
+    }
+    if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)sizes, L"Size")) {
+        DestroyMenu(sizes); DestroyMenu(menu); return 0;
+    }
+    if (!AppendMenuW(menu, MF_STRING | (topmost ? MF_CHECKED : 0), MENU_TOPMOST, L"Always on top") ||
+        !AppendMenuW(menu, MF_STRING | (reduced ? MF_CHECKED : 0), MENU_REDUCED, L"Reduce motion / pause") ||
+        !AppendMenuW(menu, MF_STRING, MENU_RESET, L"Reset position") ||
+        !AppendMenuW(menu, MF_STRING | (managed || reduced ? MF_GRAYED : 0), MENU_INTERACT, L"Play animation") ||
+        !AppendMenuW(menu, MF_SEPARATOR, 0, NULL) ||
+        !AppendMenuW(menu, MF_STRING, MENU_EXIT, L"Exit pet")) {
+        DestroyMenu(menu); return 0;
+    }
+    unsigned command = (unsigned)TrackPopupMenuEx(menu,
+        TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+        at.x, at.y, window, NULL);
+    DestroyMenu(menu); /* also destroys attached submenu */
+    return command;
+}
+
 static void usage(void) {
     fputs("pulse-pet-demo [--reduced-motion] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE]\n"
-        "Left click: wave. Left drag: move. Right click: exit. --smoke: hidden synthetic test.\n", stderr);
+        "Left click: interact. Left drag: move. Right click: menu. --smoke: hidden synthetic test.\n", stderr);
 }
 
 int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
@@ -214,6 +259,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
     uint64_t started = GetTickCount64(), smoke_end = started + 500;
     unsigned last_row = UINT32_MAX, last_column = UINT32_MAX, frames = 0;
     int shown = 0, done = 0;
+    unsigned interaction = 0;
     if (smoke && !state_slot) reaction = PET_STATE_WAVING;
     while (!done) {
         if (stop) {
@@ -226,13 +272,60 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
          * timeline or the smoke-test deadline. */
         for (unsigned n = 0; n < 64 && PeekMessageW(&message, NULL, 0, 0, PM_REMOVE); ++n) {
             if (message.message == WM_QUIT ||
-                (message.hwnd == surface.window &&
-                 (message.message == WM_CLOSE || message.message == WM_RBUTTONUP))) {
+                (message.hwnd == surface.window && message.message == WM_CLOSE)) {
                 done = 1;
                 break;
             }
             if (message.hwnd == surface.window) {
-                if (message.message == WM_LBUTTONDOWN && GetCursorPos(&press)) {
+                if (message.message == WM_RBUTTONUP && !smoke && shown && GetCursorPos(&cursor)) {
+                    if (GetCapture() == surface.window) ReleaseCapture();
+                    pressed = 0;
+                    unsigned command = pet_menu(surface.window, cursor, scale, topmost,
+                        reduced, state_slot != NULL);
+                    /* Check the owner signal immediately after the modal menu. */
+                    if (stop && WaitForSingleObject(stop, 0) == WAIT_OBJECT_0) {
+                        stopped = 1; done = 1; break;
+                    }
+                    if (command == MENU_EXIT) { done = 1; break; }
+                    if (command == MENU_TOPMOST) {
+                        if (pet_surface_policy(&surface, !topmost, FALSE) == PET_SURFACE_OK)
+                            topmost = !topmost;
+                        else fputs("Pet z-order update failed.\n", stderr);
+                    } else if (command == MENU_REDUCED) {
+                        reduced = !reduced;
+                        started = GetTickCount64();
+                        if (!state_slot) reaction = PET_STATE_IDLE;
+                    } else if (command == MENU_INTERACT && !state_slot && !reduced) {
+                        reaction = (++interaction & 1u) ? PET_STATE_WAVING : PET_STATE_SUCCESS;
+                        started = GetTickCount64();
+                    } else if (command == MENU_RESET) {
+                        RECT area;
+                        if (work_area(cursor, &area)) {
+                            LONG nx = clamp_long((int64_t)area.right - surface.width - 24);
+                            LONG ny = clamp_long((int64_t)area.bottom - surface.height - 24);
+                            if (pet_clamp_position(&area, surface.width, surface.height, &nx, &ny) == PET_SURFACE_OK &&
+                                pet_surface_move(&surface, nx, ny) == PET_SURFACE_OK) {
+                                x = nx; y = ny;
+                            } else fputs("Pet position reset failed.\n", stderr);
+                        }
+                    } else if (command >= MENU_SCALE_50 && command <= MENU_SCALE_200) {
+                        unsigned next = menu_scales[command - MENU_SCALE_50];
+                        unsigned width = PET_FRAME_WIDTH * next / 100;
+                        unsigned height = PET_FRAME_HEIGHT * next / 100;
+                        LONG nx = clamp_long((int64_t)x + surface.width - width);
+                        LONG ny = clamp_long((int64_t)y + surface.height - height);
+                        RECT area;
+                        POINT anchor = {clamp_long((int64_t)x + surface.width / 2),
+                            clamp_long((int64_t)y + surface.height / 2)};
+                        if (next != scale && work_area(anchor, &area)) {
+                            if (pet_clamp_position(&area, width, height, &nx, &ny) == PET_SURFACE_OK &&
+                                pet_surface_resize(&surface, next, atlas, bytes, version,
+                                    last_row, last_column, nx, ny, 255) == PET_SURFACE_OK) {
+                                x = nx; y = ny; scale = next;
+                            } else fputs("Pet resize failed; previous surface retained.\n", stderr);
+                        }
+                    }
+                } else if (message.message == WM_LBUTTONDOWN && GetCursorPos(&press)) {
                     press_x = x;
                     press_y = y;
                     dragged = 0;
@@ -256,8 +349,8 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
                     if (GetCapture() == surface.window) {
                         ReleaseCapture();
                         if (!dragged) {
-                            if (!state_slot) {
-                                reaction = PET_STATE_WAVING;
+                            if (!state_slot && !reduced) {
+                                reaction = (++interaction & 1u) ? PET_STATE_WAVING : PET_STATE_SUCCESS;
                                 started = GetTickCount64();
                             }
                         }

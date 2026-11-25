@@ -83,6 +83,17 @@ int main(void) {
     CHECK(pet_surface_present(&surface, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OK);
     CHECK(surface.pixels[0] == 25 && surface.pixels[3] == 128);
     CHECK(surface.pixels[4] == 25 && surface.pixels[7] == 128);
+    HBITMAP old_bitmap = surface.bitmap;
+    CHECK(pet_surface_resize(&surface, 75, atlas, bytes, 2, 11, 7, 20, 20, 255) == PET_SURFACE_INVALID);
+    CHECK(surface.bitmap == old_bitmap && surface.width == 384 && surface.height == 416);
+    CHECK(pet_surface_resize(&surface, 201, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_INVALID);
+    CHECK(surface.bitmap == old_bitmap);
+    CHECK(pet_surface_resize(&surface, 75, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OK);
+    CHECK(surface.width == 144 && surface.height == 156 && surface.bitmap != old_bitmap);
+    CHECK(surface.pixels[0] == 25 && surface.pixels[3] == 128);
+    CHECK(pet_surface_resize(&surface, 200, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OK);
+    CHECK(surface.width == 384 && surface.height == 416);
+    CHECK(!IsWindowVisible(surface.window));
     CHECK(pet_surface_move(&surface, 30, 40) == PET_SURFACE_OK);
     RECT actual;
     CHECK(GetWindowRect(surface.window, &actual) && actual.left == 30 && actual.top == 40);
