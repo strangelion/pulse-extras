@@ -1471,3 +1471,27 @@ outcome, including ambiguous failures. The worker still checks revision,
 expiry and detail-page identity before transfer. Tests cover out-of-range,
 unbound and offline selection, absent UI selection and scoped native
 commands. This revision does not enable concurrent host transfers.
+
+## Configurable session capacity and resource admission
+
+The fixed eight-instance pilot ceiling is replaced by a validated runtime
+limits preference (one versioned value: instance limit and commit MiB).
+Defaults remain 8 and 1024 MiB. The user may select 1–1024 instances and
+128–131072 MiB; the effective limit is min(instance limit, floor(budget /
+128 MiB)). Native system-memory admission and per-child Job Object limits
+still apply. This is reserved commit policy, not measured working set or
+a guarantee that the computer can launch that many pets. Saved limits are
+read atomically with the existing settings and copied into the next session
+before worker admission. Editing is disabled during a runtime task; no
+active session limit is changed or child terminated by a settings write.
+The runtime opens its native group with the effective limit and the
+configured budget. Bounded worker heap buffers and a fixed lookup table
+retain source identity for all 1024 possible rows; the UI renders only
+12 filtered rows per page, clamps a shortened result set, and keeps
+aggregate metrics unfiltered. Large sessions tick native slots in bounded
+batches at a shorter worker cadence, with bounded drain timeout. The
+1024-slot capacity and resource math are tested without launching 1024
+processes; host ABI fixture validates persisted settings, existing stress
+tests remain distinct. Large-scale real-host CPU/memory and exit timing
+must be measured before claiming acceptance. Market download concurrency
+is still not enabled by this change.

@@ -23,10 +23,12 @@ extern "kernel32" fn CloseThreadpoolTimer(*anyopaque) callconv(.winapi) void;
 const allocator = std.heap.page_allocator;
 const title = "Pulse Companion";
 const preference = "market.downloadConcurrency";
+const runtime_preference = "runtime.limits";
+const running_page_size: usize = 12;
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -39,6 +41,7 @@ const Instance = struct {
     subscriptions: [commands.len]u64 = @splat(0),
     section: Section = .library,
     saved: u8 = 4,
+    runtime_limits: library.RuntimeLimits = .{},
     version: u64 = 0,
     loaded: bool = false,
     active: bool = false,
@@ -112,6 +115,7 @@ const Instance = struct {
     running_search_revision: u64 = 0,
     running_query: [256]u8 = undefined,
     running_query_len: usize = 0,
+    running_offset: usize = 0,
     favorites_only: bool = false,
     status: []const u8 = "设置尚未读取",
 };
@@ -124,7 +128,7 @@ const Content = struct {
     import_toolbar: [3]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
-    states: [7]ui.State = undefined,
+    states: [9]ui.State = undefined,
     market_actions: [4]ui.Node = undefined,
     market_paging: [2]ui.Node = undefined,
     market_install: [2]ui.Node = undefined,
@@ -149,6 +153,12 @@ const Content = struct {
     running_count: [96]u8 = undefined,
     running_count_id: [64]u8 = undefined,
     running_search_toolbar: [2]ui.Node = undefined,
+    running_paging: [2]ui.Node = undefined,
+    limits_inputs: [2]ui.Node = undefined,
+    limits_count: [16]u8 = undefined,
+    limits_memory: [16]u8 = undefined,
+    limits_text: [320]u8 = undefined,
+    limits_id: [64]u8 = undefined,
     quarantine_heading: [160]u8 = undefined,
     quarantine_heading_id: [64]u8 = undefined,
     quarantine_text: [4][224]u8 = undefined,
@@ -306,6 +316,19 @@ fn runningMatches(item: library.RunningRow, source: []const u8, query: []const u
         return false;
     }
     return true;
+}
+
+fn runningMatchCount(instance: *const Instance) usize {
+    var count: usize = 0;
+    for (instance.running_rows.rows[0..instance.running_rows.count], 0..) |item, n| {
+        if (runningMatches(item, instance.running_rows.sources[n].text(), instance.running_query[0..instance.running_query_len])) count += 1;
+    }
+    return count;
+}
+
+fn runningPageStart(offset: usize, total: usize) usize {
+    if (total == 0) return 0;
+    return @min(offset / running_page_size, (total - 1) / running_page_size) * running_page_size;
 }
 
 fn marketIdle(instance: *const Instance) bool {
@@ -524,13 +547,20 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     content.stop_toolbar[1] = action("running.stop-one", "停止指定实例", commands[14], can_stop);
                     content.children[count] = horizontal("running.stop-toolbar", &content.stop_toolbar);
                     count += 1;
+                    const total = runningMatchCount(instance);
+                    const offset = runningPageStart(instance.running_offset, total);
                     var matched: usize = 0;
+                    var rendered: usize = 0;
                     const count_index = count;
                     count += 1;
                     for (instance.running_rows.rows[0..instance.running_rows.count], 0..) |item, n| {
                         const source = instance.running_rows.sources[n].text();
                         if (!runningMatches(item, source, instance.running_query[0..instance.running_query_len])) continue;
                         matched += 1;
+                        if (matched <= offset) continue;
+                        if (rendered == running_page_size) break;
+                        const slot = rendered;
+                        rendered += 1;
                         const name = if (source.len != 0) source else "来源未采集";
                         const state = switch (item.state) {
                             .starting => "启动中",
@@ -539,17 +569,23 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                         };
                         const body = if (item.metrics) |metrics| blk: {
                             if (metrics.cpu_core_percent) |cpu| {
-                                break :blk std.fmt.bufPrint(&content.row_text[n], "ID {d} · {s} · 素材 {d} · {s} · PID {d} · CPU {d:.1}% · 工作集 {d} KiB · 私有 {d} KiB · 句柄 {d}", .{ item.id, name, item.asset_id, state, metrics.pid, cpu, metrics.working_set / 1024, metrics.private_bytes / 1024, metrics.handles }) catch unreachable;
+                                break :blk std.fmt.bufPrint(&content.row_text[slot], "ID {d} · {s} · 素材 {d} · {s} · PID {d} · CPU {d:.1}% · 工作集 {d} KiB · 私有 {d} KiB · 句柄 {d}", .{ item.id, name, item.asset_id, state, metrics.pid, cpu, metrics.working_set / 1024, metrics.private_bytes / 1024, metrics.handles }) catch unreachable;
                             }
-                            break :blk std.fmt.bufPrint(&content.row_text[n], "ID {d} · {s} · 素材 {d} · {s} · PID {d} · CPU — · 工作集 {d} KiB · 私有 {d} KiB · 句柄 {d}", .{ item.id, name, item.asset_id, state, metrics.pid, metrics.working_set / 1024, metrics.private_bytes / 1024, metrics.handles }) catch unreachable;
-                        } else std.fmt.bufPrint(&content.row_text[n], "ID {d} · {s} · 素材 {d} · {s} · 暂无资源采样", .{ item.id, name, item.asset_id, state }) catch unreachable;
-                        const id = std.fmt.bufPrint(&content.row_ids[n], "instance-{x}-{x}", .{ item.id, std.hash.Wyhash.hash(0, body) }) catch unreachable;
+                            break :blk std.fmt.bufPrint(&content.row_text[slot], "ID {d} · {s} · 素材 {d} · {s} · PID {d} · CPU — · 工作集 {d} KiB · 私有 {d} KiB · 句柄 {d}", .{ item.id, name, item.asset_id, state, metrics.pid, metrics.working_set / 1024, metrics.private_bytes / 1024, metrics.handles }) catch unreachable;
+                        } else std.fmt.bufPrint(&content.row_text[slot], "ID {d} · {s} · 素材 {d} · {s} · 暂无资源采样", .{ item.id, name, item.asset_id, state }) catch unreachable;
+                        const id = std.fmt.bufPrint(&content.row_ids[slot], "instance-{x}-{x}", .{ item.id, std.hash.Wyhash.hash(0, body) }) catch unreachable;
                         content.children[count] = label(id, body);
                         count += 1;
                     }
-                    const line = std.fmt.bufPrint(&content.running_count, "匹配 {d} / {d} 个实例", .{ matched, instance.running_rows.count }) catch unreachable;
+                    const line = std.fmt.bufPrint(&content.running_count, "匹配 {d} / {d} 个实例 · 显示 {d}–{d}", .{ total, instance.running_rows.count, if (total == 0) 0 else offset + 1, offset + rendered }) catch unreachable;
                     content.children[count_index] = changingLabel(&content.running_count_id, "running.count", line);
-                    if (matched == 0) {
+                    if (total > running_page_size) {
+                        content.running_paging[0] = action("running.previous", "上一页", commands[53], offset != 0);
+                        content.running_paging[1] = action("running.next", "下一页", commands[54], offset + rendered < total);
+                        content.children[count] = horizontal("running.pagination", &content.running_paging);
+                        count += 1;
+                    }
+                    if (total == 0) {
                         content.children[count] = label("running.no-match", "没有匹配的实例，请调整搜索词。");
                         count += 1;
                     }
@@ -565,7 +601,23 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             content.toolbar[1] = action("settings.less", "减少并发", commands[5], instance.loaded and instance.pending == 0 and instance.saved > 1);
             content.toolbar[2] = action("settings.more", "增加并发", commands[6], instance.loaded and instance.pending == 0 and instance.saved < 8);
             content.children[4] = horizontal("settings.toolbar", content.toolbar[0..3]);
-            count = 5;
+            const limits = instance.runtime_limits;
+            const limits_text = std.fmt.bufPrint(&content.limits_text, "实例上限 {d} · 提交内存预算 {d} MiB · 有效上限 {d}（每实例预留 128 MiB；系统资源不足仍会拒绝启动）", .{ limits.instances, limits.commit_mib, limits.effective() }) catch unreachable;
+            content.children[5] = changingLabel(&content.limits_id, "settings.limits", limits_text);
+            const editable = instance.loaded and instance.pending == 0 and instance.runtime_task_id == 0;
+            content.limits_inputs[0] = ui.node(ui.NodeKind.text_input);
+            content.limits_inputs[0].id = abi.view("settings.instances");
+            content.limits_inputs[0].state = .{ .present = 1, .value = abi.view("settings.instances") };
+            content.limits_inputs[0].placeholder = .{ .present = 1, .value = abi.view("实例上限（1–1024）") };
+            content.limits_inputs[0].enabled = .{ .present = 1, .value = @intFromBool(editable) };
+            content.limits_inputs[1] = ui.node(ui.NodeKind.text_input);
+            content.limits_inputs[1].id = abi.view("settings.commit-mib");
+            content.limits_inputs[1].state = .{ .present = 1, .value = abi.view("settings.commit-mib") };
+            content.limits_inputs[1].placeholder = .{ .present = 1, .value = abi.view("内存预算 MiB（128–131072）") };
+            content.limits_inputs[1].enabled = .{ .present = 1, .value = @intFromBool(editable) };
+            content.children[6] = horizontal("settings.runtime-inputs", &content.limits_inputs);
+            content.children[7] = action("settings.limits-save", "保存运行限制（下次启动生效）", commands[52], editable);
+            count = 8;
         },
     }
     content.root = ui.node(ui.NodeKind.stack);
@@ -584,6 +636,10 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     content.states[4] = .{ .key = abi.view("quarantine.id"), .value = abi.view("") };
     content.states[5] = .{ .key = abi.view("running.query"), .value = abi.view(instance.running_query[0..instance.running_query_len]) };
     content.states[6] = .{ .key = abi.view("market.query"), .value = abi.view(instance.market_query.query[0..instance.market_query.len]) };
+    const limit_count = std.fmt.bufPrint(&content.limits_count, "{d}", .{instance.runtime_limits.instances}) catch unreachable;
+    const limit_memory = std.fmt.bufPrint(&content.limits_memory, "{d}", .{instance.runtime_limits.commit_mib}) catch unreachable;
+    content.states[7] = .{ .key = abi.view("settings.instances"), .value = abi.view(limit_count) };
+    content.states[8] = .{ .key = abi.view("settings.commit-mib"), .value = abi.view(limit_memory) };
     tree.states = &content.states;
     tree.state_count = content.states.len;
 }
@@ -613,6 +669,19 @@ fn readPreference(settings: raw.PulseSettings) !u8 {
     return found orelse 4;
 }
 
+fn readRuntimeLimits(settings: raw.PulseSettings) !library.RuntimeLimits {
+    if (settings.version > (1 << 53) - 1 or settings.count > 1024 or (settings.count != 0 and settings.values == null)) return error.InvalidSettings;
+    var found: ?library.RuntimeLimits = null;
+    for (0..settings.count) |n| {
+        const pair = settings.values[n];
+        const key = abi.slice(pair.key) orelse continue;
+        if (!std.mem.eql(u8, key, runtime_preference)) continue;
+        if (found != null) return error.InvalidSettings;
+        found = try library.RuntimeLimits.decode(abi.slice(pair.value) orelse return error.InvalidSettings);
+    }
+    return found orelse .{};
+}
+
 fn completed(user: ?*anyopaque, reply: [*c]const raw.PulseResourcesReply) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
     if (reply == null or reply[0].size < @sizeOf(raw.PulseResourcesReply) or instance.pending == 0 or reply[0].request_id != instance.pending) return;
@@ -625,7 +694,13 @@ fn completed(user: ?*anyopaque, reply: [*c]const raw.PulseResourcesReply) callco
     if (value.operation != operation or value.status != abi.ok) {
         instance.status = "设置读取或写入失败；请重新读取（可能存在版本冲突）";
     } else if (readPreference(value.settings)) |saved| {
+        const limits = readRuntimeLimits(value.settings) catch {
+            instance.status = "运行限制设置无效；未覆盖原有设置";
+            refresh(instance);
+            return;
+        };
         instance.saved = saved;
+        instance.runtime_limits = limits;
         instance.version = value.settings.version;
         instance.loaded = true;
         instance.status = if (operation == raw.PULSE_RESOURCES_SETTINGS_SET) "偏好已确认保存；尚未连接实际下载运行时" else "已读取设置（未配置时采用默认值）；尚未连接实际下载运行时";
@@ -653,12 +728,40 @@ fn load(instance: *Instance) void {
 }
 
 fn save(instance: *Instance, next: u8) void {
-    const resources = instance.resources orelse return;
-    if (!instance.loaded or instance.pending != 0 or next < 1 or next > 8) return;
-    const set = resources.settings_set orelse return;
+    if (next < 1 or next > 8) return;
     const value = [_]u8{'0' + next};
+    saveSetting(instance, preference, &value);
+}
+
+fn saveLimits(instance: *Instance) void {
+    if (!instance.loaded or instance.pending != 0 or instance.runtime_task_id != 0) return;
+    const panel = instance.panel orelse return;
+    const get_state = panel.table.get_state orelse return;
+    var count: [16]u8 = undefined;
+    var memory: [16]u8 = undefined;
+    var count_len: u32 = 0;
+    var memory_len: u32 = 0;
+    if (get_state(panel.table.context, panel.id, abi.view("settings.instances"), &count, count.len, &count_len) != abi.ok or count_len >= count.len or get_state(panel.table.context, panel.id, abi.view("settings.commit-mib"), &memory, memory.len, &memory_len) != abi.ok or memory_len >= memory.len) {
+        instance.status = "无法读取运行限制输入";
+        refresh(instance);
+        return;
+    }
+    const limits = library.RuntimeLimits.parse(count[0..count_len], memory[0..memory_len]) catch {
+        instance.status = "运行限制无效；请检查实例数量和 MiB 预算";
+        refresh(instance);
+        return;
+    };
+    var value: [32]u8 = undefined;
+    const encoded = std.fmt.bufPrint(&value, "{d}:{d}", .{ limits.instances, limits.commit_mib }) catch unreachable;
+    saveSetting(instance, runtime_preference, encoded);
+}
+
+fn saveSetting(instance: *Instance, key: []const u8, value: []const u8) void {
+    const resources = instance.resources orelse return;
+    if (!instance.loaded or instance.pending != 0) return;
+    const set = resources.settings_set orelse return;
     var request: u64 = 0;
-    const status = set(resources.context, abi.view(preference), abi.view(&value), 0, instance.version, completed, instance, &request);
+    const status = set(resources.context, abi.view(key), abi.view(value), 0, instance.version, completed, instance, &request);
     if (status == abi.ok and request != 0) {
         instance.pending = request;
         instance.pending_operation = raw.PULSE_RESOURCES_SETTINGS_SET;
@@ -924,6 +1027,7 @@ fn onRunningSearchChanged(user: ?*anyopaque, panel: u64, batch: [*c]const raw.Pu
         if (!validSearch(value) or std.mem.eql(u8, value, instance.running_query[0..instance.running_query_len])) continue;
         @memcpy(instance.running_query[0..value.len], value);
         instance.running_query_len = value.len;
+        instance.running_offset = 0;
         changed = true;
     }
     // Only the copied bounded snapshot is filtered. No process or I/O calls.
@@ -944,6 +1048,7 @@ fn manualRunningSearch(instance: *Instance, clear: bool) void {
         @memcpy(instance.running_query[0..needed], bytes[0..needed]);
         instance.running_query_len = needed;
     }
+    instance.running_offset = 0;
     refresh(instance);
 }
 
@@ -1164,6 +1269,8 @@ fn startAsset(instance: *Instance, asset_id: u64) void {
     instance.runtime_done.store(false, .release);
     instance.runtime_error = null;
     instance.session.reset();
+    instance.session.limits = instance.runtime_limits;
+    instance.running_offset = 0;
     instance.session.start_asset.store(asset_id, .release);
     instance.running_rows = .{};
     instance.stop_requested = false;
@@ -1875,7 +1982,9 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         if (n >= 12 and n <= 14 and instance.section != .running) return;
         if (n >= 15 and n <= 28 and instance.section != .library) return;
         if (n >= 29 and n <= 30 and instance.section != .running) return;
-        if (n >= 31 and instance.section != .market) return;
+        if (n >= 31 and n <= 51 and instance.section != .market) return;
+        if (n == 52 and instance.section != .global) return;
+        if (n >= 53 and instance.section != .running) return;
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
@@ -1931,6 +2040,13 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             38 => pollTasks(instance),
             39 => clearMarketSearch(instance),
             40...51 => selectMarket(instance, n - 40),
+            52 => saveLimits(instance),
+            53, 54 => {
+                const total = runningMatchCount(instance);
+                const offset = runningPageStart(instance.running_offset, total);
+                instance.running_offset = if (n == 53) offset -| running_page_size else runningPageStart(offset + running_page_size, total);
+                refresh(instance);
+            },
             25 => if (instance.recovery_report != null and instance.quarantine_offset >= quarantine_page_size) {
                 instance.quarantine_offset -= quarantine_page_size;
                 refresh(instance);
@@ -2200,17 +2316,20 @@ test "settings preference validates exact value and duplicate keys" {
 }
 
 test "four section tree declares only real navigation and preference actions" {
-    var instance: Instance = .{ .host = undefined };
+    const instance = try std.testing.allocator.create(Instance);
+    defer std.testing.allocator.destroy(instance);
+    instance.* = .{ .host = undefined };
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     for (0..names.len) |n| {
         instance.section = @fromBackingInt(@intCast(n));
-        fill(&instance, &content, &tree);
+        fill(instance, &content, &tree);
         try std.testing.expectEqual(@as(u32, commands.len), tree.command_count);
         try std.testing.expectEqual(@as(u32, 4), content.children[0].children.count);
         try std.testing.expectEqualStrings(commands[n][10..], abi.slice(content.children[1].id).?);
         const expected: u32 = switch (instance.section) {
-            .global, .library => 5,
+            .library => 5,
+            .global => 8,
             .running => 6,
             .market => 6,
         };
@@ -2220,10 +2339,12 @@ test "four section tree declares only real navigation and preference actions" {
 }
 
 test "running view exposes bounded start and stop actions" {
-    var instance: Instance = .{ .host = undefined, .section = .running };
+    const instance = try std.testing.allocator.create(Instance);
+    defer std.testing.allocator.destroy(instance);
+    instance.* = .{ .host = undefined, .section = .running };
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
-    fill(&instance, &content, &tree);
+    fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 6), content.root.children.count);
     try std.testing.expectEqual(ui.NodeKind.text_input, content.children[3].type);
     try std.testing.expectEqual(@as(u32, 2), content.children[4].children.count);
@@ -2234,25 +2355,27 @@ test "running view exposes bounded start and stop actions" {
     instance.runtime_task_id = 1;
     instance.task_kind = .builtin_session;
     instance.session.set(.running);
-    fill(&instance, &content, &tree);
+    fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 7), content.root.children.count);
     try std.testing.expectEqual(@as(u32, 0), content.toolbar[0].enabled.value);
     try std.testing.expectEqual(@as(u32, 1), content.toolbar[1].enabled.value);
     instance.stop_requested = true;
-    fill(&instance, &content, &tree);
+    fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 0), content.toolbar[1].enabled.value);
     instance.section = .library;
     instance.tasks = std.mem.zeroes(raw.PulseTasksV1);
-    fill(&instance, &content, &tree);
+    fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 1), content.toolbar[1].enabled.value);
     instance.task_id = 2;
-    fill(&instance, &content, &tree);
+    fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 0), content.toolbar[1].enabled.value);
     try std.testing.expectEqual(@as(u64, 1), instance.runtime_task_id);
 }
 
 test "library view bounds rows and uses stable IDs" {
-    var instance: Instance = .{ .host = undefined };
+    const instance = try std.testing.allocator.create(Instance);
+    defer std.testing.allocator.destroy(instance);
+    instance.* = .{ .host = undefined };
     instance.library_loaded = true;
     instance.library_snapshot.count = 17;
     for (instance.library_snapshot.rows[0..17], 0..) |*row, n| {
@@ -2260,11 +2383,11 @@ test "library view bounds rows and uses stable IDs" {
     }
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
-    fill(&instance, &content, &tree);
+    fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 23), content.root.children.count);
     try std.testing.expect(std.mem.startsWith(u8, abi.slice(content.children[7].id).?, "asset-1-"));
     instance.library_offset = 16;
-    fill(&instance, &content, &tree);
+    fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 8), content.root.children.count);
     try std.testing.expect(std.mem.startsWith(u8, abi.slice(content.children[7].id).?, "asset-11-"));
 }
@@ -2280,18 +2403,20 @@ test "dynamic labels replace identity only when text changes" {
 }
 
 test "empty library hides pagination and manual poll unless needed" {
-    var instance: Instance = .{ .host = undefined, .library_loaded = true };
+    const instance = try std.testing.allocator.create(Instance);
+    defer std.testing.allocator.destroy(instance);
+    instance.* = .{ .host = undefined, .library_loaded = true };
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
-    fill(&instance, &content, &tree);
+    fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 7), content.root.children.count);
     try std.testing.expectEqual(@as(u32, 3), content.children[4].children.count);
     try std.testing.expectEqualStrings("library.empty", abi.slice(content.children[6].id).?);
     instance.library_snapshot.total = 1;
-    fill(&instance, &content, &tree);
+    fill(instance, &content, &tree);
     try std.testing.expectEqualStrings("library.no-match", abi.slice(content.children[6].id).?);
     instance.task_id = 1;
-    fill(&instance, &content, &tree);
+    fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 4), content.children[4].children.count);
 }
 
@@ -2365,10 +2490,12 @@ test "quarantine rows distinguish unknown size from measured zero" {
 }
 
 test "search field uses a native placeholder and separate controls" {
-    var instance: Instance = .{ .host = undefined };
+    const instance = try std.testing.allocator.create(Instance);
+    defer std.testing.allocator.destroy(instance);
+    instance.* = .{ .host = undefined };
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
-    fill(&instance, &content, &tree);
+    fill(instance, &content, &tree);
     try std.testing.expectEqual(ui.NodeKind.text_input, content.children[3].type);
     try std.testing.expectEqualStrings("library.query", abi.slice(content.children[3].state.value).?);
     try std.testing.expectEqualStrings("search", abi.slice(content.children[3].glyph.value).?);
@@ -2378,21 +2505,23 @@ test "search field uses a native placeholder and separate controls" {
 }
 
 test "typing copies latest user query without mutating the worker input" {
-    var instance: Instance = .{ .host = undefined, .active = true, .page = 9, .search_token = 1, .task_id = 12 };
-    rememberSearch(&instance, "old");
-    applySearch(&instance);
+    const instance = try std.testing.allocator.create(Instance);
+    defer std.testing.allocator.destroy(instance);
+    instance.* = .{ .host = undefined, .active = true, .page = 9, .search_token = 1, .task_id = 12 };
+    rememberSearch(instance, "old");
+    applySearch(instance);
     var change: raw.PulseUiStateChange = .{ .key = abi.view("library.query"), .value = abi.view("猫"), .revision = 2, .source_mask = @intCast(raw.PULSE_UI_STATE_USER) };
     var batch: raw.PulseUiStateBatch = .{ .revision = 2, .changes = &change, .count = 1 };
-    onSearchChanged(&instance, 9, &batch);
+    onSearchChanged(instance, 9, &batch);
     try std.testing.expectEqualStrings("猫", instance.search_draft[0..instance.search_draft_len]);
     try std.testing.expectEqualStrings("old", instance.query[0..instance.query_len]);
     change.value = abi.view("wrong");
     change.revision = 3;
     change.source_mask = @intCast(raw.PULSE_UI_STATE_PROGRAMMATIC);
-    onSearchChanged(&instance, 9, &batch);
+    onSearchChanged(instance, 9, &batch);
     try std.testing.expectEqualStrings("猫", instance.search_draft[0..instance.search_draft_len]);
     instance.task_id = 0;
-    applySearch(&instance);
+    applySearch(instance);
     try std.testing.expectEqualStrings("猫", instance.query[0..instance.query_len]);
     try std.testing.expect(!validSearch("a\x00b"));
 }
@@ -2410,10 +2539,12 @@ test "running search matches source and exact IDs without treating missing PID a
 }
 
 test "market panel requires explicit admission and has no implicit install" {
-    var instance: Instance = .{ .host = undefined, .section = .market };
+    const instance = try std.testing.allocator.create(Instance);
+    defer std.testing.allocator.destroy(instance);
+    instance.* = .{ .host = undefined, .section = .market };
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
-    fill(&instance, &content, &tree);
+    fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 6), content.root.children.count);
     try std.testing.expectEqualStrings("market.query", abi.slice(content.children[3].id).?);
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[0].enabled.value);
@@ -2422,6 +2553,38 @@ test "market panel requires explicit admission and has no implicit install" {
     try std.testing.expectEqualStrings(commands[39], abi.slice(content.market_actions[3].command.value).?);
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[3].enabled.value);
     try std.testing.expectEqualStrings("search", abi.slice(content.children[3].glyph.value).?);
-    try std.testing.expectEqual(@as(u32, 7), tree.state_count);
+    try std.testing.expectEqual(@as(u32, 9), tree.state_count);
     try std.testing.expect(instance.market_selected == null);
+}
+
+test "running page bounds rendered controls at full storage capacity" {
+    const instance = try std.testing.allocator.create(Instance);
+    defer std.testing.allocator.destroy(instance);
+    instance.* = .{ .host = undefined, .section = .running, .runtime_task_id = 1 };
+    instance.running_rows.count = library.session_limit;
+    for (instance.running_rows.rows[0..library.session_limit], 0..) |*row, n| {
+        row.* = .{ .id = n + 1, .asset_id = 1 };
+    }
+    instance.running_offset = 1019;
+    var content: Content = undefined;
+    var tree: ui.Tree = undefined;
+    fill(instance, &content, &tree);
+    try std.testing.expectEqual(@as(usize, 1020), runningPageStart(1024, library.session_limit));
+    try std.testing.expectEqual(@as(u32, 22), content.root.children.count);
+    instance.running_offset = 1024;
+    fill(instance, &content, &tree);
+    try std.testing.expectEqual(@as(u32, 14), content.root.children.count);
+    try std.testing.expect(std.mem.startsWith(u8, abi.slice(content.children[9].id).?, "instance-3fd-"));
+    instance.running_rows.count = 1;
+    fill(instance, &content, &tree);
+    try std.testing.expectEqual(@as(u32, 10), content.root.children.count);
+}
+
+test "persisted runtime limits reject malformed and duplicate settings" {
+    var values = [_]raw.PulseSetting{ .{ .key = abi.view(runtime_preference), .value = abi.view("1024:256") }, .{ .key = abi.view(runtime_preference), .value = abi.view("8:1024") } };
+    try std.testing.expectEqual(@as(usize, 8), (try readRuntimeLimits(.{})).effective());
+    try std.testing.expectEqual(@as(usize, 2), (try readRuntimeLimits(.{ .values = &values, .count = 1 })).effective());
+    try std.testing.expectError(error.InvalidSettings, readRuntimeLimits(.{ .values = &values, .count = 2 }));
+    values[0].value = abi.view("1025:256");
+    try std.testing.expectError(error.InvalidLimits, readRuntimeLimits(.{ .values = &values, .count = 1 }));
 }

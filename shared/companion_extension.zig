@@ -333,7 +333,37 @@ test "import request copies bounded local path and valid metadata identity" {
 }
 
 // Experimental UI admission ceiling, independent of native storage capacity.
-pub const session_limit: usize = 8;
+pub const session_limit: usize = model.max_instances;
+pub const commit_per_instance_mib: usize = model.child_commit_ceiling / (1024 * 1024);
+
+pub const RuntimeLimits = struct {
+    instances: usize = 8,
+    commit_mib: usize = 1024,
+
+    pub fn validate(self: RuntimeLimits) !void {
+        if (self.instances == 0 or self.instances > session_limit or self.commit_mib < commit_per_instance_mib or self.commit_mib > session_limit * commit_per_instance_mib) return error.InvalidLimits;
+    }
+
+    pub fn effective(self: RuntimeLimits) usize {
+        return @min(self.instances, self.commit_mib / commit_per_instance_mib);
+    }
+
+    pub fn parse(count: []const u8, memory: []const u8) !RuntimeLimits {
+        for (count) |ch| if (!std.ascii.isDigit(ch)) return error.InvalidLimits;
+        for (memory) |ch| if (!std.ascii.isDigit(ch)) return error.InvalidLimits;
+        const limits: RuntimeLimits = .{
+            .instances = std.fmt.parseInt(usize, count, 10) catch return error.InvalidLimits,
+            .commit_mib = std.fmt.parseInt(usize, memory, 10) catch return error.InvalidLimits,
+        };
+        try limits.validate();
+        return limits;
+    }
+
+    pub fn decode(value: []const u8) !RuntimeLimits {
+        const split = std.mem.indexOfScalar(u8, value, ':') orelse return error.InvalidLimits;
+        return parse(value[0..split], value[split + 1 ..]);
+    }
+};
 
 // One pending built-in start; all native operations remain worker-owned.
 pub const Phase = enum(u32) { idle, starting, running, stopping };
@@ -377,6 +407,8 @@ pub const RunningSnapshot = struct {
 };
 
 pub const Session = struct {
+    // Set by the UI before admitting a new worker; immutable during that session.
+    limits: RuntimeLimits = .{},
     phase: std.atomic.Value(u32) = .init(@backingInt(Phase.idle)),
     working_set: std.atomic.Value(usize) = .init(0),
     private_bytes: std.atomic.Value(usize) = .init(0),
@@ -397,7 +429,7 @@ pub const Session = struct {
 
     pub fn canStart(self: *const Session) bool {
         return self.phase.load(.acquire) == @backingInt(Phase.running) and
-            self.owned.load(.acquire) < session_limit and !self.pending_start.load(.acquire) and
+            self.owned.load(.acquire) < self.limits.effective() and !self.pending_start.load(.acquire) and
             self.pending_stop.load(.acquire) == 0 and self.stopping_id.load(.acquire) == 0;
     }
 
@@ -437,10 +469,22 @@ pub const Session = struct {
         self.snapshot.count = @min(rows.len, session_limit);
         @memcpy(self.snapshot.rows[0..self.snapshot.count], rows[0..self.snapshot.count]);
         self.snapshot.sources = @splat(.{});
+        // Bounded open-addressed lookup: one build per publication, rather
+        // than scanning 1024 labels for each row. Zero denotes an empty slot.
+        const table_size = session_limit * 2;
+        var lookup: [table_size]u16 = @splat(0);
+        for (sources, 0..) |source, n| {
+            if (source.id == 0) continue;
+            var slot: usize = @intCast(source.id % table_size);
+            while (lookup[slot] != 0) slot = (slot + 1) % table_size;
+            lookup[slot] = @intCast(n + 1);
+        }
         for (rows[0..self.snapshot.count], 0..) |row, n| {
-            for (sources) |source| {
+            var slot: usize = @intCast(row.id % table_size);
+            while (lookup[slot] != 0) : (slot = (slot + 1) % table_size) {
+                const source = &sources[lookup[slot] - 1];
                 if (source.id == row.id) {
-                    self.snapshot.sources[n] = source;
+                    self.snapshot.sources[n] = source.*;
                     break;
                 }
             }
@@ -543,10 +587,19 @@ fn launchAsset(owner: *runtime.Owner, helper: [:0]const u16, digest: *const [32]
 fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, digest: [32]u8, helper: [:0]const u16, helper_digest: *const [32]u8, canceled: *const fn (?*anyopaque) callconv(.c) u32, context: ?*anyopaque) !void {
     if (canceled(context) != 0) return;
     session.set(.starting);
-    try owner.open(root, digest, session_limit, session_limit * model.child_commit_ceiling);
+    try session.limits.validate();
+    const capacity = session.limits.effective();
+    try owner.open(root, digest, capacity, session.limits.commit_mib * 1024 * 1024);
     if (canceled(context) != 0) return;
-    var sources: [session_limit]RunningSource = @splat(.{});
-    const started = try launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire), &sources);
+    const Buffers = struct {
+        sources: [session_limit]RunningSource = @splat(.{}),
+        items: [session_limit]model.Instance = undefined,
+    };
+    const buffers = try std.heap.page_allocator.create(Buffers);
+    defer std.heap.page_allocator.destroy(buffers);
+    buffers.* = .{};
+    const sources = &buffers.sources;
+    const started = try launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire), sources);
     var failure: ?anyerror = started.failure;
     var rows: [group.max_tick_slots]group.TickResult = undefined;
     var begin = GetTickCount64();
@@ -555,7 +608,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
         if (session.pending_start.load(.acquire)) {
             session.set(.starting);
             if (canceled(context) == 0) {
-                if (launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire), &sources)) |next| {
+                if (launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire), sources)) |next| {
                     if (next.failure) |err| failure = err;
                     begin = GetTickCount64();
                 } else |err| {
@@ -596,7 +649,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
         for (rows[0..count]) |row| {
             if (row.failure) |err| failure = err;
             if (row.exit_code) |code| {
-                for (&sources) |*source| {
+                for (sources) |*source| {
                     if (source.id == row.id) source.* = .{};
                 }
                 if (row.id == stopping) {
@@ -610,8 +663,8 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
             }
         }
         if (session.stopping_id.load(.acquire) != 0 and GetTickCount64() - stop_since >= 5_000) failure = error.UnconfirmedShutdown;
-        var items: [session_limit]model.Instance = undefined;
-        const owned = try owner.group.snapshot(0, &items);
+        const items = &buffers.items;
+        const owned = try owner.group.snapshot(0, items);
         var ready: usize = 0;
         var starting: usize = 0;
         var working_set: usize = 0;
@@ -624,7 +677,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
                 private_bytes += metrics.private_bytes;
             }
         }
-        session.publishNamedRows(items[0..owned], &sources);
+        session.publishNamedRows(items[0..owned], sources);
         session.owned.store(owned, .release);
         session.ready.store(ready, .release);
         session.working_set.store(working_set, .release);
@@ -639,7 +692,10 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
         } else if (GetTickCount64() - begin >= 15_000) {
             failure = error.ReadinessTimeout;
         }
-        if (failure == null) Sleep(100);
+        // Tick remains bounded to 32 native slots. Large sessions use a
+        // shorter worker cadence so readiness and stop acknowledgement do
+        // not wait a full multi-second rotation. UI polling remains 100 ms.
+        if (failure == null) Sleep(if (capacity > 128) 20 else 100);
     }
     if (failure) |err| return err;
 }
@@ -656,13 +712,13 @@ fn drainOwned(owner: *runtime.Owner, session: *Session) !void {
     var failure: ?anyerror = null;
     while (try owner.group.remaining() != 0) {
         const elapsed = GetTickCount64() - stop;
-        if (elapsed >= 5_000) return error.UnconfirmedShutdown;
+        if (elapsed >= (if (session.limits.effective() > 128) @as(u64, 10_000) else 5_000)) return error.UnconfirmedShutdown;
         if (elapsed >= 2_000) try owner.group.beginDrain(true);
         const count = try owner.group.tick(&rows);
         for (rows[0..count]) |row| {
             if (row.failure) |err| failure = err;
         }
-        if (try owner.group.remaining() != 0) Sleep(50);
+        if (try owner.group.remaining() != 0) Sleep(if (session.limits.effective() > 128) 20 else 50);
     }
     if (failure) |err| return err;
 }
@@ -677,7 +733,7 @@ test "session admits only one pending start within the pilot limit" {
     try std.testing.expect(!session.requestStart());
     try std.testing.expectEqual(@as(u64, 27), session.start_asset.load(.acquire));
     session.pending_start.store(false, .release);
-    session.owned.store(session_limit, .release);
+    session.owned.store(session.limits.effective(), .release);
     try std.testing.expect(!session.requestStart());
     session.reset();
     try std.testing.expectEqual(@as(usize, 0), session.owned.load(.acquire));
@@ -780,4 +836,24 @@ test "running source labels follow stable instance IDs across row reorder" {
     session.copyRows(&copy);
     try std.testing.expectEqual(@as(usize, 1), copy.count);
     try std.testing.expectEqual(@as(u64, 0), copy.sources[1].id);
+}
+
+test "runtime limit validation and actual session admission" {
+    const defaults: RuntimeLimits = .{};
+    try std.testing.expectEqual(@as(usize, 8), defaults.effective());
+    const maximum = try RuntimeLimits.decode("1024:131072");
+    try std.testing.expectEqual(@as(usize, 1024), maximum.effective());
+    const constrained = try RuntimeLimits.parse("1024", "384");
+    try std.testing.expectEqual(@as(usize, 3), constrained.effective());
+    for ([_][]const u8{ "0:1024", "1025:1024", "8:127", "8:131073", "8:1:2", "+8:1024", "8:0x400" }) |bad| {
+        try std.testing.expectError(error.InvalidLimits, RuntimeLimits.decode(bad));
+    }
+    const session = try std.testing.allocator.create(Session);
+    defer std.testing.allocator.destroy(session);
+    session.* = .{ .limits = constrained };
+    session.set(.running);
+    session.owned.store(2, .release);
+    try std.testing.expect(session.canStart());
+    session.owned.store(3, .release);
+    try std.testing.expect(!session.canStart());
 }

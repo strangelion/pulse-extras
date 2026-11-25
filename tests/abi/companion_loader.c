@@ -17,7 +17,7 @@
 static const char *commands[] = {
     "companion.library", "companion.running", "companion.market", "companion.global",
     "companion.settings.refresh", "companion.download.less", "companion.download.more",
-    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12"
+    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next"
 };
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 /* Optional 1.0.61 picker ABI: independent C layout matching the supplied
@@ -71,6 +71,8 @@ typedef struct {
     void *queued_user;
     uint64_t dispatch_id;
     char saved, requested;
+    char runtime_saved[32], runtime_requested[32];
+    int runtime_write;
     uint32_t operation;
     PulseUiClickFn click[COMMAND_COUNT];
     void *users[COMMAND_COUNT];
@@ -122,7 +124,8 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
     f->global = same(root->children.data[1].id, "global");
     f->enabled_less = f->enabled_more = 0;
     if (f->global) {
-        REQUIRE(root->children.count == 5);
+        REQUIRE(root->children.count == 8);
+        REQUIRE(same(root->children.data[7].command.value, commands[52]));
         const PulseUiModelNode *toolbar = root->children.data + 4;
         REQUIRE(toolbar->children.present && toolbar->children.count == 3 && toolbar->children.data);
         const PulseUiModelNode *less = toolbar->children.data + 1, *more = less + 1;
@@ -132,7 +135,7 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
         f->enabled_more = (int)more->enabled.value;
     }
     if (same(root->children.data[1].id, "running")) {
-        REQUIRE(root->children.count >= 6 && root->children.count <= 17);
+        REQUIRE(root->children.count >= 6 && root->children.count <= 22);
         const PulseUiModelNode *search = root->children.data + 3;
         REQUIRE(search->type == PULSE_UI_MODEL_TEXT_INPUT && same(search->state.value, "running.query"));
         const PulseUiModelNode *toolbar = root->children.data + 4;
@@ -247,6 +250,12 @@ static PulseStatus PULSE_CALL get_state(void *ctx, uint64_t page, PulseStringVie
     if (same(key, "running.stop-id")) {
         memcpy(buffer, "1", 2); *needed = 1; return PULSE_OK;
     }
+    if (same(key, "settings.instances")) {
+        memcpy(buffer, "1024", 5); *needed = 4; return PULSE_OK;
+    }
+    if (same(key, "settings.commit-mib")) {
+        memcpy(buffer, "512", 4); *needed = 3; return PULSE_OK;
+    }
     REQUIRE(same(key, "library.query"));
     memcpy(buffer, "test", 5);
     *needed = 4;
@@ -310,9 +319,17 @@ static PulseStatus PULSE_CALL get(void *ctx, PulseResourcesCompletionFn callback
 }
 static PulseStatus PULSE_CALL set(void *ctx, PulseStringView key, PulseStringView value, uint32_t del, uint64_t version, PulseResourcesCompletionFn callback, void *user, uint64_t *id) {
     Fixture *f = ctx;
-    REQUIRE(same(key, "market.downloadConcurrency") && !del && version == f->version);
-    REQUIRE(value.data && value.length == 1 && value.data[0] >= '1' && value.data[0] <= '8');
-    f->requested = value.data[0];
+    REQUIRE(!del && version == f->version);
+    f->runtime_write = same(key, "runtime.limits");
+    if (f->runtime_write) {
+        REQUIRE(same(value, "1024:512"));
+        memcpy(f->runtime_requested, value.data, value.length);
+        f->runtime_requested[value.length] = 0;
+    } else {
+        REQUIRE(same(key, "market.downloadConcurrency"));
+        REQUIRE(value.data && value.length == 1 && value.data[0] >= '1' && value.data[0] <= '8');
+        f->requested = value.data[0];
+    }
     return request(f, PULSE_RESOURCES_SETTINGS_SET, callback, user, id);
 }
 static PulseStatus PULSE_CALL cancel(void *ctx, uint64_t id) {
@@ -601,12 +618,17 @@ static PulseStatus PULSE_CALL query(void *ctx, PulseStringView name, uint32_t ve
 static int deliver(Fixture *f, PulseStatus status, int wrong_operation) {
     CHECK(f->pending && f->completion);
     if (status == PULSE_OK && f->operation == PULSE_RESOURCES_SETTINGS_SET && !wrong_operation) {
-        f->saved = f->requested; f->saved_present = 1; ++f->version;
+        if (f->runtime_write) memcpy(f->runtime_saved, f->runtime_requested, sizeof(f->runtime_saved));
+        else { f->saved = f->requested; f->saved_present = 1; }
+        ++f->version;
     }
-    PulseSetting setting = {.key=view("market.downloadConcurrency"), .value={&f->saved, 1}};
+    PulseSetting settings[2];
+    unsigned count = 0;
+    if (f->saved_present) settings[count++] = (PulseSetting){.key=view("market.downloadConcurrency"), .value={&f->saved, 1}};
+    if (f->runtime_saved[0]) settings[count++] = (PulseSetting){.key=view("runtime.limits"), .value=view(f->runtime_saved)};
     PulseResourcesReply reply = {.size=sizeof(reply), .operation=wrong_operation ? PULSE_RESOURCES_STAT : f->operation,
         .request_id=f->pending, .status=status,
-        .settings={.version=f->version, .values=f->saved_present ? &setting : NULL, .count=f->saved_present ? 1u : 0u}};
+        .settings={.version=f->version, .values=count ? settings : NULL, .count=count}};
     PulseResourcesCompletionFn callback = f->completion;
     void *user = f->reply_user;
     f->pending = 0; f->completion = NULL; f->reply_user = NULL;
@@ -654,6 +676,9 @@ static int cycle(PulsePluginEntryV1Fn entry, int fallback) {
     CHECK(!f.task && f.task_released == 1);
     CHECK(click(&f, 3) == 0 && click(&f, 5) == 0 && f.requested == '4');
     CHECK(deliver(&f, PULSE_OK, 0) == 0 && f.saved == '4');
+    CHECK(click(&f, 52) == 0 && f.pending && !f.runtime_saved[0]);
+    CHECK(deliver(&f, PULSE_OK, 0) == 0 && !strcmp(f.runtime_saved, "1024:512") && f.saved == '4');
+    CHECK(click(&f, 4) == 0 && deliver(&f, PULSE_OK, 0) == 0);
     out.destroy(out.instance);
     CHECK(!f.page && !f.pending && !f.subscribed && f.removed == 2);
     return 0;
