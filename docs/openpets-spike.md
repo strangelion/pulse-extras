@@ -320,3 +320,38 @@ alpha, hidden window presentation, styles, wrong-thread rejection and
 repeated cleanup on Windows. This is a hidden kernel/GDI surface test,
 not an interactive desktop or resource benchmark. No production DLL is
 changed; the sample pixels are not distributable pet artwork.
+
+## Standalone native desktop demo
+
+Build on Windows from repository root with the pinned Zig:
+
+```powershell
+zig build-exe shared/companion/pet_demo.zig shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c -target x86_64-windows-gnu -O ReleaseSafe -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -femit-bin=pulse-pet-demo.exe
+.\pulse-pet-demo.exe
+.\pulse-pet-demo.exe --reduced-motion
+.\pulse-pet-demo.exe --webp-v2 C:\path\to\spritesheet.webp
+```
+
+The default demo generates original geometric placeholder pixels, shows
+a nonactivating independent window near the primary work area's bottom
+right and uses the Zig timeline. Left click waves; right click exits.
+Reduced motion waits for messages without frame timers. The message loop
+waits until the next frame or input and redraws only on cell changes;
+missed frames are skipped. The hidden --smoke mode explicitly exercises
+multiple frames and exits after 500ms (plus OS call/scheduling latency).
+CI builds the executable and runs that hidden synthetic smoke test.
+
+An optional explicit V1/V2 WebP path is read once (16 MiB compressed cap,
+fixed local drive and final reparse rejection), validated by the Zig
+preflight, then decoded using installed Windows Imaging Component
+codecs. One frame, exact dimensions, tight RGBA8 output and a fixed
+allocation are required. COM objects and compressed bytes are freed before
+the render loop. No automatic codec installation, internet download or
+asset search. This is not a sandboxed decoder; WIC internal memory and
+execution time are outside the pixel-budget guarantee. Actual WebP support
+depends on the installed Windows codec and is not exercised by synthetic
+CI; a missing or incompatible codec fails instead of silently falling back.
+No pet.json file loading, signed asset trust, DPI scaling, dragging,
+multimonitor persistence, Pulse supervision or release packaging yet.
+This executable remains a standalone experiment, not a default startup
+item or production DLL.
