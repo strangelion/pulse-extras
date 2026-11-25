@@ -264,18 +264,31 @@ pet_child_result pet_child_stop(pet_supervisor *owner, DWORD grace_ms,
  * check is a hard safety backstop, not physical memory allocation. */
 static pet_group_slot *group_find(pet_supervisor_group *group, uint64_t id) {
     if (!group || group != active_group || !id) return NULL;
-    for (unsigned i = 0; i < group->limit; ++i)
+    for (unsigned i = 0; i < group->limit && i < PET_GROUP_MAX; ++i)
         if (group->slots[i].id == id) return &group->slots[i];
     return NULL;
 }
 
 pet_child_result pet_group_open(pet_supervisor_group *group, unsigned limit, SIZE_T commit_budget) {
-    if (!group || !limit || limit > PET_GROUP_MAX || commit_budget < PET_CHILD_COMMIT_LIMIT)
+    if (!group || !limit || limit > PET_GROUP_CONFIG_MAX || commit_budget < PET_CHILD_COMMIT_LIMIT)
         return PET_CHILD_INVALID;
     if (InterlockedCompareExchange(&live_owner, 2, 0) != 0) return PET_CHILD_BUSY;
     memset(group, 0, sizeof(*group));
     group->limit = limit; group->commit_budget = commit_budget; group->next_id = 1;
     active_group = group;
+    return PET_CHILD_OK;
+}
+
+pet_child_result pet_group_admission(const pet_supervisor_group *group,
+    uint64_t available_physical, uint64_t available_commit) {
+    if (!group || group != active_group) return PET_CHILD_INVALID;
+    if (group->count >= group->limit) return PET_CHILD_COUNT_LIMIT;
+    if (group->count >= PET_GROUP_MAX) return PET_CHILD_STORAGE_LIMIT;
+    if (group->count >= group->commit_budget / PET_CHILD_COMMIT_LIMIT) return PET_CHILD_BUDGET_LIMIT;
+    /* This is a conservative launch guard, not a reservation or guarantee.
+     * Other processes can change available memory immediately afterward. */
+    const uint64_t need = PET_GROUP_MEMORY_HEADROOM + PET_CHILD_COMMIT_LIMIT;
+    if (available_physical < need || available_commit < need) return PET_CHILD_SYSTEM_MEMORY;
     return PET_CHILD_OK;
 }
 
@@ -286,10 +299,15 @@ pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *app
     if (!group || group != active_group || !options || options->remember)
         return PET_CHILD_INVALID;
     /* Until per-instance persistence exists, reject shared registry writes. */
-    if (group->count >= group->limit ||
-        group->count >= group->commit_budget / PET_CHILD_COMMIT_LIMIT) return PET_CHILD_BUSY;
+    pet_child_result admission = pet_group_admission(group, UINT64_MAX, UINT64_MAX);
+    if (admission != PET_CHILD_OK) return admission;
+    MEMORYSTATUSEX memory = {0};
+    memory.dwLength = sizeof(memory);
+    if (!GlobalMemoryStatusEx(&memory)) return PET_CHILD_OS_ERROR;
+    admission = pet_group_admission(group, memory.ullAvailPhys, memory.ullAvailPageFile);
+    if (admission != PET_CHILD_OK) return admission;
     if (group->next_id == UINT64_MAX) return PET_CHILD_INVALID;
-    for (unsigned i = 0; i < group->limit; ++i) {
+    for (unsigned i = 0; i < group->limit && i < PET_GROUP_MAX; ++i) {
         pet_group_slot *slot = &group->slots[i];
         if (slot->id) continue;
         slot->id = group->next_id++;
@@ -304,7 +322,7 @@ pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *app
         *id = slot->id;
         return result;
     }
-    return PET_CHILD_BUSY;
+    return PET_CHILD_STORAGE_LIMIT;
 }
 
 pet_child_result pet_group_publish(pet_supervisor_group *group, uint64_t id, unsigned reaction) {

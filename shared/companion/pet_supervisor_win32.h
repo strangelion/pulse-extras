@@ -23,7 +23,9 @@ typedef struct {
 
 typedef enum {
     PET_CHILD_OK = 0, PET_CHILD_INVALID, PET_CHILD_BUSY,
-    PET_CHILD_OS_ERROR, PET_CHILD_CONTAINMENT_FAILED, PET_CHILD_TIMEOUT
+    PET_CHILD_OS_ERROR, PET_CHILD_CONTAINMENT_FAILED, PET_CHILD_TIMEOUT,
+    PET_CHILD_COUNT_LIMIT, PET_CHILD_STORAGE_LIMIT, PET_CHILD_BUDGET_LIMIT,
+    PET_CHILD_SYSTEM_MEMORY
 } pet_child_result;
 
 typedef struct {
@@ -54,7 +56,9 @@ void pet_child_abandon(pet_supervisor *owner);
 /* One process-wide owner mode: legacy singleton OR one worker-owned group.
  * The group is noncopyable and must remain alive until close succeeds.
  * Count includes unconfirmed startup failures and stopping children. */
-#define PET_GROUP_MAX 1024u
+#define PET_GROUP_MAX 1024u /* Current storage capacity, not config range. */
+#define PET_GROUP_CONFIG_MAX 2147483647u
+#define PET_GROUP_MEMORY_HEADROOM (512ull * 1024ull * 1024ull)
 typedef struct {
     uint64_t id;
     pet_supervisor child;
@@ -68,6 +72,10 @@ typedef struct {
 } pet_supervisor_group;
 
 pet_child_result pet_group_open(pet_supervisor_group *group, unsigned limit, SIZE_T commit_budget);
+/* Pure policy, using current owned count and caller-supplied system memory
+ * measurements. Does not promise successful process creation. */
+pet_child_result pet_group_admission(const pet_supervisor_group *group,
+    uint64_t available_physical, uint64_t available_commit);
 /* On an error, nonzero id means a possibly live child remains owned;
  * reap or stop it before reclaiming the reservation. */
 pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *approved_exe,

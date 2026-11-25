@@ -122,3 +122,24 @@ when checked. Prior full regression and stress runs at 17a5642 passed.
 ## Capacity revision: 1024
 
 The hard ceiling is now 1024; actual admission remains bounded by configured count and commit budget. At 128 MiB per child, 1024 reservations total 128 GiB, not preallocated physical memory. Automatic stress remains 100 actual independent processes. A thousand live processes require explicit capacity preflight, bounded ramp-up/shutdown and GUI resource monitoring. Unit tests cover 1024 logical reservations, paging, stale IDs and full release; native test opens 1024 slots but launches two real fixture children under a two-child budget. Use paged copied snapshots (e.g. 32 rows), not 1024 separate control trees. Native storage should remain off small worker stacks. UI and Zig/native adapter are not wired yet. Previous run 45565745997 passed; new code awaits CI.
+
+## Configuration range and resource warnings
+
+The user requested signed int maximum as the configuration upper bound.
+Accept 1..2147483647 in both Zig and native interfaces; do not allocate a
+table of that size. Current fixed backend remains 1024 slots. Report the
+configured limit, storage ceiling, committed budget, effective admission
+limit and actual measurements separately. Distinct admission errors:
+configured count reached, backend storage exhausted, committed quota
+insufficient, system physical/commit headroom insufficient. No silent clamp
+of the saved count. The native start checks GlobalMemoryStatusEx before
+creation, requiring 512 MiB headroom plus the 128 MiB child ceiling in both
+available physical and available commit estimates. This provisional guard
+is not an OS-wide reservation and cannot prevent races with other apps.
+OS errors remain distinct. Pending stop slots still count. UI should show
+a clear warning and allow lower counts or stopping owned instances, not
+offer an unsafe bypass. Actual dynamic storage, GUI resource guard and
+UI wiring remain future work; 1024 live processes have not been tested.
+The normal CI stress count remains 100. Native tests exercise INT_MAX
+configuration, overrange rejection, synthetic low-memory readings and
+actual budget denial; Zig tests exercise INT_MAX without oversized tables.

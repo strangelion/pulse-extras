@@ -107,18 +107,21 @@ int main(void) {
     /* Two live children, one group, distinct state channels. Limit by
      * conservative memory ceiling even though count cap permits 1024. */
     options.smoke = TRUE;
-    CHECK(pet_group_open(&group, PET_GROUP_MAX + 1, PET_CHILD_COMMIT_LIMIT) == PET_CHILD_INVALID);
-    CHECK(pet_group_open(&group, PET_GROUP_MAX, PET_CHILD_COMMIT_LIMIT) == PET_CHILD_OK);
-    CHECK(group.limit == PET_GROUP_MAX && !group.count);
+    CHECK(pet_group_open(&group, PET_GROUP_CONFIG_MAX + 1u, PET_CHILD_COMMIT_LIMIT) == PET_CHILD_INVALID);
+    CHECK(pet_group_open(&group, PET_GROUP_CONFIG_MAX, PET_CHILD_COMMIT_LIMIT) == PET_CHILD_OK);
+    CHECK(group.limit == PET_GROUP_CONFIG_MAX && !group.count);
+    CHECK(pet_group_admission(&group, UINT64_MAX, UINT64_MAX) == PET_CHILD_OK);
+    CHECK(pet_group_admission(&group, 0, UINT64_MAX) == PET_CHILD_SYSTEM_MEMORY);
+    CHECK(pet_group_admission(&group, UINT64_MAX, 0) == PET_CHILD_SYSTEM_MEMORY);
     CHECK(pet_group_close(&group) == PET_CHILD_OK);
-    CHECK(pet_group_open(&group, PET_GROUP_MAX, PET_CHILD_COMMIT_LIMIT * 2) == PET_CHILD_OK);
+    CHECK(pet_group_open(&group, PET_GROUP_CONFIG_MAX, PET_CHILD_COMMIT_LIMIT * 2) == PET_CHILD_OK);
     CHECK(pet_child_start(&other, path, &options) == PET_CHILD_BUSY);
     CHECK(pet_group_start(&group, L"relative.exe", &options, &rejected) == PET_CHILD_INVALID);
     CHECK(!rejected && !group.count);
     CHECK(pet_group_start(&group, path, &options, &a) == PET_CHILD_OK && a);
     CHECK(pet_group_start(&group, path, &options, &b) == PET_CHILD_OK && b > a);
     CHECK(group.count == 2);
-    CHECK(pet_group_start(&group, path, &options, &rejected) == PET_CHILD_BUSY && !rejected);
+    CHECK(pet_group_start(&group, path, &options, &rejected) == PET_CHILD_BUDGET_LIMIT && !rejected);
     CHECK(pet_group_close(&group) == PET_CHILD_BUSY);
     CHECK(pet_group_publish(&group, a, PET_STATE_THINKING) == PET_CHILD_OK);
     CHECK(pet_group_publish(&group, b, PET_STATE_TESTING) == PET_CHILD_OK);

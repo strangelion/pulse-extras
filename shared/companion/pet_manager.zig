@@ -4,7 +4,8 @@
 const std = @import("std");
 const Budget = @import("runtime_budget").Budget;
 
-pub const max_instances = 1024;
+pub const max_instances = 1024; // Current backend storage capacity.
+pub const max_configured_instances: usize = std.math.maxInt(i32);
 // Must match PET_CHILD_COMMIT_LIMIT in pet_supervisor_win32.h. A reservation
 // is a conservative admission ceiling, not measured private bytes.
 pub const child_commit_ceiling: usize = 128 * 1024 * 1024;
@@ -20,7 +21,8 @@ pub const Instance = struct {
     state: State = .starting,
     metrics: ?Metrics = null,
 };
-pub const Error = error{ Invalid, Capacity, BudgetExceeded, IdExhausted, UnknownInstance, InvalidTransition };
+pub const Error = error{ Invalid, Capacity, StorageCapacity, BudgetExceeded, IdExhausted, UnknownInstance, InvalidTransition };
+pub const Admission = enum { allowed, configured_limit, storage_limit, budget_limit };
 
 pub const Manager = struct {
     budget: Budget,
@@ -29,7 +31,7 @@ pub const Manager = struct {
     slots: [max_instances]?Instance = @splat(null),
 
     pub fn init(limit: usize, commit_budget: usize) Error!Manager {
-        if (limit == 0 or limit > max_instances or commit_budget < child_commit_ceiling)
+        if (limit == 0 or limit > max_configured_instances or commit_budget < child_commit_ceiling)
             return error.Invalid;
         return .{ .budget = Budget.init(commit_budget), .limit = limit };
     }
@@ -38,8 +40,20 @@ pub const Manager = struct {
         return self.budget.used / child_commit_ceiling;
     }
 
+    pub fn effectiveLimit(self: *const Manager) usize {
+        return @min(@min(self.limit, max_instances), self.budget.limit / child_commit_ceiling);
+    }
+
+    pub fn admission(self: *const Manager) Admission {
+        const used = self.count();
+        if (used >= self.limit) return .configured_limit;
+        if (used >= max_instances) return .storage_limit;
+        if (used >= self.budget.limit / child_commit_ceiling) return .budget_limit;
+        return .allowed;
+    }
+
     fn find(self: *Manager, id: u64) Error!*Instance {
-        for (self.slots[0..self.limit]) |*slot| {
+        for (self.slots[0..@min(self.limit, max_instances)]) |*slot| {
             if (slot.*) |*item| {
                 if (item.id == id) return item;
             }
@@ -51,9 +65,14 @@ pub const Manager = struct {
     // even if creation fails. UI row indices and PIDs are not identifiers.
     pub fn reserveStart(self: *Manager, asset_id: u64) Error!u64 {
         if (asset_id == 0) return error.Invalid;
-        if (self.count() >= self.limit) return error.Capacity;
+        switch (self.admission()) {
+            .allowed => {},
+            .configured_limit => return error.Capacity,
+            .storage_limit => return error.StorageCapacity,
+            .budget_limit => return error.BudgetExceeded,
+        }
         if (self.next_id == std.math.maxInt(u64)) return error.IdExhausted;
-        for (self.slots[0..self.limit]) |*slot| {
+        for (self.slots[0..@min(self.limit, max_instances)]) |*slot| {
             if (slot.* == null) {
                 try self.budget.reserve(child_commit_ceiling);
                 const id = self.next_id;
@@ -91,7 +110,7 @@ pub const Manager = struct {
     // Caller must have positive evidence that creation never happened OR
     // that the owned process exited. A kill request/timeout is insufficient.
     pub fn confirmGone(self: *Manager, id: u64) Error!void {
-        for (self.slots[0..self.limit]) |*slot| {
+        for (self.slots[0..@min(self.limit, max_instances)]) |*slot| {
             if (slot.*) |item| {
                 if (item.id == id) {
                     slot.* = null;
@@ -107,7 +126,7 @@ pub const Manager = struct {
     // Pending starts and stops both pin the asset until confirmed gone.
     pub fn canRemoveAsset(self: *const Manager, asset_id: u64) bool {
         if (asset_id == 0) return false;
-        for (self.slots[0..self.limit]) |slot| {
+        for (self.slots[0..@min(self.limit, max_instances)]) |slot| {
             if (slot) |item| {
                 if (item.asset_id == asset_id) return false;
             }
@@ -124,7 +143,7 @@ pub const Manager = struct {
     pub fn snapshotPage(self: *const Manager, offset: usize, out: []Instance) usize {
         var skip = offset;
         var n: usize = 0;
-        for (self.slots[0..self.limit]) |slot| {
+        for (self.slots[0..@min(self.limit, max_instances)]) |slot| {
             if (n == out.len) break;
             if (slot) |item| {
                 if (skip != 0) {
@@ -184,7 +203,7 @@ test "late readiness does not resurrect a stopping instance and unknown metrics 
 
 test "invalid limits and exhausted IDs do not consume reservations" {
     try std.testing.expectError(error.Invalid, Manager.init(0, child_commit_ceiling));
-    try std.testing.expectError(error.Invalid, Manager.init(max_instances + 1, child_commit_ceiling));
+    try std.testing.expectError(error.Invalid, Manager.init(max_configured_instances + 1, child_commit_ceiling));
     try std.testing.expectError(error.Invalid, Manager.init(1, child_commit_ceiling - 1));
     var m = try Manager.init(1, child_commit_ceiling);
     try std.testing.expectError(error.Invalid, m.reserveStart(0));
@@ -220,4 +239,26 @@ test "1024 configured slots do not override actual budget" {
     const id = try m.reserveStart(1);
     try std.testing.expectError(error.BudgetExceeded, m.reserveStart(2));
     try m.confirmGone(id);
+}
+
+test "INT_MAX configuration does not allocate INT_MAX slots or bypass quota" {
+    var m = try Manager.init(max_configured_instances, child_commit_ceiling * 2);
+    try std.testing.expectEqual(@as(usize, 2147483647), m.limit);
+    try std.testing.expectEqual(@as(usize, 2), m.effectiveLimit());
+    const a = try m.reserveStart(1);
+    const b = try m.reserveStart(1);
+    try std.testing.expectEqual(Admission.budget_limit, m.admission());
+    try std.testing.expectError(error.BudgetExceeded, m.reserveStart(1));
+    try m.confirmGone(a);
+    try m.confirmGone(b);
+    try std.testing.expectEqual(Admission.allowed, m.admission());
+}
+
+test "INT_MAX configuration reports actual backend capacity separately" {
+    var m = try Manager.init(max_configured_instances, child_commit_ceiling * max_instances);
+    for (0..max_instances) |_| _ = try m.reserveStart(1);
+    try std.testing.expectEqual(Admission.storage_limit, m.admission());
+    try std.testing.expectError(error.StorageCapacity, m.reserveStart(1));
+    for (1..max_instances + 1) |id| try m.confirmGone(@intCast(id));
+    try std.testing.expectEqual(@as(usize, 0), m.count());
 }
