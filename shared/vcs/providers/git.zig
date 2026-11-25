@@ -388,15 +388,20 @@ test "reads a real repository end to end when git is installed" {
     try edited.writeStreamingAll(io, "changed\n");
     edited.close(io);
 
-    var session = @import("vcs_session").Session.init(std.testing.io, 1000, testSessionClock);
-    defer session.shutdown();
-    _ = try session.request(git.provider(), &workspace);
-    try std.testing.expect(try session.startNext());
-    const publication = try session.awaitActive();
-    if (publication == .failed) return publication.failed;
-    try std.testing.expect(publication == .published);
-    const dirty = session.lookup(&workspace).fresh;
-    try std.testing.expectEqual(@as(u32, 1), dirty.changes.modified);
+    const panel = @import("vcs_panel");
+    var controller = panel.Controller.init(std.testing.io, 1000, testSessionClock);
+    defer controller.shutdown();
+    try controller.select(git.provider(), &workspace);
+    try std.testing.expect(try controller.startNext());
+    try controller.join();
+    const dirty = controller.view();
+    if (dirty.failure) |failure| return failure;
+    try std.testing.expectEqual(panel.Phase.ready, dirty.phase);
+    try std.testing.expectEqual(@as(u32, 1), dirty.snapshot.?.changes.modified);
+    var content: panel.Content = undefined;
+    var tree: @import("pulse_ui_model").Tree = undefined;
+    content.build(.en, &dirty, &tree);
+    try std.testing.expectEqualStrings("Modified: 1", content.textFor("vcs.modified").?);
 
     try expectSuccess(&runner, &.{ report.path.slice(), "-C", root, "worktree", "add", "--detach", "linked", "HEAD" });
     var linked_buffer: [identity.max_path_bytes]u8 = undefined;

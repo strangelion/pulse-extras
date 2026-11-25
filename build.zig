@@ -21,7 +21,7 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
-    all: [31]std.Build.Module.Import = undefined,
+    all: [32]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
@@ -217,6 +217,20 @@ const Modules = struct {
                 .{ .name = "vcs_detect", .module = vcs_detect },
             },
         });
+        const vcs_panel = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/panel.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_provider", .module = vcs_provider },
+                .{ .name = "vcs_session", .module = vcs_session },
+                .{ .name = "vcs_capabilities", .module = vcs_capabilities },
+                .{ .name = "vcs_detect", .module = vcs_detect },
+                .{ .name = "pulse_abi", .module = abi },
+                .{ .name = "pulse_ui_model", .module = ui_model },
+            },
+        });
         const vcs_git = b.createModule(.{
             .root_source_file = b.path("shared/vcs/providers/git.zig"),
             .target = target,
@@ -228,6 +242,8 @@ const Modules = struct {
                 .{ .name = "vcs_identity", .module = vcs_identity },
                 .{ .name = "vcs_provider", .module = vcs_provider },
                 .{ .name = "vcs_session", .module = vcs_session },
+                .{ .name = "vcs_panel", .module = vcs_panel },
+                .{ .name = "pulse_ui_model", .module = ui_model },
                 .{ .name = "pulse_process", .module = process_mod },
                 .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
@@ -291,6 +307,7 @@ const Modules = struct {
             .{ .name = "vcs_cli", .module = vcs_cli },
             .{ .name = "vcs_snapshot", .module = vcs_snapshot },
             .{ .name = "vcs_session", .module = vcs_session },
+            .{ .name = "vcs_panel", .module = vcs_panel },
             .{ .name = "vcs_git", .module = vcs_git },
             .{ .name = "vcs_jj", .module = vcs_jj },
             .{ .name = "vcs_svn", .module = vcs_svn },
@@ -378,6 +395,7 @@ pub fn build(b: *std.Build) void {
         "shared/vcs/cli.zig",
         "shared/vcs/snapshot.zig",
         "shared/vcs/session.zig",
+        "shared/vcs/panel.zig",
         "shared/vcs/providers/git.zig",
         "shared/vcs/providers/jj.zig",
         "shared/vcs/providers/svn.zig",

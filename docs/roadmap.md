@@ -109,3 +109,5 @@ RT0 latest-only task candidate provides one running future plus one replaceable 
 RT0 non-host candidate implements Windows job-backed Runner opt-in, approved path/digest and narrow env admission, group budgets, FIFO, typed event ring, owned temporary file store. Validate full CI and follow up on failures; actual host and measured multi-plugin acceptance deferred. Persistent crash recovery/rotation, race-free trusted installation verification and product-level policy integration remain explicit follow-up, not claimed complete.
 
 Deferred real-host checks are enumerated in [shared-runtime-host-acceptance.md](shared-runtime-host-acceptance.md); retain NOT VERIFIED until actual evidence. A merge of the library foundation does not certify production VCS panel distribution.
+
+VCS panel milestone: host-independent coordinator and bounded native SDK model are implemented as a candidate; no new DLL/package or automatic execution. Full CI precedes host wiring; UI delivery must respect official dispatch and teardown contract. Actual approved tool/repository policy, JJ/SVN identity and history remain open.

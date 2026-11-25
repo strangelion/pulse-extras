@@ -73,3 +73,5 @@ Windows CI 45453154189 was canceled in the aggregate test step after ~29m40s; Ub
 Post-merge candidate adds a Windows Runner cancellation/reuse test, per-field VCS count availability, strict Git distance and JJ revision parsing, explicit JJ commit diff selection, bounded SVN local-status XML structural validation, and Hello Panel mock model callback/rollback tests. New changes require CI; these are not native host acceptance or complete XML validation. Current approved-path policy and persistent recovery remain separate gates.
 
 Candidate tests: relative/traversal PATH rejection, approval refusing compatibility and unsupported tools, malformed identity output, real linked Git worktree. No new dependency/workflow; current CI required. Host integration remains deferred.
+
+CLI/worktree candidate efdc821 passed full CI 45516706043. New panel tests cover superseded selection, stale failure, cancellation and stop, owned text buffers and zero/unknown distinction; real Git fixture exercises controller/model generation. All new tests pending current CI. Mock controller/model is not actual Pulse host acceptance.
