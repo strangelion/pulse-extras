@@ -210,7 +210,7 @@ static unsigned pet_menu(const pet_resources *resources, pet_surface *surface, H
      * falsely checked preset. The original checked menu remains fallback. */
     for (unsigned i = 0; i < sizeof(menu_scales) / sizeof(menu_scales[0]); ++i) {
         if (scale == menu_scales[i]) {
-            (void)pet_menu_mark_radio(sizes, MENU_SCALE_50 + i);
+            (void)pulse_menu_mark_radio(sizes, MENU_SCALE_50 + i);
             break;
         }
     }
@@ -233,24 +233,17 @@ static unsigned pet_menu(const pet_resources *resources, pet_surface *surface, H
         }
         for (unsigned i = 0; i < package->meta.outfit_count; ++i) {
             wchar_t name[161], escaped[321];
-            int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                (const char *)package->meta.outfits[i].name, -1, name, 161);
-            if (!n) { destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0; }
-            size_t j = 0;
-            for (int k = 0; k < n - 1; ++k) {
-                if (name[k] == L'&') escaped[j++] = L'&';
-                escaped[j++] = name[k];
-            }
-            escaped[j] = 0;
+            if (!pulse_menu_escape_utf8((const char *)package->meta.outfits[i].name,
+                name, 161, escaped, 321)) { destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0; }
             if (!AppendMenuW(outfits, MF_STRING | (!auto_outfit && outfit == i + 1 ? MF_CHECKED : 0),
                 MENU_OUTFIT_FIRST + i + 1, escaped)) {
                 destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0;
             }
         }
         if (auto_outfit && package->meta.rule_count)
-            (void)pet_menu_mark_radio(outfits, MENU_OUTFIT_AUTO);
+            (void)pulse_menu_mark_radio(outfits, MENU_OUTFIT_AUTO);
         else if (!auto_outfit && outfit <= package->meta.outfit_count)
-            (void)pet_menu_mark_radio(outfits, MENU_OUTFIT_FIRST + outfit);
+            (void)pulse_menu_mark_radio(outfits, MENU_OUTFIT_FIRST + outfit);
         if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)outfits, strings.outfit)) {
             destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0;
         }
@@ -263,15 +256,8 @@ static unsigned pet_menu(const pet_resources *resources, pet_surface *surface, H
         if (!automatic) { destroy_menu(resources, actions, 1); destroy_menu(resources, menu, attached); return 0; }
         for (unsigned i = 0; i < package->meta.count; ++i) {
             wchar_t name[161], escaped[321];
-            int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                (const char *)package->meta.items[i].name, -1, name, 161);
-            if (!n) { destroy_menu(resources, automatic, 1); destroy_menu(resources, actions, 1); destroy_menu(resources, menu, attached); return 0; }
-            size_t j = 0;
-            for (int k = 0; k < n - 1; ++k) {
-                if (name[k] == L'&') escaped[j++] = L'&';
-                escaped[j++] = name[k];
-            }
-            escaped[j] = 0;
+            if (!pulse_menu_escape_utf8((const char *)package->meta.items[i].name,
+                name, 161, escaped, 321)) { destroy_menu(resources, automatic, 1); destroy_menu(resources, actions, 1); destroy_menu(resources, menu, attached); return 0; }
             uint32_t bit = pet_idle_bit(i);
             if (!AppendMenuW(actions, MF_STRING |
                     (managed || reduced || ((idle->failed | idle->unavailable) & bit) ? MF_GRAYED : 0),

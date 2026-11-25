@@ -21,7 +21,7 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
-    all: [35]std.Build.Module.Import = undefined,
+    all: [36]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module, companion_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
@@ -92,6 +92,11 @@ const Modules = struct {
         });
         const diagnostics = b.createModule(.{
             .root_source_file = b.path("shared/diagnostics/probe_log.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const runtime_retention = b.createModule(.{
+            .root_source_file = b.path("shared/runtime/retention.zig"),
             .target = target,
             .optimize = optimize,
         });
@@ -282,6 +287,7 @@ const Modules = struct {
             .target = target,
             .optimize = optimize,
             .imports = &.{
+                .{ .name = "runtime_retention", .module = runtime_retention },
                 .{ .name = "runtime_budget", .module = runtime_budget },
                 .{ .name = "runtime_group", .module = runtime_group },
                 .{ .name = "runtime_temp_store", .module = runtime_temp_store },
@@ -303,6 +309,7 @@ const Modules = struct {
             .{ .name = "pulse_ui_model", .module = ui_model },
             .{ .name = "pulse_ui_mount", .module = ui_mount },
             .{ .name = "pulse_diagnostics", .module = diagnostics },
+            .{ .name = "runtime_retention", .module = runtime_retention },
             .{ .name = "runtime_budget", .module = runtime_budget },
             .{ .name = "runtime_allocator", .module = runtime_allocator },
             .{ .name = "runtime_latest_task", .module = runtime_latest_task },
@@ -462,7 +469,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    dump_root.addCSourceFile(.{ .file = b.path("shared/companion/pet_crash_capture_win32.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
+    dump_root.addCSourceFiles(.{
+        .files = &.{ "shared/companion/pet_crash_capture_win32.c", "shared/diagnostics/crash_win32.c" },
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
+    });
     dump_root.linkSystemLibrary("shell32", .{});
     dump_root.linkSystemLibrary("advapi32", .{});
     const dump_capture = b.addExecutable(.{ .name = "pulse-pet-crash-capture", .root_module = dump_root });
@@ -529,6 +539,7 @@ pub fn build(b: *std.Build) void {
         "shared/diagnostics/probe_log.zig",
         "shared/process/run.zig",
         "shared/runtime/budget.zig",
+        "shared/runtime/retention.zig",
         "shared/runtime/allocator.zig",
         "shared/runtime/latest_task.zig",
         "shared/runtime/group.zig",

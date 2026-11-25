@@ -3,124 +3,12 @@
 #define WIN32_LEAN_AND_MEAN
 #define _WIN32_WINNT 0x0A00
 #include <windows.h>
-#include <dbghelp.h>
+#include "../diagnostics/crash_win32.h"
 #include <shellapi.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <wchar.h>
 #include <string.h>
-
-typedef BOOL (WINAPI *dump_fn)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
-    PMINIDUMP_EXCEPTION_INFORMATION, PMINIDUMP_USER_STREAM_INFORMATION,
-    PMINIDUMP_CALLBACK_INFORMATION);
-
-typedef struct {
-    HANDLE file;
-    uint64_t limit;
-    BOOL started, finished;
-} dump_writer;
-
-/* DbgHelp directs all writes through the callback. The fallback handle is
- * NUL, not the output file; an unsupported callback cannot bypass the cap. */
-static BOOL CALLBACK write_dump(PVOID opaque, const PMINIDUMP_CALLBACK_INPUT in,
-    PMINIDUMP_CALLBACK_OUTPUT out) {
-    dump_writer *writer = opaque;
-    switch (in->CallbackType) {
-    case IoStartCallback:
-        writer->started = TRUE;
-        out->Status = S_FALSE;
-        return TRUE;
-    case IoWriteAllCallback: {
-        uint64_t offset = in->Io.Offset;
-        DWORD bytes = in->Io.BufferBytes, written = 0;
-        LARGE_INTEGER at;
-        if (!writer->started || writer->finished ||
-            offset > writer->limit || bytes > writer->limit - offset) return FALSE;
-        at.QuadPart = (LONGLONG)offset;
-        if (!SetFilePointerEx(writer->file, at, NULL, FILE_BEGIN) ||
-            (bytes && (!WriteFile(writer->file, in->Io.Buffer, bytes, &written, NULL) ||
-                written != bytes))) return FALSE;
-        out->Status = S_OK;
-        return TRUE;
-    }
-    case IoFinishCallback:
-        writer->finished = TRUE;
-        out->Status = S_OK;
-        return TRUE;
-    default:
-        return TRUE;
-    }
-}
-
-/* File creation is exclusive and uses a protected DACL for the actual
- * current user, not the containing directory's possibly shared ACL. */
-static HANDLE private_file(const wchar_t *path) {
-    HANDLE token = NULL, file = INVALID_HANDLE_VALUE;
-    union { TOKEN_USER user; BYTE bytes[512]; } info;
-    union { ACL acl; BYTE bytes[512]; } access;
-    SECURITY_DESCRIPTOR sd;
-    SECURITY_ATTRIBUTES sa = {sizeof(sa), &sd, FALSE};
-    DWORD bytes = 0;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return file;
-    if (GetTokenInformation(token, TokenUser, &info, sizeof(info), &bytes) &&
-        IsValidSid(info.user.User.Sid) &&
-        InitializeAcl(&access.acl, sizeof(access), ACL_REVISION) &&
-        AddAccessAllowedAce(&access.acl, ACL_REVISION, FILE_ALL_ACCESS, info.user.User.Sid) &&
-        InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION) &&
-        SetSecurityDescriptorDacl(&sd, TRUE, &access.acl, FALSE) &&
-        SetSecurityDescriptorControl(&sd, SE_DACL_PROTECTED, SE_DACL_PROTECTED)) {
-        file = CreateFileW(path, GENERIC_READ | GENERIC_WRITE | DELETE, 0, &sa,
-            CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
-    }
-    CloseHandle(token);
-    return file;
-}
-
-static BOOL capture(dump_fn dump, HANDLE process, const DEBUG_EVENT *event,
-    const wchar_t *path, uint64_t limit) {
-    HANDLE thread = OpenThread(THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
-        FALSE, event->dwThreadId);
-    if (!thread) return FALSE;
-    CONTEXT context = {0};
-    context.ContextFlags = CONTEXT_ALL;
-    BOOL have_context = GetThreadContext(thread, &context);
-    CloseHandle(thread);
-    if (!have_context) return FALSE;
-    EXCEPTION_RECORD record = event->u.Exception.ExceptionRecord;
-    /* Nested pointers belong to the target address space. */
-    record.ExceptionRecord = NULL;
-    EXCEPTION_POINTERS pointers = {&record, &context};
-    MINIDUMP_EXCEPTION_INFORMATION exception = {event->dwThreadId, &pointers, FALSE};
-    HANDLE sink = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (sink == INVALID_HANDLE_VALUE) return FALSE;
-    HANDLE file = private_file(path);
-    if (file == INVALID_HANDLE_VALUE) {
-        CloseHandle(sink);
-        return FALSE;
-    }
-    dump_writer writer = {file, limit, FALSE, FALSE};
-    MINIDUMP_CALLBACK_INFORMATION callback = {write_dump, &writer};
-    BOOL ok = dump(process, event->dwProcessId, sink,
-        (MINIDUMP_TYPE)(MiniDumpWithFullMemory | MiniDumpWithThreadInfo),
-        &exception, NULL, &callback);
-    CloseHandle(sink);
-    LARGE_INTEGER size, zero = {0};
-    DWORD magic = 0, got = 0;
-    ok = ok && writer.started && writer.finished &&
-        GetFileSizeEx(file, &size) && size.QuadPart >= (LONGLONG)sizeof(MINIDUMP_HEADER) &&
-        (uint64_t)size.QuadPart <= limit &&
-        SetFilePointerEx(file, zero, NULL, FILE_BEGIN) &&
-        ReadFile(file, &magic, sizeof(magic), &got, NULL) &&
-        got == sizeof(magic) && magic == MINIDUMP_SIGNATURE && FlushFileBuffers(file);
-    if (!ok) {
-        FILE_DISPOSITION_INFO remove = {TRUE};
-        if (!SetFileInformationByHandle(file, FileDispositionInfo, &remove, sizeof(remove)))
-            fputs("Partial dump cleanup failed; inspect the explicitly selected path.\n", stderr);
-    }
-    if (!CloseHandle(file)) ok = FALSE;
-    return ok;
-}
 
 static BOOL output_path(const wchar_t *arg, wchar_t path[MAX_PATH]) {
     DWORD n = GetFullPathNameW(arg, MAX_PATH, path, NULL);
@@ -151,12 +39,8 @@ static int collect(const wchar_t *path, BOOL smoke, uint64_t limit) {
         (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) return 2;
     if (swprintf(command, sizeof(command) / sizeof(command[0]), L"\"%ls\"%ls",
         image, smoke ? L" --smoke" : L"") < 0) return 2;
-    HMODULE dll = LoadLibraryExW(L"dbghelp.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    if (!dll) return 2;
-    FARPROC address = GetProcAddress(dll, "MiniDumpWriteDump");
-    dump_fn dump = NULL;
-    _Static_assert(sizeof(dump) == sizeof(address), "Windows function pointer size");
-    memcpy(&dump, &address, sizeof(dump));
+    pulse_dump_backend backend = {0};
+    if (!pulse_dump_open(&backend)) return 2;
     int result = 2;
     HANDLE job = CreateJobObjectW(NULL, NULL);
     PROCESS_INFORMATION child = {0};
@@ -167,7 +51,7 @@ static int collect(const wchar_t *path, BOOL smoke, uint64_t limit) {
     limits.ProcessMemoryLimit = (SIZE_T)128u * 1024u * 1024u;
     STARTUPINFOW startup = {0};
     startup.cb = sizeof(startup);
-    if (!dump || !job ||
+    if (!job ||
         !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
         !CreateProcessW(image, command, NULL, NULL, FALSE,
             DEBUG_ONLY_THIS_PROCESS | CREATE_SUSPENDED, NULL, NULL, &startup, &child))
@@ -199,7 +83,9 @@ static int collect(const wchar_t *path, BOOL smoke, uint64_t limit) {
                 status = DBG_EXCEPTION_NOT_HANDLED;
                 if (!event.u.Exception.dwFirstChance && !fault) {
                     fault = TRUE;
-                    saved = capture(dump, child.hProcess, &event, path, limit);
+                    saved = pulse_dump_capture(&backend, child.hProcess, &event, path, limit);
+                    if (!saved && GetLastError() == ERROR_WRITE_FAULT)
+                        fputs("Dump cleanup or close failed; inspect the selected path.\n", stderr);
                 }
             }
         }
@@ -222,7 +108,7 @@ cleanup:
         CloseHandle(child.hProcess);
     }
     if (job) CloseHandle(job);
-    FreeLibrary(dll);
+    pulse_dump_close(&backend);
     return result;
 }
 
@@ -230,7 +116,7 @@ int main(void) {
     int argc = 0, result = 2;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     wchar_t path[MAX_PATH];
-    uint64_t limit = UINT64_C(256) * 1024 * 1024;
+    uint64_t limit = PULSE_DUMP_MAX_BYTES;
     BOOL smoke = FALSE, valid = argv && argc >= 2 && output_path(argv[1], path);
     for (int i = 2; valid && i < argc; ++i) {
         if (!smoke && !wcscmp(argv[i], L"--smoke")) smoke = TRUE;

@@ -1882,3 +1882,16 @@ independent checkmarks. The surface regression exercises native item
 flags; visual Pulse Fluent parity remains unverified and the pinned
 public SDK exposes no standalone Fluent popup renderer. No unsupported
 theme ordinals or custom owner-draw accessibility regressions are added.
+
+
+### Shared runtime extraction
+
+The collector now consumes the static shared crash backend, while its
+sibling launch and explicit user-selected export remain local to
+Companion. Session-history age/count eviction uses the shared runtime
+retention policy (PDH1 format and defaults unchanged); menu radio and
+asset-label mnemonic handling use the shared Win32 compatibility header.
+See [Shared Runtime](shared-runtime.md#shared-diagnostics-and-native-menu-consumers).
+These are code-sharing changes, not cross-process state sharing.
+Managed multi-instance crash policy, safe durable dump rotation and
+actual Pulse visual/host acceptance remain open.

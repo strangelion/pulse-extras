@@ -2,6 +2,7 @@
 //! root lease. Old rows expire on the next append, not a background task.
 //! The checksum detects accidental corruption; it is not authentication.
 const std = @import("std");
+const retention = @import("runtime_retention");
 
 pub const capacity = 16;
 pub const max_age: u64 = 30 * 24 * 60 * 60;
@@ -34,21 +35,7 @@ pub const History = struct {
 
     pub fn append(self: *History, record: Record) !void {
         try record.validate();
-        if (self.count > capacity) return error.InvalidHistory;
-        // Never discard a future record just because the wall clock moved
-        // backwards. Capacity still bounds retention.
-        var kept: usize = 0;
-        for (self.records[0..self.count]) |previous| {
-            if (record.stamp >= previous.stamp and record.stamp - previous.stamp > max_age) continue;
-            self.records[kept] = previous;
-            kept += 1;
-        }
-        if (kept == capacity) {
-            std.mem.copyForwards(Record, self.records[0 .. capacity - 1], self.records[1..capacity]);
-            kept -= 1;
-        }
-        self.records[kept] = record;
-        self.count = kept + 1;
+        retention.append(Record, &self.records, &self.count, record, max_age) catch return error.InvalidHistory;
     }
 
     pub fn encode(self: *const History, buffer: []u8) ![]const u8 {

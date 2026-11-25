@@ -51,6 +51,14 @@ class ScopeTests(unittest.TestCase):
                      "build.zig", ".github/workflows/pet-stress.yml", "sdk/upstream.toml"):
             self.assertEqual(classify(["shared/companion/pet_demo.zig", path]), "full")
 
+    def test_shared_diagnostics_and_menu_require_full(self):
+        for path in ("shared/diagnostics/crash_win32.c",
+                     "shared/diagnostics/crash_win32.h",
+                     "shared/runtime/retention.zig", "shared/pulse/menu_win32.h"):
+            with self.subTest(path=path):
+                self.assertEqual(classify([path]), "full")
+                self.assertEqual(classify([path, "shared/companion/pet_demo_win32.c"]), "full")
+
     def test_full_for_other_paths(self):
         for path in (
             "build.zig", ".zig-version", ".gitattributes", ".gitignore",

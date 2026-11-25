@@ -1,6 +1,7 @@
 #ifndef PULSE_PET_MENU_STRINGS_WIN32_H
 #define PULSE_PET_MENU_STRINGS_WIN32_H
 #include "pet_surface_win32.h"
+#include "../pulse/menu_win32.h"
 #include <wchar.h>
 
 typedef enum {
@@ -28,20 +29,6 @@ static inline pet_language pet_language_resolve(pet_language requested, LANGID s
      * mainland China and Singapore. Unknown Chinese sublanguage uses CN. */
     unsigned sub = SUBLANGID(system_ui);
     return sub == 1 || sub == 3 || sub == 5 ? PET_LANGUAGE_ZH_TW : PET_LANGUAGE_ZH_CN;
-}
-
-/* Preserve native checked-state and other flags, styling only the selected
- * mutually exclusive option. This works across a separator and does not
- * turn independent toggles into radio items. Failure leaves the checkmark. */
-static inline BOOL pet_menu_mark_radio(HMENU menu, UINT command) {
-    MENUITEMINFOW info = {0};
-    info.cbSize = sizeof(info);
-    info.fMask = MIIM_FTYPE | MIIM_STATE;
-    if (!GetMenuItemInfoW(menu, command, FALSE, &info) ||
-        !(info.fState & MFS_CHECKED) || (info.fType & MFT_SEPARATOR)) return FALSE;
-    info.fMask = MIIM_FTYPE;
-    info.fType |= MFT_RADIOCHECK;
-    return SetMenuItemInfoW(menu, command, FALSE, &info);
 }
 
 /* Wide strings are independent from the process ANSI code page. */

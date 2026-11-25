@@ -432,3 +432,37 @@ borrowed desktop DC separately, including transactional resize peaks
 and WM_NCDESTROY ownership. Fixed native decode events join the
 existing bounded log. No system-wide allocation accounting or full
 migration of textual diagnostics is claimed.
+
+
+### Shared diagnostics and native-menu consumers
+
+The Companion collector now statically compiles the reusable
+`shared/diagnostics/crash_win32.c` backend. It owns system DbgHelp only in
+the explicitly launched diagnostic process, accepts only a caller-owned
+debugged child and matching second-chance event/thread, enforces a
+256 MiB ceiling and uses exclusive current-user DACL output. The backend
+does not discover processes, install a host filter, choose output paths,
+start a service, or perform automatic deletion. Failed callback writes
+are sticky; partial cleanup failure is reported. The standalone adapter
+retains responsibility for the trusted sibling executable, job, debug
+event loop and user opt-in. DbgHelp calls must be serialized in a
+dedicated process; no cross-DLL singleton or shared pointers.
+
+`shared/runtime/retention.zig` provides allocation-free, caller-owned
+ordered record retention by age and count. Companion's PDH1 history
+uses it without changing record format, private lease, 16-row/30-day
+defaults or existing validation. It does not authorize filesystem
+deletion. Durable managed dump manifests, aggregate disk admission,
+retention of verified dump files and interruption recovery require a
+separate tested persistence adapter; user-selected exports stay
+user-owned and are never swept.
+
+`shared/pulse/menu_win32.h` provides native checked-radio styling and
+bounded UTF-8 mnemonic escaping, consumed by the actual desktop menu.
+The OS retains accessibility, keyboard navigation and cancellation.
+Companion labels and menu commands remain product-specific. This is a
+public Win32 compatibility backend, not a private Fluent renderer or a
+claim of exact Pulse theme parity. Future consumers can compile these
+sources into their own owner scopes; no mandatory shared DLL. Shared
+path changes require full CI, including existing native crash and menu
+fixtures plus retention tests.
