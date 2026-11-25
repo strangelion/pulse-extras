@@ -626,3 +626,16 @@ acceptance, package manifest, production root approval and runtime hookup
 remain open. The DLL is experimental, not release eligible. No real-host
 performance claims. Previous cache regression passed; service regression
 was still running when this change started.
+
+## Companion actual DLL ABI acceptance fixture
+
+Add a full-CI Windows loader for the built pulse_companion DLL using the
+pinned C headers. Eight load/unload cycles exercise both dedicated settings
+and workspace fallback plus partial subscription failure (16 full lifecycle
+scenarios and 8 partial activations). Validate scoped page IDs, tree shape,
+callback registration, deferred settings replies, versioned writes, conflict
+recovery, wrong-operation reply rejection, cancel on stop and a retryable
+page-removal error. Ignore settings commands outside the global section;
+show default-vs-saved status accurately; never apply an unconfirmed setting.
+This is an independent simulated host, not a real Pulse renderer or install
+acceptance. No new runtime or OS permissions. CI pending for this change.

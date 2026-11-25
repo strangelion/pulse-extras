@@ -22,6 +22,7 @@ const Instance = struct {
     panel: ?ui.Panel = null,
     resources: ?raw.PulseResourcesV1 = null,
     pending: u64 = 0,
+    pending_operation: u32 = 0,
     subscriptions: [commands.len]u64 = @splat(0),
     section: Section = .library,
     saved: u8 = 4,
@@ -119,17 +120,19 @@ fn readPreference(settings: raw.PulseSettings) !u8 {
 fn completed(user: ?*anyopaque, reply: [*c]const raw.PulseResourcesReply) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
     if (reply == null or reply[0].size < @sizeOf(raw.PulseResourcesReply) or instance.pending == 0 or reply[0].request_id != instance.pending) return;
+    const operation = instance.pending_operation;
     instance.pending = 0;
+    instance.pending_operation = 0;
     instance.loaded = false;
     if (!instance.active) return;
     const value = &reply[0];
-    if (value.status != abi.ok) {
+    if (value.operation != operation or value.status != abi.ok) {
         instance.status = "设置读取或写入失败；请重新读取（可能存在版本冲突）";
     } else if (readPreference(value.settings)) |saved| {
         instance.saved = saved;
         instance.version = value.settings.version;
         instance.loaded = true;
-        instance.status = "偏好已确认保存；尚未连接实际下载运行时";
+        instance.status = if (operation == raw.PULSE_RESOURCES_SETTINGS_SET) "偏好已确认保存；尚未连接实际下载运行时" else "已读取设置（未配置时采用默认值）；尚未连接实际下载运行时";
     } else |_| {
         instance.status = "宿主设置数据无效；未覆盖原有设置";
     }
@@ -145,6 +148,7 @@ fn load(instance: *Instance) void {
     instance.loaded = false;
     if (status == abi.ok and request != 0) {
         instance.pending = request;
+        instance.pending_operation = raw.PULSE_RESOURCES_SETTINGS_GET;
         instance.status = "正在读取设置";
     } else {
         instance.status = "无法读取宿主设置";
@@ -161,6 +165,7 @@ fn save(instance: *Instance, next: u8) void {
     const status = set(resources.context, abi.view(preference), abi.view(&value), 0, instance.version, completed, instance, &request);
     if (status == abi.ok and request != 0) {
         instance.pending = request;
+        instance.pending_operation = raw.PULSE_RESOURCES_SETTINGS_SET;
         instance.status = "正在保存设置";
     } else {
         instance.loaded = false;
@@ -175,6 +180,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
     const name = abi.slice(command) orelse return;
     for (commands, 0..) |candidate, n| {
         if (!std.mem.eql(u8, candidate, name)) continue;
+        if (n >= 4 and instance.section != .global) return;
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
@@ -199,6 +205,7 @@ fn close(instance: *Instance) host_mod.Error!void {
             else => return err,
         };
         instance.pending = 0;
+        instance.pending_operation = 0;
     }
     if (instance.page != 0) {
         if (instance.pages) |pages| {
@@ -244,6 +251,7 @@ fn open(instance: *Instance) host_mod.Error!void {
         } else |err| diag.status("companion-mount-unavailable", @intFromError(err));
     }
     if (instance.panel) |*panel| {
+        if (panel.table.update == null or panel.table.subscribe_command == null or (instance.pages == null and panel.table.close == null)) return error.Unavailable;
         for (commands, 0..) |command, n| instance.subscriptions[n] = try panel.subscribeCommand(command, onCommand, instance);
     }
     instance.resources = try instance.host.queryOptional(raw.PulseResourcesV1, raw.PULSE_RESOURCES_INTERFACE_NAME, raw.PULSE_RESOURCES_VERSION_1);
@@ -251,7 +259,12 @@ fn open(instance: *Instance) host_mod.Error!void {
         if (resources.settings_get == null or resources.settings_set == null or resources.cancel_request == null) instance.resources = null;
     }
     instance.active = true;
-    if (instance.resources != null) load(instance) else instance.status = "宿主设置接口不可用";
+    if (instance.resources != null) {
+        load(instance);
+    } else {
+        instance.status = "宿主设置接口不可用";
+        refresh(instance);
+    }
 }
 
 fn activate(user: ?*anyopaque) callconv(.c) abi.Status {

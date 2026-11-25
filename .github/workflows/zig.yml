@@ -135,6 +135,17 @@ jobs:
           & ./zig-out/abi-loader.exe $dll[0].FullName
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Exercise actual Companion DLL settings lifecycle against pinned C ABI
+        if: runner.os == 'Windows' && needs.scope.outputs.level == 'full'
+        shell: pwsh
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu -I.sdk-cache/include tests/abi/companion_loader.c -o zig-out/companion-loader.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dll = @(Get-ChildItem zig-out -Recurse -Filter pulse_companion.dll)
+          if ($dll.Count -ne 1) { throw "Expected one Companion DLL" }
+          & ./zig-out/companion-loader.exe $dll[0].FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   companion_native:
     name: Windows companion (${{ matrix.lane }})
     needs: scope
