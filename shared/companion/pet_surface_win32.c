@@ -62,6 +62,14 @@ pet_surface_result pet_clamp_position(const RECT *work, unsigned width,
 
 static const wchar_t class_name[] = L"PulseExtras.Companion.Layered.Experimental.V1";
 
+static void cancel_menu(pet_surface *surface, BOOL timeout) {
+    if (!surface->menu_timer || surface->menu_cancelled) return;
+    surface->menu_cancelled = TRUE;
+    if (timeout) pet_note(surface->resources, PET_NOTE_TIMEOUT);
+    /* Owner thread, including while TrackPopupMenuEx runs its modal loop. */
+    if (!EndMenu()) DefWindowProcW(surface->window, WM_CANCELMODE, 0, 0);
+}
+
 static LRESULT CALLBACK pet_window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     if (message == WM_NCCREATE) {
         const CREATESTRUCTW *create = (const CREATESTRUCTW *)lparam;
@@ -76,7 +84,37 @@ static LRESULT CALLBACK pet_window_proc(HWND window, UINT message, WPARAM wparam
      * not only retrieved by PeekMessage. Re-evaluate civil-time rules. */
     if (surface && (message == WM_TIMECHANGE || message == WM_SETTINGCHANGE ||
         message == WM_POWERBROADCAST)) surface->schedule_dirty = TRUE;
+    if (surface && surface->menu_timer) {
+        if (message == WM_MENUSELECT && !(HIWORD(wparam) == 0xffff && !lparam))
+            surface->menu_last_input = GetTickCount64();
+        if (message == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE)
+            cancel_menu(surface, FALSE);
+        if (message == WM_CANCELMODE || message == WM_CLOSE)
+            cancel_menu(surface, FALSE);
+        if (message == WM_TIMER && wparam == surface->menu_timer) {
+            uint64_t now = GetTickCount64();
+            if (surface->menu_stop && WaitForSingleObject(surface->menu_stop, 0) != WAIT_TIMEOUT)
+                cancel_menu(surface, FALSE);
+            else if (GetForegroundWindow() != window)
+                cancel_menu(surface, FALSE);
+            else {
+                POINT cursor;
+                if (GetCursorPos(&cursor)) {
+                    if (surface->menu_cursor_known &&
+                        (cursor.x != surface->menu_cursor.x || cursor.y != surface->menu_cursor.y))
+                        surface->menu_last_input = now;
+                    surface->menu_cursor = cursor;
+                    surface->menu_cursor_known = TRUE;
+                }
+                if (pet_menu_idle_expired(surface->menu_last_input, now))
+                    cancel_menu(surface, TRUE);
+            }
+            return 0;
+        }
+    }
     if (message == WM_NCDESTROY) {
+        if (surface && surface->window == window && surface->menu_timer)
+            (void)pet_surface_menu_end(surface);
         SetWindowLongPtrW(window, GWLP_USERDATA, 0);
         /* CreateWindowExW can fail before its return value is published.
          * Only a published window transfers its reservation here. */
@@ -154,10 +192,79 @@ static BOOL return_desktop_dc(const pet_resources *resources, HDC dc) {
     return FALSE;
 }
 
+pet_surface_result pet_surface_menu_begin(pet_surface *surface, HANDLE stop) {
+    if (!surface || !surface->window || surface->menu_timer) return PET_SURFACE_INVALID;
+    if (GetCurrentThreadId() != surface->owner_thread) return PET_SURFACE_WRONG_THREAD;
+    if (!pet_reserve(surface->resources, PET_RESOURCE_MENU_TIMER, 1)) return PET_SURFACE_OS_ERROR;
+    UINT_PTR timer = SetTimer(surface->window, 1, PET_MENU_CHECK_MS, NULL);
+    if (!timer) {
+        pet_release(surface->resources, PET_RESOURCE_MENU_TIMER, 1);
+        return PET_SURFACE_OS_ERROR;
+    }
+    surface->menu_timer = timer;
+    surface->menu_stop = stop;
+    surface->menu_cancelled = FALSE;
+    surface->menu_last_input = GetTickCount64();
+    surface->menu_cursor_known = GetCursorPos(&surface->menu_cursor);
+    return PET_SURFACE_OK;
+}
+
+pet_surface_result pet_surface_menu_end(pet_surface *surface) {
+    if (!surface) return PET_SURFACE_INVALID;
+    if (surface->owner_thread && GetCurrentThreadId() != surface->owner_thread) return PET_SURFACE_WRONG_THREAD;
+    if (!surface->menu_timer) return PET_SURFACE_OK;
+    UINT_PTR timer = surface->menu_timer;
+    surface->menu_timer = 0;
+    surface->menu_stop = NULL;
+    surface->menu_cursor_known = FALSE;
+    if (!KillTimer(surface->window, timer)) {
+        pet_cleanup_failed(surface->resources, PET_RESOURCE_MENU_TIMER);
+        return PET_SURFACE_OS_ERROR;
+    }
+    pet_release(surface->resources, PET_RESOURCE_MENU_TIMER, 1);
+    return PET_SURFACE_OK;
+}
+
+unsigned pet_surface_track_menu(pet_surface *surface, HMENU menu, POINT at, HANDLE stop) {
+    if (!surface || !surface->window || !menu || !IsWindowVisible(surface->window) ||
+        GetCurrentThreadId() != surface->owner_thread || surface->menu_timer ||
+        (stop && WaitForSingleObject(stop, 0) != WAIT_TIMEOUT)) return 0;
+    HWND window = surface->window;
+    HWND previous = GetForegroundWindow();
+    DWORD previous_pid = 0;
+    DWORD previous_thread = previous ? GetWindowThreadProcessId(previous, &previous_pid) : 0;
+    unsigned command = 0;
+    /* Explicit right-click only. Retain WS_EX_NOACTIVATE for normal use.
+     * Never bypass the OS foreground policy with input injection. */
+    if (previous != window) (void)SetForegroundWindow(window);
+    if (GetForegroundWindow() == window &&
+        pet_surface_menu_begin(surface, stop) == PET_SURFACE_OK) {
+        command = (unsigned)TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            at.x, at.y, window, NULL);
+        if (surface->menu_cancelled) command = 0;
+        if (pet_surface_menu_end(surface) != PET_SURFACE_OK) command = 0;
+        /* Required foreground-menu dismissal/reopen workaround. */
+        if (!PostMessageW(window, WM_NULL, 0, 0))
+            pet_note(surface->resources, PET_NOTE_IO_FAILURE);
+    } else {
+        pet_note(surface->resources, PET_NOTE_BACKPRESSURE);
+    }
+    /* If an outside click selected a different application, do not steal
+     * focus back. Revalidate the saved HWND's process/thread identity. */
+    if (previous && previous != window && previous_thread && IsWindow(previous) &&
+        GetForegroundWindow() == window) {
+        DWORD pid = 0;
+        if (GetWindowThreadProcessId(previous, &pid) == previous_thread && pid == previous_pid)
+            (void)SetForegroundWindow(previous);
+    }
+    return command;
+}
+
 pet_surface_result pet_surface_close(pet_surface *surface) {
     if (!surface) return PET_SURFACE_INVALID;
     if (!surface->owner_thread) return PET_SURFACE_OK;
     if (GetCurrentThreadId() != surface->owner_thread) return PET_SURFACE_WRONG_THREAD;
+    BOOL timer_ok = pet_surface_menu_end(surface) == PET_SURFACE_OK;
     if (surface->window) {
         if (!IsWindow(surface->window) || !DestroyWindow(surface->window)) {
             pet_cleanup_failed(surface->resources, PET_RESOURCE_WINDOW);
@@ -184,7 +291,7 @@ pet_surface_result pet_surface_close(pet_surface *surface) {
         }
     }
     *surface = (pet_surface){0};
-    return ok ? PET_SURFACE_OK : PET_SURFACE_OS_ERROR;
+    return ok && timer_ok ? PET_SURFACE_OK : PET_SURFACE_OS_ERROR;
 }
 
 pet_surface_result pet_surface_open(pet_surface *surface, BOOL topmost, BOOL click_through) {

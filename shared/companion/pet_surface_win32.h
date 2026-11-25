@@ -30,7 +30,8 @@ pet_surface_result pet_frame_bgra(const uint8_t *atlas, size_t atlas_bytes,
 
 /* Experimental standalone UI-thread primitive; initialize with {0}.
  * Do not copy while open. Caller owns its dedicated message loop, animation
- * deadlines and process lifetime. No global hooks, renderer thread or timers.
+ * deadlines and process lifetime. No global hooks or renderer thread.
+ * A bounded timer exists only during explicit native menu tracking.
  * Window is initially hidden, nonactivating and absent from the taskbar.
  * Default size is one 192x208 cell; scaled sizes are bounded physical pixels. */
 typedef struct {
@@ -44,6 +45,11 @@ typedef struct {
     unsigned width, height;
     BOOL placement_dirty;
     BOOL schedule_dirty;
+    UINT_PTR menu_timer;
+    HANDLE menu_stop; /* borrowed until tracking returns */
+    uint64_t menu_last_input;
+    POINT menu_cursor;
+    BOOL menu_cursor_known, menu_cancelled;
     const pet_resources *resources;
 } pet_surface;
 
@@ -70,6 +76,18 @@ pet_surface_result pet_surface_resize(pet_surface *surface, unsigned percent,
     unsigned column, LONG x, LONG y, BYTE opacity);
 pet_surface_result pet_surface_show(pet_surface *surface, BOOL visible);
 pet_surface_result pet_surface_policy(pet_surface *surface, BOOL topmost, BOOL click_through);
+/* Scoped guard is public for noninteractive native resource tests.
+ * Owner thread only. No menu is shown by begin/end themselves. */
+#define PET_MENU_IDLE_MS 20000u
+#define PET_MENU_CHECK_MS 250u
+static inline BOOL pet_menu_idle_expired(uint64_t last, uint64_t now) {
+    return now >= last && now - last >= PET_MENU_IDLE_MS;
+}
+pet_surface_result pet_surface_menu_begin(pet_surface *surface, HANDLE stop);
+pet_surface_result pet_surface_menu_end(pet_surface *surface);
+/* Temporary foreground ownership only for a user-requested context menu.
+ * Returns zero on dismissal, timeout, stop or failed admission. */
+unsigned pet_surface_track_menu(pet_surface *surface, HMENU menu, POINT at, HANDLE stop);
 pet_surface_result pet_surface_close(pet_surface *surface);
 
 #endif

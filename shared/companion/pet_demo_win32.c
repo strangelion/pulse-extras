@@ -184,7 +184,7 @@ static BOOL destroy_menu(const pet_resources *resources, HMENU menu, unsigned co
 /* Menu belongs to the pet, not the host. No external commands or hooks.
  * A modal menu can delay cooperative stop until dismissal; the parent
  * still owns the bounded job termination fallback. */
-static unsigned pet_menu(const pet_resources *resources, HWND window, POINT at, unsigned scale, int topmost,
+static unsigned pet_menu(const pet_resources *resources, pet_surface *surface, HANDLE stop, POINT at, unsigned scale, int topmost,
     int reduced, int managed, pet_language language, const pet_package *package,
     const pet_idle_policy *idle, unsigned outfit, int auto_outfit, int gaze_supported,
     int gaze_enabled, int display, int *built) {
@@ -289,9 +289,7 @@ static unsigned pet_menu(const pet_resources *resources, HWND window, POINT at, 
         !AppendMenuW(menu, MF_STRING, MENU_EXIT, strings.exit)) {
         destroy_menu(resources, menu, attached); return 0;
     }
-    unsigned command = display ? (unsigned)TrackPopupMenuEx(menu,
-        TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-        at.x, at.y, window, NULL) : 0;
+    unsigned command = display ? pet_surface_track_menu(surface, menu, at, stop) : 0;
     if (destroy_menu(resources, menu, attached)) {
         if (built) *built = 1;
     }
@@ -617,7 +615,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         memcpy(package.meta.items[0].name, "Test activity", sizeof("Test activity"));
         package.meta.items[0].reps[0].frames = 4;
         int built = 0;
-        (void)pet_menu(memory->resource_bridge, surface.window, (POINT){0, 0},
+        (void)pet_menu(memory->resource_bridge, &surface, stop, (POINT){0, 0},
             scale, topmost, reduced, state_slot != NULL, language, &package, &idle, 0, 1, 1, 1, 0, &built);
         ZeroMemory(&package.meta, sizeof(package.meta));
         if (!built) goto cleanup;
@@ -678,7 +676,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                             goto cleanup;
                         last_row = base.row; last_column = base.column;
                     }
-                    unsigned command = pet_menu(memory->resource_bridge, surface.window, cursor, scale, topmost,
+                    unsigned command = pet_menu(memory->resource_bridge, &surface, stop, cursor, scale, topmost,
                         reduced, state_slot != NULL, language, &package, &idle, outfit, auto_outfit, gaze_supported, gaze_enabled, 1, NULL);
                     /* A modal menu may span a civil-time boundary. */
                     schedule_due = 0;

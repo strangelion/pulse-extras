@@ -23,14 +23,14 @@ static DWORD WINAPI wrong_thread(LPVOID opaque) {
 }
 
 typedef struct {
-    size_t live[11], peak[11];
+    size_t live[12], peak[12];
     unsigned denied_kind;
     unsigned cleanup_failures;
 } quota_fixture;
 
 static int fixture_reserve(void *userdata, uint32_t kind, size_t amount) {
     quota_fixture *q = userdata;
-    if (kind >= 11 || q->denied_kind == kind) return 0;
+    if (kind >= 12 || q->denied_kind == kind) return 0;
     const size_t limit = kind == PET_RESOURCE_DIB ? 2u * 384 * 416 * 4 :
         (kind == PET_RESOURCE_MEMORY_DC ? 2u : 1u);
     if (!amount || amount > limit - q->live[kind]) return 0;
@@ -41,7 +41,7 @@ static int fixture_reserve(void *userdata, uint32_t kind, size_t amount) {
 
 static void fixture_release(void *userdata, uint32_t kind, size_t amount) {
     quota_fixture *q = userdata;
-    if (kind >= 11 || !amount || amount > q->live[kind]) {
+    if (kind >= 12 || !amount || amount > q->live[kind]) {
         ++q->cleanup_failures;
         return;
     }
@@ -55,7 +55,7 @@ static void fixture_failed(void *userdata, uint32_t kind) {
 }
 
 static int fixture_drained(const quota_fixture *q) {
-    for (unsigned i = 0; i < 11; ++i) if (q->live[i]) return 0;
+    for (unsigned i = 0; i < 12; ++i) if (q->live[i]) return 0;
     return !q->cleanup_failures;
 }
 
@@ -69,6 +69,9 @@ int main(void) {
     quota_fixture q = {{0}, {0}, UINT32_MAX, 0};
     const pet_resources budget = {&q, fixture_reserve, fixture_release, fixture_failed, NULL};
     CHECK(atlas && out);
+    CHECK(!pet_menu_idle_expired(100, 20099));
+    CHECK(pet_menu_idle_expired(100, 20100));
+    CHECK(!pet_menu_idle_expired(100, 99));
     /* All sixteen sector centers, clockwise from up. */
     for (unsigned i = 0; i < 16; ++i) {
         double angle = i * 0.39269908169872415481;
@@ -261,6 +264,16 @@ int main(void) {
     CHECK(pet_surface_open(&surface, FALSE, FALSE) == PET_SURFACE_OK);
     CHECK(pet_surface_present(&surface, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OK);
     CHECK(q.live[PET_RESOURCE_WINDOW] == 1 && q.live[PET_RESOURCE_MEMORY_DC] == 1);
+    q.denied_kind = PET_RESOURCE_MENU_TIMER;
+    CHECK(pet_surface_menu_begin(&surface, NULL) == PET_SURFACE_OS_ERROR);
+    CHECK(!surface.menu_timer && q.live[PET_RESOURCE_MENU_TIMER] == 0);
+    q.denied_kind = UINT32_MAX;
+    CHECK(pet_surface_menu_begin(&surface, NULL) == PET_SURFACE_OK);
+    CHECK(surface.menu_timer && q.live[PET_RESOURCE_MENU_TIMER] == 1);
+    CHECK(pet_surface_menu_begin(&surface, NULL) == PET_SURFACE_INVALID);
+    CHECK(pet_surface_menu_end(&surface) == PET_SURFACE_OK);
+    CHECK(pet_surface_menu_end(&surface) == PET_SURFACE_OK);
+    CHECK(!surface.menu_timer && q.live[PET_RESOURCE_MENU_TIMER] == 0 && q.peak[PET_RESOURCE_MENU_TIMER] == 1);
     CHECK(q.live[PET_RESOURCE_DESKTOP_DC] == 0);
     HBITMAP committed = surface.bitmap;
     q.denied_kind = PET_RESOURCE_MEMORY_DC;
@@ -275,8 +288,10 @@ int main(void) {
     CHECK(q.peak[PET_RESOURCE_MEMORY_DC] == 2 && q.peak[PET_RESOURCE_DESKTOP_DC] == 1);
     CHECK(q.live[PET_RESOURCE_MEMORY_DC] == 1);
     /* Destruction outside close still releases the published window once. */
+    CHECK(pet_surface_menu_begin(&surface, NULL) == PET_SURFACE_OK);
     CHECK(DestroyWindow(surface.window));
     CHECK(!surface.window && q.live[PET_RESOURCE_WINDOW] == 0);
+    CHECK(!surface.menu_timer && q.live[PET_RESOURCE_MENU_TIMER] == 0);
     CHECK(pet_surface_close(&surface) == PET_SURFACE_OK);
     CHECK(pet_surface_close(&surface) == PET_SURFACE_OK);
     CHECK(fixture_drained(&q));

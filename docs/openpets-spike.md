@@ -1124,3 +1124,32 @@ PetPreferencesV1. Tests cover missing, both boolean values, invalid
 input and unknown-version retention in a volatile registry key.
 The previous Gaze revision had Windows CI still running when work began;
 the new build step and preference changes require their own verification.
+
+## Native context menu dismissal fix
+
+Desktop observation: menu remained open after outside clicks until the
+pet was clicked again. The normal surface is WS_EX_NOACTIVATE and the
+old TrackPopupMenuEx invocation did not establish foreground ownership
+or post WM_NULL. Follow the Microsoft TrackPopupMenu foreground-owner
+and post-message guidance (https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-trackpopupmenu).
+Only an explicit user-requested menu can temporarily activate the
+pet; abort if OS foreground admission fails, never synthesize input.
+After tracking returns, restore the previous validated foreground HWND
+only if the pet still owns foreground, never override a newly selected
+application. Normal rendering/dragging remains nonactivating.
+
+One scoped, budgeted 250ms window timer exists only during the native
+modal loop. Selection/cursor movement refresh the monotonic inactivity
+deadline. At 20 seconds idle, foreground loss, or signaled supervisor
+stop, cancel through EndMenu (WM_CANCELMODE fallback); suppress command
+on cancellation. Release timer immediately on return or window teardown;
+failed cleanup keeps the quota charged. No persistent timer, global
+hook, separate thread, or custom popup renderer. Menu trees retain the
+existing shared budget and recursive destruction. The timeout is a
+chosen UX default, not an OpenPets requirement; native modal message
+delivery can delay a timer. Unit/native hidden fixtures check timeout
+boundaries, guard admission/denial, repeated stop and destruction drain.
+They do not exercise a real foreground modal menu. On the interactive
+desktop verify outside click, Escape, submenu use, 20s idle, Alt+Tab,
+repeated reopen, focus restoration and normal pet movement. No SVG or
+Motion support added in this bug-fix revision.

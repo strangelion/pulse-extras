@@ -3,7 +3,7 @@ const std = @import("std");
 const Budget = @import("runtime_budget").Budget;
 const Log = @import("runtime_event_log").Log;
 
-pub const Kind = enum(u32) { file = 0, codec = 1, dib = 2, notify = 3, ipc = 4, registry = 5, menu = 6, argv = 7, window = 8, memory_dc = 9, desktop_dc = 10 };
+pub const Kind = enum(u32) { file = 0, codec = 1, dib = 2, notify = 3, ipc = 4, registry = 5, menu = 6, argv = 7, window = 8, memory_dc = 9, desktop_dc = 10, menu_timer = 11 };
 pub const Owner = struct {
     files: Budget = Budget.init(320),
     codecs: Budget = Budget.init(1),
@@ -16,6 +16,7 @@ pub const Owner = struct {
     windows: Budget = Budget.init(1),
     memory_dcs: Budget = Budget.init(2),
     desktop_dcs: Budget = Budget.init(1),
+    menu_timers: Budget = Budget.init(1),
     log: Log = .{},
     cleanup_failures: usize = 0,
     lock: std.atomic.Mutex = .unlocked,
@@ -42,6 +43,7 @@ pub const Owner = struct {
             8 => &self.windows,
             9 => &self.memory_dcs,
             10 => &self.desktop_dcs,
+            11 => &self.menu_timers,
             else => null,
         };
     }
@@ -50,7 +52,7 @@ pub const Owner = struct {
     pub fn checkDrained(self: *const Owner) error{OutstandingResources}!void {
         if (self.files.used != 0 or self.codecs.used != 0 or self.dib.used != 0 or self.notifications.used != 0 or self.ipc.used != 0 or self.registry.used != 0 or
             self.menus.used != 0 or self.argv.used != 0 or self.windows.used != 0 or self.memory_dcs.used != 0 or
-            self.desktop_dcs.used != 0 or self.cleanup_failures != 0) return error.OutstandingResources;
+            self.desktop_dcs.used != 0 or self.menu_timers.used != 0 or self.cleanup_failures != 0) return error.OutstandingResources;
     }
 };
 
@@ -166,7 +168,7 @@ test "native IPC registry menu and argument quotas drain independently" {
 test "surface object quotas and fixed diagnostic codes" {
     var owner: Owner = .{};
     const bridge = Bridge.init(&owner);
-    const limits = [_]usize{ 1, 2, 1 };
+    const limits = [_]usize{ 1, 2, 1, 1 };
     for (limits, 8..) |limit, kind| {
         const code: u32 = @intCast(kind);
         try std.testing.expectEqual(@as(c_int, 1), bridge.reserve(bridge.context, code, limit));
