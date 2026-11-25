@@ -9,6 +9,7 @@ const mount = @import("pulse_ui_mount");
 const diag = @import("pulse_diagnostics");
 const library = @import("companion_library");
 const config = @import("companion_config");
+const pickers = @import("pulse_pickers");
 const builtin = @import("builtin");
 
 const TimerCallback = *const fn (?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.winapi) void;
@@ -24,7 +25,7 @@ const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -64,6 +65,10 @@ const Instance = struct {
     import_request: ?library.ImportRequest = null,
     import_result: ?library.ImportResult = null,
     import_dialog: u64 = 0,
+    picker: ?pickers.Table = null,
+    picker_request: u64 = 0,
+    fallback_pick: bool = false,
+    picked_folder: ?library.PickedFolder = null,
     dialogs: ?raw.PulseDialogsV1 = null,
     import_cancel_requested: bool = false,
     work_snapshot: library.Snapshot = .{},
@@ -81,7 +86,7 @@ const Content = struct {
     declared: [commands.len]abi.StringView = undefined,
     navigation: [4]ui.Node = undefined,
     children: [28]ui.Node = undefined,
-    import_toolbar: [2]ui.Node = undefined,
+    import_toolbar: [3]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
     states: [4]ui.State = undefined,
@@ -200,10 +205,11 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 }
             }
             if (instance.dialogs != null and config.helper_sha256.len == 64 and config.runtime_sha256.len == 64) {
-                const enabled = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.import_dialog == 0;
+                const enabled = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.import_dialog == 0 and instance.picker_request == 0;
                 content.import_toolbar[0] = action("library.import", "导入本地素材", commands[19], enabled);
-                content.import_toolbar[1] = action("library.import-cancel", "取消导入", commands[20], instance.import_request != null and instance.task_id != 0 and !instance.import_cancel_requested);
-                content.children[count] = horizontal("library.import-toolbar", content.import_toolbar[0..if (instance.import_request != null) @as(usize, 2) else 1]);
+                content.import_toolbar[1] = action("library.browse", "浏览文件夹", commands[21], enabled);
+                content.import_toolbar[2] = action("library.import-cancel", "取消导入", commands[20], instance.import_request != null and instance.task_id != 0 and !instance.import_cancel_requested);
+                content.children[count] = horizontal("library.import-toolbar", content.import_toolbar[0..if (instance.import_request != null) @as(usize, 3) else 2]);
                 count += 1;
             }
         },
@@ -384,6 +390,14 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
     if (context == null) return raw.PULSE_TASK_FAILED;
     const canceled = context[0].cancelled orelse return raw.PULSE_TASK_FAILED;
     if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
+    if (instance.fallback_pick) {
+        instance.picked_folder = library.pickFolderDefault(config.helper_sha256) catch |err| {
+            instance.work_error = err;
+            return raw.PULSE_TASK_FAILED;
+        };
+        if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
+        return raw.PULSE_TASK_COMPLETED;
+    }
     if (instance.preference_edit) |*edit| {
         library.editPreferenceDefault(config.runtime_sha256, edit) catch |err| {
             instance.work_error = err;
@@ -536,6 +550,25 @@ fn pollLibrary(instance: *Instance) void {
     }
     diag.status("companion-library-terminal", instance.task_state);
     instance.task_id = 0;
+    if (instance.fallback_pick) {
+        instance.fallback_pick = false;
+        const done = instance.work_done.load(.acquire);
+        if (instance.active and instance.section == .library and instance.runtime_task_id == 0) {
+            if (instance.task_state == raw.PULSE_TASK_COMPLETED and done and instance.work_error == null) {
+                if (instance.picked_folder) |folder| {
+                    var selection: Selection = .{};
+                    selection.fromPath(folder.path[0..folder.len]);
+                    showImportWithSelection(instance, &selection);
+                } else instance.library_status = "已取消文件夹选择";
+            } else if (instance.task_state != raw.PULSE_TASK_CANCELLED) {
+                instance.library_status = "系统文件夹选择不可用；请手动填写";
+                showImportWithSelection(instance, &.{});
+            }
+        }
+        instance.picked_folder = null;
+        refresh(instance);
+        return;
+    }
     const was_edit = instance.preference_edit != null;
     const was_import = instance.import_request != null;
     instance.preference_edit = null;
@@ -593,7 +626,7 @@ fn pollRuntime(instance: *Instance) void {
 }
 
 fn startRuntimeCheck(instance: *Instance) void {
-    if (!instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0 or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0) return;
+    if (!instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0 or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick) return;
     const tasks = instance.tasks orelse return;
     const create = tasks.create orelse return;
     // Existing dispatcher/timer is required: do not create an uncollectable task.
@@ -629,7 +662,7 @@ fn startBuiltin(instance: *Instance) void {
 }
 
 fn startAsset(instance: *Instance, asset_id: u64) void {
-    if (!instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or asset_id == 0) return;
+    if (!instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or asset_id == 0) return;
     if (instance.runtime_task_id != 0) {
         if (instance.task_kind != .builtin_session) return;
         instance.runtime_status = if (instance.session.requestAsset(asset_id)) "已提交新增实例请求" else "暂不可新增实例；请等待或停止";
@@ -725,7 +758,7 @@ fn startLibraryAsset(instance: *Instance) void {
 }
 
 fn startPreference(instance: *Instance, action_kind: library.PreferenceAction) void {
-    if (instance.import_dialog != 0 or instance.import_request != null) return;
+    if (instance.import_dialog != 0 or instance.import_request != null or instance.picker_request != 0 or instance.fallback_pick) return;
     if (!instance.active or !instance.library_loaded or instance.task_id != 0 or instance.runtime_task_id != 0 or config.runtime_sha256.len != 64 or instance.dispatch == null) return;
     const panel = instance.panel orelse return;
     const get_state = panel.table.get_state orelse return;
@@ -766,6 +799,17 @@ const Selection = struct {
     len: usize = 0,
     id: [64]u8 = undefined,
     id_len: usize = 0,
+
+    fn fromPath(self: *Selection, path: []const u8) void {
+        if (path.len < 4 or path.len > self.path.len or !std.ascii.isAlphabetic(path[0]) or path[1] != ':' or path[2] != '\\' or !std.unicode.utf8ValidateSlice(path) or std.mem.indexOfAny(u8, path, "\x00\r\n") != null) return;
+        @memcpy(self.path[0..path.len], path);
+        self.len = path.len;
+        const leaf = if (std.mem.lastIndexOfScalar(u8, path, '\\')) |last| path[last + 1 ..] else path;
+        if (library.validSourceId(leaf)) {
+            @memcpy(self.id[0..leaf.len], leaf);
+            self.id_len = leaf.len;
+        }
+    }
 
     fn capture(user: ?*anyopaque, snapshot: [*c]const raw.PulseContextSelectionSnapshot) callconv(.c) void {
         const self: *Selection = @ptrCast(@alignCast(user orelse return));
@@ -818,8 +862,7 @@ fn importClosed(user: ?*anyopaque, dialog: u64, status: abi.Status, button: abi.
 
 fn showImport(instance: *Instance) void {
     if (!instance.active or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.tasks == null or instance.dispatch == null or config.helper_sha256.len != 64 or config.runtime_sha256.len != 64) return;
-    const dialogs = instance.dialogs orelse return;
-    const show = dialogs.show orelse return;
+    if (instance.picker_request != 0 or instance.fallback_pick) return;
     var selection: Selection = .{};
     const context = instance.host.queryOptional(raw.PulseContextV1, raw.PULSE_CONTEXT_INTERFACE_NAME, raw.PULSE_CONTEXT_VERSION_1) catch null;
     if (context) |table| {
@@ -827,6 +870,77 @@ fn showImport(instance: *Instance) void {
             if (get(table.context, Selection.capture, &selection) != abi.ok) selection = .{};
         }
     }
+    showImportWithSelection(instance, &selection);
+}
+
+fn pickerCompleted(user: ?*anyopaque, result: [*c]const pickers.Result) callconv(.c) void {
+    const instance: *Instance = @ptrCast(@alignCast(user orelse return));
+    if (result == null or result[0].size < @sizeOf(pickers.Result) or result[0].request_id != instance.picker_request or instance.picker_request == 0) return;
+    instance.picker_request = 0;
+    instance.picker = null;
+    if (!instance.active or instance.section != .library) return;
+    if (result[0].outcome == pickers.cancelled) {
+        instance.library_status = "已取消文件夹选择";
+        refresh(instance);
+        return;
+    }
+    if (result[0].outcome != pickers.accepted or result[0].path_count != 1 or result[0].paths == null) {
+        instance.library_status = "Pulse 文件夹选择未成功；请手动填写";
+        refresh(instance);
+        return;
+    }
+    var selection: Selection = .{};
+    selection.fromPath(abi.slice(result[0].paths[0]) orelse "");
+    if (selection.len == 0) {
+        instance.library_status = "仅支持本地绝对目录；请重新选择";
+        refresh(instance);
+        return;
+    }
+    showImportWithSelection(instance, &selection);
+}
+
+fn browseImport(instance: *Instance) void {
+    if (!instance.active or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.dialogs == null or instance.tasks == null or instance.dispatch == null or config.helper_sha256.len != 64 or config.runtime_sha256.len != 64) return;
+    const table = instance.host.queryOptional(pickers.Table, pickers.name, pickers.version) catch {
+        instance.library_status = "宿主选择器查询失败；请手动填写";
+        refresh(instance);
+        return;
+    };
+    if (table) |picker| {
+        if (picker.pick_folders) |pick| {
+            if (picker.cancel != null) {
+                const request: pickers.Request = .{ .title = abi.view("选择桌宠素材文件夹"), .ok_label = abi.view("选择") };
+                var id: u64 = 0;
+                const status = pick(picker.context, &request, pickerCompleted, instance, &id);
+                if (status == abi.ok and id != 0) {
+                    instance.picker = picker;
+                    instance.picker_request = id;
+                    refresh(instance);
+                    return;
+                }
+                if (status != abi.error_unavailable) {
+                    instance.library_status = "宿主选择器未接受请求；请手动填写";
+                    refresh(instance);
+                    return;
+                }
+            }
+        }
+    }
+    // Missing/unavailable host interface, not an explicit user cancel.
+    instance.fallback_pick = true;
+    instance.picked_folder = null;
+    startLibrary(instance, false);
+    if (instance.task_id == 0) {
+        instance.fallback_pick = false;
+        showImportWithSelection(instance, &.{});
+    }
+    refresh(instance);
+}
+
+fn showImportWithSelection(instance: *Instance, selection: *const Selection) void {
+    if (!instance.active or instance.section != .library or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0) return;
+    const dialogs = instance.dialogs orelse return;
+    const show = dialogs.show orelse return;
     var fields = [_]ui.Node{ ui.node(ui.NodeKind.text_input), ui.node(ui.NodeKind.text_input) };
     fields[0].id = abi.view("import.path");
     fields[0].text = .{ .present = 1, .value = abi.view("素材文件夹") };
@@ -889,7 +1003,7 @@ fn cancelImport(instance: *Instance) void {
 
 fn startLibrary(instance: *Instance, capture_query: bool) void {
     const tasks = instance.tasks orelse return;
-    if (instance.task_id != 0 or instance.import_dialog != 0) return;
+    if (instance.task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0) return;
     const create = tasks.create orelse return;
     if (capture_query) {
         const panel = instance.panel orelse return;
@@ -911,10 +1025,10 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     instance.work_done.store(false, .release);
     instance.work_error = null;
     instance.work_snapshot = .{};
-    instance.library_loaded = false;
+    if (!instance.fallback_pick) instance.library_loaded = false;
     const descriptor: raw.PulseTaskDescriptor = .{
         .size = @sizeOf(raw.PulseTaskDescriptor),
-        .title = abi.view(if (instance.import_request != null) "导入桌宠素材" else if (instance.preference_edit != null) "保存桌宠偏好" else "读取桌宠素材清单"),
+        .title = abi.view(if (instance.fallback_pick) "选择素材文件夹" else if (instance.import_request != null) "导入桌宠素材" else if (instance.preference_edit != null) "保存桌宠偏好" else "读取桌宠素材清单"),
         .type = abi.view("companion.library"),
         .work = readLibrary,
         .user = instance,
@@ -922,7 +1036,7 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     var id: u64 = 0;
     if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
         instance.task_id = id;
-        instance.library_status = if (instance.import_request != null) "正在导入本地素材" else if (instance.preference_edit != null) "正在保存素材偏好" else "正在自动读取素材清单";
+        instance.library_status = if (instance.fallback_pick) "正在使用 Windows 文件夹选择器（60 秒超时）" else if (instance.import_request != null) "正在导入本地素材" else if (instance.preference_edit != null) "正在保存素材偏好" else "正在自动读取素材清单";
         armTimer(instance);
         if (instance.timer == null) instance.library_status = "正在读取；宿主自动刷新不可用，可手动检查";
     } else {
@@ -975,6 +1089,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             18 => startPreference(instance, .remove_tag),
             19 => showImport(instance),
             20 => cancelImport(instance),
+            21 => browseImport(instance),
             else => {},
         }
         return;
@@ -986,6 +1101,16 @@ fn close(instance: *Instance) host_mod.Error!void {
     instance.runtime_checked = false;
     instance.runtime_status = if (config.runtime_sha256.len == 0) "未打包运行时；无法启动桌宠" else "切换至运行管理时检查同包运行时";
     stopTimer(instance);
+    if (instance.picker_request != 0) {
+        const picker = instance.picker orelse return error.State;
+        const cancel = picker.cancel orelse return error.Unavailable;
+        host_mod.mapStatus(cancel(picker.context, instance.picker_request)) catch |err| switch (err) {
+            error.State => {},
+            else => return err,
+        };
+        instance.picker_request = 0;
+        instance.picker = null;
+    }
     if (instance.import_dialog != 0) {
         const dialogs = instance.dialogs orelse return error.State;
         const close_dialog = dialogs.close orelse return error.Unavailable;

@@ -1054,3 +1054,23 @@ launch. The isolated integration fixture verifies an incomplete enumeration
 fails and repeated full scans classify the same anomalies. This is the
 foundation for an explicit repair/deletion journal; no destructive action
 or UI recovery button is exposed yet.
+
+## Optional Pulse 1.0.61 folder picker and Zig fallback
+
+Based on the supplied pulse-native-sdk-preview3-20261124.zip (SHA-256
+cdbe0f1d10c6ae4da8a71a7338c760c4c64c3d87522e47195b9cc749c9977ad2).
+Its abi.h is byte-identical to the pinned public baseline; pickers.h is
+additive, digest 103b59a0289caf0096f00e35dc53b6ff6e8759e3c83438b2a463ca855a5fbf46.
+Keep the old generated bindings; query the optional V1 picker at runtime
+with a narrow ABI adapter and independently checked C layout. The Browse
+button opens the host picker first; accepted single local directories are
+copied before callback return and shown in the existing confirmation form.
+Cancel never falls through or starts an import. If the host interface is
+missing or unavailable, a bounded approved helper task opens Windows
+IFileDialog from Zig using STA COM in the helper process. It is not parented
+to Pulse, has a 60-second limit, and returns a bounded path or explicit
+cancel marker. A helper failure offers manual entry. No PowerShell, third-
+party dialog executable, or arbitrary executable is invoked. Existing
+selection prefill and manual input remain. C fixture covers host picker
+accept/cancel; actual Windows fallback interaction needs manual acceptance.
+The rest of the uploaded SDK and harness are not yet migrated or executed.

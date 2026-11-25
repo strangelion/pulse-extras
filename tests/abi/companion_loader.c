@@ -16,8 +16,33 @@
 static const char *commands[] = {
     "companion.library", "companion.running", "companion.market", "companion.global",
     "companion.settings.refresh", "companion.download.less", "companion.download.more",
-    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel"
+    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse"
 };
+/* Optional 1.0.61 picker ABI: independent C layout matching the supplied
+ * SDK pickers.h (SHA-256 103b59a0289caf0096f00e35dc53b6ff6e8759e3c83438b2a463ca855a5fbf46).
+ * The old public header baseline has no picker declarations. */
+typedef struct {
+    uint32_t size, flags;
+    PulseStringView title, ok_label, initial_path;
+} FolderRequest;
+typedef struct {
+    uint32_t size, outcome;
+    uint64_t request_id;
+    uint32_t filter_index, path_count;
+    const PulseStringView *paths;
+    PulseStringView selected_id, error;
+} FolderResult;
+typedef void (PULSE_CALL *FolderCallback)(void *, const FolderResult *);
+typedef struct {
+    uint32_t size, version;
+    void *context;
+    void *open_files, *save_file;
+    PulseStatus (PULSE_CALL *pick_folders)(void *, const FolderRequest *, FolderCallback, void *, uint64_t *);
+    void *quick_pick;
+    PulseStatus (PULSE_CALL *cancel)(void *, uint64_t);
+} FolderTable;
+_Static_assert(sizeof(FolderTable) == 56 && sizeof(FolderRequest) == 56 && sizeof(FolderResult) == 64, "picker ABI");
+
 typedef struct {
     uint64_t page, next, pending, version;
     unsigned created, removed, canceled, updates, subscribed, fail_subscribe;
@@ -32,8 +57,8 @@ typedef struct {
     uint64_t dispatch_id;
     char saved, requested;
     uint32_t operation;
-    PulseUiClickFn click[21];
-    void *users[21];
+    PulseUiClickFn click[22];
+    void *users[22];
     uint64_t task, aux_task;
     PulseTaskWorkFn aux_work;
     void *aux_user;
@@ -42,7 +67,9 @@ typedef struct {
     PulseTaskState task_state;
     PulseTaskWorkFn task_work;
     void *task_user;
-    uint64_t dialog;
+    uint64_t dialog, picker;
+    FolderCallback picker_callback;
+    void *picker_user;
     PulseDialogClosed dialog_closed;
     void *dialog_user;
     PulseResourcesCompletionFn completion;
@@ -56,8 +83,8 @@ static int same(PulseStringView s, const char *text) {
 }
 
 static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
-    REQUIRE(t && t->size == sizeof(*t) && t->root && t->command_count == 21 && t->commands);
-    for (unsigned i = 0; i < 21; ++i) REQUIRE(same(t->commands[i], commands[i]));
+    REQUIRE(t && t->size == sizeof(*t) && t->root && t->command_count == 22 && t->commands);
+    for (unsigned i = 0; i < 22; ++i) REQUIRE(same(t->commands[i], commands[i]));
     const PulseUiModelNode *root = t->root;
     REQUIRE(root->size == sizeof(*root) && root->type == PULSE_UI_MODEL_STACK);
     REQUIRE(root->children.present && root->children.data && (root->children.count >= 3 && root->children.count <= 28));
@@ -136,7 +163,7 @@ static PulseStatus PULSE_CALL update(void *ctx, uint64_t page, const PulseUiMode
 static PulseStatus PULSE_CALL subscribe(void *ctx, uint64_t page, PulseStringView command, PulseUiClickFn click, void *user, uint64_t *id) {
     Fixture *f = ctx;
     REQUIRE(page && page == f->page && click && user && id);
-    for (unsigned i = 0; i < 21; ++i) {
+    for (unsigned i = 0; i < 22; ++i) {
         if (!same(command, commands[i])) continue;
         REQUIRE(!f->click[i]);
         if (f->fail_subscribe && i == 2) return PULSE_ERROR_STATE;
@@ -357,6 +384,29 @@ static PulseStatus PULSE_CALL close_dialog(void *ctx, uint64_t dialog) {
     callback(user, dialog, PULSE_OK, view("cancel"), NULL, 0);
     return PULSE_OK;
 }
+static PulseStatus PULSE_CALL pick_folders(void *ctx, const FolderRequest *request, FolderCallback callback, void *user, uint64_t *id) {
+    Fixture *f = ctx;
+    REQUIRE(!f->picker && request && request->size == sizeof(*request) && !request->flags && callback && user && id);
+    f->picker = ++f->next; *id = f->picker;
+    f->picker_callback = callback; f->picker_user = user;
+    return PULSE_OK;
+}
+static PulseStatus picker_reply(Fixture *f, uint32_t outcome) {
+    REQUIRE(f->picker && f->picker_callback);
+    PulseStringView path = view("C:\\fixture\\cat");
+    FolderResult reply = {.size=sizeof(reply), .outcome=outcome, .request_id=f->picker,
+        .path_count=outcome == 0 ? 1u : 0u, .paths=outcome == 0 ? &path : NULL};
+    FolderCallback callback = f->picker_callback;
+    void *user = f->picker_user;
+    f->picker = 0; f->picker_callback = NULL; f->picker_user = NULL;
+    callback(user, &reply);
+    return PULSE_OK;
+}
+static PulseStatus PULSE_CALL cancel_picker(void *ctx, uint64_t id) {
+    Fixture *f = ctx;
+    REQUIRE(id && id == f->picker);
+    return picker_reply(f, 1);
+}
 static PulseStatus PULSE_CALL query(void *ctx, PulseStringView name, uint32_t version, void *out, uint32_t size) {
     Fixture *f = ctx;
     REQUIRE(version == 1 && out);
@@ -371,6 +421,11 @@ static PulseStatus PULSE_CALL query(void *ctx, PulseStringView name, uint32_t ve
     if (same(name, PULSE_DISPATCH_INTERFACE) && f->auto_dispatch) {
         REQUIRE(size >= sizeof(PulseDispatchV1));
         PulseDispatchV1 t = {.size=sizeof(t), .version=1, .context=f, .post=post, .cancel=cancel_dispatch};
+        memcpy(out, &t, sizeof(t)); return PULSE_OK;
+    }
+    if (f->bundled && same(name, "pulse.pickers")) {
+        REQUIRE(size >= sizeof(FolderTable));
+        FolderTable t = {.size=sizeof(t), .version=1, .context=f, .pick_folders=pick_folders, .cancel=cancel_picker};
         memcpy(out, &t, sizeof(t)); return PULSE_OK;
     }
     if (f->bundled && same(name, PULSE_DIALOGS_INTERFACE_NAME)) {
@@ -414,7 +469,7 @@ static int deliver(Fixture *f, PulseStatus status, int wrong_operation) {
     return 0;
 }
 static int click(Fixture *f, unsigned i) {
-    CHECK(i < 21 && f->click[i] && f->page);
+    CHECK(i < 22 && f->click[i] && f->page);
     f->click[i](f->users[i], f->page, view(commands[i]));
     return 0;
 }
@@ -424,7 +479,7 @@ static int cycle(PulsePluginEntryV1Fn entry, int fallback) {
     PulseHostV1 host = {.size=sizeof(host), .version=1, .context=&f, .query_interface=query};
     PulsePluginV1 out = {.size=sizeof(out), .version=1};
     CHECK(entry(&host, &out) == PULSE_OK && out.instance && out.activate && out.deactivate && out.destroy);
-    CHECK(out.activate(out.instance) == PULSE_OK && f.created == 1 && f.subscribed == 21 && f.pending && f.task);
+    CHECK(out.activate(out.instance) == PULSE_OK && f.created == 1 && f.subscribed == 22 && f.pending && f.task);
     CHECK(click(&f, 3) == 0 && f.global && !f.enabled_more);
     CHECK(deliver(&f, PULSE_OK, 0) == 0 && f.enabled_more && f.enabled_less);
     CHECK(click(&f, 6) == 0 && f.pending && f.requested == '5' && !f.enabled_more);
@@ -441,7 +496,7 @@ static int cycle(PulsePluginEntryV1Fn entry, int fallback) {
     CHECK(click(&f, 4) == 0 && f.pending);
     f.fail_remove = 1;
     out.deactivate(out.instance);
-    CHECK(!f.pending && f.canceled == 1 && f.page && f.subscribed == 21);
+    CHECK(!f.pending && f.canceled == 1 && f.page && f.subscribed == 22);
     CHECK(f.task_canceled == 1 && f.task_state == PULSE_TASK_CANCELLED);
     CHECK(click(&f, 6) == 0 && !f.pending); /* inactive callbacks cannot save */
     f.fail_remove = 0;
@@ -497,6 +552,11 @@ static int bundled_session(PulsePluginEntryV1Fn entry) {
     for (unsigned i = 0; i < 100 && f.task; ++i) { Sleep(20); pump(&f); }
     CHECK(!f.task);
     CHECK(click(&f, 19) == 0 && f.dialog && !f.task);
+    CHECK(close_dialog(&f, f.dialog) == PULSE_OK && !f.dialog && !f.task);
+    CHECK(click(&f, 21) == 0 && f.picker && !f.dialog && !f.task);
+    CHECK(picker_reply(&f, 1) == PULSE_OK && !f.picker && !f.dialog && !f.task);
+    CHECK(click(&f, 21) == 0 && f.picker);
+    CHECK(picker_reply(&f, 0) == PULSE_OK && !f.picker && f.dialog && !f.task);
     CHECK(close_dialog(&f, f.dialog) == PULSE_OK && !f.dialog && !f.task);
     CHECK(click(&f, 1) == 0 && f.task && f.worker);
     for (unsigned i = 0; i < 750 && f.task; ++i) { Sleep(20); pump(&f); }

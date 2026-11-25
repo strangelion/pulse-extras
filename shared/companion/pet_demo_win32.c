@@ -436,6 +436,11 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv) pet_release(memory->resource_bridge, PET_RESOURCE_ARGV, 1);
     if (!argv || !sample || !validate || !sample_activity || !validate_activity || !parse_package || !schedule) goto cleanup;
+    if (argc == 2 && wcscmp(argv[1], L"--pick-folder") == 0) {
+        extern int pet_pick_folder(void);
+        rc = pet_pick_folder();
+        goto cleanup;
+    }
     for (int i = 1; i < argc; ++i) {
         if (wcscmp(argv[i], L"--smoke") == 0 && !smoke) smoke = 1;
         else if (!stress_seconds && wcscmp(argv[i], L"--stress-seconds") == 0 &&

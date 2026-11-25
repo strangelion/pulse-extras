@@ -111,6 +111,10 @@ fn parsePackage(bridge: *const memory.Bridge, input: [*]const u8, len: usize, id
     return package.parse(bridge.allocator(), input, len, id, id_len, out);
 }
 
+export fn pet_pick_folder() callconv(.c) c_int {
+    return @import("pet_folder_picker.zig").run();
+}
+
 pub fn main(init: std.process.Init) !void {
     var group = Group.init(std.heap.page_allocator, memory.limit, 1, 1);
     var resource_owner: resources.Owner = .{};

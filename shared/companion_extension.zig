@@ -11,6 +11,7 @@ pub const builtin_asset_id = group.Group.builtin_asset_id;
 
 const store = @import("companion_runtime_store.zig");
 const local_import = @import("companion_local_import.zig");
+const process = @import("pulse_process");
 
 pub const Snapshot = library.Snapshot;
 pub const PreferenceAction = enum { toggle_favorite, add_tag, remove_tag };
@@ -26,6 +27,7 @@ extern "kernel32" fn GetModuleHandleExW(u32, *const anyopaque, *usize) callconv(
 extern "kernel32" fn GetModuleFileNameW(usize, [*]u16, u32) callconv(.winapi) u32;
 extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
+extern "kernel32" fn GetWindowsDirectoryW([*]u16, u32) callconv(.winapi) u32;
 
 pub fn parseDigest(hex: []const u8) ![32]u8 {
     if (hex.len != 64) return error.InvalidRuntimeDigest;
@@ -118,6 +120,72 @@ pub const ImportRequest = struct {
 };
 
 pub const validSourceId = inventory.validSource;
+
+pub const PickedFolder = struct {
+    path: [4096]u8 = undefined,
+    len: usize = 0,
+};
+
+// The picker is a separate, job-contained approved helper, not a COM call
+// inside the Pulse DLL. Its only successful output is one bounded path or
+// an explicit cancellation. The timeout also bounds shutdown of old hosts.
+pub fn pickFolderDefault(helper_hex: []const u8) !?PickedFolder {
+    if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
+    const digest = try parseDigest(helper_hex);
+    var wide: [1024]u16 = undefined;
+    const root = try packageRoot(&wide);
+    var root_bytes: [4096]u8 = undefined;
+    const root_len = try std.unicode.utf16LeToUtf8(&root_bytes, root);
+    var exe_bytes: [4096]u8 = undefined;
+    const exe = try std.fmt.bufPrint(&exe_bytes, "{s}\\pulse-pet-demo.exe", .{root_bytes[0..root_len]});
+    var system_wide: [1024]u16 = undefined;
+    const n = GetWindowsDirectoryW(&system_wide, system_wide.len);
+    if (n == 0 or n >= system_wide.len) return error.InvalidSystemDirectory;
+    var system_bytes: [4096]u8 = undefined;
+    const system_len = try std.unicode.utf16LeToUtf8(&system_bytes, system_wide[0..n]);
+    var environ = std.process.Environ.Map.init(std.heap.page_allocator);
+    defer environ.deinit();
+    try environ.put("SystemRoot", system_bytes[0..system_len]);
+    var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+    var runner = process.Runner.init(std.heap.page_allocator, threaded.io());
+    try runner.configureApproved(.{ .path = exe, .digest = digest }, 60 * std.time.ns_per_s);
+    try runner.configureTree(.windows_job);
+    const outcome = blk: {
+        var result = runner.run(.{
+            .argv = &.{ exe, "--pick-folder" },
+            .cwd = root_bytes[0..root_len],
+            .environ_map = &environ,
+            .timeout_ns = 60 * std.time.ns_per_s,
+            .stdout_limit = 4128,
+            .stderr_limit = 16 * 1024,
+        }) catch |err| break :blk @as(anyerror!?PickedFolder, err);
+        defer result.deinit();
+        if (!result.succeeded()) break :blk @as(anyerror!?PickedFolder, error.PickerFailed);
+        break :blk parsePickedFolder(result.stdout);
+    };
+    try runner.checkDrained();
+    return outcome;
+}
+
+fn parsePickedFolder(bytes: []const u8) !?PickedFolder {
+    if (std.mem.eql(u8, bytes, "PULSE_FOLDER_CANCELLED")) return null;
+    const prefix = "PULSE_FOLDER_V1 ";
+    if (!std.mem.startsWith(u8, bytes, prefix)) return error.InvalidPickerOutput;
+    const path = bytes[prefix.len..];
+    if (path.len < 4 or path.len > 4096 or !std.ascii.isAlphabetic(path[0]) or path[1] != ':' or path[2] != '\\' or !std.unicode.utf8ValidateSlice(path) or std.mem.indexOfAny(u8, path, "\x00\r\n") != null) return error.InvalidPickerOutput;
+    var result: PickedFolder = .{ .len = path.len };
+    @memcpy(result.path[0..path.len], path);
+    return result;
+}
+
+test "picker output is bounded and distinguishes cancellation" {
+    try std.testing.expect((try parsePickedFolder("PULSE_FOLDER_CANCELLED")) == null);
+    const chosen = (try parsePickedFolder("PULSE_FOLDER_V1 C:\\素材\\cat")).?;
+    try std.testing.expectEqualStrings("C:\\素材\\cat", chosen.path[0..chosen.len]);
+    try std.testing.expectError(error.InvalidPickerOutput, parsePickedFolder("PULSE_FOLDER_V1 relative"));
+    try std.testing.expectError(error.InvalidPickerOutput, parsePickedFolder("PULSE_FOLDER_V1 C:\\cat\nextra"));
+}
 
 pub fn importDefault(runtime_hex: []const u8, helper_hex: []const u8, request: *const ImportRequest, cancel: ImportCancel) !ImportResult {
     if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;

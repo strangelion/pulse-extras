@@ -21,7 +21,7 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
-    all: [33]std.Build.Module.Import = undefined,
+    all: [34]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module, companion_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
@@ -262,6 +262,12 @@ const Modules = struct {
                 .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
         });
+        const pickers = b.createModule(.{
+            .root_source_file = b.path("shared/pulse/pickers_compat.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "pulse_abi", .module = abi }},
+        });
         const companion_library = b.createModule(.{
             .root_source_file = b.path("shared/companion_extension.zig"),
             .target = target,
@@ -281,6 +287,7 @@ const Modules = struct {
             .{ .name = "pulse_host", .module = host },
             .{ .name = "pulse_commands", .module = commands },
             .{ .name = "pulse_context", .module = context_mod },
+            .{ .name = "pulse_pickers", .module = pickers },
             .{ .name = "pulse_ui_model", .module = ui_model },
             .{ .name = "pulse_ui_mount", .module = ui_mount },
             .{ .name = "pulse_diagnostics", .module = diagnostics },
