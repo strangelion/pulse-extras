@@ -1,0 +1,184 @@
+//! Worker-owned admission and immutable-by-copy snapshot model for the pet
+//! manager. No OS handles, filesystem, UI callbacks, allocation or timers.
+//! The supervisor adapter must prove creation failure/exit before release.
+const std = @import("std");
+const Budget = @import("runtime_budget").Budget;
+
+pub const max_instances = 100;
+// Must match PET_CHILD_COMMIT_LIMIT in pet_supervisor_win32.h. A reservation
+// is a conservative admission ceiling, not measured private bytes.
+pub const child_commit_ceiling: usize = 128 * 1024 * 1024;
+pub const State = enum { starting, running, stopping };
+pub const Metrics = struct {
+    private_bytes: usize,
+    working_set: usize,
+    handles: u32,
+};
+pub const Instance = struct {
+    id: u64,
+    asset_id: u64,
+    state: State = .starting,
+    metrics: ?Metrics = null,
+};
+pub const Error = error{ Invalid, Capacity, BudgetExceeded, IdExhausted, UnknownInstance, InvalidTransition };
+
+pub const Manager = struct {
+    budget: Budget,
+    limit: usize,
+    next_id: u64 = 1,
+    slots: [max_instances]?Instance = @splat(null),
+
+    pub fn init(limit: usize, commit_budget: usize) Error!Manager {
+        if (limit == 0 or limit > max_instances or commit_budget < child_commit_ceiling)
+            return error.Invalid;
+        return .{ .budget = Budget.init(commit_budget), .limit = limit };
+    }
+
+    pub fn count(self: *const Manager) usize {
+        return self.budget.used / child_commit_ceiling;
+    }
+
+    fn find(self: *Manager, id: u64) Error!*Instance {
+        for (&self.slots) |*slot| {
+            if (slot.*) |*item| {
+                if (item.id == id) return item;
+            }
+        }
+        return error.UnknownInstance;
+    }
+
+    // Called before launching. The stable ID is never reused in this session,
+    // even if creation fails. UI row indices and PIDs are not identifiers.
+    pub fn reserveStart(self: *Manager, asset_id: u64) Error!u64 {
+        if (asset_id == 0) return error.Invalid;
+        if (self.count() >= self.limit) return error.Capacity;
+        if (self.next_id == std.math.maxInt(u64)) return error.IdExhausted;
+        for (&self.slots) |*slot| {
+            if (slot.* == null) {
+                try self.budget.reserve(child_commit_ceiling);
+                const id = self.next_id;
+                self.next_id += 1;
+                slot.* = .{ .id = id, .asset_id = asset_id };
+                return id;
+            }
+        }
+        return error.Capacity;
+    }
+
+    // Called only after verified creation and readiness. A stop request that
+    // raced startup remains stopping; a late readiness must not revive it.
+    pub fn markReady(self: *Manager, id: u64) Error!void {
+        const item = try self.find(id);
+        switch (item.state) {
+            .starting => item.state = .running,
+            .stopping, .running => {},
+        }
+    }
+
+    pub fn requestStop(self: *Manager, id: u64) Error!void {
+        const item = try self.find(id);
+        item.state = .stopping;
+    }
+
+    // Unknown is not zero. The worker publishes only actual measurements;
+    // a failed sample explicitly clears stale counters.
+    pub fn sample(self: *Manager, id: u64, metrics: ?Metrics) Error!void {
+        const item = try self.find(id);
+        if (item.state == .starting) return error.InvalidTransition;
+        item.metrics = metrics;
+    }
+
+    // Caller must have positive evidence that creation never happened OR
+    // that the owned process exited. A kill request/timeout is insufficient.
+    pub fn confirmGone(self: *Manager, id: u64) Error!void {
+        for (&self.slots) |*slot| {
+            if (slot.*) |item| {
+                if (item.id == id) {
+                    slot.* = null;
+                    self.budget.release(child_commit_ceiling);
+                    return;
+                }
+            }
+        }
+        return error.UnknownInstance;
+    }
+
+    // Asset removal is a different operation from stopping an instance.
+    // Pending starts and stops both pin the asset until confirmed gone.
+    pub fn canRemoveAsset(self: *const Manager, asset_id: u64) bool {
+        if (asset_id == 0) return false;
+        for (self.slots) |slot| {
+            if (slot) |item| {
+                if (item.asset_id == asset_id) return false;
+            }
+        }
+        return true;
+    }
+
+    // Bounded value snapshot; consumers never borrow mutable worker slots.
+    pub fn snapshot(self: *const Manager, out: []Instance) usize {
+        var n: usize = 0;
+        for (self.slots) |slot| {
+            if (n == out.len) break;
+            if (slot) |item| {
+                out[n] = item;
+                n += 1;
+            }
+        }
+        return n;
+    }
+};
+
+test "same asset has independent instances and removal is pinned until confirmed gone" {
+    var m = try Manager.init(3, child_commit_ceiling * 2);
+    const a = try m.reserveStart(7);
+    const b = try m.reserveStart(7);
+    try std.testing.expect(a != b);
+    try std.testing.expectError(error.BudgetExceeded, m.reserveStart(8));
+    try m.markReady(a);
+    try m.requestStop(a);
+    try std.testing.expect(!m.canRemoveAsset(7));
+    try std.testing.expectEqual(@as(usize, 2), m.count());
+    try m.confirmGone(a);
+    try std.testing.expect(!m.canRemoveAsset(7));
+    try m.confirmGone(b);
+    try std.testing.expect(m.canRemoveAsset(7));
+    try std.testing.expectEqual(@as(usize, 0), m.budget.used);
+    const c = try m.reserveStart(8);
+    try std.testing.expect(c > b);
+    try std.testing.expectError(error.UnknownInstance, m.requestStop(a));
+    try m.confirmGone(c);
+}
+
+test "late readiness does not resurrect a stopping instance and unknown metrics stay unknown" {
+    var m = try Manager.init(1, child_commit_ceiling * 2);
+    const id = try m.reserveStart(1);
+    try std.testing.expectError(error.Capacity, m.reserveStart(2));
+    try std.testing.expectError(error.InvalidTransition, m.sample(id, null));
+    try m.requestStop(id);
+    try m.markReady(id);
+    var rows: [1]Instance = undefined;
+    try std.testing.expectEqual(@as(usize, 1), m.snapshot(&rows));
+    try std.testing.expectEqual(State.stopping, rows[0].state);
+    try std.testing.expect(rows[0].metrics == null);
+    try m.sample(id, .{ .private_bytes = 12, .working_set = 34, .handles = 5 });
+    _ = m.snapshot(&rows);
+    try std.testing.expectEqual(@as(usize, 12), rows[0].metrics.?.private_bytes);
+    try m.sample(id, null);
+    _ = m.snapshot(&rows);
+    try std.testing.expect(rows[0].metrics == null);
+    try m.confirmGone(id);
+    try std.testing.expectError(error.UnknownInstance, m.confirmGone(id));
+    try std.testing.expectEqual(@as(usize, 0), m.snapshot(&rows));
+}
+
+test "invalid limits and exhausted IDs do not consume reservations" {
+    try std.testing.expectError(error.Invalid, Manager.init(0, child_commit_ceiling));
+    try std.testing.expectError(error.Invalid, Manager.init(max_instances + 1, child_commit_ceiling));
+    try std.testing.expectError(error.Invalid, Manager.init(1, child_commit_ceiling - 1));
+    var m = try Manager.init(1, child_commit_ceiling);
+    try std.testing.expectError(error.Invalid, m.reserveStart(0));
+    m.next_id = std.math.maxInt(u64);
+    try std.testing.expectError(error.IdExhausted, m.reserveStart(1));
+    try std.testing.expectEqual(@as(usize, 0), m.budget.used);
+}
