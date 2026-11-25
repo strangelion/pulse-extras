@@ -36,7 +36,7 @@ Only the extension's own download preference is persisted by the host.
 2. Switch all four sections; library, running, market and global should
    remain responsive. Running and market must explicitly say unavailable,
    not invent counts. Check narrow window, light/dark themes and high DPI.
-3. In library click read, then check result after task completion. Missing
+3. In library wait for automatic read and result collection; use search/refresh to retry. The manual check is fallback only. Missing
    inventory should show the missing message and zero rows; existing records
    should show their real IDs, not verified-artwork claims. Try a nonmatching
    query, favorites and pagination if the existing inventory permits.

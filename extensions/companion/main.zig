@@ -8,6 +8,14 @@ const ui = @import("pulse_ui_model");
 const mount = @import("pulse_ui_mount");
 const diag = @import("pulse_diagnostics");
 const library = @import("companion_library");
+const builtin = @import("builtin");
+
+const TimerCallback = *const fn (?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.winapi) void;
+const FileTime = extern struct { low: u32, high: u32 };
+extern "kernel32" fn CreateThreadpoolTimer(TimerCallback, ?*anyopaque, ?*anyopaque) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn SetThreadpoolTimer(*anyopaque, ?*const FileTime, u32, u32) callconv(.winapi) void;
+extern "kernel32" fn WaitForThreadpoolTimerCallbacks(*anyopaque, i32) callconv(.winapi) void;
+extern "kernel32" fn CloseThreadpoolTimer(*anyopaque) callconv(.winapi) void;
 
 const allocator = std.heap.page_allocator;
 const title = "Pulse Companion";
@@ -31,6 +39,11 @@ const Instance = struct {
     loaded: bool = false,
     active: bool = false,
     tasks: ?raw.PulseTasksV1 = null,
+    dispatch: ?raw.PulseDispatchV1 = null,
+    timer: ?*anyopaque = null,
+    queued: std.atomic.Value(bool) = .init(false),
+    posting: std.atomic.Value(bool) = .init(false),
+    dispatch_token: std.atomic.Value(u64) = .init(0),
     task_id: u64 = 0,
     task_state: u32 = raw.PULSE_TASK_RUNNING,
     work_done: std.atomic.Value(bool) = .init(false),
@@ -38,7 +51,7 @@ const Instance = struct {
     work_snapshot: library.Snapshot = .{},
     library_snapshot: library.Snapshot = .{},
     library_loaded: bool = false,
-    library_status: []const u8 = "点击读取本地素材清单",
+    library_status: []const u8 = "准备读取本地素材清单",
     library_offset: usize = 0,
     query: [256]u8 = undefined,
     query_len: usize = 0,
@@ -52,7 +65,8 @@ const Content = struct {
     children: [26]ui.Node = undefined,
     states: [1]ui.State = undefined,
     row_text: [16][256]u8 = undefined,
-    row_ids: [16][32]u8 = undefined,
+    row_ids: [16][64]u8 = undefined,
+    dynamic_ids: [4][64]u8 = undefined,
     library_count: [160]u8 = undefined,
     root: ui.Node = undefined,
     value: [128]u8 = undefined,
@@ -62,6 +76,13 @@ fn label(id: []const u8, body: []const u8) ui.Node {
     var node = ui.text(body);
     node.id = abi.view(id);
     return node;
+}
+
+// Older host renderers retain a text control when its ID is unchanged.
+// Give changed text a new identity, while preserving interactive state IDs.
+fn changingLabel(buffer: []u8, prefix: []const u8, body: []const u8) ui.Node {
+    const id = std.fmt.bufPrint(buffer, "{s}-{x}", .{ prefix, std.hash.Wyhash.hash(0, body) }) catch unreachable;
+    return label(id, body);
 }
 
 fn action(id: []const u8, body: []const u8, command: []const u8, enabled: bool) ui.Node {
@@ -83,31 +104,31 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     navigation.gap = .{ .present = 1, .value = 6 };
     ui.withChildren(&navigation, &content.navigation);
     content.children[0] = navigation;
-    content.children[1] = label("section", names[selected]);
+    content.children[1] = label(commands[selected][10..], names[selected]);
     content.children[1].role = .{ .present = 1, .value = abi.view("section") };
     var count: usize = 3;
     switch (instance.section) {
         .library => {
-            content.children[2] = label("library.status", instance.library_status);
-            content.children[3] = action("library.reload", "读取素材清单", commands[7], instance.tasks != null and instance.task_id == 0);
-            content.children[4] = action("library.poll", "检查读取结果", commands[8], instance.tasks != null and instance.task_id != 0);
+            content.children[2] = changingLabel(&content.dynamic_ids[0], "library.status", instance.library_status);
+            content.children[3] = action("library.reload", "搜索 / 刷新素材", commands[7], instance.tasks != null and instance.task_id == 0);
+            content.children[4] = action("library.poll", "手动检查（备用）", commands[8], instance.tasks != null and instance.task_id != 0 and instance.timer == null);
             content.children[5] = ui.node(ui.NodeKind.text_input);
             content.children[5].id = abi.view("library.query");
             content.children[5].text = .{ .present = 1, .value = abi.view("来源 ID 或标签") };
             content.children[5].state = .{ .present = 1, .value = abi.view("library.query") };
-            content.children[6] = action("library.favorites", if (instance.favorites_only) "仅收藏：开启" else "仅收藏：关闭", commands[11], instance.tasks != null and instance.task_id == 0);
+            content.children[6] = action(if (instance.favorites_only) "library.favorites.on" else "library.favorites.off", if (instance.favorites_only) "仅收藏：开启" else "仅收藏：关闭", commands[11], instance.tasks != null and instance.task_id == 0);
             count = 7;
             if (instance.library_loaded) {
                 const snapshot = &instance.library_snapshot;
                 const end = @min(snapshot.count, instance.library_offset + 16);
                 const line = std.fmt.bufPrint(&content.library_count, "清单共 {d} 项 · 匹配 {d} 项 · 当前显示 {d}–{d}", .{ snapshot.total, snapshot.count, if (snapshot.count == 0) 0 else instance.library_offset + 1, end }) catch unreachable;
-                content.children[7] = label("library.count", line);
+                content.children[7] = changingLabel(&content.dynamic_ids[1], "library.count", line);
                 content.children[8] = action("library.previous", "上一页", commands[9], instance.library_offset > 0);
                 content.children[9] = action("library.next", "下一页", commands[10], end < snapshot.count);
                 count = 10;
                 for (snapshot.rows[instance.library_offset..end], 0..) |*row, n| {
-                    const id = std.fmt.bufPrint(&content.row_ids[n], "asset-{x}", .{row.id}) catch unreachable;
                     const body = std.fmt.bufPrint(&content.row_text[n], "#{d}  {s} · {s} · {s} · 标签 {d} {s}", .{ row.id, row.sourceId(), if (row.paired) "双摘要记录" else "待重验", if (row.favorite) "已收藏" else "未收藏", row.tag_count, row.first_tag[0..row.first_tag_len] }) catch unreachable;
+                    const id = std.fmt.bufPrint(&content.row_ids[n], "asset-{x}-{x}", .{ row.id, std.hash.Wyhash.hash(0, body) }) catch unreachable;
                     content.children[count] = label(id, body);
                     count += 1;
                 }
@@ -117,8 +138,8 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
         .market => content.children[2] = label("market.status", "市场服务已独立实现，尚未连接宿主工作线程。搜索、下载和安装暂不可用。"),
         .global => {
             const value = if (instance.loaded) std.fmt.bufPrint(&content.value, "已保存的下载并发偏好：{d}（1–8）", .{instance.saved}) catch unreachable else "下载并发偏好尚未确认";
-            content.children[2] = label("settings.value", value);
-            content.children[3] = label("settings.status", instance.status);
+            content.children[2] = changingLabel(&content.dynamic_ids[2], "settings.value", value);
+            content.children[3] = changingLabel(&content.dynamic_ids[3], "settings.status", instance.status);
             content.children[4] = action("settings.refresh", "重新读取设置", commands[4], instance.resources != null and instance.pending == 0);
             content.children[5] = action("settings.less", "减少并发", commands[5], instance.loaded and instance.pending == 0 and instance.saved > 1);
             content.children[6] = action("settings.more", "增加并发", commands[6], instance.loaded and instance.pending == 0 and instance.saved < 8);
@@ -245,6 +266,69 @@ fn observe(user: ?*anyopaque, snapshot: [*c]const raw.PulseTaskSnapshot) callcon
     instance.task_state = snapshot[0].state;
 }
 
+fn dispatchPoll(user: ?*anyopaque) callconv(.c) void {
+    const instance: *Instance = @ptrCast(@alignCast(user orelse return));
+    instance.queued.store(false, .release);
+    if (instance.active) pollLibrary(instance);
+}
+
+// A Windows threadpool timer only posts to the public host dispatcher.
+// Never calls UI/tasks APIs, never waits for UI, and coalesces pending work.
+fn timerTick(_: ?*anyopaque, user: ?*anyopaque, _: ?*anyopaque) callconv(.winapi) void {
+    const instance: *Instance = @ptrCast(@alignCast(user orelse return));
+    // A periodic threadpool timer may overlap callbacks. Serialize post
+    // itself so an older token cannot overwrite a newer pending token.
+    if (instance.posting.swap(true, .acq_rel)) return;
+    defer instance.posting.store(false, .release);
+    if (instance.queued.swap(true, .acq_rel)) return;
+    const dispatch = instance.dispatch orelse {
+        instance.queued.store(false, .release);
+        return;
+    };
+    const post = dispatch.post orelse {
+        instance.queued.store(false, .release);
+        return;
+    };
+    var token: u64 = 0;
+    if (post(dispatch.context, dispatchPoll, instance, &token) != abi.ok or token == 0) {
+        instance.queued.store(false, .release);
+        return;
+    }
+    instance.dispatch_token.store(token, .release);
+}
+
+fn armTimer(instance: *Instance) void {
+    if (comptime builtin.os.tag != .windows) return;
+    if (instance.timer != null or instance.dispatch == null) return;
+    const timer = CreateThreadpoolTimer(timerTick, instance, null) orelse {
+        diag.event("companion-auto-refresh-unavailable");
+        return;
+    };
+    instance.timer = timer;
+    // Relative 100 ms; poll no faster than 10 Hz while a task is pending.
+    const due: u64 = @bitCast(@as(i64, -1_000_000));
+    const time: FileTime = .{ .low = @truncate(due), .high = @truncate(due >> 32) };
+    SetThreadpoolTimer(timer, &time, 100, 0);
+}
+
+fn stopTimer(instance: *Instance) void {
+    if (comptime builtin.os.tag != .windows) return;
+    if (instance.timer) |timer| {
+        SetThreadpoolTimer(timer, null, 0, 0);
+        // Timer callbacks do not wait on the UI thread.
+        WaitForThreadpoolTimerCallbacks(timer, 1);
+        CloseThreadpoolTimer(timer);
+        instance.timer = null;
+    }
+    const token = instance.dispatch_token.swap(0, .acq_rel);
+    if (token != 0) {
+        if (instance.dispatch) |dispatch| {
+            if (dispatch.cancel) |cancel| _ = cancel(dispatch.context, token);
+        }
+    }
+    instance.queued.store(false, .release);
+}
+
 fn pollLibrary(instance: *Instance) void {
     const tasks = instance.tasks orelse return;
     if (instance.task_id == 0) return;
@@ -257,8 +341,6 @@ fn pollLibrary(instance: *Instance) void {
         return;
     }
     if (instance.task_state == raw.PULSE_TASK_RUNNING or instance.task_state == raw.PULSE_TASK_CANCELLING) {
-        instance.library_status = "正在读取素材清单";
-        refresh(instance);
         return;
     }
     if (instance.task_state != raw.PULSE_TASK_COMPLETED and instance.task_state != raw.PULSE_TASK_FAILED and instance.task_state != raw.PULSE_TASK_CANCELLED and instance.task_state != raw.PULSE_TASK_PARTIAL) return;
@@ -267,6 +349,7 @@ fn pollLibrary(instance: *Instance) void {
         refresh(instance);
         return;
     }
+    stopTimer(instance);
     diag.status("companion-library-terminal", instance.task_state);
     instance.task_id = 0;
     const done = instance.work_done.load(.acquire);
@@ -282,25 +365,27 @@ fn pollLibrary(instance: *Instance) void {
     refresh(instance);
 }
 
-fn startLibrary(instance: *Instance) void {
+fn startLibrary(instance: *Instance, capture_query: bool) void {
     const tasks = instance.tasks orelse return;
     if (instance.task_id != 0) return;
     const create = tasks.create orelse return;
-    const panel = instance.panel orelse return;
-    const get_state = panel.table.get_state orelse {
-        instance.library_status = "宿主不支持读取搜索状态";
-        refresh(instance);
-        return;
-    };
-    var buffer: [257]u8 = undefined;
-    var needed: u32 = 0;
-    if (get_state(panel.table.context, panel.id, abi.view("library.query"), &buffer, buffer.len, &needed) != abi.ok or needed > instance.query.len or !std.unicode.utf8ValidateSlice(buffer[0..needed])) {
-        instance.library_status = "搜索词无效或超过 256 字节";
-        refresh(instance);
-        return;
+    if (capture_query) {
+        const panel = instance.panel orelse return;
+        const get_state = panel.table.get_state orelse {
+            instance.library_status = "宿主不支持读取搜索状态";
+            refresh(instance);
+            return;
+        };
+        var buffer: [257]u8 = undefined;
+        var needed: u32 = 0;
+        if (get_state(panel.table.context, panel.id, abi.view("library.query"), &buffer, buffer.len, &needed) != abi.ok or needed > instance.query.len or !std.unicode.utf8ValidateSlice(buffer[0..needed])) {
+            instance.library_status = "搜索词无效或超过 256 字节";
+            refresh(instance);
+            return;
+        }
+        @memcpy(instance.query[0..needed], buffer[0..needed]);
+        instance.query_len = needed;
     }
-    @memcpy(instance.query[0..needed], buffer[0..needed]);
-    instance.query_len = needed;
     instance.work_done.store(false, .release);
     instance.work_error = null;
     instance.work_snapshot = .{};
@@ -315,7 +400,9 @@ fn startLibrary(instance: *Instance) void {
     var id: u64 = 0;
     if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
         instance.task_id = id;
-        instance.library_status = "正在读取；点击检查读取结果";
+        instance.library_status = "正在自动读取素材清单";
+        armTimer(instance);
+        if (instance.timer == null) instance.library_status = "正在读取；宿主自动刷新不可用，可手动检查";
     } else {
         instance.library_status = "宿主拒绝读取任务";
     }
@@ -333,12 +420,13 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
+                if (instance.section == .library and !instance.library_loaded and instance.task_id == 0) startLibrary(instance, false);
                 refresh(instance);
             },
             4 => load(instance),
             5 => if (instance.saved > 1) save(instance, instance.saved - 1),
             6 => if (instance.saved < 8) save(instance, instance.saved + 1),
-            7 => startLibrary(instance),
+            7 => startLibrary(instance, true),
             8 => pollLibrary(instance),
             9 => if (instance.library_loaded and instance.library_offset >= 16) {
                 instance.library_offset -= 16;
@@ -346,7 +434,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             },
             11 => if (instance.task_id == 0 and instance.tasks != null) {
                 instance.favorites_only = !instance.favorites_only;
-                startLibrary(instance);
+                startLibrary(instance, true);
             },
             10 => if (instance.library_loaded and instance.library_offset + 16 < instance.library_snapshot.count) {
                 instance.library_offset += 16;
@@ -360,6 +448,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
 
 fn close(instance: *Instance) host_mod.Error!void {
     instance.active = false;
+    stopTimer(instance);
     if (instance.task_id != 0) {
         const tasks = instance.tasks orelse return error.State;
         const cancel = tasks.cancel orelse return error.Unavailable;
@@ -436,10 +525,19 @@ fn open(instance: *Instance) host_mod.Error!void {
         if (instance.tasks) |tasks| {
             if (tasks.create == null or tasks.get == null or tasks.release == null or tasks.cancel == null) instance.tasks = null;
         }
-        instance.library_status = if (instance.tasks != null) "点击读取本地素材清单" else "宿主后台任务接口不可用";
+        instance.library_status = if (instance.tasks != null) "准备读取本地素材清单" else "宿主后台任务接口不可用";
+    }
+    instance.dispatch = try instance.host.queryOptional(raw.PulseDispatchV1, raw.PULSE_DISPATCH_INTERFACE, raw.PULSE_DISPATCH_VERSION);
+    if (instance.dispatch) |dispatch| {
+        if (dispatch.post == null or dispatch.cancel == null) instance.dispatch = null;
     }
     instance.active = true;
-    if (instance.task_id != 0) pollLibrary(instance);
+    if (instance.task_id != 0) {
+        pollLibrary(instance);
+        if (instance.task_id != 0) armTimer(instance);
+    } else if (instance.section == .library) {
+        startLibrary(instance, false);
+    }
     if (instance.resources != null) {
         load(instance);
     } else {
@@ -513,6 +611,7 @@ test "four section tree declares only real navigation and preference actions" {
         fill(&instance, &content, &tree);
         try std.testing.expectEqual(@as(u32, commands.len), tree.command_count);
         try std.testing.expectEqual(@as(u32, 4), content.children[0].children.count);
+        try std.testing.expectEqualStrings(commands[n][10..], abi.slice(content.children[1].id).?);
         try std.testing.expectEqual(@as(u32, if (instance.section == .global or instance.section == .library) 7 else 3), content.root.children.count);
     }
     try std.testing.expectEqual(@as(u32, 0), content.children[6].enabled.value);
@@ -529,9 +628,19 @@ test "library view bounds rows and uses stable IDs" {
     var tree: ui.Tree = undefined;
     fill(&instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 26), content.root.children.count);
-    try std.testing.expectEqualStrings("asset-1", abi.slice(content.children[10].id).?);
+    try std.testing.expect(std.mem.startsWith(u8, abi.slice(content.children[10].id).?, "asset-1-"));
     instance.library_offset = 16;
     fill(&instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 11), content.root.children.count);
-    try std.testing.expectEqualStrings("asset-11", abi.slice(content.children[10].id).?);
+    try std.testing.expect(std.mem.startsWith(u8, abi.slice(content.children[10].id).?, "asset-11-"));
+}
+
+test "dynamic labels replace identity only when text changes" {
+    var a: [64]u8 = undefined;
+    var b: [64]u8 = undefined;
+    const first = changingLabel(&a, "status", "old");
+    const second = changingLabel(&b, "status", "new");
+    try std.testing.expect(!std.mem.eql(u8, abi.slice(first.id).?, abi.slice(second.id).?));
+    const again = changingLabel(&b, "status", "old");
+    try std.testing.expectEqualStrings(abi.slice(first.id).?, abi.slice(again.id).?);
 }

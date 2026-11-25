@@ -735,3 +735,19 @@ the script never seeds, deletes or modifies that inventory. User testing
 is now appropriate for rendering/settings/tasks, not process launch or
 preference editing. MSVC writer integration remains unresolved; no release
 eligibility or real-host result is claimed.
+
+## Real-host feedback: automatic library loading and text refresh
+
+The first user smoke test confirmed native embedded settings rendering.
+Market navigation changed its body but retained the previous section title;
+manual read/poll was an experimental limitation. Start one bounded read
+on activation (and on entering an unloaded library), collect automatically
+via the published UI dispatcher and a Windows threadpool timer at 100 ms.
+The timer only posts coalesced UI callbacks; task APIs remain UI-thread-only.
+Stop/drain the timer and cancel its queued token on terminal collection or
+stop, with manual poll fallback if unavailable. No idle timer. Changed text
+uses content-derived node identity so a retained text control is recreated;
+interactive input/navigation identities remain stable. Search/refresh is
+explicit, not a scan on each keystroke. Tests add actual DLL timer/dispatch
+collection without touching user data, and changed label IDs. Real host
+retest required; no new filesystem writes or process launches.

@@ -6,6 +6,7 @@
 #include "pulse/settings_pages.h"
 #include "pulse/resources.h"
 #include "pulse/tasks.h"
+#include "pulse/dispatch.h"
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); return 1; } } while (0)
 #define REQUIRE(x) do { if (!(x)) { fprintf(stderr, "ABI fixture line %d: %s\n", __LINE__, #x); return PULSE_ERROR_ARGUMENT; } } while (0)
@@ -19,6 +20,11 @@ typedef struct {
     uint64_t page, next, pending, version;
     unsigned created, removed, canceled, updates, subscribed, fail_subscribe;
     int fallback, fail_remove, enabled_more, enabled_less, global, saved_present;
+    int auto_dispatch;
+    CRITICAL_SECTION dispatch_lock;
+    PulseDispatchCallback queued;
+    void *queued_user;
+    uint64_t dispatch_id;
     char saved, requested;
     uint32_t operation;
     PulseUiClickFn click[12];
@@ -181,6 +187,32 @@ static PulseStatus PULSE_CALL release_task(void *ctx, PulseTaskId id) {
     ++f->task_released;
     return PULSE_OK;
 }
+static PulseStatus PULSE_CALL post(void *ctx, PulseDispatchCallback callback, void *user, uint64_t *token) {
+    Fixture *f = ctx;
+    EnterCriticalSection(&f->dispatch_lock);
+    if (f->queued) { LeaveCriticalSection(&f->dispatch_lock); return PULSE_ERROR_STATE; }
+    f->queued = callback; f->queued_user = user;
+    *token = ++f->dispatch_id;
+    LeaveCriticalSection(&f->dispatch_lock);
+    return PULSE_OK;
+}
+static PulseStatus PULSE_CALL cancel_dispatch(void *ctx, uint64_t token) {
+    Fixture *f = ctx;
+    EnterCriticalSection(&f->dispatch_lock);
+    PulseStatus s = PULSE_ERROR_STATE;
+    if (f->queued && token == f->dispatch_id) {
+        f->queued = NULL; f->queued_user = NULL; s = PULSE_OK;
+    }
+    LeaveCriticalSection(&f->dispatch_lock);
+    return s;
+}
+static void pump(Fixture *f) {
+    EnterCriticalSection(&f->dispatch_lock);
+    PulseDispatchCallback cb = f->queued; void *user = f->queued_user;
+    f->queued = NULL; f->queued_user = NULL;
+    LeaveCriticalSection(&f->dispatch_lock);
+    if (cb) cb(user);
+}
 static PulseStatus PULSE_CALL query(void *ctx, PulseStringView name, uint32_t version, void *out, uint32_t size) {
     Fixture *f = ctx;
     REQUIRE(version == 1 && out);
@@ -192,6 +224,11 @@ static PulseStatus PULSE_CALL query(void *ctx, PulseStringView name, uint32_t ve
         memcpy(out, &t, sizeof(t)); return PULSE_OK;
     }
     if (same(name, PULSE_UI_MODEL_INTERFACE) && f->fallback) return model(f, out, size);
+    if (same(name, PULSE_DISPATCH_INTERFACE) && f->auto_dispatch) {
+        REQUIRE(size >= sizeof(PulseDispatchV1));
+        PulseDispatchV1 t = {.size=sizeof(t), .version=1, .context=f, .post=post, .cancel=cancel_dispatch};
+        memcpy(out, &t, sizeof(t)); return PULSE_OK;
+    }
     if (same(name, PULSE_TASKS_INTERFACE_NAME)) {
         REQUIRE(size >= sizeof(PulseTasksV1));
         PulseTasksV1 t = {.size=sizeof(t), .version=1, .context=f,
@@ -233,7 +270,7 @@ static int cycle(PulsePluginEntryV1Fn entry, int fallback) {
     PulseHostV1 host = {.size=sizeof(host), .version=1, .context=&f, .query_interface=query};
     PulsePluginV1 out = {.size=sizeof(out), .version=1};
     CHECK(entry(&host, &out) == PULSE_OK && out.instance && out.activate && out.deactivate && out.destroy);
-    CHECK(out.activate(out.instance) == PULSE_OK && f.created == 1 && f.subscribed == 12 && f.pending);
+    CHECK(out.activate(out.instance) == PULSE_OK && f.created == 1 && f.subscribed == 12 && f.pending && f.task);
     CHECK(click(&f, 3) == 0 && f.global && !f.enabled_more);
     CHECK(deliver(&f, PULSE_OK, 0) == 0 && f.enabled_more && f.enabled_less);
     CHECK(click(&f, 6) == 0 && f.pending && f.requested == '5' && !f.enabled_more);
@@ -265,6 +302,26 @@ static int cycle(PulsePluginEntryV1Fn entry, int fallback) {
     return 0;
 }
 
+static int automatic(PulsePluginEntryV1Fn entry) {
+    Fixture f = {.auto_dispatch=1};
+    InitializeCriticalSection(&f.dispatch_lock);
+    PulseHostV1 host = {.size=sizeof(host), .version=1, .context=&f, .query_interface=query};
+    PulsePluginV1 out = {.size=sizeof(out), .version=1};
+    CHECK(entry(&host, &out) == PULSE_OK);
+    CHECK(out.activate(out.instance) == PULSE_OK && f.task);
+    /* Simulate terminal cancellation without reading real user files. The
+       timer must collect automatically, without invoking the poll command. */
+    CHECK(cancel_task(&f, f.task) == PULSE_OK);
+    for (unsigned i = 0; i < 100 && f.task; ++i) { Sleep(20); pump(&f); }
+    CHECK(!f.task && f.task_released == 1);
+    CHECK(click(&f, 7) == 0 && f.task);
+    out.deactivate(out.instance);
+    out.destroy(out.instance);
+    pump(&f);
+    CHECK(!f.queued);
+    DeleteCriticalSection(&f.dispatch_lock);
+    return 0;
+}
 static int partial(PulsePluginEntryV1Fn entry) {
     Fixture f = {.fail_subscribe=1};
     PulseHostV1 host = {.size=sizeof(host), .version=1, .context=&f, .query_interface=query};
@@ -283,9 +340,9 @@ int main(int argc, char **argv) {
         PulsePluginSdkPreviewFn preview = (PulsePluginSdkPreviewFn)GetProcAddress(lib, "PulsePluginSdkPreview");
         PulsePluginEntryV1Fn entry = (PulsePluginEntryV1Fn)GetProcAddress(lib, "PulsePluginEntryV1");
         CHECK(preview && entry && preview() == PULSE_SDK_PREVIEW);
-        CHECK(cycle(entry, 0) == 0 && cycle(entry, 1) == 0 && partial(entry) == 0);
+        CHECK(cycle(entry, 0) == 0 && cycle(entry, 1) == 0 && partial(entry) == 0 && automatic(entry) == 0);
         CHECK(FreeLibrary(lib));
     }
-    puts("Companion C ABI: 16 complete lifecycle scenarios and 8 partial activation scenarios passed");
+    puts("Companion C ABI: 16 complete lifecycle scenarios, 8 partial activations and 8 automatic polling scenarios passed");
     return 0;
 }
