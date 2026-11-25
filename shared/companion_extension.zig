@@ -486,10 +486,94 @@ pub fn rejectionFor(err: anyerror) Rejection {
     };
 }
 
+pub const LaunchEntry = struct {
+    asset_id: u64 = 0,
+    count: usize = 0,
+    profile: u32 = 0,
+};
+
+pub const RuntimePolicy = struct {
+    automatic: bool = false,
+    batch_size: usize = 4,
+    interval_ms: u64 = 500,
+    grace_ms: u64 = 2000,
+    timeout_ms: u64 = 10000,
+    entries: [8]LaunchEntry = @splat(.{}),
+    count: usize = 0,
+
+    fn number(comptime T: type, value: []const u8) !T {
+        if (value.len == 0) return error.InvalidPolicy;
+        for (value) |ch| if (!std.ascii.isDigit(ch)) return error.InvalidPolicy;
+        return std.fmt.parseInt(T, value, 10) catch error.InvalidPolicy;
+    }
+
+    pub fn total(self: *const RuntimePolicy) usize {
+        var result: usize = 0;
+        for (self.entries[0..self.count]) |entry| result += entry.count;
+        return result;
+    }
+
+    pub fn at(self: *const RuntimePolicy, index: usize) ?LaunchEntry {
+        var remaining = index;
+        for (self.entries[0..self.count]) |entry| {
+            if (remaining < entry.count) return entry;
+            remaining -= entry.count;
+        }
+        return null;
+    }
+
+    pub fn decode(value: []const u8) !RuntimePolicy {
+        if (value.len > 512) return error.InvalidPolicy;
+        var sections = std.mem.splitScalar(u8, value, ';');
+        var fields = std.mem.splitScalar(u8, sections.next() orelse return error.InvalidPolicy, ':');
+        const automatic = try number(u8, fields.next() orelse return error.InvalidPolicy);
+        var policy: RuntimePolicy = .{
+            .automatic = automatic == 1,
+            .batch_size = try number(usize, fields.next() orelse return error.InvalidPolicy),
+            .interval_ms = try number(u64, fields.next() orelse return error.InvalidPolicy),
+            .grace_ms = try number(u64, fields.next() orelse return error.InvalidPolicy),
+            .timeout_ms = try number(u64, fields.next() orelse return error.InvalidPolicy),
+        };
+        if (fields.next() != null or automatic > 1 or policy.batch_size == 0 or policy.batch_size > 16 or policy.interval_ms < 100 or policy.interval_ms > 3000 or policy.grace_ms > 5000 or policy.timeout_ms > 10000 or policy.timeout_ms < policy.grace_ms + 2000) return error.InvalidPolicy;
+        while (sections.next()) |section| {
+            if (policy.count == policy.entries.len) return error.InvalidPolicy;
+            var row = std.mem.splitScalar(u8, section, ':');
+            const key = row.next() orelse return error.InvalidPolicy;
+            const id = if (std.mem.eql(u8, key, "builtin")) builtin_asset_id else try number(u64, key);
+            const count = try number(usize, row.next() orelse return error.InvalidPolicy);
+            const profile = try number(u32, row.next() orelse return error.InvalidPolicy);
+            if (id == 0 or count == 0 or count > session_limit or profile > 1 or (id == builtin_asset_id and profile != 0) or row.next() != null) return error.InvalidPolicy;
+            for (policy.entries[0..policy.count]) |prior| if (prior.asset_id == id) return error.InvalidPolicy;
+            policy.entries[policy.count] = .{ .asset_id = id, .count = count, .profile = profile };
+            policy.count += 1;
+            if (policy.total() > session_limit) return error.InvalidPolicy;
+        }
+        if (policy.automatic and policy.count == 0) return error.InvalidPolicy;
+        return policy;
+    }
+
+    pub fn encode(self: *const RuntimePolicy, buffer: []u8) ![]const u8 {
+        const header = try std.fmt.bufPrint(buffer, "{d}:{d}:{d}:{d}:{d}", .{ @intFromBool(self.automatic), self.batch_size, self.interval_ms, self.grace_ms, self.timeout_ms });
+        var len = header.len;
+        for (self.entries[0..self.count]) |entry| {
+            const suffix = if (entry.asset_id == builtin_asset_id)
+                try std.fmt.bufPrint(buffer[len..], ";builtin:{d}:{d}", .{ entry.count, entry.profile })
+            else
+                try std.fmt.bufPrint(buffer[len..], ";{d}:{d}:{d}", .{ entry.asset_id, entry.count, entry.profile });
+            len += suffix.len;
+        }
+        return buffer[0..len];
+    }
+};
+
+pub const Visibility = enum { unknown, visible, hidden, pending_show, pending_hide };
 pub const RunningRow = model.Instance;
 pub const RunningSource = struct {
     id: u64 = 0,
     profile: Profile = .{},
+    visibility: Visibility = .unknown,
+    visibility_since: u64 = 0,
+    visibility_failed: bool = false,
     bytes: [64]u8 = @splat(0),
     len: usize = 0,
 
@@ -507,6 +591,18 @@ pub const RunningSnapshot = struct {
 pub const Session = struct {
     // Set by the UI before admitting a new worker; immutable during that session.
     limits: RuntimeLimits = .{},
+    policy: RuntimePolicy = .{},
+    planned: bool = false,
+    plan_active: std.atomic.Value(bool) = .init(false),
+    plan_cancel: std.atomic.Value(bool) = .init(false),
+    plan_attempted: std.atomic.Value(usize) = .init(0),
+    plan_launched: std.atomic.Value(usize) = .init(0),
+    exits: std.atomic.Value(usize) = .init(0),
+    abnormal_exits: std.atomic.Value(usize) = .init(0),
+    last_exit: std.atomic.Value(u32) = .init(0),
+    visibility_busy: std.atomic.Value(bool) = .init(false),
+    visibility_id: std.atomic.Value(u64) = .init(0),
+    visibility_show: std.atomic.Value(bool) = .init(true),
     phase: std.atomic.Value(u32) = .init(@backingInt(Phase.idle)),
     working_set: std.atomic.Value(usize) = .init(0),
     private_bytes: std.atomic.Value(usize) = .init(0),
@@ -528,7 +624,7 @@ pub const Session = struct {
 
     pub fn canStart(self: *const Session) bool {
         return self.phase.load(.acquire) == @backingInt(Phase.running) and
-            self.owned.load(.acquire) < self.limits.effective() and !self.pending_start.load(.acquire) and
+            self.owned.load(.acquire) < self.limits.effective() and !self.plan_active.load(.acquire) and !self.pending_start.load(.acquire) and
             self.pending_stop.load(.acquire) == 0 and self.stopping_id.load(.acquire) == 0;
     }
 
@@ -549,6 +645,13 @@ pub const Session = struct {
         self.start_profile.store(packed_profile, .monotonic);
         self.start_asset.store(asset_id, .monotonic);
         self.pending_start.store(true, .release);
+        return true;
+    }
+
+    pub fn requestVisibility(self: *Session, id: u64, show: bool) bool {
+        if (id == 0 or self.phase.load(.acquire) != @backingInt(Phase.running) or self.visibility_busy.load(.acquire) or self.visibility_id.load(.acquire) != 0 or self.pending_start.load(.acquire) or self.pending_stop.load(.acquire) != 0 or self.stopping_id.load(.acquire) != 0) return false;
+        self.visibility_show.store(show, .monotonic);
+        self.visibility_id.store(id, .release);
         return true;
     }
 
@@ -610,6 +713,24 @@ pub const Session = struct {
     }
 
     pub fn reset(self: *Session) void {
+        self.plan_active.store(false, .release);
+        self.plan_cancel.store(false, .release);
+        self.plan_attempted.store(0, .release);
+        self.plan_launched.store(0, .release);
+        self.exits.store(0, .release);
+        self.abnormal_exits.store(0, .release);
+        self.last_exit.store(0, .release);
+        self.denied.store(0, .release);
+        self.last_rejection.store(@backingInt(Rejection.none), .release);
+        self.visibility_busy.store(false, .release);
+        self.visibility_id.store(0, .release);
+        self.clearLive();
+    }
+
+    fn clearLive(self: *Session) void {
+        self.plan_active.store(false, .release);
+        self.visibility_busy.store(false, .release);
+        self.visibility_id.store(0, .release);
         self.pending_stop.store(0, .release);
         self.stopping_id.store(0, .release);
         self.publishRows(&.{});
@@ -618,8 +739,6 @@ pub const Session = struct {
         self.start_profile.store(0, .release);
         self.owned.store(0, .release);
         self.ready.store(0, .release);
-        self.denied.store(0, .release);
-        self.last_rejection.store(@backingInt(Rejection.none), .release);
         self.working_set.store(0, .release);
         self.private_bytes.store(0, .release);
         self.set(.idle);
@@ -642,7 +761,7 @@ pub fn runBuiltin(session: *Session, runtime_hex: []const u8, helper_hex: []cons
     helper[len] = 0;
     const owner = try std.heap.page_allocator.create(runtime.Owner);
     owner.* = .{};
-    defer session.reset();
+    defer session.clearLive();
     const outcome = runOwned(owner, session, root, digest, helper[0..len :0], &helper_digest, canceled, context);
     // The loop can return early from any native API. Always attempt normal
     // drain before close or emergency abandonment, even after such errors.
@@ -712,12 +831,49 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
     defer std.heap.page_allocator.destroy(buffers);
     buffers.* = .{};
     const sources = &buffers.sources;
-    const started = try launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire), session.start_profile.load(.acquire), sources);
+    var plan_index: usize = 0;
+    if (session.planned) {
+        session.plan_active.store(true, .release);
+        session.plan_attempted.store(1, .release);
+    }
+    const started = launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire), session.start_profile.load(.acquire), sources) catch |err| {
+        session.reject(rejectionFor(err));
+        return err;
+    };
+    if (session.planned) {
+        plan_index = 1;
+        if (started.failure == null) session.plan_launched.store(1, .release);
+        if (plan_index >= session.policy.total()) session.plan_active.store(false, .release);
+    }
     var failure: ?anyerror = started.failure;
     var rows: [group.max_tick_slots]group.TickResult = undefined;
     var begin = GetTickCount64();
     var stop_since: u64 = 0;
+    var next_batch = begin + session.policy.interval_ms;
+    var all_ready = false;
     while (failure == null and canceled(context) == 0) {
+        if (session.plan_cancel.load(.acquire)) session.plan_active.store(false, .release);
+        if (session.plan_active.load(.acquire) and all_ready and session.pending_stop.load(.acquire) == 0 and session.stopping_id.load(.acquire) == 0 and !session.visibility_busy.load(.acquire) and session.visibility_id.load(.acquire) == 0 and (plan_index % session.policy.batch_size != 0 or GetTickCount64() >= next_batch)) {
+            if (session.policy.at(plan_index)) |entry| {
+                session.plan_attempted.store(plan_index + 1, .release);
+                if (launchAsset(owner, helper, helper_digest, entry.asset_id, entry.profile, sources)) |next| {
+                    if (next.failure) |err| {
+                        failure = err;
+                        session.plan_active.store(false, .release);
+                    } else {
+                        _ = session.plan_launched.fetchAdd(1, .acq_rel);
+                    }
+                    plan_index += 1;
+                    begin = GetTickCount64();
+                    if (plan_index % session.policy.batch_size == 0) next_batch = begin + session.policy.interval_ms;
+                    if (plan_index >= session.policy.total()) session.plan_active.store(false, .release);
+                } else |err| {
+                    session.reject(rejectionFor(err));
+                    session.plan_active.store(false, .release);
+                    if (err == error.CleanupFailed) failure = err;
+                }
+            } else session.plan_active.store(false, .release);
+        }
         if (session.pending_start.load(.acquire)) {
             session.set(.starting);
             if (canceled(context) == 0) {
@@ -752,7 +908,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
             session.pending_stop.store(0, .release);
         }
         const stopping = session.stopping_id.load(.acquire);
-        if (stopping != 0 and GetTickCount64() - stop_since >= 2_000) {
+        if (stopping != 0 and GetTickCount64() - stop_since >= session.policy.grace_ms) {
             owner.group.stop(stopping, true) catch |err| {
                 if (err != error.UnknownInstance) failure = err;
             };
@@ -762,6 +918,12 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
         for (rows[0..count]) |row| {
             if (row.failure) |err| failure = err;
             if (row.exit_code) |code| {
+                _ = session.exits.fetchAdd(1, .acq_rel);
+                session.last_exit.store(code, .release);
+                if (code != 0 and row.id != stopping) {
+                    _ = session.abnormal_exits.fetchAdd(1, .acq_rel);
+                    session.plan_active.store(false, .release);
+                }
                 for (sources) |*source| {
                     if (source.id == row.id) source.* = .{};
                 }
@@ -775,7 +937,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
                 }
             }
         }
-        if (session.stopping_id.load(.acquire) != 0 and GetTickCount64() - stop_since >= 5_000) failure = error.UnconfirmedShutdown;
+        if (session.stopping_id.load(.acquire) != 0 and GetTickCount64() - stop_since >= session.policy.timeout_ms) failure = error.UnconfirmedShutdown;
         const items = &buffers.items;
         const owned = try owner.group.snapshot(0, items);
         var ready: usize = 0;
@@ -790,6 +952,50 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
                 private_bytes += metrics.private_bytes;
             }
         }
+        all_ready = starting == 0 and ready != 0;
+        const visibility = session.visibility_id.load(.acquire);
+        const show = session.visibility_show.load(.acquire);
+        if (visibility != 0) session.visibility_busy.store(true, .release);
+        var visibility_pending = false;
+        // Index by source slot; only the worker mutates acknowledgement state.
+        for (sources) |*source| {
+            if (source.id == 0) continue;
+            if (source.visibility == .pending_show or source.visibility == .pending_hide) {
+                const acknowledged = owner.group.visibilityAck(source.id) catch false;
+                if (acknowledged) {
+                    source.visibility = if (source.visibility == .pending_show) .visible else .hidden;
+                } else if (GetTickCount64() - source.visibility_since >= 3000) {
+                    source.visibility = .unknown;
+                    source.visibility_failed = true;
+                    session.reject(.unknown_instance);
+                } else visibility_pending = true;
+                continue;
+            }
+            if (source.visibility_failed) continue;
+            // Only a first-frame-confirmed row can reuse its ready event.
+            var running = false;
+            for (items[0..owned]) |item| {
+                if (item.id == source.id) {
+                    running = item.state == .running;
+                    break;
+                }
+            }
+            if (!running) continue;
+            if (source.visibility == .unknown) source.visibility = .visible;
+            if (visibility == 0 or (visibility != std.math.maxInt(u64) and visibility != source.id)) continue;
+            if (source.visibility == (if (show) Visibility.visible else Visibility.hidden)) continue;
+            owner.group.requestVisibility(source.id, show) catch {
+                source.visibility = .unknown;
+                source.visibility_failed = true;
+                session.reject(.unknown_instance);
+                continue;
+            };
+            source.visibility = if (show) .pending_show else .pending_hide;
+            source.visibility_since = GetTickCount64();
+            visibility_pending = true;
+        }
+        if (visibility != 0) session.visibility_id.store(0, .release);
+        session.visibility_busy.store(visibility_pending, .release);
         session.publishNamedRows(items[0..owned], sources);
         session.owned.store(owned, .release);
         session.ready.store(ready, .release);
@@ -815,6 +1021,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
 
 fn drainOwned(owner: *runtime.Owner, session: *Session) !void {
     session.set(.stopping);
+    session.plan_active.store(false, .release);
     session.pending_start.store(false, .release);
     session.pending_stop.store(0, .release);
     if (!owner.opened) return;
@@ -825,11 +1032,15 @@ fn drainOwned(owner: *runtime.Owner, session: *Session) !void {
     var failure: ?anyerror = null;
     while (try owner.group.remaining() != 0) {
         const elapsed = GetTickCount64() - stop;
-        if (elapsed >= (if (session.limits.effective() > 128) @as(u64, 10_000) else 5_000)) return error.UnconfirmedShutdown;
-        if (elapsed >= 2_000) try owner.group.beginDrain(true);
+        if (elapsed >= session.policy.timeout_ms) return error.UnconfirmedShutdown;
+        if (elapsed >= session.policy.grace_ms) try owner.group.beginDrain(true);
         const count = try owner.group.tick(&rows);
         for (rows[0..count]) |row| {
             if (row.failure) |err| failure = err;
+            if (row.exit_code) |code| {
+                _ = session.exits.fetchAdd(1, .acq_rel);
+                session.last_exit.store(code, .release);
+            }
         }
         if (try owner.group.remaining() != 0) Sleep(if (session.limits.effective() > 128) 20 else 50);
     }
@@ -983,4 +1194,64 @@ test "session copies per-launch overrides without changing the prior pending req
     try std.testing.expectEqualDeep(custom, try LaunchProfile.unpack(session.start_profile.load(.acquire)));
     session.reset();
     try std.testing.expectEqual(@as(u32, 0), session.start_profile.load(.acquire));
+}
+
+test "runtime policy validates bounded opt-in launch plan and shutdown deadlines" {
+    const policy = try RuntimePolicy.decode("1:4:500:2000:10000;builtin:3:0;27:2:1");
+    try std.testing.expect(policy.automatic);
+    try std.testing.expectEqual(@as(usize, 5), policy.total());
+    try std.testing.expectEqual(builtin_asset_id, policy.at(2).?.asset_id);
+    try std.testing.expectEqual(@as(u64, 27), policy.at(3).?.asset_id);
+    try std.testing.expectEqual(@as(u32, 1), policy.at(4).?.profile);
+    try std.testing.expect(policy.at(5) == null);
+    var buffer: [512]u8 = undefined;
+    try std.testing.expectEqualStrings("1:4:500:2000:10000;builtin:3:0;27:2:1", try policy.encode(&buffer));
+    for ([_][]const u8{ "1:4:500:2000:10000", "0:0:500:2000:10000", "0:4:99:2000:10000", "0:4:500:5000:6000", "0:4:500:2000:10001", "0:4:500:2000:10000;builtin:1:1", "0:4:500:2000:10000;5:1:0;5:1:1", "0:4:500:2000:10000;5:1025:0" }) |bad| {
+        try std.testing.expectError(error.InvalidPolicy, RuntimePolicy.decode(bad));
+    }
+}
+
+test "visibility and launch policy commands retain one pending request" {
+    const session = try std.testing.allocator.create(Session);
+    defer std.testing.allocator.destroy(session);
+    session.* = .{};
+    session.set(.running);
+    session.plan_active.store(true, .release);
+    try std.testing.expect(!session.canStart());
+    session.plan_active.store(false, .release);
+    try std.testing.expect(session.requestVisibility(7, false));
+    try std.testing.expect(!session.requestVisibility(8, true));
+    try std.testing.expectEqual(@as(u64, 7), session.visibility_id.load(.acquire));
+    try std.testing.expect(!session.visibility_show.load(.acquire));
+}
+
+extern "kernel32" fn GetTempPathW(u32, [*]u16) callconv(.winapi) u32;
+extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
+extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, ?*anyopaque) callconv(.winapi) usize;
+extern "kernel32" fn WriteFile(usize, [*]const u8, u32, *u32, ?*anyopaque) callconv(.winapi) c_int;
+extern "kernel32" fn FlushFileBuffers(usize) callconv(.winapi) c_int;
+extern "kernel32" fn CloseHandle(usize) callconv(.winapi) c_int;
+
+pub fn exportDiagnostic(report: []const u8, output: []u8) !usize {
+    if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
+    if (report.len == 0 or report.len > 4096) return error.InvalidDiagnostic;
+    var path: [1024]u16 = undefined;
+    const root_len = GetTempPathW(path.len, &path);
+    if (root_len == 0 or root_len >= path.len or path[root_len - 1] != '\\') return error.DiagnosticPath;
+    var name: [128]u8 = undefined;
+    const suffix = try std.fmt.bufPrint(&name, "PulseExtras-Companion-diagnostic-{d}-{d}.txt", .{ GetCurrentProcessId(), GetTickCount64() });
+    if (root_len + suffix.len >= path.len) return error.DiagnosticPath;
+    for (suffix, 0..) |ch, n| path[root_len + n] = ch;
+    const len = root_len + suffix.len;
+    path[len] = 0;
+    const output_len = try std.unicode.utf16LeToUtf8(output, path[0..len]);
+    // CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT. Never overwrite or follow
+    // a preexisting leaf. The OS temp directory is the explicit destination.
+    const file = CreateFileW(path[0..len :0].ptr, 0x40000000, 0, null, 1, 0x00200080, null);
+    if (file == std.math.maxInt(usize)) return error.DiagnosticCreate;
+    var written: u32 = 0;
+    const ok = WriteFile(file, report.ptr, @intCast(report.len), &written, null) != 0 and written == report.len and FlushFileBuffers(file) != 0;
+    const closed = CloseHandle(file) != 0;
+    if (!ok or !closed) return error.DiagnosticWrite;
+    return output_len;
 }

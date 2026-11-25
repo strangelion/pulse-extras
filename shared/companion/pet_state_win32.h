@@ -12,13 +12,14 @@ enum {
     PET_STATE_IDLE = 0, PET_STATE_THINKING = 1, PET_STATE_WORKING = 2,
     PET_STATE_EDITING = 3, PET_STATE_RUNNING = 4, PET_STATE_TESTING = 5,
     PET_STATE_WAITING = 6, PET_STATE_WAVING = 7, PET_STATE_SUCCESS = 8,
-    PET_STATE_ERROR = 9, PET_STATE_CELEBRATING = 10
+    PET_STATE_ERROR = 9, PET_STATE_CELEBRATING = 10,
+    PET_STATE_HIDE = 11, PET_STATE_SHOW = 12
 };
 #define PET_STATE_MAX_GENERATION 0x07ffffffu
 
 static inline BOOL pet_state_valid(DWORD word) {
     return (word >> 4) >= 1 && (word >> 4) <= PET_STATE_MAX_GENERATION &&
-        (word & 15u) <= PET_STATE_CELEBRATING;
+        (word & 15u) <= PET_STATE_SHOW;
 }
 
 static inline DWORD pet_state_read(const volatile LONG *slot) {

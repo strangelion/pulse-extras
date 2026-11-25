@@ -161,3 +161,21 @@ Verify the node disappears, the diagnostic cannot be submitted again during
 that activation, and no browser opens unless the gallery action is clicked.
 When a task is pending without an automatic timer, use "手动检查任务状态"
 on Market; it must collect the same owned task rather than spawn a duplicate.
+
+## Stage C isolated-host acceptance
+
+Use a fresh isolated bundled runtime store and profile. Keep automatic
+startup off initially. Save 0:2:500:2000:10000;builtin:3:0, execute the
+plan, verify first-frame acknowledgements and the inter-batch delay.
+Cancel remaining launches before the last batch; existing children
+remain alive. Use a missing managed ID to verify fail-closed admission.
+Enable automatic only in the isolated profile, deactivate/reactivate,
+and check one plan per activation, with no restart after a child exits.
+Set an instance ID and hide/show it, then hide/show all ready children.
+Verify actual windows and copied acknowledgement labels, lower hidden
+CPU, and safe stop while hidden. Test configured grace/deadline and
+confirm no unrelated process is terminated. Export a diagnostic and
+verify numeric-only contents, no private paths or tokens, and no overwrite.
+Repeat with missing dispatcher, constrained resources and while
+deactivating. Record exact host version, source revision, logs and
+screenshots; never count the ABI fixture as real desktop acceptance.

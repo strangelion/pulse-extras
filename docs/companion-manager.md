@@ -1721,3 +1721,57 @@ resources.h exposes stat/settings/audit, not a generic image upload or
 resource URI resolver. Neither is repurposed as an invented image loader.
 Real catalog thumbnail/animation rendering is still gated on verified URI
 and renderer behavior and isolated bounded decoding.
+
+## Stage C: opt-in launch plan, visibility, drain and diagnostics
+
+The versioned host settings value runtime.policy is read together with
+the existing count/commit limits. The default is 0:4:500:2000:10000:
+automatic off, four starts per batch, 500 ms minimum inter-batch gap,
+2000 ms cooperative grace and 10000 ms total drain deadline. Append
+semicolon-separated asset-id:count:profile records (builtin for the
+built-in pet; 0 default, 1 alternate). Up to eight distinct asset IDs,
+1024 total instances, 1–16 per batch, interval 100–3000 ms, grace
+0–5000 ms, total deadline at least grace+2000 and at most 10000.
+The UI refuses plans beyond the effective limit. A successful initial
+settings read may admit one automatic plan per plugin activation; no
+Windows login task, automatic restart or retry loop. Saving a policy
+does not trigger it immediately. A saved plan can also be explicitly
+started. The worker creates one child per tick after previous first-frame
+readiness, checks native admission on each launch, waits between batches,
+and stops adding on rejection, abnormal exit, cancellation or shutdown.
+Existing healthy children are not stopped merely by canceling the plan.
+The plan binds stable managed asset IDs and approved launch profiles;
+normal launch validation still applies.
+
+The digest-bound private child channel adds hide/show commands 11/12.
+After initial readiness, the supervisor resets the existing ready event
+for one visibility request per child; the renderer acknowledges only
+after its window reports the requested style. The hidden renderer waits
+for stop, state or messages, without scheduling new render/gaze/decode
+work. A pending decode remains bounded until resume. The copied rows show
+last confirmed visibility, pending or unknown. Timeout disables further
+visibility requests for that child rather than accepting a late ack as
+a new one. All commands address owned stable instance IDs, not PIDs.
+No host ABI layout or SDK pin change. Hide all affects currently ready
+instances only; no automatic Pulse-minimize synchronization is claimed.
+Manual targeted and whole-session stop use configured grace and bounded
+deadline; emergency Job cleanup is still not a confirmed reap.
+
+An explicit diagnostic command writes a bounded numeric, UTF-8 report
+to a unique CREATE_NEW file in the OS temp directory, from the existing
+host worker. No source IDs, PIDs, paths, tokens, raw host logs or user
+files are embedded. The resulting path is shown only after the worker
+is collected. Export files are user-owned; do not silently delete them.
+No continuous production log files are added. The test-only ABI probe
+log remains separately controlled by the test harness. The report
+contains sampled aggregate resource usage and retained last-session
+rejection/exit counts, not a crash dump or per-instance event journal.
+
+Stage C requires the pinned formatter, companion regression and the
+actual isolated Pulse host: verify the launch plan, mixed asset profiles,
+first-frame and hide/show acknowledgement, hidden CPU, per-instance and
+all-stop behavior, export and repeated deactivate/unload. Host activation
+timing and whether closing the settings page causes deactivation remain
+actual-host acceptance questions. The new code does not implement Windows
+login startup, persistent named per-instance plans, arbitrary export paths,
+host-minimize events or automatic deletion of exported reports.

@@ -337,6 +337,19 @@ pub const Group = struct {
         try check(self.api.publish.?(&self.native, native_id, reaction));
     }
 
+    pub fn requestVisibility(self: *Group, id: u64, visible: bool) !void {
+        try self.publish(id, if (visible) 12 else 11);
+    }
+
+    // The child signals only after checking the actual window style.
+    // Do not interpret an unsignaled event as a hidden window.
+    pub fn visibilityAck(self: *Group, id: u64) !bool {
+        const native_id = try (try self.active()).nativeId(id);
+        var ready: c_int = 0;
+        try check(self.api.ready.?(&self.native, native_id, &ready));
+        return ready != 0;
+    }
+
     pub fn pollReady(self: *Group, id: u64) !bool {
         const manager = try self.active();
         const native_id = try manager.nativeId(id);

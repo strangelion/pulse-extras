@@ -28,7 +28,7 @@ const running_page_size: usize = 12;
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version", "companion.market.queue-base", "companion.market.queue-full", "companion.market.queue-start", "companion.market.queue-clear", "companion.market.queue-item-1", "companion.market.queue-item-2", "companion.market.queue-item-3", "companion.market.queue-item-4", "companion.market.queue-item-5", "companion.market.queue-item-6", "companion.market.queue-item-7", "companion.market.queue-item-8", "companion.library.profile-default", "companion.library.profile-alternate", "companion.library.profile-reset", "companion.library.profile-clear", "companion.library.start-alternate", "companion.library.start-custom", "companion.library.detail", "companion.market.image-test", "companion.market.open-gallery", "companion.market.image-fallback" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version", "companion.market.queue-base", "companion.market.queue-full", "companion.market.queue-start", "companion.market.queue-clear", "companion.market.queue-item-1", "companion.market.queue-item-2", "companion.market.queue-item-3", "companion.market.queue-item-4", "companion.market.queue-item-5", "companion.market.queue-item-6", "companion.market.queue-item-7", "companion.market.queue-item-8", "companion.library.profile-default", "companion.library.profile-alternate", "companion.library.profile-reset", "companion.library.profile-clear", "companion.library.start-alternate", "companion.library.start-custom", "companion.library.detail", "companion.market.image-test", "companion.market.open-gallery", "companion.market.image-fallback", "companion.runtime.policy-save", "companion.runtime.plan-start", "companion.runtime.plan-cancel", "companion.running.hide", "companion.running.show", "companion.running.hide-all", "companion.running.show-all", "companion.runtime.diagnostics" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -42,6 +42,15 @@ const Instance = struct {
     section: Section = .library,
     saved: u8 = 4,
     runtime_limits: library.RuntimeLimits = .{},
+    runtime_policy: library.RuntimePolicy = .{},
+    auto_considered: bool = false,
+    auto_pending: bool = false,
+    diagnostic_pending: bool = false,
+    diagnostic_report: [4096]u8 = undefined,
+    diagnostic_report_len: usize = 0,
+    diagnostic_path: [1024]u8 = undefined,
+    diagnostic_path_len: usize = 0,
+    diagnostic_status: []const u8 = "尚未导出诊断",
     version: u64 = 0,
     loaded: bool = false,
     active: bool = false,
@@ -142,7 +151,14 @@ const Content = struct {
     import_toolbar: [3]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
-    states: [10]ui.State = undefined,
+    states: [11]ui.State = undefined,
+    policy_text: [512]u8 = undefined,
+    policy_actions: [3]ui.Node = undefined,
+    visibility_actions: [4]ui.Node = undefined,
+    plan_status: [192]u8 = undefined,
+    plan_status_id: [64]u8 = undefined,
+    diagnostic_text: [1024]u8 = undefined,
+    diagnostic_id: [64]u8 = undefined,
     profile_controls: [4]ui.Node = undefined,
     profile_launch: [2]ui.Node = undefined,
     profile_group: [5]ui.Node = undefined,
@@ -766,7 +782,13 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                         const name = if (source.len != 0) source else "来源未采集";
                         const state = switch (item.state) {
                             .starting => "启动中",
-                            .running => "运行中",
+                            .running => switch (instance.running_rows.sources[n].visibility) {
+                                .unknown => "运行中 · 可见性未知",
+                                .visible => "运行中 · 已确认显示",
+                                .hidden => "运行中 · 已确认隐藏",
+                                .pending_show => "运行中 · 等待显示确认",
+                                .pending_hide => "运行中 · 等待隐藏确认",
+                            },
                             .stopping => "正在退出",
                         };
                         const body = if (item.metrics) |metrics| blk: {
@@ -797,7 +819,21 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                         content.children[count] = label("running.no-match", "没有匹配的实例，请调整搜索词。");
                         count += 1;
                     }
+                    const can_visibility = phase == .running and !instance.stop_requested and !instance.session.visibility_busy.load(.acquire) and instance.session.visibility_id.load(.acquire) == 0;
+                    content.visibility_actions[0] = action("running.hide", "隐藏指定 ID", commands[83], can_visibility and readable);
+                    content.visibility_actions[1] = action("running.show", "显示指定 ID", commands[84], can_visibility and readable);
+                    content.visibility_actions[2] = action("running.hide-all", "全部隐藏", commands[85], can_visibility);
+                    content.visibility_actions[3] = action("running.show-all", "全部显示", commands[86], can_visibility);
+                    content.children[count] = horizontal("running.visibility", &content.visibility_actions);
+                    count += 1;
                 }
+            }
+            if (live and instance.session.plan_active.load(.acquire)) {
+                const plan = std.fmt.bufPrint(&content.plan_status, "启动计划：已创建 {d}/{d} · 已尝试 {d}", .{ instance.session.plan_launched.load(.acquire), instance.session.policy.total(), instance.session.plan_attempted.load(.acquire) }) catch unreachable;
+                content.children[count] = changingLabel(&content.plan_status_id, "running.plan-status", plan);
+                count += 1;
+                content.children[count] = action("running.plan-cancel", "取消剩余启动", commands[82], true);
+                count += 1;
             }
         },
         .market => count = fillMarket(instance, content),
@@ -825,7 +861,18 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             content.limits_inputs[1].enabled = .{ .present = 1, .value = @intFromBool(editable) };
             content.children[6] = horizontal("settings.runtime-inputs", &content.limits_inputs);
             content.children[7] = action("settings.limits-save", "保存运行限制（下次启动生效）", commands[52], editable);
-            count = 8;
+            const policy_editable = editable and instance.task_id == 0 and !instance.auto_pending;
+            content.children[8] = label("settings.policy-help", "运行策略：自动(0/1):每批数量:间隔ms:协作退出ms:总超时ms；追加 ;素材ID:数量:配置(0默认/1备用)，builtin 表示内置。自动默认关闭。");
+            content.children[9] = searchInput("settings.runtime-policy", "0:4:500:2000:10000;builtin:2:0");
+            content.children[9].enabled = .{ .present = 1, .value = @intFromBool(policy_editable) };
+            content.policy_actions[0] = action("settings.policy-save", "保存启动与退出策略", commands[80], policy_editable);
+            content.policy_actions[1] = action("settings.plan-start", "执行已保存启动计划", commands[81], policy_editable and instance.runtime_policy.count != 0);
+            content.policy_actions[2] = action("settings.plan-cancel", "取消剩余启动", commands[82], instance.runtime_task_id != 0 and instance.session.plan_active.load(.acquire));
+            content.children[10] = horizontal("settings.policy-actions", &content.policy_actions);
+            content.children[11] = action("settings.diagnostics", "导出脱敏诊断到临时目录", commands[87], instance.active and instance.task_id == 0 and instance.tasks != null and instance.dispatch != null);
+            const diagnostic = if (instance.diagnostic_pending) "正在导出脱敏诊断" else if (instance.diagnostic_path_len != 0) instance.diagnostic_path[0..instance.diagnostic_path_len] else instance.diagnostic_status;
+            content.children[12] = changingLabel(&content.diagnostic_id, "settings.diagnostic-status", diagnostic);
+            count = 13;
         },
     }
     content.root = ui.node(ui.NodeKind.stack);
@@ -849,6 +896,8 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     content.states[7] = .{ .key = abi.view("settings.instances"), .value = abi.view(limit_count) };
     content.states[8] = .{ .key = abi.view("settings.commit-mib"), .value = abi.view(limit_memory) };
     content.states[9] = .{ .key = abi.view("library.profile"), .value = abi.view("100:0:0") };
+    const policy_value = instance.runtime_policy.encode(&content.policy_text) catch unreachable;
+    content.states[10] = .{ .key = abi.view("settings.runtime-policy"), .value = abi.view(policy_value) };
     tree.states = &content.states;
     tree.state_count = content.states.len;
 }
@@ -903,6 +952,21 @@ fn readRuntimeLimits(settings: raw.PulseSettings) !library.RuntimeLimits {
     return found orelse .{};
 }
 
+const policy_preference = "runtime.policy";
+
+fn readRuntimePolicy(settings: raw.PulseSettings) !library.RuntimePolicy {
+    if (settings.version > (1 << 53) - 1 or settings.count > 1024 or (settings.count != 0 and settings.values == null)) return error.InvalidSettings;
+    var found: ?library.RuntimePolicy = null;
+    for (0..settings.count) |n| {
+        const pair = settings.values[n];
+        const key = abi.slice(pair.key) orelse continue;
+        if (!std.mem.eql(u8, key, policy_preference)) continue;
+        if (found != null) return error.InvalidSettings;
+        found = try library.RuntimePolicy.decode(abi.slice(pair.value) orelse return error.InvalidSettings);
+    }
+    return found orelse .{};
+}
+
 fn completed(user: ?*anyopaque, reply: [*c]const raw.PulseResourcesReply) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
     if (reply == null or reply[0].size < @sizeOf(raw.PulseResourcesReply) or instance.pending == 0 or reply[0].request_id != instance.pending) return;
@@ -920,14 +984,27 @@ fn completed(user: ?*anyopaque, reply: [*c]const raw.PulseResourcesReply) callco
             refresh(instance);
             return;
         };
+        const policy = readRuntimePolicy(value.settings) catch {
+            instance.status = "运行策略无效；不自动启动";
+            instance.auto_pending = false;
+            instance.auto_considered = true;
+            refresh(instance);
+            return;
+        };
         instance.saved = saved;
         instance.runtime_limits = limits;
+        instance.runtime_policy = policy;
+        if (!instance.auto_considered and operation == raw.PULSE_RESOURCES_SETTINGS_GET) {
+            instance.auto_considered = true;
+            instance.auto_pending = policy.automatic and policy.count != 0 and instance.runtime_task_id == 0;
+        }
         instance.version = value.settings.version;
         instance.loaded = true;
         instance.status = if (operation == raw.PULSE_RESOURCES_SETTINGS_SET) "偏好已确认保存；下次下载队列和运行会话采用新设置" else "已读取设置（未配置时采用默认值）";
     } else |_| {
         instance.status = "宿主设置数据无效；未覆盖原有设置";
     }
+    maybeAutoStart(instance);
     refresh(instance);
 }
 
@@ -977,6 +1054,27 @@ fn saveLimits(instance: *Instance) void {
     saveSetting(instance, runtime_preference, encoded);
 }
 
+fn savePolicy(instance: *Instance) void {
+    if (!instance.loaded or instance.pending != 0 or instance.runtime_task_id != 0 or instance.task_id != 0 or instance.auto_pending) return;
+    const panel = instance.panel orelse return;
+    const get_state = panel.table.get_state orelse return;
+    var bytes: [513]u8 = undefined;
+    var needed: u32 = 0;
+    if (get_state(panel.table.context, panel.id, abi.view("settings.runtime-policy"), &bytes, bytes.len, &needed) != abi.ok or needed > 512) return;
+    const policy = library.RuntimePolicy.decode(bytes[0..needed]) catch {
+        instance.status = "运行策略格式或范围无效；未保存";
+        refresh(instance);
+        return;
+    };
+    if (policy.total() > instance.runtime_limits.effective()) {
+        instance.status = "启动计划超过有效资源上限；未保存";
+        refresh(instance);
+        return;
+    }
+    var encoded: [512]u8 = undefined;
+    saveSetting(instance, policy_preference, policy.encode(&encoded) catch return);
+}
+
 fn saveSetting(instance: *Instance, key: []const u8, value: []const u8) void {
     const resources = instance.resources orelse return;
     if (!instance.loaded or instance.pending != 0) return;
@@ -1003,6 +1101,13 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
     if (context == null) return raw.PULSE_TASK_FAILED;
     const canceled = context[0].cancelled orelse return raw.PULSE_TASK_FAILED;
     if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
+    if (instance.diagnostic_pending) {
+        instance.diagnostic_path_len = library.exportDiagnostic(instance.diagnostic_report[0..instance.diagnostic_report_len], &instance.diagnostic_path) catch |err| {
+            instance.work_error = err;
+            return raw.PULSE_TASK_FAILED;
+        };
+        return raw.PULSE_TASK_COMPLETED;
+    }
     if (instance.market_browser_pending) {
         library.openMarketGallery() catch |err| {
             instance.work_error = err;
@@ -1181,6 +1286,7 @@ fn pollTasks(instance: *Instance) void {
     pollLibrary(instance);
     pollRuntime(instance);
     pollSearch(instance);
+    maybeAutoStart(instance);
     if (instance.task_id == 0 and instance.runtime_task_id == 0 and !(instance.section == .library and instance.search_pending)) stopTimer(instance);
 }
 
@@ -1329,6 +1435,15 @@ fn pollLibrary(instance: *Instance) void {
     }
     diag.status("companion-library-terminal", instance.task_state);
     instance.task_id = 0;
+    if (instance.diagnostic_pending) {
+        instance.diagnostic_pending = false;
+        if (instance.task_state != raw.PULSE_TASK_COMPLETED or !instance.work_done.load(.acquire) or instance.work_error != null) {
+            instance.diagnostic_path_len = 0;
+            instance.diagnostic_status = if (instance.work_error) |err| @errorName(err) else "诊断导出未确认";
+        } else instance.diagnostic_status = "诊断已导出";
+        refresh(instance);
+        return;
+    }
     if (instance.market_browser_pending) {
         instance.market_browser_pending = false;
         const done = instance.work_done.load(.acquire);
@@ -1538,6 +1653,34 @@ fn startAsset(instance: *Instance, asset_id: u64) void {
 }
 
 fn startAssetProfile(instance: *Instance, asset_id: u64, choice: library.LaunchProfile) void {
+    instance.auto_pending = false;
+    startSession(instance, asset_id, choice, false);
+}
+
+fn maybeAutoStart(instance: *Instance) void {
+    if (!instance.auto_pending or !instance.active or !instance.loaded or instance.task_id != 0 or instance.runtime_task_id != 0) return;
+    instance.auto_pending = false;
+    startPlan(instance);
+}
+
+fn startPlan(instance: *Instance) void {
+    if (!instance.active or !instance.loaded or instance.pending != 0 or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.runtime_policy.count == 0) return;
+    if (instance.runtime_policy.total() > instance.runtime_limits.effective()) {
+        instance.runtime_status = "启动计划超过有效资源上限；未启动";
+        refresh(instance);
+        return;
+    }
+    if (instance.dispatch == null or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64) {
+        instance.runtime_status = "启动计划不可用；缺少宿主调度或同包运行时";
+        refresh(instance);
+        return;
+    }
+    const first = instance.runtime_policy.at(0) orelse return;
+    const choice = library.LaunchProfile.unpack(first.profile) catch return;
+    startSession(instance, first.asset_id, choice, true);
+}
+
+fn startSession(instance: *Instance, asset_id: u64, choice: library.LaunchProfile, planned: bool) void {
     const packed_profile = choice.pack() catch return;
     if (instance.detail_request != null or instance.market_request != null or !instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0 or asset_id == 0) return;
     if (instance.runtime_task_id != 0) {
@@ -1552,6 +1695,9 @@ fn startAssetProfile(instance: *Instance, asset_id: u64, choice: library.LaunchP
     instance.runtime_error = null;
     instance.session.reset();
     instance.session.limits = instance.runtime_limits;
+    instance.session.policy = instance.runtime_policy;
+    instance.session.planned = planned;
+    instance.session.plan_active.store(planned, .release);
     instance.running_offset = 0;
     instance.session.start_profile.store(packed_profile, .release);
     instance.session.start_asset.store(asset_id, .release);
@@ -1577,7 +1723,56 @@ fn startAssetProfile(instance: *Instance, asset_id: u64, choice: library.LaunchP
     refresh(instance);
 }
 
+fn setVisibility(instance: *Instance, all: bool, show: bool) void {
+    if (instance.runtime_task_id == 0 or instance.task_kind != .builtin_session or instance.stop_requested) return;
+    const id = if (all) std.math.maxInt(u64) else blk: {
+        const panel = instance.panel orelse return;
+        const get_state = panel.table.get_state orelse return;
+        var bytes: [32]u8 = undefined;
+        var needed: u32 = 0;
+        if (get_state(panel.table.context, panel.id, abi.view("running.stop-id"), &bytes, bytes.len, &needed) != abi.ok or needed == 0 or needed >= bytes.len) return;
+        const selected = std.fmt.parseInt(u64, bytes[0..needed], 10) catch return;
+        for (instance.running_rows.rows[0..instance.running_rows.count]) |item| {
+            if (item.id == selected and item.state == .running) break :blk selected;
+        }
+        return;
+    };
+    instance.runtime_status = if (instance.session.requestVisibility(id, show)) "已提交可见性请求；等待子进程确认" else "可见性请求繁忙或实例未就绪";
+    refresh(instance);
+}
+
+fn exportDiagnostic(instance: *Instance) void {
+    if (!instance.active or instance.task_id != 0 or instance.dispatch == null or instance.import_dialog != 0 or instance.removal_dialog != 0 or instance.picker_request != 0) return;
+    const tasks = instance.tasks orelse return;
+    const create = tasks.create orelse return;
+    const session = &instance.session;
+    const report = std.fmt.bufPrint(&instance.diagnostic_report, "PulseExtras Companion diagnostic v1\nSDK preview: {d}\nconfigured_instances: {d}\ncommit_budget_mib: {d}\neffective_limit: {d}\nstartup_batch: {d}\nstartup_interval_ms: {d}\nshutdown_grace_ms: {d}\nshutdown_timeout_ms: {d}\nowned: {d}\nready: {d}\nworking_set_bytes: {d}\nprivate_bytes: {d}\nlaunch_attempted: {d}\nlaunch_created: {d}\nrejections: {d}\nlast_rejection: {d}\nconfirmed_exits: {d}\nabnormal_exits: {d}\nlast_exit_code: {d}\n", .{ abi.sdk_preview, instance.runtime_limits.instances, instance.runtime_limits.commit_mib, instance.runtime_limits.effective(), instance.runtime_policy.batch_size, instance.runtime_policy.interval_ms, instance.runtime_policy.grace_ms, instance.runtime_policy.timeout_ms, session.owned.load(.acquire), session.ready.load(.acquire), session.working_set.load(.acquire), session.private_bytes.load(.acquire), session.plan_attempted.load(.acquire), session.plan_launched.load(.acquire), session.denied.load(.acquire), session.last_rejection.load(.acquire), session.exits.load(.acquire), session.abnormal_exits.load(.acquire), session.last_exit.load(.acquire) }) catch return;
+    instance.diagnostic_report_len = report.len;
+    instance.diagnostic_path_len = 0;
+    instance.diagnostic_pending = true;
+    instance.work_done.store(false, .release);
+    instance.work_error = null;
+    const descriptor: raw.PulseTaskDescriptor = .{
+        .size = @sizeOf(raw.PulseTaskDescriptor),
+        .title = abi.view("导出桌宠诊断"),
+        .type = abi.view("companion.diagnostic"),
+        .work = readLibrary,
+        .user = instance,
+    };
+    var id: u64 = 0;
+    if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
+        instance.task_id = id;
+        instance.diagnostic_status = "正在导出脱敏诊断";
+        armTimer(instance);
+    } else {
+        instance.diagnostic_pending = false;
+        instance.diagnostic_status = "宿主拒绝诊断任务";
+    }
+    refresh(instance);
+}
+
 fn stopBuiltin(instance: *Instance) void {
+    instance.auto_pending = false;
     if (instance.runtime_task_id == 0 or instance.task_kind != .builtin_session or instance.stop_requested) return;
     const tasks = instance.tasks orelse return;
     const cancel = tasks.cancel orelse return;
@@ -2484,7 +2679,10 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         if (n >= 53 and n <= 54 and instance.section != .running) return;
         if (n >= 55 and n <= 69 and instance.section != .market) return;
         if (n >= 70 and n <= 76 and instance.section != .library) return;
-        if (n >= 77 and instance.section != .market) return;
+        if (n >= 77 and n <= 79 and instance.section != .market) return;
+        if ((n == 80 or n == 81 or n == 87) and instance.section != .global) return;
+        if (n == 82 and instance.section != .global and instance.section != .running) return;
+        if (n >= 83 and n <= 86 and instance.section != .running) return;
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
@@ -2560,6 +2758,18 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
                 rejectMarketImage(instance);
                 refresh(instance);
             },
+            80 => savePolicy(instance),
+            81 => startPlan(instance),
+            82 => {
+                instance.auto_pending = false;
+                instance.session.plan_cancel.store(true, .release);
+                refresh(instance);
+            },
+            83 => setVisibility(instance, false, false),
+            84 => setVisibility(instance, false, true),
+            85 => setVisibility(instance, true, false),
+            86 => setVisibility(instance, true, true),
+            87 => exportDiagnostic(instance),
             55...57 => changeMarketFilter(instance, n - 55),
             58 => queueMarket(instance, false),
             59 => queueMarket(instance, true),
@@ -2590,6 +2800,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
 
 fn close(instance: *Instance) host_mod.Error!void {
     instance.active = false;
+    instance.auto_pending = false;
     instance.market_image_test = false;
     instance.market_image_rejected = false;
     instance.runtime_checked = false;
@@ -2768,6 +2979,8 @@ fn open(instance: *Instance) host_mod.Error!void {
         if (dispatch.post == null or dispatch.cancel == null) instance.dispatch = null;
     }
     if (instance.dispatch != null and instance.tasks != null) subscribeSearch(instance);
+    instance.auto_considered = false;
+    instance.auto_pending = false;
     instance.active = true;
     const had_tasks = instance.task_id != 0 or instance.runtime_task_id != 0;
     if (had_tasks) {
@@ -2856,7 +3069,7 @@ test "four section tree declares only real navigation and preference actions" {
         try std.testing.expectEqualStrings(commands[n][10..], abi.slice(content.children[1].id).?);
         const expected: u32 = switch (instance.section) {
             .library => 5,
-            .global => 8,
+            .global => 13,
             .running => 6,
             .market => 8,
         };
@@ -3085,7 +3298,7 @@ test "market panel requires explicit admission and has no implicit install" {
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[4].enabled.value);
     try std.testing.expect(std.mem.indexOf(u8, abi.slice(content.children[5].text.value).?, library.market_gallery_url) != null);
     try std.testing.expectEqualStrings("search", abi.slice(content.children[3].glyph.value).?);
-    try std.testing.expectEqual(@as(u32, 10), tree.state_count);
+    try std.testing.expectEqual(@as(u32, 11), tree.state_count);
     try std.testing.expect(instance.market_selected == null);
 }
 
@@ -3103,14 +3316,14 @@ test "running page bounds rendered controls at full storage capacity" {
     var tree: ui.Tree = undefined;
     fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(usize, 1020), runningPageStart(1024, library.session_limit));
-    try std.testing.expectEqual(@as(u32, 22), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 23), content.root.children.count);
     instance.running_offset = 1024;
     fill(instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 14), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 15), content.root.children.count);
     try std.testing.expect(std.mem.startsWith(u8, abi.slice(content.children[9].id).?, "instance-3fd-"));
     instance.running_rows.count = 1;
     fill(instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 10), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 11), content.root.children.count);
 }
 
 test "persisted runtime limits reject malformed and duplicate settings" {
@@ -3182,4 +3395,13 @@ test "market browser and batch tasks retain manual collection without a dispatch
     try std.testing.expect(instance.market_image_rejected and !instance.market_image_test);
     onCommand(instance, instance.page, abi.view(commands[77]));
     try std.testing.expect(!instance.market_image_test);
+}
+
+test "runtime policy setting is opt-in and validated before publication" {
+    var values = [_]raw.PulseSetting{ .{ .key = abi.view(policy_preference), .value = abi.view("1:2:500:2000:10000;builtin:2:0") }, .{ .key = abi.view(policy_preference), .value = abi.view("0:4:500:2000:10000") } };
+    try std.testing.expect(!(try readRuntimePolicy(.{})).automatic);
+    const policy = try readRuntimePolicy(.{ .values = &values, .count = 1 });
+    try std.testing.expect(policy.automatic);
+    try std.testing.expectEqual(@as(usize, 2), policy.total());
+    try std.testing.expectError(error.InvalidSettings, readRuntimePolicy(.{ .values = &values, .count = 2 }));
 }

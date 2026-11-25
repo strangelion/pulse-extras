@@ -545,6 +545,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         last_word = pet_state_read(state_slot);
         if (!pet_state_valid(last_word)) goto cleanup;
         reaction = last_word & 15u;
+        if (reaction > PET_STATE_CELEBRATING) goto cleanup;
         received_testing = reaction == PET_STATE_TESTING;
     }
     if (package_dir) {
@@ -747,7 +748,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     uint64_t started = GetTickCount64(), smoke_end = started + 500;
     uint64_t stress_end = started + (uint64_t)stress_seconds * 1000;
     unsigned last_row = UINT32_MAX, last_column = UINT32_MAX, frames = 0;
-    int shown = 0, done = 0;
+    int shown = 0, done = 0, policy_hidden = 0;
     unsigned interaction = 0;
     if (smoke && !state_slot) reaction = PET_STATE_WAVING;
     while (!done) {
@@ -912,7 +913,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
-        if (done || (shown && !IsWindowVisible(surface.window))) break;
+        if (done || (shown && !policy_hidden && !IsWindowVisible(surface.window))) break;
         if (pressed && GetCapture() != surface.window) pressed = 0;
         if (surface.placement_dirty) {
             pet_gaze_suspend(&gaze, GetTickCount64());
@@ -933,13 +934,39 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             if (!pet_state_valid(word) || (word >> 4) < (last_word >> 4)) goto cleanup;
             if (word != last_word) {
                 if ((word >> 4) == (last_word >> 4)) goto cleanup;
-                reaction = word & 15u;
-                started = now;
+                unsigned command = word & 15u;
                 last_word = word;
-                if (reaction == PET_STATE_TESTING) received_testing = 1;
+                if (command == PET_STATE_HIDE || command == PET_STATE_SHOW) {
+                    if (!ready_sent || !ready_event || smoke || stress_hidden || !shown) goto cleanup;
+                    BOOL visible = command == PET_STATE_SHOW;
+                    if (pet_surface_show(&surface, visible) != PET_SURFACE_OK ||
+                        !!IsWindowVisible(surface.window) != !!visible) goto cleanup;
+                    policy_hidden = !visible;
+                    if (GetCapture() == surface.window) ReleaseCapture();
+                    pressed = dragged = 0;
+                    pet_gaze_reset(&gaze);
+                    started = now;
+                    if (!SetEvent(ready_event)) goto cleanup;
+                } else {
+                    reaction = command;
+                    started = now;
+                    if (reaction == PET_STATE_TESTING) received_testing = 1;
+                }
             }
         }
         if ((smoke && now >= smoke_end) || (stress_seconds && now >= stress_end)) break;
+        if (policy_hidden) {
+            /* No frame sampling, gaze, outfit scheduling or new decode work
+             * while hidden. Existing bounded decode may finish; consume on
+             * resume. Stop/state/message events remain responsive. */
+            HANDLE hidden_waits[2] = {stop, state_event};
+            DWORD hidden_result = MsgWaitForMultipleObjectsEx(2, hidden_waits, INFINITE,
+                QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            if (hidden_result == WAIT_OBJECT_0) { stopped = 1; break; }
+            if (hidden_result == WAIT_FAILED || (hidden_result >= WAIT_ABANDONED_0 &&
+                hidden_result < WAIT_ABANDONED_0 + 2)) goto cleanup;
+            continue;
+        }
         if (surface.schedule_dirty) {
             surface.schedule_dirty = FALSE;
             schedule_due = 0;

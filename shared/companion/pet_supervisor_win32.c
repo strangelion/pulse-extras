@@ -334,12 +334,19 @@ pet_child_result pet_child_start(pet_supervisor *owner, const wchar_t *approved_
 
 pet_child_result pet_child_publish(pet_supervisor *owner, unsigned reaction) {
     if (!owner || !owner->job || !owner->process || !owner->state_slot ||
-        !owner->state_event || reaction > PET_STATE_CELEBRATING) return PET_CHILD_INVALID;
+        !owner->state_event || reaction > PET_STATE_SHOW) return PET_CHILD_INVALID;
     DWORD status = WaitForSingleObject(owner->process, 0);
     if (status == WAIT_OBJECT_0) return PET_CHILD_INVALID;
     if (status != WAIT_TIMEOUT) return PET_CHILD_OS_ERROR;
     if (reaction == owner->reaction) return PET_CHILD_OK;
     if (owner->generation >= PET_STATE_MAX_GENERATION) return PET_CHILD_INVALID;
+    if (reaction == PET_STATE_HIDE || reaction == PET_STATE_SHOW) {
+        /* First frame or preceding visibility command must be acknowledged.
+         * A caller must never retry an unconfirmed command blindly. */
+        if (!owner->ready_event || WaitForSingleObject(owner->ready_event, 0) != WAIT_OBJECT_0)
+            return PET_CHILD_BUSY;
+        if (!ResetEvent(owner->ready_event)) return PET_CHILD_OS_ERROR;
+    }
     ++owner->generation;
     InterlockedExchange(owner->state_slot, (LONG)((owner->generation << 4) | reaction));
     /* On signaling failure, the state may already be visible. Caller must
