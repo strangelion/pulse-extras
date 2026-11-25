@@ -243,18 +243,18 @@ pub const Session = struct {
 };
 
 const t = std.testing;
-const token = "0123456789abcdef0123456789abcdef";
+const fixture_token = "0123456789abcdef0123456789abcdef";
 const acquire: Request = .{ .acquire = .{ .pet_id = "pulse-pet", .client_pid = 42, .session_nonce = "session-1" } };
 const explicit_fixture = "{\"id\":\"a\",\"ok\":true,\"result\":{\"leaseId\":\"lease-1\",\"requestedPetId\":\"pulse-pet\",\"targetKind\":\"explicit\",\"actualTargetPetId\":\"pulse-pet\",\"usingDefaultPet\":false,\"leaseActive\":true,\"clientPid\":42,\"expiresAt\":1700000015000}}\n";
 const fallback_fixture = "{\"id\":\"a\",\"ok\":true,\"result\":{\"leaseId\":\"lease-2\",\"requestedPetId\":\"pulse-pet\",\"targetKind\":\"default\",\"actualTargetPetId\":\"default-pet\",\"usingDefaultPet\":true,\"fallbackReason\":\"pet_not_installed\",\"leaseActive\":true,\"clientPid\":42,\"expiresAt\":1700000015000}}\n";
 
 test "lease requests use pinned method shapes and refuse implicit targets" {
     var buffer: [1024]u8 = undefined;
-    try t.expectEqualStrings("{\"id\":\"a\",\"version\":1,\"token\":\"0123456789abcdef0123456789abcdef\",\"method\":\"lease.acquire\",\"params\":{\"requestedPetId\":\"pulse-pet\",\"clientPid\":42,\"sessionNonce\":\"session-1\"}}\n", try encode(&buffer, "a", token, acquire));
-    try t.expectEqualStrings("{\"id\":\"a\",\"version\":1,\"token\":\"0123456789abcdef0123456789abcdef\",\"method\":\"lease.heartbeat\",\"params\":{\"leaseId\":\"lease-1\"}}\n", try encode(&buffer, "a", token, .{ .heartbeat = "lease-1" }));
-    try t.expectEqualStrings("{\"id\":\"a\",\"version\":1,\"token\":\"0123456789abcdef0123456789abcdef\",\"method\":\"lease.release\",\"params\":{\"leaseId\":\"lease-1\"}}\n", try encode(&buffer, "a", token, .{ .release = "lease-1" }));
-    try t.expectError(error.InvalidTarget, encode(&buffer, "a", token, .{ .acquire = .{ .pet_id = "", .client_pid = 42, .session_nonce = "session-1" } }));
-    try t.expectError(error.InvalidLease, encode(&buffer, "a", token, .{ .release = "bad\n" }));
+    try t.expectEqualStrings("{\"id\":\"a\",\"version\":1,\"token\":\"0123456789abcdef0123456789abcdef\",\"method\":\"lease.acquire\",\"params\":{\"requestedPetId\":\"pulse-pet\",\"clientPid\":42,\"sessionNonce\":\"session-1\"}}\n", try encode(&buffer, "a", fixture_token, acquire));
+    try t.expectEqualStrings("{\"id\":\"a\",\"version\":1,\"token\":\"0123456789abcdef0123456789abcdef\",\"method\":\"lease.heartbeat\",\"params\":{\"leaseId\":\"lease-1\"}}\n", try encode(&buffer, "a", fixture_token, .{ .heartbeat = "lease-1" }));
+    try t.expectEqualStrings("{\"id\":\"a\",\"version\":1,\"token\":\"0123456789abcdef0123456789abcdef\",\"method\":\"lease.release\",\"params\":{\"leaseId\":\"lease-1\"}}\n", try encode(&buffer, "a", fixture_token, .{ .release = "lease-1" }));
+    try t.expectError(error.InvalidTarget, encode(&buffer, "a", fixture_token, .{ .acquire = .{ .pet_id = "", .client_pid = 42, .session_nonce = "session-1" } }));
+    try t.expectError(error.InvalidLease, encode(&buffer, "a", fixture_token, .{ .release = "bad\n" }));
 }
 
 test "lease responses have no nested ok field and preserve fallback for cleanup" {
