@@ -14,7 +14,7 @@ const title = "Pulse Companion";
 const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -40,14 +40,18 @@ const Instance = struct {
     library_loaded: bool = false,
     library_status: []const u8 = "点击读取本地素材清单",
     library_offset: usize = 0,
+    query: [256]u8 = undefined,
+    query_len: usize = 0,
+    favorites_only: bool = false,
     status: []const u8 = "设置尚未读取",
 };
 
 const Content = struct {
     declared: [commands.len]abi.StringView = undefined,
     navigation: [4]ui.Node = undefined,
-    children: [24]ui.Node = undefined,
-    row_text: [16][128]u8 = undefined,
+    children: [26]ui.Node = undefined,
+    states: [1]ui.State = undefined,
+    row_text: [16][256]u8 = undefined,
     row_ids: [16][32]u8 = undefined,
     library_count: [160]u8 = undefined,
     root: ui.Node = undefined,
@@ -87,18 +91,23 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             content.children[2] = label("library.status", instance.library_status);
             content.children[3] = action("library.reload", "读取素材清单", commands[7], instance.tasks != null and instance.task_id == 0);
             content.children[4] = action("library.poll", "检查读取结果", commands[8], instance.tasks != null and instance.task_id != 0);
-            count = 5;
+            content.children[5] = ui.node(ui.NodeKind.text_input);
+            content.children[5].id = abi.view("library.query");
+            content.children[5].text = .{ .present = 1, .value = abi.view("来源 ID 或标签") };
+            content.children[5].state = .{ .present = 1, .value = abi.view("library.query") };
+            content.children[6] = action("library.favorites", if (instance.favorites_only) "仅收藏：开启" else "仅收藏：关闭", commands[11], instance.tasks != null and instance.task_id == 0);
+            count = 7;
             if (instance.library_loaded) {
                 const snapshot = &instance.library_snapshot;
                 const end = @min(snapshot.count, instance.library_offset + 16);
-                const line = std.fmt.bufPrint(&content.library_count, "清单共 {d} 项 · 当前显示 {d}–{d} · 尚未验证文件", .{ snapshot.count, if (snapshot.count == 0) 0 else instance.library_offset + 1, end }) catch unreachable;
-                content.children[5] = label("library.count", line);
-                content.children[6] = action("library.previous", "上一页", commands[9], instance.library_offset > 0);
-                content.children[7] = action("library.next", "下一页", commands[10], end < snapshot.count);
-                count = 8;
+                const line = std.fmt.bufPrint(&content.library_count, "清单共 {d} 项 · 匹配 {d} 项 · 当前显示 {d}–{d}", .{ snapshot.total, snapshot.count, if (snapshot.count == 0) 0 else instance.library_offset + 1, end }) catch unreachable;
+                content.children[7] = label("library.count", line);
+                content.children[8] = action("library.previous", "上一页", commands[9], instance.library_offset > 0);
+                content.children[9] = action("library.next", "下一页", commands[10], end < snapshot.count);
+                count = 10;
                 for (snapshot.rows[instance.library_offset..end], 0..) |*row, n| {
                     const id = std.fmt.bufPrint(&content.row_ids[n], "asset-{x}", .{row.id}) catch unreachable;
-                    const body = std.fmt.bufPrint(&content.row_text[n], "#{d}  {s} · {s}", .{ row.id, row.sourceId(), if (row.paired) "双摘要记录" else "待重验" }) catch unreachable;
+                    const body = std.fmt.bufPrint(&content.row_text[n], "#{d}  {s} · {s} · {s} · 标签 {d} {s}", .{ row.id, row.sourceId(), if (row.paired) "双摘要记录" else "待重验", if (row.favorite) "已收藏" else "未收藏", row.tag_count, row.first_tag[0..row.first_tag_len] }) catch unreachable;
                     content.children[count] = label(id, body);
                     count += 1;
                 }
@@ -125,6 +134,9 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     tree.root = &content.root;
     tree.commands = &content.declared;
     tree.command_count = content.declared.len;
+    content.states[0] = .{ .key = abi.view("library.query"), .value = abi.view(instance.query[0..instance.query_len]) };
+    tree.states = &content.states;
+    tree.state_count = content.states.len;
 }
 
 fn refresh(instance: *Instance) void {
@@ -216,7 +228,8 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
     if (context == null) return raw.PULSE_TASK_FAILED;
     const canceled = context[0].cancelled orelse return raw.PULSE_TASK_FAILED;
     if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
-    library.readDefault(&instance.work_snapshot) catch |err| {
+    library.readFilteredDefault(&instance.work_snapshot, .{ .query = instance.query[0..instance.query_len], .favorites_only = instance.favorites_only, .cancel = canceled, .context = context[0].context }) catch |err| {
+        if (err == error.Canceled) return raw.PULSE_TASK_CANCELLED;
         instance.work_error = err;
         return raw.PULSE_TASK_FAILED;
     };
@@ -270,6 +283,21 @@ fn startLibrary(instance: *Instance) void {
     const tasks = instance.tasks orelse return;
     if (instance.task_id != 0) return;
     const create = tasks.create orelse return;
+    const panel = instance.panel orelse return;
+    const get_state = panel.table.get_state orelse {
+        instance.library_status = "宿主不支持读取搜索状态";
+        refresh(instance);
+        return;
+    };
+    var buffer: [257]u8 = undefined;
+    var needed: u32 = 0;
+    if (get_state(panel.table.context, panel.id, abi.view("library.query"), &buffer, buffer.len, &needed) != abi.ok or needed > instance.query.len or !std.unicode.utf8ValidateSlice(buffer[0..needed])) {
+        instance.library_status = "搜索词无效或超过 256 字节";
+        refresh(instance);
+        return;
+    }
+    @memcpy(instance.query[0..needed], buffer[0..needed]);
+    instance.query_len = needed;
     instance.work_done.store(false, .release);
     instance.work_error = null;
     instance.work_snapshot = .{};
@@ -312,6 +340,10 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             9 => if (instance.library_loaded and instance.library_offset >= 16) {
                 instance.library_offset -= 16;
                 refresh(instance);
+            },
+            11 => if (instance.task_id == 0 and instance.tasks != null) {
+                instance.favorites_only = !instance.favorites_only;
+                startLibrary(instance);
             },
             10 => if (instance.library_loaded and instance.library_offset + 16 < instance.library_snapshot.count) {
                 instance.library_offset += 16;
@@ -471,7 +503,7 @@ test "four section tree declares only real navigation and preference actions" {
         fill(&instance, &content, &tree);
         try std.testing.expectEqual(@as(u32, commands.len), tree.command_count);
         try std.testing.expectEqual(@as(u32, 4), content.children[0].children.count);
-        try std.testing.expectEqual(@as(u32, if (instance.section == .global) 7 else if (instance.section == .library) 5 else 3), content.root.children.count);
+        try std.testing.expectEqual(@as(u32, if (instance.section == .global or instance.section == .library) 7 else 3), content.root.children.count);
     }
     try std.testing.expectEqual(@as(u32, 0), content.children[6].enabled.value);
 }
@@ -486,10 +518,10 @@ test "library view bounds rows and uses stable IDs" {
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     fill(&instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 24), content.root.children.count);
-    try std.testing.expectEqualStrings("asset-1", abi.slice(content.children[8].id).?);
+    try std.testing.expectEqual(@as(u32, 26), content.root.children.count);
+    try std.testing.expectEqualStrings("asset-1", abi.slice(content.children[10].id).?);
     instance.library_offset = 16;
     fill(&instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 9), content.root.children.count);
-    try std.testing.expectEqualStrings("asset-11", abi.slice(content.children[8].id).?);
+    try std.testing.expectEqual(@as(u32, 11), content.root.children.count);
+    try std.testing.expectEqualStrings("asset-11", abi.slice(content.children[10].id).?);
 }

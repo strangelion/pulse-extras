@@ -135,9 +135,18 @@ test "real approved helper imports package and reload deduplicates" {
     try std.testing.expectEqual(@as(u64, 2), restarted.index.next_id);
     var entry = try catalog.Entry.init(1, "fixture-v1", "Fixture", .v1);
     _ = try entry.addTag("test");
+    _ = try entry.addTag("second-tag");
+    entry.favorite = true;
     try store.save(root_wide, &entry);
     var reloaded = try catalog.Entry.init(1, "fixture-v1", "Fixture", .v1);
     try std.testing.expect(try store.load(root_wide, &reloaded));
     try std.testing.expect(reloaded.hasTag("test"));
+    try @import("companion/pet_library_read.zig").readFilteredAt(std.mem.span(root_wide), &snapshot, .{ .query = "SECOND", .favorites_only = true });
+    try std.testing.expectEqual(@as(usize, 1), snapshot.count);
+    try std.testing.expect(snapshot.rows[0].favorite);
+    try std.testing.expectEqual(@as(usize, 2), snapshot.rows[0].tag_count);
+    try @import("companion/pet_library_read.zig").readFilteredAt(std.mem.span(root_wide), &snapshot, .{ .query = "no-match" });
+    try std.testing.expectEqual(@as(usize, 0), snapshot.count);
+    try std.testing.expectEqual(@as(usize, 1), snapshot.total);
     try runner.checkDrained();
 }

@@ -670,3 +670,19 @@ on the background worker; release both module references after freeing the
 known-folder string, and surface missing symbols or cleanup failure. The
 standalone GNU companion's existing system-library dependencies stay intact.
 No changes to CI scope, tests, root discovery policy or file write access.
+
+## Native read-only preference filtering
+
+Read per-asset PCT1 records only by stable inventory ID from the same
+pinned root, with the same exact size/type/path/link checks and identity
+validation in the existing codec. Missing record means default preferences;
+corruption fails the scan visibly. Match all terms against source ID and
+all tags (ASCII case-insensitive, non-ASCII exact), optional favorites-only.
+Read at most 512 preferences on the host worker, cooperatively check cancel
+between files. Retain compact result rows (first tag preview and total tag
+count, not full preference records), 16 rows per page. Native search state
+is copied before starting; explicit read/poll remains. No preference writes
+or artwork metadata/thumbnail claim; root ACL initialization still pending.
+Tests cover real persisted preferences, second-tag matching, favorite and
+no-match filtering, and actual System32 known-folder resolution. New CI
+pending. This is read-only, not permission to manage existing user files.

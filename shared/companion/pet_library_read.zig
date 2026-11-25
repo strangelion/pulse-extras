@@ -4,12 +4,17 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const inventory = @import("pet_inventory.zig");
+const catalog = @import("pet_catalog.zig");
 
 pub const Row = struct {
     id: u64,
     source: [64]u8,
     len: u8,
     paired: bool,
+    favorite: bool = false,
+    tag_count: usize = 0,
+    first_tag: [64]u8 = undefined,
+    first_tag_len: usize = 0,
 
     pub fn sourceId(self: *const Row) []const u8 {
         return self.source[0..self.len];
@@ -20,6 +25,7 @@ pub const Snapshot = struct {
     count: usize = 0,
     rows: [inventory.max_entries]Row = undefined,
     missing: bool = false,
+    total: usize = 0,
 };
 
 const invalid = @as(usize, @bitCast(@as(isize, -1)));
@@ -101,18 +107,41 @@ fn resolveRoot(shell: usize, ole: usize, out: []u16) ![:0]const u16 {
     return appendPath(out, std.mem.span(base), std.unicode.wtf8ToWtf16LeStringLiteral("\\PulseExtras-Companion"));
 }
 
+pub const Options = struct {
+    query: []const u8 = "",
+    favorites_only: bool = false,
+    cancel: ?*const fn (?*anyopaque) callconv(.c) u32 = null,
+    context: ?*anyopaque = null,
+
+    fn check(self: Options) !void {
+        if (self.cancel) |cancel| {
+            if (cancel(self.context) != 0) return error.Canceled;
+        }
+    }
+};
+
 pub fn readDefault(out: *Snapshot) !void {
+    return readFilteredDefault(out, .{});
+}
+
+pub fn readFilteredDefault(out: *Snapshot, options: Options) !void {
     if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
     var root: [1024]u16 = undefined;
     const full = try knownRoot(&root);
-    try readAt(full, out);
+    try readFilteredAt(full, out, options);
 }
 
 /// Test/worker-only path boundary; no UI path is accepted by readDefault.
 /// Open existing normal local directories/files, deny delete sharing, reject
 /// reparse points/aliases/hardlinked records. No writes, no executable loading.
 pub fn readAt(root: [:0]const u16, out: *Snapshot) !void {
+    return readFilteredAt(root, out, .{});
+}
+
+pub fn readFilteredAt(root: [:0]const u16, out: *Snapshot, options: Options) !void {
     if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
+    try (catalog.Filter{ .query = options.query }).validate();
+    try options.check();
     if (root.len < 4 or root.len > 950 or root[1] != ':' or root[2] != '\\' or root[root.len - 1] == '\\') return error.InvalidRoot;
     const drive = [_:0]u16{ root[0], ':', '\\' };
     if (GetDriveTypeW(&drive) != 3) return error.InvalidRoot;
@@ -126,49 +155,125 @@ pub fn readAt(root: [:0]const u16, out: *Snapshot) !void {
         return error.OpenRootFailed;
     }
     var result: Snapshot = .{};
-    const read = readPinned(dir, root, &result);
+    const read = readPinned(dir, root, &result, options);
     if (CloseHandle(dir) == 0) return error.CleanupFailed;
     try read;
     out.* = result;
 }
 
-fn readPinned(dir: usize, root: [:0]const u16, out: *Snapshot) !void {
+fn readPinned(dir: usize, root: [:0]const u16, out: *Snapshot, options: Options) !void {
     var info: Info = undefined;
     if (GetFileInformationByHandle(dir, &info) == 0 or (info.attributes & 0x410) != 0x10 or !canonical(dir, root)) return error.InvalidRoot;
     var name: [1024]u16 = undefined;
     const path = try appendPath(&name, root, std.unicode.wtf8ToWtf16LeStringLiteral("\\inventory.pci"));
-    const file = CreateFileW(path.ptr, 0x80000000, 1, null, 3, 0x00200000, null);
-    if (file == invalid) {
-        if (GetLastError() == 2) {
-            out.* = .{ .missing = true };
-            return;
+    var bytes: [inventory.max_bytes]u8 = undefined;
+    const size = (try readRecord(path, &bytes)) orelse {
+        out.* = .{ .missing = true };
+        return;
+    };
+    try decode(bytes[0..size], out);
+    out.total = out.count;
+    var matched: usize = 0;
+    for (out.rows[0..out.count]) |*row| {
+        try options.check();
+        var entry = try catalog.Entry.init(row.id, row.sourceId(), row.sourceId(), .v1);
+        var leaf_buf: [64]u8 = undefined;
+        const leaf = try std.fmt.bufPrint(&leaf_buf, "\\pet-{x:0>16}.pct", .{row.id});
+        var wide_leaf: [64]u16 = undefined;
+        const leaf_len = try std.unicode.utf8ToUtf16Le(&wide_leaf, leaf);
+        var pref_path: [1024]u16 = undefined;
+        const pref = try appendPath(&pref_path, root, wide_leaf[0..leaf_len]);
+        var pref_bytes: [catalog.max_preferences_bytes]u8 = undefined;
+        if (try readRecord(pref, &pref_bytes)) |len| {
+            try catalog.decodePreferences(&entry, pref_bytes[0..len]);
         }
-        return error.OpenInventoryFailed;
+        if (!matches(&entry, options)) continue;
+        row.favorite = entry.favorite;
+        row.tag_count = entry.tag_count;
+        if (entry.tagAt(0)) |tag| {
+            @memcpy(row.first_tag[0..tag.len], tag);
+            row.first_tag_len = tag.len;
+        }
+        out.rows[matched] = row.*;
+        matched += 1;
     }
-    const result = readFile(file, path, out);
-    if (CloseHandle(file) == 0) return error.CleanupFailed;
-    try result;
+    out.count = matched;
+    try options.check();
 }
 
-fn readFile(file: usize, path: []const u16, out: *Snapshot) !void {
+fn containsFolded(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len > haystack.len) return false;
+    for (0..haystack.len - needle.len + 1) |n| {
+        if (std.ascii.eqlIgnoreCase(haystack[n..][0..needle.len], needle)) return true;
+    }
+    return false;
+}
+
+fn matches(entry: *const catalog.Entry, options: Options) bool {
+    if (options.favorites_only and !entry.favorite) return false;
+    var terms = std.mem.tokenizeAny(u8, options.query, " \t");
+    while (terms.next()) |term| {
+        if (containsFolded(entry.sourceId(), term)) continue;
+        var found = false;
+        for (0..entry.tag_count) |n| {
+            if (containsFolded(entry.tagAt(n).?, term)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+fn readRecord(path: [:0]const u16, bytes: []u8) !?usize {
+    const file = CreateFileW(path.ptr, 0x80000000, 1, null, 3, 0x00200000, null);
+    if (file == invalid) {
+        if (GetLastError() == 2) return null;
+        return error.OpenRecordFailed;
+    }
+    const result = readFile(file, path, bytes);
+    if (CloseHandle(file) == 0) return error.CleanupFailed;
+    return try result;
+}
+
+fn readFile(file: usize, path: []const u16, bytes: []u8) !usize {
     var info: Info = undefined;
     if (GetFileType(file) != 1 or GetFileInformationByHandle(file, &info) == 0 or
         (info.attributes & 0x410) != 0 or info.links != 1 or info.high != 0 or
-        info.low == 0 or info.low > inventory.max_bytes or !canonical(file, path)) return error.InvalidInventory;
-    var bytes: [inventory.max_bytes]u8 = undefined;
+        info.low == 0 or info.low > bytes.len or !canonical(file, path)) return error.InvalidRecord;
     var got: u32 = 0;
-    if (ReadFile(file, &bytes, info.low, &got, null) == 0 or got != info.low) return error.ReadInventoryFailed;
+    if (ReadFile(file, bytes.ptr, info.low, &got, null) == 0 or got != info.low) return error.ReadRecordFailed;
     var extra: [1]u8 = undefined;
-    if (ReadFile(file, &extra, 1, &got, null) == 0 or got != 0) return error.ReadInventoryFailed;
-    try decode(bytes[0..info.low], out);
+    if (ReadFile(file, &extra, 1, &got, null) == 0 or got != 0) return error.ReadRecordFailed;
+    return info.low;
 }
 
 pub fn decode(bytes: []const u8, out: *Snapshot) !void {
     var index: inventory.Inventory = .{};
     try inventory.decode(&index, bytes);
-    var result: Snapshot = .{ .count = index.count };
+    var result: Snapshot = .{ .count = index.count, .total = index.count };
     for (index.entries[0..index.count], 0..) |record, n| {
         result.rows[n] = .{ .id = record.id, .source = record.source, .len = record.len, .paired = record.digest != null and record.secondary != null };
     }
     out.* = result;
+}
+
+test "known folder resolution loads only system APIs on Windows" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var path: [1024]u16 = undefined;
+    const root = try knownRoot(&path);
+    try std.testing.expect(root.len > 3);
+    try std.testing.expect(std.mem.endsWith(u16, root, std.unicode.wtf8ToWtf16LeStringLiteral("\\PulseExtras-Companion")));
+}
+
+test "library matching searches every tag and respects favorite filter" {
+    var entry = try catalog.Entry.init(1, "cat", "cat", .v1);
+    _ = try entry.addTag("像素");
+    _ = try entry.addTag("Work");
+    try std.testing.expect(matches(&entry, .{ .query = "CAT work 像素" }));
+    try std.testing.expect(!matches(&entry, .{ .query = "cat", .favorites_only = true }));
+    entry.favorite = true;
+    try std.testing.expect(matches(&entry, .{ .query = "work", .favorites_only = true }));
+    try std.testing.expect(!matches(&entry, .{ .query = "unknown" }));
 }
