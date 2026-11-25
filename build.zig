@@ -411,9 +411,10 @@ pub fn build(b: *std.Build) void {
             .imports = host_modules.imports(),
         });
         import_root.addCSourceFiles(.{
-            .files = &.{ "shared/companion/pet_catalog_store_win32.c", "tests/companion/pet_catalog_store_fixture.c" },
+            .files = &.{ "shared/companion/pet_catalog_store_win32.c", "tests/companion/pet_catalog_store_fixture.c", "shared/companion/pet_market_http_win32.c" },
             .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
         });
+        import_root.linkSystemLibrary("winhttp", .{});
         const import_tests = b.addTest(.{ .root_module = import_root });
         import_integration.dependOn(&b.addRunArtifact(import_tests).step);
     }
@@ -464,6 +465,7 @@ pub fn build(b: *std.Build) void {
         "shared/companion/pet_import.zig",
         "shared/companion/pet_import_helper.zig",
         "shared/companion/pet_market.zig",
+        "shared/companion/pet_market_download.zig",
         "shared/companion/pet_zip.zig",
         "shared/companion/pet_resources.zig",
         "shared/companion/pet_decode_task.zig",

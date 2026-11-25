@@ -12,6 +12,8 @@ pub const Store = struct {
         id: u64,
         file: ?std.Io.File,
         reserved: usize = 0,
+        sealed: bool = false,
+        failed: bool = false,
     };
     io: std.Io,
     dir: std.Io.Dir,
@@ -35,7 +37,7 @@ pub const Store = struct {
             const id = self.next_id;
             self.next_id += 1;
             var buffer: [64]u8 = undefined;
-            const file = try self.dir.createFile(self.io, name(id, &buffer), .{ .exclusive = true });
+            const file = try self.dir.createFile(self.io, name(id, &buffer), .{ .exclusive = true, .read = true });
             slot.* = .{ .id = id, .file = file };
             return id;
         }
@@ -54,12 +56,26 @@ pub const Store = struct {
     pub fn append(self: *Store, id: u64, bytes: []const u8) !void {
         const entry = self.find(id) orelse return error.NotOwned;
         const file = entry.file orelse return error.Closed;
+        if (entry.sealed or entry.failed) return error.Closed;
         if (bytes.len > self.limit - self.used) return error.ResourceLimit;
         // A failed write might be partial; conservatively retain the charge
         // until deletion instead of assuming no disk space was consumed.
         self.used += bytes.len;
         entry.reserved += bytes.len;
-        try file.writeStreamingAll(self.io, bytes);
+        file.writeStreamingAll(self.io, bytes) catch |err| {
+            entry.failed = true;
+            return err;
+        };
+    }
+
+    /// Borrow the owned file for positional reads after transfer completes.
+    /// The borrower must not close or mutate it; owner outlives all readers.
+    pub fn seal(self: *Store, id: u64) !std.Io.File {
+        const entry = self.find(id) orelse return error.NotOwned;
+        const file = entry.file orelse return error.Closed;
+        if (entry.failed) return error.Closed;
+        entry.sealed = true;
+        return file;
     }
 
     pub fn remove(self: *Store, id: u64) !void {

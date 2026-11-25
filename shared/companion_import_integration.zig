@@ -7,6 +7,11 @@ const inventory = @import("companion/pet_inventory.zig");
 const catalog = @import("companion/pet_catalog.zig");
 const trust = @import("process_trust");
 const process = @import("pulse_process");
+const http = @import("companion/pet_market_http_win32.zig");
+
+test {
+    _ = http;
+}
 
 extern "c" fn pet_catalog_store_fixture_open([*]u16, u32) c_int;
 extern "c" fn pet_import_fixture_path(c_uint, [*]u8, u32) u32;

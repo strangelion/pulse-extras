@@ -476,3 +476,28 @@ and mixed profiles, exact raw units, historical CI sources, resource budget
 semantics and remaining host capacity/soak tests. Keep measurements scoped
 to their commit and workload; neither 1024 backend slots nor the signed
 configuration range is a measured live-process capacity.
+
+## Bounded market transfer backend
+
+The previous full regression 45584837927 passed on all parallel lanes.
+Add a worker-owned WinHTTP HTTPS GET adapter for the official V3 index,
+page/search JSON, raster previews and pet ZIPs. Default certificate checks,
+fixed origins/paths, no redirects/cookies/automatic authentication, no HTTP
+content compression, status 200, bounded response headers/body, exact
+Content-Length when present, and 16 KiB chunks into the existing exclusive
+temporary store. Use OS automatic proxy policy. Resolve/connect/send/receive
+timeouts and a cooperative 120-second deadline checked between synchronous
+calls; not a hard deadline or immediate in-flight cancellation. Record OS
+network error code, do not log URLs containing credentials (not accepted).
+A sealed store file is borrowed for positional reads; the owner must outlive
+readers. Failed writes poison the entry; failure removes owned temporary
+files or reports cleanup failure. Pool admission is serialized and reserves
+worst-case request bytes: 4 ZIP and 4 preview workers by default (1..8
+configurable each), one catalog request, shared 2 GiB disk reservation budget.
+Release only after worker join and cleanup; extraction needs its own disk
+reservation. No actual thread scheduler, bandwidth limiter, cache, retries,
+range requests, production ACL initialization or download-to-import UI yet.
+Tests exercise fake streaming body, cleanup, cancellation, quota, stale
+leases and native URL parity/pre-cancel without internet. Windows integration
+build links real WinHTTP; actual external TLS/download validation is pending.
+New code awaits CI; do not claim live market works yet.
