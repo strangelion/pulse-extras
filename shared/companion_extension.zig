@@ -9,7 +9,16 @@ const model = @import("companion/pet_manager.zig");
 const inventory = @import("companion/pet_inventory.zig");
 pub const builtin_asset_id = group.Group.builtin_asset_id;
 
+const store = @import("companion_runtime_store.zig");
+
 pub const Snapshot = library.Snapshot;
+pub const PreferenceAction = enum { toggle_favorite, add_tag, remove_tag };
+pub const PreferenceEdit = struct {
+    row: library.Row,
+    action: PreferenceAction,
+    tag: [64]u8 = @splat(0),
+    tag_len: usize = 0,
+};
 pub const readFilteredDefault = library.readFilteredDefault;
 
 extern "kernel32" fn GetModuleHandleExW(u32, *const anyopaque, *usize) callconv(.winapi) c_int;
@@ -50,6 +59,41 @@ pub fn checkRuntime(hex: []const u8) !void {
     };
     owner.close() catch return error.CleanupFailed;
     std.heap.page_allocator.destroy(owner);
+}
+
+fn openPrivateDefault(owner: *runtime.Owner) ![:0]const u16 {
+    var path: [1024]u16 = undefined;
+    const root = try library.knownRoot(&path);
+    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\PulseExtras-Companion");
+    if (!std.mem.endsWith(u16, root, suffix) or root.len <= suffix.len) return error.InvalidRoot;
+    const parent_len = root.len - suffix.len;
+    path[parent_len] = 0;
+    return owner.privateRoot(path[0..parent_len :0]);
+}
+
+fn applyEdit(owner: *runtime.Owner, edit: *const PreferenceEdit) !void {
+    _ = try openPrivateDefault(owner);
+    _ = try store.applyPreference(owner, edit.row.id, edit.row.sourceId(), edit.row.preference_version, switch (edit.action) {
+        .toggle_favorite => .{ .favorite = !edit.row.favorite },
+        .add_tag => .{ .add_tag = edit.tag[0..edit.tag_len] },
+        .remove_tag => .{ .remove_tag = edit.tag[0..edit.tag_len] },
+    });
+}
+
+pub fn editPreferenceDefault(hex: []const u8, edit: *const PreferenceEdit) !void {
+    if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
+    const digest = try parseDigest(hex);
+    var path: [1024]u16 = undefined;
+    const root = try packageRoot(&path);
+    const owner = try std.heap.page_allocator.create(runtime.Owner);
+    owner.* = .{};
+    const outcome = blk: {
+        owner.open(root, digest, 1, 128 * 1024 * 1024) catch |err| break :blk @as(anyerror!void, err);
+        break :blk applyEdit(owner, edit);
+    };
+    owner.close() catch return error.CleanupFailed;
+    std.heap.page_allocator.destroy(owner);
+    return outcome;
 }
 
 // Experimental UI admission ceiling, independent of native storage capacity.
@@ -202,14 +246,7 @@ pub fn runBuiltin(session: *Session, runtime_hex: []const u8, helper_hex: []cons
 
 fn launchAsset(owner: *runtime.Owner, helper: [:0]const u16, digest: *const [32]u8, asset_id: u64) !group.Start {
     if (asset_id == builtin_asset_id) return owner.group.startBuiltin(helper, digest);
-    var path: [1024]u16 = undefined;
-    const root = try library.knownRoot(&path);
-    // Only the known-folder resolver chooses the parent, not the UI.
-    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\PulseExtras-Companion");
-    if (!std.mem.endsWith(u16, root, suffix) or root.len <= suffix.len) return error.InvalidRoot;
-    const parent_len = root.len - suffix.len;
-    path[parent_len] = 0;
-    const approved = try owner.privateRoot(path[0..parent_len :0]);
+    const approved = try openPrivateDefault(owner);
     const index = try std.heap.page_allocator.create(inventory.Inventory);
     defer std.heap.page_allocator.destroy(index);
     index.* = .{};

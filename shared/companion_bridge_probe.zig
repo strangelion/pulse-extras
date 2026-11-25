@@ -87,9 +87,16 @@ fn exerciseManaged(owner: *loader.Owner, private: [:0]const u16) !void {
     if (index.count != 3) return error.UnexpectedInventory;
     var preference = try catalog.Entry.init(1, "fixture-v1", "Fixture V1", .v1);
     if (try store.loadPreferences(owner, &preference)) return error.UnexpectedPreference;
-    preference.favorite = true;
-    _ = try preference.addTag("bridge-test");
-    try store.savePreferences(owner, &preference);
+    const initial = try catalog.preferenceVersion(&preference, false);
+    if (!try store.applyPreference(owner, 1, "fixture-v1", initial, .{ .favorite = true })) return error.PreferenceNotPersisted;
+    if (store.applyPreference(owner, 1, "fixture-v1", initial, .{ .add_tag = "stale" })) |_| {
+        return error.AcceptedStalePreference;
+    } else |err| {
+        if (err != error.VersionConflict) return err;
+    }
+    if (!try store.loadPreferences(owner, &preference)) return error.PreferenceNotPersisted;
+    const updated = try catalog.preferenceVersion(&preference, true);
+    if (!try store.applyPreference(owner, 1, "fixture-v1", updated, .{ .add_tag = "bridge-test" })) return error.PreferenceNotPersisted;
     var reloaded = try catalog.Entry.init(1, "fixture-v1", "Fixture V1", .v1);
     if (!try store.loadPreferences(owner, &reloaded) or !reloaded.favorite or !reloaded.hasTag("bridge-test")) return error.PreferenceNotPersisted;
     if (!try store.loadInventory(owner, index) or index.count != 3) return error.UnexpectedInventory;

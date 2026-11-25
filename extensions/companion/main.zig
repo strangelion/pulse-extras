@@ -24,7 +24,7 @@ const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -60,6 +60,7 @@ const Instance = struct {
     task_state: u32 = raw.PULSE_TASK_RUNNING,
     work_done: std.atomic.Value(bool) = .init(false),
     work_error: ?anyerror = null,
+    preference_edit: ?library.PreferenceEdit = null,
     work_snapshot: library.Snapshot = .{},
     library_snapshot: library.Snapshot = .{},
     library_loaded: bool = false,
@@ -74,10 +75,11 @@ const Instance = struct {
 const Content = struct {
     declared: [commands.len]abi.StringView = undefined,
     navigation: [4]ui.Node = undefined,
-    children: [24]ui.Node = undefined,
+    children: [26]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
-    states: [3]ui.State = undefined,
+    states: [4]ui.State = undefined,
+    preference_toolbar: [4]ui.Node = undefined,
     asset_toolbar: [2]ui.Node = undefined,
     stop_toolbar: [2]ui.Node = undefined,
     row_text: [16][256]u8 = undefined,
@@ -170,8 +172,18 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     content.asset_toolbar[0].state = .{ .present = 1, .value = abi.view("library.asset-id") };
                     content.asset_toolbar[0].placeholder = .{ .present = 1, .value = abi.view("输入素材 ID") };
                     const live = instance.runtime_task_id != 0 and instance.task_kind == .builtin_session;
-                    content.asset_toolbar[1] = action("library.start", "启动指定素材", commands[15], !instance.stop_requested and (instance.runtime_task_id == 0 or (live and instance.session.canStart())));
+                    content.asset_toolbar[1] = action("library.start", "启动指定素材", commands[15], instance.preference_edit == null and !instance.stop_requested and (instance.runtime_task_id == 0 or (live and instance.session.canStart())));
                     content.children[count] = horizontal("library.start-toolbar", &content.asset_toolbar);
+                    count += 1;
+                    const edit_enabled = config.runtime_sha256.len == 64 and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.tasks != null;
+                    content.preference_toolbar[0] = ui.node(ui.NodeKind.text_input);
+                    content.preference_toolbar[0].id = abi.view("library.tag");
+                    content.preference_toolbar[0].state = .{ .present = 1, .value = abi.view("library.tag") };
+                    content.preference_toolbar[0].placeholder = .{ .present = 1, .value = abi.view("标签（最多 64 字节）") };
+                    content.preference_toolbar[1] = action("library.favorite-toggle", "切换收藏", commands[16], edit_enabled);
+                    content.preference_toolbar[2] = action("library.tag-add", "添加标签", commands[17], edit_enabled);
+                    content.preference_toolbar[3] = action("library.tag-remove", "移除标签", commands[18], edit_enabled);
+                    content.children[count] = horizontal("library.preferences", &content.preference_toolbar);
                     count += 1;
                 }
                 for (snapshot.rows[instance.library_offset..end], 0..) |*row, n| {
@@ -263,6 +275,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     content.states[0] = .{ .key = abi.view("library.query"), .value = abi.view(instance.query[0..instance.query_len]) };
     content.states[1] = .{ .key = abi.view("running.stop-id"), .value = abi.view("") };
     content.states[2] = .{ .key = abi.view("library.asset-id"), .value = abi.view("") };
+    content.states[3] = .{ .key = abi.view("library.tag"), .value = abi.view("") };
     tree.states = &content.states;
     tree.state_count = content.states.len;
 }
@@ -358,6 +371,12 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
     if (context == null) return raw.PULSE_TASK_FAILED;
     const canceled = context[0].cancelled orelse return raw.PULSE_TASK_FAILED;
     if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
+    if (instance.preference_edit) |*edit| {
+        library.editPreferenceDefault(config.runtime_sha256, edit) catch |err| {
+            instance.work_error = err;
+            return raw.PULSE_TASK_FAILED;
+        };
+    }
     library.readFilteredDefault(&instance.work_snapshot, .{ .query = instance.query[0..instance.query_len], .favorites_only = instance.favorites_only, .cancel = canceled, .context = context[0].context }) catch |err| {
         if (err == error.Canceled) return raw.PULSE_TASK_CANCELLED;
         instance.work_error = err;
@@ -497,15 +516,17 @@ fn pollLibrary(instance: *Instance) void {
     }
     diag.status("companion-library-terminal", instance.task_state);
     instance.task_id = 0;
+    const was_edit = instance.preference_edit != null;
+    instance.preference_edit = null;
     const done = instance.work_done.load(.acquire);
     if (instance.task_state == raw.PULSE_TASK_COMPLETED and done and instance.work_error == null) {
         instance.library_snapshot = instance.work_snapshot;
         instance.library_loaded = true;
         instance.library_offset = 0;
-        instance.library_status = if (instance.library_snapshot.missing) "固定目录中尚无素材清单（未创建文件）" else "已读取持久化清单；尚未验证素材文件";
+        instance.library_status = if (was_edit) "偏好已保存并重新读取" else if (instance.library_snapshot.missing) "固定目录中尚无素材清单（未创建文件）" else "已读取持久化清单；尚未验证素材文件";
     } else {
         instance.library_loaded = false;
-        instance.library_status = if (instance.task_state == raw.PULSE_TASK_CANCELLED) "读取已取消" else if (done) if (instance.work_error) |err| @errorName(err) else "读取结果无效" else "读取未完成";
+        instance.library_status = if (instance.task_state == raw.PULSE_TASK_CANCELLED) (if (was_edit) "编辑任务已取消；请刷新确认磁盘状态" else "读取已取消") else if (done) if (instance.work_error) |err| @errorName(err) else "读取结果无效" else "读取未完成";
     }
     refresh(instance);
 }
@@ -549,7 +570,7 @@ fn pollRuntime(instance: *Instance) void {
 }
 
 fn startRuntimeCheck(instance: *Instance) void {
-    if (!instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0) return;
+    if (!instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0 or instance.preference_edit != null) return;
     const tasks = instance.tasks orelse return;
     const create = tasks.create orelse return;
     // Existing dispatcher/timer is required: do not create an uncollectable task.
@@ -585,7 +606,7 @@ fn startBuiltin(instance: *Instance) void {
 }
 
 fn startAsset(instance: *Instance, asset_id: u64) void {
-    if (!instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or asset_id == 0) return;
+    if (!instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or asset_id == 0) return;
     if (instance.runtime_task_id != 0) {
         if (instance.task_kind != .builtin_session) return;
         instance.runtime_status = if (instance.session.requestAsset(asset_id)) "已提交新增实例请求" else "暂不可新增实例；请等待或停止";
@@ -680,6 +701,42 @@ fn startLibraryAsset(instance: *Instance) void {
     refresh(instance);
 }
 
+fn startPreference(instance: *Instance, action_kind: library.PreferenceAction) void {
+    if (!instance.active or !instance.library_loaded or instance.task_id != 0 or instance.runtime_task_id != 0 or config.runtime_sha256.len != 64 or instance.dispatch == null) return;
+    const panel = instance.panel orelse return;
+    const get_state = panel.table.get_state orelse return;
+    var id_bytes: [32]u8 = undefined;
+    var needed: u32 = 0;
+    if (get_state(panel.table.context, panel.id, abi.view("library.asset-id"), &id_bytes, id_bytes.len, &needed) != abi.ok or needed == 0 or needed >= id_bytes.len) {
+        instance.library_status = "请输入有效素材 ID";
+        refresh(instance);
+        return;
+    }
+    const id = std.fmt.parseInt(u64, id_bytes[0..needed], 10) catch 0;
+    for (instance.library_snapshot.rows[0..instance.library_snapshot.count]) |row| {
+        if (row.id != id) continue;
+        var edit: library.PreferenceEdit = .{ .row = row, .action = action_kind };
+        if (action_kind != .toggle_favorite) {
+            var tag: [65]u8 = undefined;
+            needed = 0;
+            if (get_state(panel.table.context, panel.id, abi.view("library.tag"), &tag, tag.len, &needed) != abi.ok or needed == 0 or needed > edit.tag.len or !std.unicode.utf8ValidateSlice(tag[0..needed])) {
+                instance.library_status = "标签无效或超过 64 字节";
+                refresh(instance);
+                return;
+            }
+            @memcpy(edit.tag[0..needed], tag[0..needed]);
+            edit.tag_len = needed;
+        }
+        instance.preference_edit = edit;
+        startLibrary(instance, false);
+        if (instance.task_id == 0) instance.preference_edit = null;
+        refresh(instance);
+        return;
+    }
+    instance.library_status = "素材不存在或不在当前筛选结果中";
+    refresh(instance);
+}
+
 fn startLibrary(instance: *Instance, capture_query: bool) void {
     const tasks = instance.tasks orelse return;
     if (instance.task_id != 0) return;
@@ -707,7 +764,7 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     instance.library_loaded = false;
     const descriptor: raw.PulseTaskDescriptor = .{
         .size = @sizeOf(raw.PulseTaskDescriptor),
-        .title = abi.view("读取桌宠素材清单"),
+        .title = abi.view(if (instance.preference_edit != null) "保存桌宠偏好" else "读取桌宠素材清单"),
         .type = abi.view("companion.library"),
         .work = readLibrary,
         .user = instance,
@@ -715,7 +772,7 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     var id: u64 = 0;
     if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
         instance.task_id = id;
-        instance.library_status = "正在自动读取素材清单";
+        instance.library_status = if (instance.preference_edit != null) "正在保存素材偏好" else "正在自动读取素材清单";
         armTimer(instance);
         if (instance.timer == null) instance.library_status = "正在读取；宿主自动刷新不可用，可手动检查";
     } else {
@@ -733,7 +790,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         if (n >= 4 and n <= 6 and instance.section != .global) return;
         if (n >= 7 and n <= 11 and instance.section != .library) return;
         if (n >= 12 and n <= 14 and instance.section != .running) return;
-        if (n == 15 and instance.section != .library) return;
+        if (n >= 15 and instance.section != .library) return;
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
@@ -763,6 +820,9 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             13 => stopBuiltin(instance),
             14 => stopOne(instance),
             15 => startLibraryAsset(instance),
+            16 => startPreference(instance, .toggle_favorite),
+            17 => startPreference(instance, .add_tag),
+            18 => startPreference(instance, .remove_tag),
             else => {},
         }
         return;

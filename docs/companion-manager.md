@@ -977,3 +977,16 @@ preflight the expected fingerprints and full decode of both fixture packages
 with captured diagnostics before supervising them. Log child ID and numeric
 exit code on unexpected termination. No readiness or negative-case assertions
 are relaxed.
+
+## Host library preference editing
+
+The library reuses its explicit asset-ID input for favorite toggles and
+add/remove-tag actions. A short host library task copies the selected row's
+ID, source and content version, obtains the verified runtime private lease,
+revalidates inventory identity and rejects stale preference versions before
+an atomic PCT1 write. It then reloads the current filter. For this first
+iteration writes require no runtime session or runtime check in progress;
+new runtime tasks cannot begin during a preference edit. Cancellation
+cannot imply rollback of an already committed atomic write: refresh to
+confirm disk state. The bridge fixture now verifies version conflicts as
+well as persistence. Actual host UI acceptance remains separate.
