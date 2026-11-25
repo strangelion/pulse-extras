@@ -53,12 +53,12 @@ pub fn checkRuntime(hex: []const u8) !void {
 // Atomic phase only; detailed native samples remain worker-owned.
 pub const Phase = enum(u32) { idle, starting, running, stopping };
 pub const Session = struct {
-    phase: std.atomic.Value(u32) = .init(@intFromEnum(Phase.idle)),
+    phase: std.atomic.Value(u32) = .init(@backingInt(Phase.idle)),
     working_set: std.atomic.Value(usize) = .init(0),
     private_bytes: std.atomic.Value(usize) = .init(0),
 
     pub fn set(self: *Session, phase: Phase) void {
-        self.phase.store(@intFromEnum(phase), .release);
+        self.phase.store(@backingInt(phase), .release);
     }
 
     pub fn reset(self: *Session) void {

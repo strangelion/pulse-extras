@@ -173,7 +173,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             content.children[3] = horizontal("running.toolbar", content.toolbar[0..2]);
             count = 4;
             if (live) {
-                const phase: library.Phase = @enumFromInt(instance.session.phase.load(.acquire));
+                const phase: library.Phase = @fromBackingInt(@intCast(instance.session.phase.load(.acquire)));
                 const status = std.fmt.bufPrint(&content.value, "{s} · 工作集 {d} KiB · 私有内存 {d} KiB", .{ switch (phase) {
                     .idle => "等待任务",
                     .starting => "启动中",
