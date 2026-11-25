@@ -72,3 +72,22 @@ provenance, not a secure runtime pin or proof of installation ACLs. The
 helper is neither added to the package nor launched, even with --launch;
 that flag still launches only the isolated read-only host. Packaging support,
 independent approval and a worker-owned native launch bridge remain required.
+
+## Multi-file development package
+
+The pinned Pulse SDK native-package contract supports repeated
+`native-manifest --file` options for flat private DLLs and resources. Use
+`--prepare-helper wic --bundle-runtime` (or libwebp after cache preparation)
+to build the MSVC entry DLL, GNU Runtime DLL and GNU Helper EXE separately,
+then stage the latter two next to the entry DLL. The libwebp variant also
+includes its COPYING and PATENTS notices. No existing file is replaced.
+Each additional member is capped at the official 64 MiB package-file limit;
+the official author tool additionally verifies architecture, manifest and
+archive limits. Verify the generated manifest binds the exact staged member
+hashes, then run official pack and verify before optional isolated install.
+Build evidence records the member list and archive SHA-256. The default
+single-DLL smoke and standalone helper-only behavior remain available.
+The package installation now has a supported distribution path, but the
+entry DLL does not yet activate the Runtime Owner or spawn pets. The new
+option does not claim production signing, live host acceptance or permission
+to launch anything outside the explicitly isolated development host.
