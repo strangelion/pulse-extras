@@ -37,8 +37,8 @@ pub const Controller = struct {
     phase: Phase = .empty,
     failure: ?contract.Error = null,
 
-    pub fn init(io: std.Io, ttl_ms: i64, clock: *const fn () i64) Controller {
-        return .{ .session = Session.init(io, ttl_ms, clock) };
+    pub fn init(io: std.Io, ttl_ms: i64, now: *const fn () i64) Controller {
+        return .{ .session = Session.init(io, ttl_ms, now) };
     }
 
     /// Successful admission commits the selection; a failed admission clears
