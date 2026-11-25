@@ -1,6 +1,6 @@
 """Original, fully encoded V1/V2 WebP stress fixtures; no dependencies.
 
-Alternating solid color cells exercise actual decoding and atlas ownership,
+Distinct solid color atlases exercise actual decoding and atlas ownership,
 not realistic artwork complexity. No external downloads.
 """
 import base64
@@ -8,8 +8,8 @@ import json
 from pathlib import Path
 import sys
 
-V1 = "UklGRrYAAABXRUJQVlA4TKoAAAAv/8XTAQ9wFK1ruZ1Tdf6jBWTSNvVveu8cJKL/AoIiB+zYXXf8/+Q//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM//uM/JeC/AA=="
-V2 = "UklGRtwAAABXRUJQVlA4TM8AAAAv/8U7Ag9wUF2CbBt/r20/1o3I5j/cBDJpm/k3vXcCBonov4CgyAE7Mtc5/n/yH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//xH//x33PgvwIA"
+V1 = "UklGRpwAAABXRUJQVlA4TI8AAAAv/8XTAQdQoIIUr/8BAEX6/58i+p/63//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//97/8qAAA="
+V2 = "UklGRrgAAABXRUJQVlA4TKsAAAAv/8U7AgdQoOIVpP8BAUnS//2BEf3P+M9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+nwYA"
 
 
 def decode_atlas(encoded, expected_size, width, height):
@@ -29,13 +29,13 @@ def main():
     root.mkdir(parents=True, exist_ok=False)
     package = root / "fixture-v1"
     package.mkdir()
-    (package / "spritesheet.webp").write_bytes(decode_atlas(V1, 190, 1536, 1872))
+    (package / "spritesheet.webp").write_bytes(decode_atlas(V1, 164, 1536, 1872))
     (package / "pet.json").write_text(json.dumps({
         "id": "fixture-v1", "displayName": "Fixture V1",
         "description": "Original stress fixture",
         "spritesheetPath": "spritesheet.webp"
     }), encoding="utf-8")
-    (root / "fixture-v2.webp").write_bytes(decode_atlas(V2, 228, 1536, 2288))
+    (root / "fixture-v2.webp").write_bytes(decode_atlas(V2, 192, 1536, 2288))
 
 
 if __name__ == "__main__":

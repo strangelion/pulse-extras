@@ -6,6 +6,8 @@ import ctypes as C
 from ctypes import wintypes as W
 import json
 import os
+import re
+import statistics
 from pathlib import Path
 import subprocess
 import tempfile
@@ -121,6 +123,32 @@ DRAIN = (
     b"Companion tasks: queued=0 running=0",
 )
 
+HEAP = re.compile(rb"Companion heap: live=0 allocations=0 peak=(\d+) denied=(\d+)")
+RESOURCES = re.compile(rb"Companion resources: files=0 codec=0 dib=0 cleanup_failures=0 peaks=(\d+)/(\d+)/(\d+)")
+
+
+def shutdown_metrics(data):
+    heap, resources = HEAP.search(data), RESOURCES.search(data)
+    if heap is None or resources is None:
+        return None
+    peak, denied = map(int, heap.groups())
+    files, codecs, dib = map(int, resources.groups())
+    return dict(heap_peak=peak, heap_denied=denied, file_peak=files,
+                codec_peak=codecs, dib_peak=dib)
+
+
+def trend(samples):
+    if len(samples) < 2:
+        return {}
+    width = min(5, len(samples) // 2)
+    result = {}
+    for key in ("private_bytes", "working_set", "handles", "threads", "gdi", "user"):
+        first = statistics.median(row[key] for row in samples[:width])
+        last = statistics.median(row[key] for row in samples[-width:])
+        result[key] = dict(first_median=first, last_median=last, delta=last-first)
+    return result
+
+
 def sources(a):
     result = []
     for version, filename in a.webp or []:
@@ -150,6 +178,8 @@ def run(a):
     children = []
     prev = {}
     prev_time = None
+    aggregate_samples = []
+    shutdown = []
     try:
         if summary["initial_available_bytes"] < required:
             raise RuntimeError(f"Insufficient available memory: need {required//MIB} MiB")
@@ -229,6 +259,7 @@ def run(a):
                             aw = csv.DictWriter(agg, fieldnames=list(sample))
                             aw.writeheader()
                         aw.writerow(sample)
+                        aggregate_samples.append(total)
                         agg.flush()
                         per.flush()
                         for key,value in total.items():
@@ -251,14 +282,18 @@ def run(a):
                     except subprocess.TimeoutExpired:
                         summary["forced"] += 1
                         proc.kill()
-                for proc, log, handle, _ in children:
+                for proc, log, handle, source in children:
                     try:
                         proc.wait(timeout=5)
                         data = read_log(log)
-                        if proc.returncode == 0 and all(marker in data for marker in DRAIN):
+                        metrics = shutdown_metrics(data)
+                        if metrics is not None:
+                            shutdown.append(dict(pid=proc.pid, source=source, **metrics))
+                        if (proc.returncode == 0 and all(marker in data for marker in DRAIN)
+                                and metrics is not None and not metrics['heap_denied']):
                             summary["graceful"] += 1
                         else:
-                            summary["failures"].append(f"pid {proc.pid}: exit={proc.returncode}, drain not verified")
+                            summary["failures"].append(f"pid {proc.pid}: exit={proc.returncode}, drain or allocator budget not verified")
                             (output/f"failure-{proc.pid}.log").write_bytes(data)
                     finally:
                         if handle:
@@ -269,6 +304,21 @@ def run(a):
         if event:
             win.close(event)
         summary["final_available_bytes"] = win.available()
+        summary["steady_state_trend"] = trend(aggregate_samples)
+        summary["shutdown_reports"] = len(shutdown)
+        if shutdown:
+            summary["heap_peak_max"] = max(row["heap_peak"] for row in shutdown)
+            summary["heap_peak_sum"] = sum(row["heap_peak"] for row in shutdown)
+            summary["heap_denied_total"] = sum(row["heap_denied"] for row in shutdown)
+            grouped = collections.defaultdict(list)
+            for row in shutdown:
+                grouped[row["source"]].append(row["heap_peak"])
+            summary["source_heap_peaks"] = {str(source): dict(instances=len(peaks),
+                max=max(peaks), sum=sum(peaks)) for source, peaks in grouped.items()}
+            with (output/"shutdown.csv").open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=list(shutdown[0]))
+                writer.writeheader()
+                writer.writerows(shutdown)
         summary["passed"] = (summary["ready"] == a.count and summary["samples"] >= 2
                              and summary["graceful"] == a.count and not summary["failures"]
                              and not summary["forced"])

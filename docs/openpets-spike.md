@@ -1226,3 +1226,19 @@ For actual artwork on a Windows desktop, supply repeated --package and
 --webp options and --visible; use separate output directories.
 No new performance pass threshold inferred from a single baseline.
 The new profiles require their own CI and real-desktop validation.
+
+### Allocator attribution and steady-state trend
+
+V1/V2 RGBA atlases require 11,501,568 / 14,057,472 bytes (10.97 /
+13.41 MiB). The synthetic baseline owns a full V2 atlas per process;
+48 MiB is the tracked per-process allocator budget, not an OS memory cap.
+Cross-process decoded asset sharing is not implemented.
+
+Collect shutdown.csv with PID, source slot, allocator peak/denial and
+file/codec/DIB peaks. Missing diagnostics or any allocator denial now
+fails the benchmark. Summary includes per-source heap peaks and first/last
+up-to-five-sample median deltas for private bytes, working set, handles,
+threads and GDI/USER objects. These are descriptive comparisons, not
+leak proof. Individual heap peaks need not occur simultaneously.
+Regenerate the original solid-color V1/V2 fixture streams using a real
+WebP encoder; both were decoded locally, Windows WIC still needs CI.
