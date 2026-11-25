@@ -82,9 +82,19 @@ pub const Start = struct {
 };
 const Package = struct { directory: [*:0]const u16, source_id: [*:0]const u16, expected_sha: ?[*:0]const u16 = null };
 
+pub const TickResult = struct {
+    id: u64,
+    exit_code: ?u32 = null,
+    failure: ?anyerror = null,
+};
+pub const max_tick_slots = 32;
+pub const Drain = enum { normal, cooperative, force };
+
 pub const Group = struct {
     native: Native = undefined,
     manager: ?model.Manager = null,
+    cursor: usize = 0,
+    drain: Drain = .normal,
 
     pub fn open(self: *Group, limit: usize, budget: usize) !void {
         if (self.manager != null) return error.Busy;
@@ -92,6 +102,8 @@ pub const Group = struct {
         const manager = try model.Manager.init(limit, budget);
         try check(pet_group_open(&self.native, @intCast(limit), budget));
         self.manager = manager;
+        self.cursor = 0;
+        self.drain = .normal;
     }
 
     fn active(self: *Group) NativeError!*model.Manager {
@@ -151,6 +163,7 @@ pub const Group = struct {
 
     fn startSelected(self: *Group, io: std.Io, approval: trust.Approval, asset_id: u64, options: Options, package: ?Package) !Start {
         const manager = try self.active();
+        if (self.drain != .normal) return error.Draining;
         if (options.scale < 50 or options.scale > 200) return error.Invalid;
         try approval.verify(io, approval.path);
         var path: [1024]u16 = undefined;
@@ -248,6 +261,62 @@ pub const Group = struct {
         return null;
     }
 
+    // Admission closes immediately, not after a full sweep. The owner
+    // chooses whether and when to escalate; never force unrelated jobs.
+    pub fn beginDrain(self: *Group, force: bool) !void {
+        _ = try self.active();
+        if (force) {
+            self.drain = .force;
+        } else if (self.drain == .normal) {
+            self.drain = .cooperative;
+        }
+    }
+
+    pub fn remaining(self: *Group) !usize {
+        return (try self.active()).count();
+    }
+
+    // A single serialized, nonblocking owner tick. Scan at most 32 physical
+    // slots, rather than paging occupied rows (which shift on confirmed
+    // reap). No allocation and no sleep. Each returned record is a copied
+    // per-instance outcome; one failure cannot starve other children.
+    // Callers must retain/report failures and keep pumping until remaining
+    // reaches zero. A zero-result tick can simply have scanned empty slots.
+    pub fn tick(self: *Group, out: []TickResult) !usize {
+        const manager = try self.active();
+        const capacity = @min(manager.limit, model.max_instances);
+        const budget = @min(@min(out.len, max_tick_slots), capacity);
+        if (budget == 0) return error.Invalid;
+        var n: usize = 0;
+        for (0..budget) |_| {
+            const slot = self.cursor;
+            self.cursor = (slot + 1) % capacity;
+            const item = manager.slots[slot] orelse continue;
+            var result: TickResult = .{ .id = item.id };
+            if (self.drain == .normal) {
+                result.exit_code = self.refresh(item.id) catch |err| blk: {
+                    result.failure = err;
+                    break :blk null;
+                };
+            } else {
+                // Check exit before requesting stop. In drain mode don't
+                // sample CPU or attempt a readiness transition.
+                result.exit_code = self.reap(item.id) catch |err| blk: {
+                    result.failure = err;
+                    break :blk null;
+                };
+                if (result.failure == null and result.exit_code == null) {
+                    self.stop(item.id, self.drain == .force) catch |err| {
+                        result.failure = err;
+                    };
+                }
+            }
+            out[n] = result;
+            n += 1;
+        }
+        return n;
+    }
+
     pub fn snapshot(self: *Group, offset: usize, out: []model.Instance) !usize {
         return (try self.active()).snapshotPage(offset, out);
     }
@@ -257,6 +326,8 @@ pub const Group = struct {
         if (manager.count() != 0) return error.Busy;
         try check(pet_group_close(&self.native));
         self.manager = null;
+        self.cursor = 0;
+        self.drain = .normal;
     }
 };
 
@@ -309,11 +380,52 @@ test "group adapter binds two approved demo children and recovers reservations" 
     try std.testing.expectEqual(@as(usize, 2), try group.snapshot(0, &rows));
     try std.testing.expectEqual(model.State.starting, rows[0].state);
     try std.testing.expectError(error.Busy, group.close());
+    var empty: [0]TickResult = .{};
+    try std.testing.expectError(error.Invalid, group.tick(&empty));
+    var tick_results: [max_tick_slots]TickResult = undefined;
+    // Each active ID is observed even with many empty physical slots.
+    const observed = try group.tick(&tick_results);
+    try std.testing.expectEqual(@as(usize, 2), observed);
+    for (tick_results[0..observed], 0..) |result, i| {
+        try std.testing.expectEqual(ids[i], result.id);
+        try std.testing.expect(result.failure == null);
+        if (result.exit_code) |code| {
+            try std.testing.expectEqual(@as(u32, 0), code);
+            ids[i] = 0;
+        }
+    }
     // Smoke can exit quickly; assert acknowledgment on a separate native
     // fixture below rather than relying on a scheduler-sensitive poll here.
     for (&ids) |*id| {
+        if (id.* == 0) continue;
         try std.testing.expectEqual(@as(u32, 0), try waitReap(&group, id.*));
         id.* = 0;
     }
     try std.testing.expectEqual(@as(usize, 0), try group.snapshot(0, &rows));
+    const last = try group.startInternal(io, approval, 1, .{ .smoke = 1 });
+    ids[0] = last.id;
+    try std.testing.expect(last.failure == null);
+    try group.publish(last.id, 5);
+    try group.beginDrain(false);
+    try std.testing.expectError(error.Draining, group.startInternal(io, approval, 1, .{ .smoke = 1 }));
+    try std.testing.expectError(error.Busy, group.close());
+    // Walk the physical ring without losing a child when occupied rows shift.
+    for (0..200) |_| {
+        const n = try group.tick(&tick_results);
+        for (tick_results[0..n]) |result| {
+            try std.testing.expectEqual(last.id, result.id);
+            try std.testing.expect(result.failure == null);
+            if (result.exit_code != null) ids[0] = 0;
+        }
+        if (try group.remaining() == 0) break;
+        pet_host_fixture_sleep(25);
+    }
+    try std.testing.expectEqual(@as(usize, 0), try group.remaining());
+    try std.testing.expectEqual(@as(u64, 0), ids[0]);
+    try group.close();
+    try group.open(2, model.child_commit_ceiling * 2);
+    try std.testing.expectEqual(Drain.normal, group.drain);
+    try group.beginDrain(true);
+    try group.beginDrain(false);
+    try std.testing.expectEqual(Drain.force, group.drain);
 }

@@ -765,3 +765,20 @@ re-reading a new version for overwrite. Integration test compares the actual
 persisted reader token against the writer's shared codec. No new writes or
 ACL changes in the DLL. Real-host layout retest and MSVC write integration
 remain pending; new CI not yet verified.
+
+## Bounded worker pumping and shutdown admission
+
+The existing native group adapter now provides a round-robin worker tick,
+scanning at most 32 physical manager slots per call. It emits copied outcomes
+per instance (confirmed exit code or explicit error); empty slots cannot
+shift later rows past the cursor. No new timer, thread or allocation is added.
+Shutdown closes new launch admission immediately, uses cooperative stop by
+default and permits explicit force escalation of owned jobs only. No child
+reservation is released on a stop request; confirmed reap remains mandatory.
+The caller must keep pumping until remaining reaches zero and report errors;
+zero outcomes from a tick do not imply shutdown is complete. The existing
+Windows real-child regression exercises polling, launch rejection during
+drain, confirmed exit and reopen. This is a worker integration seam, not yet
+wired to the MSVC settings DLL, and does not establish real Pulse shutdown
+acceptance. The approved executable/root provisioning and unload callback
+contract remain prerequisites.
