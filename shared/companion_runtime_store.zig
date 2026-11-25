@@ -48,10 +48,12 @@ pub fn scanRecoveryDetailed(owner: *runtime.Owner) !recovery.Snapshot {
     snapshot.summary.quarantine_unmeasured = snapshot.summary.quarantined_registered + snapshot.summary.quarantined_removed;
     for (snapshot.quarantine[0..snapshot.quarantine_count]) |*detail| {
         if (detail.state == .blocked) {
-            if (recovery.hasReceipt(rows[0..count], detail.id)) detail.receipt_state = .invalid;
+            if (recovery.hasCleanup(rows[0..count], detail.id)) {
+                detail.receipt_state = .cleanup_started;
+            } else if (recovery.hasReceipt(rows[0..count], detail.id)) detail.receipt_state = .invalid;
             continue;
         }
-        if (detail.state == .unregistered_retained) detail.receipt_state = try inspectReceipt(owner, detail.id);
+        if (detail.state == .unregistered_retained) try inspectReceipt(owner, detail);
         const bytes = owner.quarantineUsage(detail.id) catch |err| switch (err) {
             error.MissingStoreApi => break,
             error.InvalidRecord, error.StoreIo, error.StoreBusy => continue,
@@ -68,25 +70,37 @@ pub fn scanRecoveryDetailed(owner: *runtime.Owner) !recovery.Snapshot {
     return snapshot;
 }
 
-fn inspectReceipt(owner: *runtime.Owner, id: u64) !recovery.ReceiptState {
+fn inspectReceipt(owner: *runtime.Owner, detail: *recovery.QuarantineDetail) !void {
+    const id = detail.id;
+    detail.receipt_state = .unavailable;
     const value = (owner.readRemovalReceipt(id) catch |err| switch (err) {
-        error.MissingStoreApi => return .unavailable,
-        error.InvalidRecord, error.InvalidReceipt => return .invalid,
-        error.StoreIo, error.StoreBusy => return .unavailable,
+        error.MissingStoreApi, error.StoreIo, error.StoreBusy => return,
+        error.InvalidRecord, error.InvalidReceipt => {
+            detail.receipt_state = .invalid;
+            return;
+        },
         else => return err,
-    }) orelse return .absent;
+    }) orelse {
+        detail.receipt_state = .absent;
+        return;
+    };
     const identity = owner.quarantineIdentity(id) catch |err| switch (err) {
-        error.MissingStoreApi, error.StoreIo, error.StoreBusy => return .unavailable,
-        error.InvalidRecord => return .invalid,
+        error.MissingStoreApi, error.StoreIo, error.StoreBusy => return,
+        error.InvalidRecord => {
+            detail.receipt_state = .invalid;
+            return;
+        },
         else => return err,
     };
-    return if (value.volume == identity.volume and value.file_index == identity.file_index) .matched_identity else .invalid;
+    if (value.volume != identity.volume or value.file_index != identity.file_index) {
+        detail.receipt_state = .invalid;
+        return;
+    }
+    detail.receipt_state = .matched_identity;
+    detail.cleanup_receipt = value;
 }
 
-// Read-only cleanup preflight. This is evidence for the current lease, not
-// permission to delete later. A future destructive transaction must repeat
-// verification while pinning the exact objects that it removes.
-pub fn cleanupReceipt(owner: *runtime.Owner, id: u64) !receipt.Receipt {
+fn checkedCleanupRecord(owner: *runtime.Owner, id: u64) !receipt.Receipt {
     if (try owner.group.remaining() != 0) return error.ActiveInstances;
     const index = try std.heap.page_allocator.create(inventory.Inventory);
     defer std.heap.page_allocator.destroy(index);
@@ -102,11 +116,39 @@ pub fn cleanupReceipt(owner: *runtime.Owner, id: u64) !receipt.Receipt {
     const count = try owner.scanStore(rows);
     _ = try recovery.classify(index, rows[0..count]);
     if (try recovery.removalState(rows[0..count], id) != .quarantined) return error.RecoveryRequired;
-    const value = (try owner.readRemovalReceipt(id)) orelse return error.MissingReceipt;
+    return (try owner.readRemovalReceipt(id)) orelse return error.MissingReceipt;
+}
+
+pub fn cleanupReceipt(owner: *runtime.Owner, id: u64) !receipt.Receipt {
+    const value = try checkedCleanupRecord(owner, id);
     const identity = try owner.quarantineIdentity(id);
     if (value.volume != identity.volume or value.file_index != identity.file_index) return error.StaleSelection;
     _ = try owner.quarantineUsage(id);
     return value;
+}
+
+// Cancellation is accepted only before immutable intent publication.
+// Partial deletion is never retried.
+pub fn cleanupPermanent(owner: *runtime.Owner, expected: receipt.Receipt, cancel: importing.Cancel) !void {
+    try cancel.check();
+    const id = expected.record.id;
+    const current = try cleanupReceipt(owner, id);
+    if (!std.meta.eql(expected, current)) return error.StaleSelection;
+    const identity: runtime.Owner.DirectoryIdentity = .{ .volume = expected.volume, .file_index = expected.file_index };
+    try owner.pinCleanup(id, identity);
+    const outcome = cleanupPinned(owner, expected, identity, cancel);
+    try owner.releaseQuarantine();
+    return outcome;
+}
+
+fn cleanupPinned(owner: *runtime.Owner, expected: receipt.Receipt, identity: runtime.Owner.DirectoryIdentity, cancel: importing.Cancel) !void {
+    const id = expected.record.id;
+    try expected.verifyPair(try owner.cleanupPair(id, cancel));
+    const latest = try checkedCleanupRecord(owner, id);
+    if (!std.meta.eql(expected, latest)) return error.StaleSelection;
+    try owner.recheckQuarantine(id, identity);
+    try cancel.check();
+    try owner.disposeCleanup(expected);
 }
 
 fn checkedRemoval(owner: *runtime.Owner, index: *inventory.Inventory, expected: inventory.Record, state: recovery.RemovalState) !void {

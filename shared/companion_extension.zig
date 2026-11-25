@@ -105,10 +105,12 @@ pub const RecoverySnapshot = recovery.Snapshot;
 pub const RecoveryState = recovery.RegisteredState;
 pub const QuarantineDetail = recovery.QuarantineDetail;
 
-pub const RemovalAction = enum { quarantine, restore_interrupted };
+pub const RemovalAction = enum { quarantine, restore_interrupted, purge };
+pub const CleanupReceipt = @import("companion/pet_removal_receipt.zig").Receipt;
 pub const RemovalRequest = struct {
     expected: inventory.Record,
     action: RemovalAction,
+    cleanup: ?CleanupReceipt = null,
 
     pub fn init(row: *const library.Row, snapshot: *const RecoverySnapshot, action: RemovalAction) !RemovalRequest {
         const expected = try row.removalRecord();
@@ -116,16 +118,24 @@ pub const RemovalRequest = struct {
         const required: RecoveryState = switch (action) {
             .quarantine => .normal,
             .restore_interrupted => .interrupted_removal,
+            .purge => return error.InvalidRecord,
         };
         if (state != required) return error.RecoveryRequired;
         return .{ .expected = expected, .action = action };
+    }
+
+    pub fn initCleanup(detail: *const QuarantineDetail) !RemovalRequest {
+        if (detail.state != .unregistered_retained or detail.receipt_state != .matched_identity or detail.logical_bytes == null) return error.RecoveryRequired;
+        const value = detail.cleanup_receipt orelse return error.MissingReceipt;
+        if (value.record.id != detail.id) return error.InvalidReceipt;
+        return .{ .expected = value.record, .action = .purge, .cleanup = value };
     }
 };
 
 // Called only after explicit host confirmation. The earlier diagnostic
 // snapshot is an admission hint, never authorization: store rechecks
 // the copied record and exact directory state under the private lease.
-pub fn applyRemovalDefault(hex: []const u8, request: *const RemovalRequest) !void {
+pub fn applyRemovalDefault(hex: []const u8, request: *const RemovalRequest, cancel: ImportCancel) !void {
     if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
     const digest = try parseDigest(hex);
     var path: [1024]u16 = undefined;
@@ -138,6 +148,7 @@ pub fn applyRemovalDefault(hex: []const u8, request: *const RemovalRequest) !voi
         break :blk switch (request.action) {
             .quarantine => store.quarantineRemove(owner, request.expected),
             .restore_interrupted => store.restoreInterruptedRemoval(owner, request.expected),
+            .purge => if (request.cleanup) |value| store.cleanupPermanent(owner, value, cancel) else error.MissingReceipt,
         };
     };
     owner.close() catch return error.CleanupFailed;
@@ -646,4 +657,20 @@ test "removal request binds selected identity and requires matching diagnostic s
     try std.testing.expectEqual(@as(u8, 9), request.expected.secondary.?[0]);
     row.paired = false;
     try std.testing.expectError(error.NeedsRevalidation, RemovalRequest.init(&row, &snapshot, .restore_interrupted));
+}
+
+test "cleanup request copies receipt and refuses unmeasured or blocked entries" {
+    var record = try inventory.Record.init(7, "cat");
+    record.digest = @splat(1);
+    record.secondary = @splat(2);
+    const value: CleanupReceipt = .{ .record = record, .volume = 4, .file_index = 5 };
+    var detail: QuarantineDetail = .{ .id = 7, .state = .unregistered_retained, .receipt_state = .matched_identity, .cleanup_receipt = value };
+    try std.testing.expectError(error.RecoveryRequired, RemovalRequest.initCleanup(&detail));
+    detail.logical_bytes = 1024;
+    const request = try RemovalRequest.initCleanup(&detail);
+    detail.cleanup_receipt = null;
+    try std.testing.expectEqualDeep(value, request.cleanup.?);
+    try std.testing.expectError(error.MissingReceipt, RemovalRequest.initCleanup(&detail));
+    detail.receipt_state = .cleanup_started;
+    try std.testing.expectError(error.RecoveryRequired, RemovalRequest.initCleanup(&detail));
 }

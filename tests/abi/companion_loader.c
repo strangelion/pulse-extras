@@ -16,7 +16,7 @@
 static const char *commands[] = {
     "companion.library", "companion.running", "companion.market", "companion.global",
     "companion.settings.refresh", "companion.download.less", "companion.download.more",
-    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next"
+    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge"
 };
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 /* Optional 1.0.61 picker ABI: independent C layout matching the supplied
@@ -665,6 +665,7 @@ static int bundled_session(PulsePluginEntryV1Fn entry) {
     /* No diagnostic snapshot/selection: direct mutation commands must do nothing. */
     CHECK(click(&f, 23) == 0 && !f.dialog && !f.task);
     CHECK(click(&f, 24) == 0 && !f.dialog && !f.task);
+    CHECK(click(&f, 27) == 0 && !f.dialog && !f.task);
     CHECK(click(&f, 19) == 0 && f.dialog && !f.task);
     CHECK(close_dialog(&f, f.dialog) == PULSE_OK && !f.dialog && !f.task);
     CHECK(click(&f, 21) == 0 && f.picker && !f.dialog && !f.task);

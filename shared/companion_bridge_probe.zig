@@ -350,6 +350,27 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     }
     if (!std.meta.eql(sample, (try owner.readRemovalReceipt(record.id)) orelse return error.MissingReceipt)) return error.UnexpectedReceipt;
     std.debug.print("Immutable receipt storage, overwrite refusal and read-only content preflight verified\n", .{});
+    // A canceled operation may not publish an intent or modify the package.
+    var cleanup_cancel: CancelProbe = .{ .calls = 2 };
+    if (store.cleanupPermanent(owner, sample, .{ .callback = CancelProbe.check, .context = &cleanup_cancel })) |_| {
+        return error.AcceptedCanceledCleanup;
+    } else |err| {
+        if (err != error.Canceled) return err;
+    }
+    const before_cleanup = try store.scanRecoveryDetailed(owner);
+    if (before_cleanup.summary.cleanup_markers != 0 or before_cleanup.quarantine_count != 1) return error.UnexpectedCleanup;
+    // Only the isolated fixture-owned quarantine may be permanently cleaned.
+    try store.cleanupPermanent(owner, sample, .{});
+    const cleaned = try store.scanRecoveryDetailed(owner);
+    if (cleaned.quarantine_count != 0 or cleaned.summary.cleanup_markers != 1 or cleaned.summary.receipts != 1 or cleaned.summary.registered != 4) return error.UnexpectedCleanup;
+    if (GetFileAttributesW(metadata) != 0xffffffff) return error.UnexpectedCleanup;
+    if (store.cleanupPermanent(owner, sample, .{})) |_| {
+        return error.AcceptedCleanupRetry;
+    } else |err| {
+        if (err != error.RecoveryRequired) return err;
+    }
+    if (!std.meta.eql(sample, (try owner.readRemovalReceipt(record.id)) orelse return error.MissingReceipt)) return error.UnexpectedReceipt;
+    std.debug.print("Fixture-only permanent quarantine cleanup and retry refusal verified\n", .{});
 }
 
 // Isolated test only: create and remove just the named stream.

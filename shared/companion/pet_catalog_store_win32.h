@@ -28,6 +28,11 @@ pet_store_result pet_removal_receipt_read(const wchar_t *root, uint64_t id,
     uint8_t *out, size_t capacity, size_t *written);
 pet_store_result pet_removal_receipt_write(const wchar_t *root, uint64_t id,
     const uint8_t *data, size_t length);
+/* Immutable cleanup intent, same typed PRC1 identity payload. */
+pet_store_result pet_cleanup_marker_read(const wchar_t *root, uint64_t id,
+    uint8_t *out, size_t capacity, size_t *written);
+pet_store_result pet_cleanup_marker_write(const wchar_t *root, uint64_t id,
+    const uint8_t *data, size_t length);
 pet_store_result pet_market_cache_read(const wchar_t *root, uint32_t slot,
     uint8_t *out, size_t capacity, size_t *written);
 pet_store_result pet_market_cache_write(const wchar_t *root, uint32_t slot,

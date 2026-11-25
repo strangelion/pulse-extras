@@ -5,6 +5,7 @@ const std = @import("std");
 const runtime = @import("companion_group.zig");
 const scan = @import("companion/pet_recovery_scan.zig");
 const receipt = @import("companion/pet_removal_receipt.zig");
+const fingerprint = @import("companion/pet_fingerprint.zig");
 
 const invalid = @as(usize, @bitCast(@as(isize, -1)));
 const name = std.unicode.wtf8ToWtf16LeStringLiteral("pulse_companion_runtime.dll");
@@ -39,6 +40,7 @@ const StoreQuarantineIdentity = *const fn (*const Lease, usize, u64, *u32, *u64)
 const quarantine_pin_max = 293;
 const StoreQuarantinePin = *const fn (*const Lease, usize, u64, u32, u64, [*]usize, usize, *usize) callconv(.c) c_int;
 const StoreQuarantineRecheck = *const fn (*const Lease, usize, u64, u32, u64, [*]const usize, usize) callconv(.c) c_int;
+const StoreCleanupDispose = *const fn (*const Lease, usize, u64, u32, u64, [*]usize, *usize, [*]const u8, usize) callconv(.c) c_int;
 const StoreQuarantineUsage = *const fn (*const Lease, usize, u64, *u64) callconv(.c) c_int;
 
 extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, ?*anyopaque) callconv(.winapi) usize;
@@ -101,6 +103,7 @@ pub const Owner = struct {
     store_faulted: bool = false,
     quarantine_pins: [quarantine_pin_max]usize = undefined,
     quarantine_pin_count: usize = 0,
+    cleanup_pins: bool = false,
 
     /// Worker only. Root must already be independently approved; the file
     /// pin denies writes/deletes, and the module stays loaded through drain.
@@ -259,10 +262,19 @@ pub const Owner = struct {
     };
 
     pub fn pinQuarantine(self: *Owner, id: u64, identity: DirectoryIdentity) !void {
+        return self.pinMode(id, identity, false);
+    }
+
+    pub fn pinCleanup(self: *Owner, id: u64, identity: DirectoryIdentity) !void {
+        return self.pinMode(id, identity, true);
+    }
+
+    fn pinMode(self: *Owner, id: u64, identity: DirectoryIdentity, deleting: bool) !void {
         if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
         if (id == 0 or identity.file_index == 0) return error.InvalidRecord;
         if (self.quarantine_pin_count != 0 or try self.group.remaining() != 0) return error.StoreBusy;
-        const pin: StoreQuarantinePin = @ptrCast(GetProcAddress(self.module, "pulse_companion_quarantine_pin_v1") orelse return error.MissingStoreApi);
+        const pin: StoreQuarantinePin = @ptrCast(GetProcAddress(self.module, if (deleting) "pulse_companion_cleanup_pin_v1" else "pulse_companion_quarantine_pin_v1") orelse return error.MissingStoreApi);
+        self.cleanup_pins = deleting;
         const code = pin(&self.lease, @sizeOf(Lease), id, identity.volume, identity.file_index, &self.quarantine_pins, self.quarantine_pins.len, &self.quarantine_pin_count);
         if (self.quarantine_pin_count > self.quarantine_pins.len) {
             self.store_faulted = true;
@@ -283,7 +295,7 @@ pub const Owner = struct {
         if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
         if (id == 0 or identity.file_index == 0) return error.InvalidRecord;
         if (self.quarantine_pin_count < 3 or self.quarantine_pin_count > self.quarantine_pins.len) return error.StoreBusy;
-        const recheck: StoreQuarantineRecheck = @ptrCast(GetProcAddress(self.module, "pulse_companion_quarantine_recheck_v1") orelse return error.MissingStoreApi);
+        const recheck: StoreQuarantineRecheck = @ptrCast(GetProcAddress(self.module, if (self.cleanup_pins) "pulse_companion_cleanup_recheck_v1" else "pulse_companion_quarantine_recheck_v1") orelse return error.MissingStoreApi);
         checkStore(recheck(&self.lease, @sizeOf(Lease), id, identity.volume, identity.file_index, &self.quarantine_pins, self.quarantine_pin_count)) catch |err| {
             if (err == error.CleanupFailed) self.store_faulted = true;
             return err;
@@ -301,6 +313,83 @@ pub const Owner = struct {
             }
             self.quarantine_pin_count -= 1;
         }
+        self.cleanup_pins = false;
+    }
+
+    // Compute both digests from the exact delete-capable handles.
+    pub fn cleanupPair(self: *Owner, id: u64, cancel: anytype) !fingerprint.Pair {
+        if (!self.cleanup_pins or self.quarantine_pin_count < 3) return error.StoreBusy;
+        const Work = struct {
+            paths: [fingerprint.max_files][96]u8,
+            files: [fingerprint.max_files]fingerprint.FileDigest,
+        };
+        const work = try std.heap.page_allocator.create(Work);
+        defer std.heap.page_allocator.destroy(work);
+        var prefix: [1032]u16 = undefined;
+        const root = std.mem.sliceTo(&self.lease.path, 0);
+        var suffix_buf: [64]u8 = undefined;
+        const leaf = try std.fmt.bufPrint(&suffix_buf, "\\pet-{x:0>16}.removed\\", .{id});
+        const pre = std.unicode.wtf8ToWtf16LeStringLiteral("\\\\?\\");
+        if (pre.len + root.len + leaf.len >= prefix.len) return error.InvalidRecord;
+        @memcpy(prefix[0..pre.len], pre);
+        @memcpy(prefix[pre.len..][0..root.len], root);
+        for (leaf, 0..) |ch, n| prefix[pre.len + root.len + n] = ch;
+        const prefix_len = pre.len + root.len + leaf.len;
+        var count: usize = 0;
+        var total: u64 = 0;
+        var buffer: [16 * 1024]u8 = undefined;
+        for (self.quarantine_pins[0..self.quarantine_pin_count]) |handle| {
+            try cancel.check();
+            var info: Info = undefined;
+            if (GetFileInformationByHandle(handle, &info) == 0) return error.StoreIo;
+            if ((info.attributes & 0x10) != 0) continue;
+            if (count == fingerprint.max_files or info.links != 1 or (info.attributes & 0x401) != 0) return error.InvalidRecord;
+            var actual: [1032]u16 = undefined;
+            const n = GetFinalPathNameByHandleW(handle, &actual, actual.len, 0);
+            if (n <= prefix_len or n >= actual.len or !samePath(actual[0..prefix_len], prefix[0..prefix_len])) return error.InvalidRecord;
+            const len = try std.unicode.utf16LeToUtf8(&work.paths[count], actual[prefix_len..n]);
+            for (work.paths[count][0..len]) |*ch| {
+                if (ch.* == '\\') ch.* = '/';
+            }
+            const size = (@as(u64, info.high) << 32) | info.low;
+            if (size == 0 or size > fingerprint.max_file_bytes or size > fingerprint.max_total_bytes - total) return error.InvalidRecord;
+            total += size;
+            var primary = std.crypto.hash.sha2.Sha256.init(.{});
+            var secondary = std.crypto.hash.sha2.Sha512.init(.{});
+            var remaining = size;
+            while (remaining != 0) {
+                try cancel.check();
+                const want: u32 = @intCast(@min(remaining, buffer.len));
+                var got: u32 = 0;
+                if (ReadFile(handle, &buffer, want, &got, null) == 0 or got != want) return error.StoreIo;
+                primary.update(buffer[0..got]);
+                secondary.update(buffer[0..got]);
+                remaining -= got;
+            }
+            var after: Info = undefined;
+            if (GetFileInformationByHandle(handle, &after) == 0 or after.high != info.high or after.low != info.low or !std.meta.eql(after.write, info.write)) return error.ContentChanged;
+            work.files[count] = .{ .path = work.paths[count][0..len], .size = size, .digest = primary.finalResult(), .secondary = secondary.finalResult() };
+            count += 1;
+        }
+        return fingerprint.digestPair(work.files[0..count]);
+    }
+
+    // Publish immutable intent before the first disposition. Never retry.
+    pub fn disposeCleanup(self: *Owner, value: receipt.Receipt) !void {
+        if (!self.cleanup_pins or self.quarantine_pin_count < 3 or self.store_faulted) return error.StoreBusy;
+        const write: StoreWrite = @ptrCast(GetProcAddress(self.module, "pulse_companion_cleanup_marker_write_v1") orelse return error.MissingStoreApi);
+        const dispose: StoreCleanupDispose = @ptrCast(GetProcAddress(self.module, "pulse_companion_cleanup_dispose_v1") orelse return error.MissingStoreApi);
+        var bytes: [receipt.encoded_size]u8 = undefined;
+        try value.encode(&bytes);
+        checkStore(write(&self.lease, @sizeOf(Lease), value.record.id, &bytes, bytes.len)) catch {
+            self.store_faulted = true;
+            return error.CleanupIntentUncertain;
+        };
+        checkStore(dispose(&self.lease, @sizeOf(Lease), value.record.id, value.volume, value.file_index, &self.quarantine_pins, &self.quarantine_pin_count, &bytes, bytes.len)) catch {
+            self.store_faulted = true;
+            return error.CleanupInterrupted;
+        };
+        if (self.quarantine_pin_count != 0) return error.CleanupInterrupted;
     }
 
     pub fn quarantineIdentity(self: *Owner, id: u64) !DirectoryIdentity {

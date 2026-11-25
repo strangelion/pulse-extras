@@ -3,6 +3,7 @@
 #include "pet_private_root_win32.h"
 #include "pet_catalog_store_win32.h"
 #include <wchar.h>
+#include <string.h>
 
 typedef struct {
     uint32_t version, size;
@@ -79,7 +80,7 @@ typedef struct {
 } pet_scan_row;
 enum { SCAN_UNKNOWN, SCAN_PACKAGE, SCAN_PENDING, SCAN_PREFERENCE,
     SCAN_INVENTORY, SCAN_INVENTORY_PENDING, SCAN_LOCK, SCAN_QUARANTINE,
-    SCAN_RECEIPT, SCAN_RECEIPT_PENDING };
+    SCAN_RECEIPT, SCAN_RECEIPT_PENDING, SCAN_CLEANUP, SCAN_CLEANUP_PENDING };
 #define PET_SCAN_MAX 4096u
 
 static pet_scan_row scan_row(const WIN32_FIND_DATAW *data) {
@@ -105,6 +106,8 @@ static pet_scan_row scan_row(const WIN32_FIND_DATAW *data) {
         else if (!wcscmp(name + 20, L".removed")) row.kind = SCAN_QUARANTINE;
         else if (!wcscmp(name + 20, L".prc")) row.kind = SCAN_RECEIPT;
         else if (!wcscmp(name + 20, L".prc.pending")) row.kind = SCAN_RECEIPT_PENDING;
+        else if (!wcscmp(name + 20, L".pcl")) row.kind = SCAN_CLEANUP;
+        else if (!wcscmp(name + 20, L".pcl.pending")) row.kind = SCAN_CLEANUP_PENDING;
         if (row.kind != SCAN_UNKNOWN) row.id = id;
     }
     return row;
@@ -216,12 +219,14 @@ __declspec(dllexport) pet_store_result pulse_companion_quarantine_v2(
 #define USAGE_MAX_BYTES (320ull * 1024ull * 1024ull)
 typedef struct { uint64_t bytes; unsigned files, entries; } usage_count;
 #define QUARANTINE_PIN_MAX (USAGE_MAX_FILES + 3u)
-typedef struct { HANDLE *handles; SIZE_T capacity, count; } usage_pins;
+typedef struct { HANDLE *handles; SIZE_T capacity, count; BOOL deleting; } usage_pins;
 
 static pet_store_result usage_open_mode(const wchar_t *path, BOOL directory,
-    BOOL pin, HANDLE *out, BY_HANDLE_FILE_INFORMATION *info) {
+    BOOL pin, BOOL deleting, BOOL share_delete, HANDLE *out, BY_HANDLE_FILE_INFORMATION *info) {
     *out = INVALID_HANDLE_VALUE;
-    HANDLE file = CreateFileW(path, pin ? GENERIC_READ : FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+    DWORD access = pin ? GENERIC_READ : FILE_READ_ATTRIBUTES;
+    if (deleting) access |= DELETE;
+    HANDLE file = CreateFileW(path, access, FILE_SHARE_READ | (share_delete ? FILE_SHARE_DELETE : 0),
         NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT |
         (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0), NULL);
     if (file == INVALID_HANDLE_VALUE) return PET_STORE_IO;
@@ -233,6 +238,7 @@ static pet_store_result usage_open_mode(const wchar_t *path, BOOL directory,
         !!(info->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != !!directory ||
         (info->dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
         (!directory && info->nNumberOfLinks != 1) ||
+        (deleting && (info->dwFileAttributes & FILE_ATTRIBUTE_READONLY)) ||
         n != wcslen(path) + 4 || n >= PET_PRIVATE_PATH_CAP + 4 ||
         wcsncmp(actual, L"\\\\?\\", 4) ||
         CompareStringOrdinal(actual + 4, -1, path, -1, TRUE) != CSTR_EQUAL) {
@@ -244,7 +250,7 @@ static pet_store_result usage_open_mode(const wchar_t *path, BOOL directory,
 
 static pet_store_result usage_open(const wchar_t *path, BOOL directory,
     HANDLE *out, BY_HANDLE_FILE_INFORMATION *info) {
-    return usage_open_mode(path, directory, FALSE, out, info);
+    return usage_open_mode(path, directory, FALSE, FALSE, FALSE, out, info);
 }
 
 /* Check the opened object rather than a reopened path. Reject named
@@ -283,10 +289,10 @@ static pet_store_result usage_retain(usage_pins *pins, HANDLE file) {
 }
 
 static pet_store_result usage_directory(const wchar_t *path, unsigned depth,
-    usage_count *count, usage_pins *pins, uint32_t volume, uint64_t file_index) {
+    usage_count *count, usage_pins *pins, uint32_t volume, uint64_t file_index, BOOL share_delete) {
     HANDLE pinned;
     BY_HANDLE_FILE_INFORMATION info;
-    pet_store_result result = usage_open_mode(path, TRUE, pins != NULL, &pinned, &info);
+    pet_store_result result = usage_open_mode(path, TRUE, pins != NULL, pins && pins->deleting, share_delete, &pinned, &info);
     if (result != PET_STORE_OK) return result;
     if (pins) {
         result = usage_retain(pins, pinned);
@@ -325,7 +331,7 @@ static pet_store_result usage_directory(const wchar_t *path, unsigned depth,
                 if (depth || (wcscmp(name, L"outfits") && wcscmp(name, L"activities"))) {
                     result = PET_STORE_INVALID; break;
                 }
-                result = usage_directory(child, depth + 1u, count, pins, volume, file_index);
+                result = usage_directory(child, depth + 1u, count, pins, volume, file_index, share_delete);
             } else {
                 /* The package helper hashes the declared root files but does
                  * not enumerate other root files. A matching fingerprint
@@ -336,7 +342,7 @@ static pet_store_result usage_directory(const wchar_t *path, unsigned depth,
                     else { result = PET_STORE_INVALID; break; }
                 }
                 HANDLE file;
-                result = usage_open_mode(child, FALSE, pins != NULL, &file, &info);
+                result = usage_open_mode(child, FALSE, pins != NULL, pins && pins->deleting, share_delete, &file, &info);
                 if (result == PET_STORE_OK) {
                     uint64_t bytes = ((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow;
                     if (++count->files > USAGE_MAX_FILES || bytes > USAGE_MAX_FILE_BYTES ||
@@ -372,7 +378,7 @@ __declspec(dllexport) pet_store_result pulse_companion_quarantine_usage_v1(
         lease->path, (unsigned long long)id);
     if (n <= 0 || n >= (int)PET_PRIVATE_PATH_CAP) return PET_STORE_INVALID;
     usage_count count = {0};
-    pet_store_result result = usage_directory(path, 0, &count, NULL, 0, 0);
+    pet_store_result result = usage_directory(path, 0, &count, NULL, 0, 0, FALSE);
     if (result == PET_STORE_OK) *bytes = count.bytes;
     return result;
 }
@@ -381,10 +387,10 @@ __declspec(dllexport) pet_store_result pulse_companion_quarantine_usage_v1(
  * returned prefix, before releasing the lease or unloading this DLL.
  * Denying write/delete sharing protects opened objects, not creation of
  * new directory entries. This API does not grant deletion permission. */
-__declspec(dllexport) pet_store_result pulse_companion_quarantine_pin_v1(
+static pet_store_result pin_quarantine(
     const pet_private_root *lease, SIZE_T size, uint64_t id,
     uint32_t volume, uint64_t file_index, HANDLE *handles,
-    SIZE_T capacity, SIZE_T *written) {
+    SIZE_T capacity, SIZE_T *written, BOOL deleting) {
     if (!written) return PET_STORE_INVALID;
     *written = 0;
     if (!live_lease(lease, size) || !id || !file_index || !handles ||
@@ -394,19 +400,33 @@ __declspec(dllexport) pet_store_result pulse_companion_quarantine_pin_v1(
         lease->path, (unsigned long long)id);
     if (n <= 0 || n >= (int)PET_PRIVATE_PATH_CAP) return PET_STORE_INVALID;
     usage_count count = {0};
-    usage_pins pins = {handles, capacity, 0};
-    pet_store_result result = usage_directory(path, 0, &count, &pins, volume, file_index);
+    usage_pins pins = {handles, capacity, 0, deleting};
+    pet_store_result result = usage_directory(path, 0, &count, &pins, volume, file_index, FALSE);
     *written = pins.count;
     return result;
+}
+
+__declspec(dllexport) pet_store_result pulse_companion_quarantine_pin_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id,
+    uint32_t volume, uint64_t file_index, HANDLE *handles,
+    SIZE_T capacity, SIZE_T *written) {
+    return pin_quarantine(lease, size, id, volume, file_index, handles, capacity, written, FALSE);
+}
+
+__declspec(dllexport) pet_store_result pulse_companion_cleanup_pin_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id,
+    uint32_t volume, uint64_t file_index, HANDLE *handles,
+    SIZE_T capacity, SIZE_T *written) {
+    return pin_quarantine(lease, size, id, volume, file_index, handles, capacity, written, TRUE);
 }
 
 /* Recheck the bounded namespace against the retained handles. Existing
  * objects cannot be replaced while their sharing pins remain open.
  * This detects additions during the scan, not later same-user insertion.
  * No handle ownership transfer or deletion. */
-__declspec(dllexport) pet_store_result pulse_companion_quarantine_recheck_v1(
+static pet_store_result recheck_quarantine(
     const pet_private_root *lease, SIZE_T size, uint64_t id,
-    uint32_t volume, uint64_t file_index, const HANDLE *handles, SIZE_T count) {
+    uint32_t volume, uint64_t file_index, const HANDLE *handles, SIZE_T count, BOOL deleting) {
     if (!live_lease(lease, size) || !id || !file_index || !handles ||
         count < 3 || count > QUARANTINE_PIN_MAX) return PET_STORE_INVALID;
     wchar_t path[PET_PRIVATE_PATH_CAP];
@@ -414,7 +434,7 @@ __declspec(dllexport) pet_store_result pulse_companion_quarantine_recheck_v1(
         lease->path, (unsigned long long)id);
     if (n <= 0 || n >= (int)PET_PRIVATE_PATH_CAP) return PET_STORE_INVALID;
     usage_count usage = {0};
-    pet_store_result result = usage_directory(path, 0, &usage, NULL, volume, file_index);
+    pet_store_result result = usage_directory(path, 0, &usage, NULL, volume, file_index, deleting);
     if (result != PET_STORE_OK) return result;
     if ((SIZE_T)usage.entries + 1 != count) return PET_STORE_INVALID;
     for (SIZE_T index = 0; index < count; ++index) {
@@ -426,10 +446,74 @@ __declspec(dllexport) pet_store_result pulse_companion_quarantine_recheck_v1(
             (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
             (!directory && info.nNumberOfLinks != 1) ||
             (!index && (!directory || actual_id != file_index))) return PET_STORE_INVALID;
+        wchar_t actual[PET_PRIVATE_PATH_CAP + 4];
+        DWORD len = GetFinalPathNameByHandleW(handles[index], actual, PET_PRIVATE_PATH_CAP + 4,
+            FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        size_t root_len = wcslen(path);
+        if (len < root_len + 4 || len >= PET_PRIVATE_PATH_CAP + 4 ||
+            wcsncmp(actual, L"\\\\?\\", 4) ||
+            CompareStringOrdinal(actual + 4, (int)root_len, path, (int)root_len, TRUE) != CSTR_EQUAL ||
+            (index ? actual[root_len + 4] != L'\\' : len != root_len + 4))
+            return PET_STORE_INVALID;
+        for (SIZE_T other = 0; other < index; ++other)
+            if (handles[other] == handles[index]) return PET_STORE_INVALID;
+        if (deleting && (info.dwFileAttributes & FILE_ATTRIBUTE_READONLY)) return PET_STORE_INVALID;
         result = usage_streams(handles[index], directory);
         if (result != PET_STORE_OK) return result;
     }
     return PET_STORE_OK;
+}
+
+__declspec(dllexport) pet_store_result pulse_companion_quarantine_recheck_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id,
+    uint32_t volume, uint64_t file_index, const HANDLE *handles, SIZE_T count) {
+    return recheck_quarantine(lease, size, id, volume, file_index, handles, count, FALSE);
+}
+
+__declspec(dllexport) pet_store_result pulse_companion_cleanup_recheck_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id,
+    uint32_t volume, uint64_t file_index, const HANDLE *handles, SIZE_T count) {
+    return recheck_quarantine(lease, size, id, volume, file_index, handles, count, TRUE);
+}
+
+/* Only verified pinned objects, leaf-first. Never follow new entries. */
+__declspec(dllexport) pet_store_result pulse_companion_cleanup_dispose_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id,
+    uint32_t volume, uint64_t file_index, HANDLE *handles, SIZE_T *count,
+    const uint8_t *expected, SIZE_T expected_size) {
+    if (!count || !expected || expected_size != PET_REMOVAL_RECEIPT_BYTES)
+        return PET_STORE_INVALID;
+    pet_store_result result = recheck_quarantine(lease, size, id, volume, file_index, handles, *count, TRUE);
+    if (result != PET_STORE_OK) return result;
+    uint8_t marker[PET_REMOVAL_RECEIPT_BYTES];
+    SIZE_T written = 0;
+    result = pet_cleanup_marker_read(lease->path, id, marker, sizeof(marker), &written);
+    if (result != PET_STORE_OK) return result;
+    if (written != expected_size || memcmp(marker, expected, expected_size))
+        return PET_STORE_INVALID;
+    while (*count) {
+        HANDLE file = handles[*count - 1];
+        BY_HANDLE_FILE_INFORMATION info;
+        if (!GetFileInformationByHandle(file, &info)) return PET_STORE_IO;
+        BOOL dir = !!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+        if (info.dwVolumeSerialNumber != volume ||
+            (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_READONLY)) ||
+            (!dir && info.nNumberOfLinks != 1)) return PET_STORE_INVALID;
+        result = usage_streams(file, dir);
+        if (result != PET_STORE_OK) return result;
+        FILE_DISPOSITION_INFO disposition = {0};
+        disposition.DeleteFile = TRUE;
+        if (!SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof(disposition)))
+            return PET_STORE_IO;
+        if (!CloseHandle(file)) return PET_STORE_CLEANUP_FAILED;
+        --*count;
+    }
+    wchar_t path[PET_PRIVATE_PATH_CAP];
+    int n = swprintf(path, PET_PRIVATE_PATH_CAP, L"%ls\\pet-%016llx.removed",
+        lease->path, (unsigned long long)id);
+    if (n <= 0 || n >= (int)PET_PRIVATE_PATH_CAP) return PET_STORE_INVALID;
+    if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) return PET_STORE_IO;
+    return GetLastError() == ERROR_FILE_NOT_FOUND ? PET_STORE_OK : PET_STORE_IO;
 }
 
 /* Read-only current directory identity; not deletion authorization. */
@@ -466,4 +550,11 @@ __declspec(dllexport) pet_store_result pulse_companion_receipt_write_v1(
     const uint8_t *data, SIZE_T length) {
     if (!live_lease(lease, size)) return PET_STORE_INVALID;
     return pet_removal_receipt_write(lease->path, id, data, length);
+}
+
+__declspec(dllexport) pet_store_result pulse_companion_cleanup_marker_write_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id,
+    const uint8_t *data, SIZE_T length) {
+    if (!live_lease(lease, size)) return PET_STORE_INVALID;
+    return pet_cleanup_marker_write(lease->path, id, data, length);
 }

@@ -29,19 +29,20 @@ static HANDLE root_open(const wchar_t *root) {
     return h;
 }
 
-typedef enum { RECORD_NORMAL, RECORD_CACHE, RECORD_RECEIPT } record_kind;
+typedef enum { RECORD_NORMAL, RECORD_CACHE, RECORD_RECEIPT, RECORD_CLEANUP } record_kind;
 
 static size_t record_limit(uint64_t id, record_kind kind) {
-    if (kind == RECORD_RECEIPT) return id ? PET_REMOVAL_RECEIPT_BYTES : 0;
+    if (kind == RECORD_RECEIPT || kind == RECORD_CLEANUP) return id ? PET_REMOVAL_RECEIPT_BYTES : 0;
     if (kind == RECORD_CACHE) return id < PET_MARKET_CACHE_SLOTS ? PET_MARKET_CACHE_MAX : 0;
     return id ? PET_CATALOG_RECORD_MAX : PET_INVENTORY_MAX;
 }
 
 static BOOL names(const wchar_t *root, uint64_t id, record_kind kind, wchar_t *final, wchar_t *temp) {
-    if (kind == RECORD_RECEIPT) {
+    if (kind == RECORD_RECEIPT || kind == RECORD_CLEANUP) {
         if (!id) return FALSE;
-        int a = swprintf(final, PATH_CAP, L"%ls\\pet-%016llx.prc", root, (unsigned long long)id);
-        int b = swprintf(temp, PATH_CAP, L"%ls\\pet-%016llx.prc.pending", root, (unsigned long long)id);
+        const wchar_t *suffix = kind == RECORD_RECEIPT ? L"prc" : L"pcl";
+        int a = swprintf(final, PATH_CAP, L"%ls\\pet-%016llx.%ls", root, (unsigned long long)id, suffix);
+        int b = swprintf(temp, PATH_CAP, L"%ls\\pet-%016llx.%ls.pending", root, (unsigned long long)id, suffix);
         return a > 0 && a < (int)PATH_CAP && b > 0 && b < (int)PATH_CAP;
     }
     if (kind == RECORD_CACHE) {
@@ -102,7 +103,7 @@ done:
 static pet_store_result write_record(const wchar_t *root, uint64_t id, record_kind kind,
     const uint8_t *data, size_t length) {
     if (!data || !length || length > record_limit(id, kind) ||
-        (kind == RECORD_RECEIPT && length != PET_REMOVAL_RECEIPT_BYTES)) return PET_STORE_INVALID;
+        ((kind == RECORD_RECEIPT || kind == RECORD_CLEANUP) && length != PET_REMOVAL_RECEIPT_BYTES)) return PET_STORE_INVALID;
     HANDLE dir = root_open(root);
     if (dir == INVALID_HANDLE_VALUE) return PET_STORE_INVALID;
     wchar_t final[PATH_CAP], temp[PATH_CAP];
@@ -115,7 +116,7 @@ static pet_store_result write_record(const wchar_t *root, uint64_t id, record_ki
         BOOL safe = normal_file(prior, &info);
         if (!CloseHandle(prior)) { result = PET_STORE_CLEANUP_FAILED; goto done; }
         if (!safe) goto done;
-        if (kind == RECORD_RECEIPT) { result = PET_STORE_BUSY; goto done; }
+        if (kind == RECORD_RECEIPT || kind == RECORD_CLEANUP) { result = PET_STORE_BUSY; goto done; }
     } else if (GetLastError() != ERROR_FILE_NOT_FOUND) {
         result = PET_STORE_IO; goto done;
     }
@@ -134,7 +135,7 @@ static pet_store_result write_record(const wchar_t *root, uint64_t id, record_ki
         goto done; /* retain pending file; never publish ambiguous write */
     }
     DWORD flags = MOVEFILE_WRITE_THROUGH;
-    if (kind != RECORD_RECEIPT) flags |= MOVEFILE_REPLACE_EXISTING;
+    if (kind != RECORD_RECEIPT && kind != RECORD_CLEANUP) flags |= MOVEFILE_REPLACE_EXISTING;
     if (complete && MoveFileExW(temp, final, flags)) {
         result = PET_STORE_OK;
     } else {
@@ -187,4 +188,14 @@ pet_store_result pet_removal_receipt_read(const wchar_t *root, uint64_t id,
 pet_store_result pet_removal_receipt_write(const wchar_t *root, uint64_t id,
     const uint8_t *data, size_t length) {
     return write_record(root, id, RECORD_RECEIPT, data, length);
+}
+
+pet_store_result pet_cleanup_marker_read(const wchar_t *root, uint64_t id,
+    uint8_t *out, size_t capacity, size_t *written) {
+    return read_record(root, id, RECORD_CLEANUP, out, capacity, written);
+}
+
+pet_store_result pet_cleanup_marker_write(const wchar_t *root, uint64_t id,
+    const uint8_t *data, size_t length) {
+    return write_record(root, id, RECORD_CLEANUP, data, length);
 }

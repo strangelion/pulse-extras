@@ -1331,3 +1331,28 @@ preflight. This is still a point-in-time read-only check: later additions,
 mapped writes and adversarial same-user activity are not transactional.
 No permanent deletion or user-directory mutation is enabled. CI and actual
 host acceptance remain pending for this revision.
+
+## Explicit permanent cleanup transaction (experimental)
+
+A separate quarantine ID field and default-cancel native confirmation
+copy the exact PRC1 receipt from the latest scan. Only unregistered,
+identity-matched, measured entries can open the confirmation. The worker
+revalidates inventory, receipt and namespace under the exclusive lease.
+The delete-capable pin set opens the same bounded ordinary objects without
+write or delete sharing; both package hashes are streamed from these same
+handles, not from a helper followed by a reopen. The worker rechecks the
+receipt, namespace, stream/volume/link invariants and cancellation before
+publishing the immutable pet-ID.pcl intent using the PRC1 identity payload.
+Neither a final nor pending intent can be overwritten or automatically
+retried. Once published, native disposition uses only retained handles in
+reverse acquisition order; no recursive deletion, path-based file deletion,
+or deletion of original import sources, preferences or receipts. Unexpected
+new entries are never followed and a nonempty directory refuses disposition.
+On partial failure keep the intent, close remaining handles, report
+interruption, and require manual isolated inspection; no automatic resume
+or rollback. A marker with no directory is evidence of an attempted
+transaction, not proof of successful cleanup. Power-loss ordering and
+hostile same-user mapped writes are outside the guarantee; actual host
+acceptance and Windows regression are required before release. Tests cover
+marker blocking, direct command without selection, actual isolated package
+cleanup and retry refusal. The feature remains experimental.

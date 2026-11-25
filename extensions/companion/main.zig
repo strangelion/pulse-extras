@@ -26,7 +26,7 @@ const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -103,7 +103,7 @@ const Content = struct {
     import_toolbar: [3]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
-    states: [4]ui.State = undefined,
+    states: [5]ui.State = undefined,
     preference_toolbar: [4]ui.Node = undefined,
     asset_toolbar: [2]ui.Node = undefined,
     stop_toolbar: [2]ui.Node = undefined,
@@ -111,8 +111,9 @@ const Content = struct {
     row_ids: [16][64]u8 = undefined,
     dynamic_ids: [4][64]u8 = undefined,
     library_count: [160]u8 = undefined,
-    recovery_text: [768]u8 = undefined,
-    quarantine_nodes: [6]ui.Node = undefined,
+    recovery_text: [1024]u8 = undefined,
+    quarantine_nodes: [7]ui.Node = undefined,
+    cleanup_toolbar: [2]ui.Node = undefined,
     quarantine_paging: [2]ui.Node = undefined,
     quarantine_heading: [160]u8 = undefined,
     quarantine_heading_id: [64]u8 = undefined,
@@ -168,7 +169,7 @@ fn fillImportToolbar(nodes: *[3]ui.Node, embedded_picker: bool, enabled: bool, i
 }
 
 fn recoveryText(report: library.RecoveryReport, buffer: []u8) ![]const u8 {
-    return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d} · 隔离待恢复 {d} · 未登记保留 {d}。隔离逻辑字节：待恢复 {d} B · 未登记 {d} B · 未统计目录 {d}。凭证 {d} · 待处理凭证 {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved, report.quarantined_registered, report.quarantined_removed, report.quarantine_registered_bytes, report.quarantine_removed_bytes, report.quarantine_unmeasured, report.receipts, report.receipt_pending });
+    return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d} · 隔离待恢复 {d} · 未登记保留 {d}。隔离逻辑字节：待恢复 {d} B · 未登记 {d} B · 未统计目录 {d}。凭证 {d} · 待处理凭证 {d} · 清理标记 {d} · 待处理清理 {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved, report.quarantined_registered, report.quarantined_removed, report.quarantine_registered_bytes, report.quarantine_removed_bytes, report.quarantine_unmeasured, report.receipts, report.receipt_pending, report.cleanup_markers, report.cleanup_pending });
 }
 
 fn recoverySuffix(snapshot: *const library.RecoverySnapshot, id: u64) []const u8 {
@@ -193,15 +194,16 @@ fn quarantineText(detail: library.QuarantineDetail, buffer: []u8) ![]const u8 {
         .matched_identity => " · 凭证身份匹配",
         .invalid => " · 凭证异常",
         .unavailable => " · 凭证未验证",
+        .cleanup_started => " · 清理事务未确认，禁止重试",
     };
     if (detail.logical_bytes) |bytes| return std.fmt.bufPrint(buffer, "#{d} · {s}{s} · {d} B", .{ detail.id, state, evidence, bytes });
     return std.fmt.bufPrint(buffer, "#{d} · {s}{s} · 大小未统计", .{ detail.id, state, evidence });
 }
 
-fn fillQuarantine(report: *const library.RecoverySnapshot, offset: usize, content: *Content) ui.Node {
+fn fillQuarantine(report: *const library.RecoverySnapshot, offset: usize, content: *Content, enabled: bool) ui.Node {
     const start = @min(offset, report.quarantine_count);
     const end = @min(start + quarantine_page_size, report.quarantine_count);
-    const heading = std.fmt.bufPrint(&content.quarantine_heading, "隔离区（只读）：{d} 项 · 显示 {d}–{d} · 列表未收录 {d} 项", .{ report.quarantine_total, if (start == end) 0 else start + 1, end, report.quarantine_total - report.quarantine_count }) catch unreachable;
+    const heading = std.fmt.bufPrint(&content.quarantine_heading, "隔离区：{d} 项 · 显示 {d}–{d} · 列表未收录 {d} 项", .{ report.quarantine_total, if (start == end) 0 else start + 1, end, report.quarantine_total - report.quarantine_count }) catch unreachable;
     content.quarantine_nodes[0] = changingLabel(&content.quarantine_heading_id, "quarantine.heading", heading);
     var count: usize = 1;
     for (report.quarantine[start..end], 0..) |detail, n| {
@@ -214,6 +216,22 @@ fn fillQuarantine(report: *const library.RecoverySnapshot, offset: usize, conten
         content.quarantine_paging[0] = action("quarantine.previous", "上一组", commands[25], start >= quarantine_page_size);
         content.quarantine_paging[1] = action("quarantine.next", "下一组", commands[26], end < report.quarantine_count);
         content.quarantine_nodes[count] = horizontal("quarantine.paging", &content.quarantine_paging);
+        count += 1;
+    }
+    var eligible = false;
+    for (report.quarantine[0..report.quarantine_count]) |*detail| {
+        if (library.RemovalRequest.initCleanup(detail)) |_| {
+            eligible = true;
+            break;
+        } else |_| {}
+    }
+    if (eligible) {
+        content.cleanup_toolbar[0] = ui.node(ui.NodeKind.text_input);
+        content.cleanup_toolbar[0].id = abi.view("quarantine.id");
+        content.cleanup_toolbar[0].state = .{ .present = 1, .value = abi.view("quarantine.id") };
+        content.cleanup_toolbar[0].placeholder = .{ .present = 1, .value = abi.view("输入隔离素材 ID") };
+        content.cleanup_toolbar[1] = action("quarantine.purge", "永久清理", commands[27], enabled);
+        content.quarantine_nodes[count] = horizontal("quarantine.cleanup", &content.cleanup_toolbar);
         count += 1;
     }
     var node = ui.node(ui.NodeKind.stack);
@@ -315,7 +333,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 content.children[count] = changingLabel(&content.dynamic_ids[2], "library.recovery-report", body);
                 count += 1;
                 if (report.quarantine_total != 0) {
-                    content.children[count] = fillQuarantine(report, instance.quarantine_offset, content);
+                    content.children[count] = fillQuarantine(report, instance.quarantine_offset, content, canMaintain(instance));
                     count += 1;
                 }
                 if (instance.library_loaded and instance.library_snapshot.count != 0 and instance.dialogs != null and config.runtime_sha256.len == 64 and config.helper_sha256.len == 64) {
@@ -409,6 +427,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     content.states[1] = .{ .key = abi.view("running.stop-id"), .value = abi.view("") };
     content.states[2] = .{ .key = abi.view("library.asset-id"), .value = abi.view("") };
     content.states[3] = .{ .key = abi.view("library.tag"), .value = abi.view("") };
+    content.states[4] = .{ .key = abi.view("quarantine.id"), .value = abi.view("") };
     tree.states = &content.states;
     tree.state_count = content.states.len;
 }
@@ -521,7 +540,8 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
         return raw.PULSE_TASK_COMPLETED;
     }
     if (instance.removal_request) |*request| {
-        library.applyRemovalDefault(config.runtime_sha256, request) catch |err| {
+        library.applyRemovalDefault(config.runtime_sha256, request, .{ .callback = canceled, .context = context[0].context }) catch |err| {
+            if (err == error.Canceled) return raw.PULSE_TASK_CANCELLED;
             instance.work_error = err;
             return raw.PULSE_TASK_FAILED;
         };
@@ -725,10 +745,14 @@ fn pollLibrary(instance: *Instance) void {
         instance.library_snapshot = instance.work_snapshot;
         instance.library_loaded = true;
         instance.library_offset = 0;
-        instance.library_status = if (removal) |request| (if (request.action == .quarantine) "素材已隔离移除；文件仍保留" else "中断移除已恢复；请重新扫描") else if (was_import) (if (instance.import_result != null and instance.import_result.? == .existing) "素材已存在；未重复复制" else "素材已导入并重新读取") else if (was_edit) "偏好已保存并重新读取" else if (instance.library_snapshot.missing) "固定目录中尚无素材清单（未创建文件）" else "已读取持久化清单；尚未验证素材文件";
+        instance.library_status = if (removal) |request| (switch (request.action) {
+            .quarantine => "素材已隔离移除；文件仍保留",
+            .restore_interrupted => "中断移除已恢复；请重新扫描",
+            .purge => "隔离素材已永久清理；凭证与事务标记保留",
+        }) else if (was_import) (if (instance.import_result != null and instance.import_result.? == .existing) "素材已存在；未重复复制" else "素材已导入并重新读取") else if (was_edit) "偏好已保存并重新读取" else if (instance.library_snapshot.missing) "固定目录中尚无素材清单（未创建文件）" else "已读取持久化清单；尚未验证素材文件";
     } else {
         instance.library_loaded = false;
-        instance.library_status = if (removal != null and done and (if (instance.work_error) |err| err == error.RemovalCommittedWithoutReceipt else false)) "移除已提交；凭证写入失败，保留隔离文件，禁止清理" else if (removal != null and done and instance.removal_committed) "操作已提交；请刷新并重新扫描" else if (removal != null and instance.task_state == raw.PULSE_TASK_CANCELLED) "任务取消；请刷新确认磁盘状态" else if (was_import and done and instance.import_result != null) "导入已提交；请刷新确认库存" else if (instance.task_state == raw.PULSE_TASK_CANCELLED) (if (was_import or was_edit) "任务已取消；请刷新确认磁盘状态" else "读取已取消") else if (done) if (instance.work_error) |err| @errorName(err) else "读取结果无效" else "读取未完成";
+        instance.library_status = if (removal != null and done and (if (instance.work_error) |err| err == error.RemovalCommittedWithoutReceipt else false)) "移除已提交；凭证写入失败，保留隔离文件，禁止清理" else if (removal != null and done and (if (instance.work_error) |err| err == error.CleanupInterrupted or err == error.CleanupIntentUncertain else false)) "清理事务状态不确定；请重新扫描，禁止自动重试" else if (removal != null and done and instance.removal_committed) "操作已提交；请刷新并重新扫描" else if (removal != null and instance.task_state == raw.PULSE_TASK_CANCELLED) "任务取消；请刷新确认磁盘状态" else if (was_import and done and instance.import_result != null) "导入已提交；请刷新确认库存" else if (instance.task_state == raw.PULSE_TASK_CANCELLED) (if (was_import or was_edit) "任务已取消；请刷新确认磁盘状态" else "读取已取消") else if (done) if (instance.work_error) |err| @errorName(err) else "读取结果无效" else "读取未完成";
     }
     refresh(instance);
 }
@@ -1276,12 +1300,28 @@ fn showRemoval(instance: *Instance, action_kind: library.RemovalAction) void {
     const get_state = panel.table.get_state orelse return;
     var bytes: [32]u8 = undefined;
     var needed: u32 = 0;
-    if (get_state(panel.table.context, panel.id, abi.view("library.asset-id"), &bytes, bytes.len, &needed) != abi.ok or needed == 0 or needed >= bytes.len) {
+    if (get_state(panel.table.context, panel.id, abi.view(if (action_kind == .purge) "quarantine.id" else "library.asset-id"), &bytes, bytes.len, &needed) != abi.ok or needed == 0 or needed >= bytes.len) {
         instance.library_status = "请输入有效素材 ID";
         refresh(instance);
         return;
     }
     const id = std.fmt.parseInt(u64, bytes[0..needed], 10) catch 0;
+    if (action_kind == .purge) {
+        const report = &instance.recovery_report.?;
+        for (report.quarantine[0..report.quarantine_count]) |*detail| {
+            if (detail.id != id) continue;
+            const request = library.RemovalRequest.initCleanup(detail) catch |err| {
+                instance.library_status = @errorName(err);
+                refresh(instance);
+                return;
+            };
+            showRemovalDialog(instance, request);
+            return;
+        }
+        instance.library_status = "隔离素材不在最近扫描结果中";
+        refresh(instance);
+        return;
+    }
     for (instance.library_snapshot.rows[0..instance.library_snapshot.count]) |*row| {
         if (row.id != id) continue;
         const request = library.RemovalRequest.init(row, &instance.recovery_report.?, action_kind) catch |err| {
@@ -1300,19 +1340,20 @@ fn showRemovalDialog(instance: *Instance, request: library.RemovalRequest) void 
     const dialogs = instance.dialogs orelse return;
     const show = dialogs.show orelse return;
     const removing = request.action == .quarantine;
+    const purging = request.action == .purge;
     var message_buffer: [512]u8 = undefined;
-    const message = std.fmt.bufPrint(&message_buffer, "素材 #{d}：{s}。{s}", .{ request.expected.id, request.expected.sourceId(), if (removing) "将受管副本移入隔离区并从素材库移除；不会删除原始目录或隔离文件。" else "仅恢复仍登记的中断移除事务，不覆盖现有目录，不恢复已完成移除的 ID。" }) catch unreachable;
+    const message = std.fmt.bufPrint(&message_buffer, "素材 #{d}：{s}。{s}", .{ request.expected.id, request.expected.sourceId(), if (purging) "将永久删除已复验的受管隔离副本，不可撤销。原始导入目录和凭证不会删除；清理中断将禁止自动重试。" else if (removing) "将受管副本移入隔离区并从素材库移除；不会删除原始目录或隔离文件。" else "仅恢复仍登记的中断移除事务，不覆盖现有目录，不恢复已完成移除的 ID。" }) catch unreachable;
     var root = label("removal.notice", message);
     var tree = std.mem.zeroes(ui.Tree);
     tree.size = @sizeOf(ui.Tree);
     tree.root = &root;
     const buttons = [_]raw.PulseDialogButton{
-        .{ .size = @sizeOf(raw.PulseDialogButton), .kind = raw.PULSE_DIALOG_BUTTON_PRIMARY, .id = abi.view("confirm"), .text = abi.view(if (removing) "隔离移除" else "恢复") },
+        .{ .size = @sizeOf(raw.PulseDialogButton), .kind = raw.PULSE_DIALOG_BUTTON_PRIMARY, .id = abi.view("confirm"), .text = abi.view(if (purging) "永久清理" else if (removing) "隔离移除" else "恢复") },
         .{ .size = @sizeOf(raw.PulseDialogButton), .kind = raw.PULSE_DIALOG_BUTTON_STANDARD, .id = abi.view("cancel"), .text = abi.view("取消") },
     };
     const descriptor: raw.PulseDialogRequest = .{
         .size = @sizeOf(raw.PulseDialogRequest),
-        .title = abi.view(if (removing) "确认隔离移除" else "确认恢复中断移除"),
+        .title = abi.view(if (purging) "确认永久清理（不可撤销）" else if (removing) "确认隔离移除" else "确认恢复中断移除"),
         .message = abi.view(message),
         .width = 560,
         .height = 160,
@@ -1435,6 +1476,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             22 => startRecovery(instance),
             23 => showRemoval(instance, .quarantine),
             24 => showRemoval(instance, .restore_interrupted),
+            27 => showRemoval(instance, .purge),
             25 => if (instance.recovery_report != null and instance.quarantine_offset >= quarantine_page_size) {
                 instance.quarantine_offset -= quarantine_page_size;
                 refresh(instance);
@@ -1775,7 +1817,7 @@ test "empty library hides pagination and manual poll unless needed" {
 }
 
 test "recovery summary reports anomalies without promising repair" {
-    var buffer: [768]u8 = undefined;
+    var buffer: [1024]u8 = undefined;
     const body = try recoveryText(.{ .registered = 2, .missing = 1, .orphan_packages = 3, .invalid = 4, .quarantine_removed_bytes = 1024, .quarantine_unmeasured = 1 }, &buffer);
     try std.testing.expect(std.mem.indexOf(u8, body, "未登记 1024 B") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "未统计目录 1") != null);
