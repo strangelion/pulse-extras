@@ -3,6 +3,7 @@
 const std = @import("std");
 const model = @import("companion/pet_manager.zig");
 const catalog = @import("companion/pet_catalog.zig");
+const inventory = @import("companion/pet_inventory.zig");
 const trust = @import("process/trust.zig");
 const Handle = ?*anyopaque;
 const Owner = extern struct {
@@ -121,6 +122,16 @@ pub const Group = struct {
             .reduced = @intFromBool(reduced),
             .topmost = @intFromBool(topmost),
         }, .{ .directory = dir[0..dir_len :0], .source_id = source[0..source_len :0] });
+    }
+
+    // Resolve only an inventory-owned ID to a deterministic private path.
+    // The root must be approved by the owning worker, never supplied by UI.
+    pub fn startManaged(self: *Group, io: std.Io, approval: trust.Approval, entry: *const catalog.Entry, index: *const inventory.Inventory, asset_root: []const u8, scale: u32, reduced: bool, topmost: bool) !Start {
+        const record = try index.get(entry.id);
+        if (!std.mem.eql(u8, record.sourceId(), entry.sourceId())) return error.Invalid;
+        var path: [4096]u8 = undefined;
+        const dir = try inventory.directory(asset_root, entry.id, &path);
+        return self.startPackage(io, approval, entry, dir, scale, reduced, topmost);
     }
 
     fn startInternal(self: *Group, io: std.Io, approval: trust.Approval, asset_id: u64, options: Options) !Start {

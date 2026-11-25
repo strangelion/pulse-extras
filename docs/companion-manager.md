@@ -261,3 +261,21 @@ stress. Group's catalog-to-private-path resolver, import and persistent
 inventory remain pending. Host-directed reaction still takes precedence over
 idle custom activities. Full Windows GUI acceptance and new CI pending.
 Prior regression 45570692091 passed both platforms.
+
+## Managed inventory checkpoint
+
+PCI1 durable inventory records stable local IDs, monotonic next ID, and
+validated source IDs only. Managed directories use pet-<16 hex digits> under
+the approved asset root; no arbitrary path from preferences or UI. Current
+inventory capacity is 512 records (independent of active instance ceiling);
+no preallocated decoded assets. Reserve and save high-water mark before
+creating a directory, then validate and publish after staging; deletion
+does not decrement next ID. The worker must serialize this sequence and
+check active pins before removal. No directory copying or recovery of
+orphaned staging files in this change. Same bounded native atomic replacement
+as PCT1; corrupt inventory blocks saving. Save rejects next-ID rollback.
+Group.startManaged matches catalog ID/source against inventory before deriving
+the path. Actual source import and startup reconstruction still pending.
+Added portable codec tests and real-file high-water mark reload test.
+Previous selected-package regression 45572503915 and mixed preflight
+45572503975 passed. New change awaits CI.

@@ -26,5 +26,8 @@ int pet_catalog_store_fixture_close(const wchar_t *root) {
     int n = swprintf(file, 1024, L"%ls\\pet-0000000000000001.pct", root);
     if (n <= 0 || n >= 1024) return 0;
     if (!DeleteFileW(file) && GetLastError() != ERROR_FILE_NOT_FOUND) return 0;
+    n = swprintf(file, 1024, L"%ls\\inventory.pci", root);
+    if (n <= 0 || n >= 1024) return 0;
+    if (!DeleteFileW(file) && GetLastError() != ERROR_FILE_NOT_FOUND) return 0;
     return RemoveDirectoryW(root);
 }

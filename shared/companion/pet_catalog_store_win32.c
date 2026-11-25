@@ -30,7 +30,11 @@ static HANDLE root_open(const wchar_t *root) {
 }
 
 static BOOL names(const wchar_t *root, uint64_t id, wchar_t *final, wchar_t *temp) {
-    if (!id) return FALSE;
+    if (!id) {
+        int a = swprintf(final, PATH_CAP, L"%ls\\inventory.pci", root);
+        int b = swprintf(temp, PATH_CAP, L"%ls\\inventory.pending", root);
+        return a > 0 && a < (int)PATH_CAP && b > 0 && b < (int)PATH_CAP;
+    }
     int a = swprintf(final, PATH_CAP, L"%ls\\pet-%016llx.pct", root, (unsigned long long)id);
     int b = swprintf(temp, PATH_CAP, L"%ls\\pet-%016llx.pending", root, (unsigned long long)id);
     return a > 0 && a < (int)PATH_CAP && b > 0 && b < (int)PATH_CAP;
@@ -42,11 +46,11 @@ static BOOL normal_file(HANDLE h, BY_HANDLE_FILE_INFORMATION *info) {
         info->nNumberOfLinks == 1;
 }
 
-pet_store_result pet_store_read(const wchar_t *root, uint64_t id,
+static pet_store_result read_record(const wchar_t *root, uint64_t id,
     uint8_t *out, size_t capacity, size_t *written) {
     if (!written) return PET_STORE_INVALID;
     *written = 0;
-    if (!out || !capacity || capacity > PET_CATALOG_RECORD_MAX) return PET_STORE_INVALID;
+    if (!out || !capacity || capacity > (id ? PET_CATALOG_RECORD_MAX : PET_INVENTORY_MAX)) return PET_STORE_INVALID;
     HANDLE dir = root_open(root);
     if (dir == INVALID_HANDLE_VALUE) return PET_STORE_INVALID;
     wchar_t final[PATH_CAP], temp[PATH_CAP];
@@ -75,9 +79,9 @@ done:
     return result;
 }
 
-pet_store_result pet_store_write(const wchar_t *root, uint64_t id,
+static pet_store_result write_record(const wchar_t *root, uint64_t id,
     const uint8_t *data, size_t length) {
-    if (!data || !length || length > PET_CATALOG_RECORD_MAX) return PET_STORE_INVALID;
+    if (!data || !length || length > (id ? PET_CATALOG_RECORD_MAX : PET_INVENTORY_MAX)) return PET_STORE_INVALID;
     HANDLE dir = root_open(root);
     if (dir == INVALID_HANDLE_VALUE) return PET_STORE_INVALID;
     wchar_t final[PATH_CAP], temp[PATH_CAP];
@@ -115,4 +119,25 @@ pet_store_result pet_store_write(const wchar_t *root, uint64_t id,
 done:
     if (!CloseHandle(dir)) result = PET_STORE_CLEANUP_FAILED;
     return result;
+}
+
+pet_store_result pet_store_read(const wchar_t *root, uint64_t id,
+    uint8_t *out, size_t capacity, size_t *written) {
+    if (!id) return PET_STORE_INVALID;
+    return read_record(root, id, out, capacity, written);
+}
+
+pet_store_result pet_store_write(const wchar_t *root, uint64_t id,
+    const uint8_t *data, size_t length) {
+    if (!id) return PET_STORE_INVALID;
+    return write_record(root, id, data, length);
+}
+
+pet_store_result pet_inventory_read(const wchar_t *root, uint8_t *out,
+    size_t capacity, size_t *written) {
+    return read_record(root, 0, out, capacity, written);
+}
+
+pet_store_result pet_inventory_write(const wchar_t *root, const uint8_t *data, size_t length) {
+    return write_record(root, 0, data, length);
 }
