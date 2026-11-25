@@ -56,6 +56,46 @@ extern "c" fn pet_group_publish(*Native, u64, u32) c_int;
 extern "c" fn pet_group_sample(*Native, u64, *RawMetrics) c_int;
 extern "c" fn pet_group_close(*Native) c_int;
 
+// The native module owns the implementation, not the caller's storage.
+// All calls are serialized by the same worker; no CRT allocation crosses
+// this boundary. Keep the module loaded until every group is closed.
+pub const NativeApi = extern struct {
+    version: u32,
+    size: u32,
+    storage_size: ?*const fn () callconv(.c) usize,
+    open: ?*const fn (*Native, u32, usize) callconv(.c) c_int,
+    start: ?*const fn (*Native, [*:0]const u16, *const [32]u8, *const Options, ?[*:0]const u16, ?[*:0]const u16, ?[*:0]const u16, *u64) callconv(.c) c_int,
+    request_stop: ?*const fn (*Native, u64) callconv(.c) c_int,
+    force_stop: ?*const fn (*Native, u64) callconv(.c) c_int,
+    reap: ?*const fn (*Native, u64, *u32) callconv(.c) c_int,
+    ready: ?*const fn (*Native, u64, *c_int) callconv(.c) c_int,
+    publish: ?*const fn (*Native, u64, u32) callconv(.c) c_int,
+    sample: ?*const fn (*Native, u64, *RawMetrics) callconv(.c) c_int,
+    close: ?*const fn (*Native) callconv(.c) c_int,
+
+    pub fn valid(self: *const NativeApi) bool {
+        return self.version == 1 and self.size == @sizeOf(NativeApi) and
+            self.storage_size != null and self.open != null and self.start != null and
+            self.request_stop != null and self.force_stop != null and self.reap != null and
+            self.ready != null and self.publish != null and self.sample != null and self.close != null;
+    }
+};
+
+const linked_api: NativeApi = .{
+    .version = 1,
+    .size = @sizeOf(NativeApi),
+    .storage_size = pet_group_storage_size,
+    .open = pet_group_open,
+    .start = pet_group_start_approved,
+    .request_stop = pet_group_request_stop,
+    .force_stop = pet_group_force_stop,
+    .reap = pet_group_reap,
+    .ready = pet_group_ready,
+    .publish = pet_group_publish,
+    .sample = pet_group_sample,
+    .close = pet_group_close,
+};
+
 pub const NativeError = error{ Invalid, Busy, OsError, ContainmentFailed, Timeout, CountLimit, StorageLimit, BudgetLimit, SystemMemory, UnapprovedExecutable };
 fn check(code: c_int) NativeError!void {
     return switch (code) {
@@ -92,14 +132,20 @@ pub const Drain = enum { normal, cooperative, force };
 pub const Group = struct {
     native: Native = undefined,
     manager: ?model.Manager = null,
+    api: NativeApi = undefined,
     cursor: usize = 0,
     drain: Drain = .normal,
 
     pub fn open(self: *Group, limit: usize, budget: usize) !void {
+        return self.openWithApi(linked_api, limit, budget);
+    }
+
+    pub fn openWithApi(self: *Group, api: NativeApi, limit: usize, budget: usize) !void {
         if (self.manager != null) return error.Busy;
-        if (@sizeOf(usize) != 8 or pet_group_storage_size() != @sizeOf(Native)) return error.Invalid;
+        if (!api.valid() or @sizeOf(usize) != 8 or api.storage_size.?() != @sizeOf(Native)) return error.Invalid;
         const manager = try model.Manager.init(limit, budget);
-        try check(pet_group_open(&self.native, @intCast(limit), budget));
+        try check(api.open.?(&self.native, @intCast(limit), budget));
+        self.api = api;
         self.manager = manager;
         self.cursor = 0;
         self.drain = .normal;
@@ -173,7 +219,7 @@ pub const Group = struct {
         path[len] = 0;
         const id = try manager.reserveStart(asset_id);
         var native_id: u64 = 0;
-        const code = pet_group_start_approved(&self.native, path[0..len :0], &approval.digest, &options, if (package) |selected| selected.directory else null, if (package) |selected| selected.source_id else null, if (package) |selected| selected.expected_sha else null, &native_id);
+        const code = self.api.start.?(&self.native, path[0..len :0], &approval.digest, &options, if (package) |selected| selected.directory else null, if (package) |selected| selected.source_id else null, if (package) |selected| selected.expected_sha else null, &native_id);
         if (native_id == 0) {
             // Native contract: zero ID on failure proves no retained child.
             try manager.confirmGone(id);
@@ -193,7 +239,7 @@ pub const Group = struct {
         const manager = try self.active();
         const native_id = try manager.nativeId(id);
         try manager.requestStop(id);
-        try check(if (force) pet_group_force_stop(&self.native, native_id) else pet_group_request_stop(&self.native, native_id));
+        try check(if (force) self.api.force_stop.?(&self.native, native_id) else self.api.request_stop.?(&self.native, native_id));
     }
 
     // Returns null while the process is still alive. No early release.
@@ -201,7 +247,7 @@ pub const Group = struct {
         const manager = try self.active();
         const native_id = try manager.nativeId(id);
         var code: u32 = 0;
-        check(pet_group_reap(&self.native, native_id, &code)) catch |err| {
+        check(self.api.reap.?(&self.native, native_id, &code)) catch |err| {
             if (err == error.Busy) return null;
             return err;
         };
@@ -213,7 +259,7 @@ pub const Group = struct {
         const manager = try self.active();
         const native_id = try manager.nativeId(id);
         var raw: RawMetrics = undefined;
-        check(pet_group_sample(&self.native, native_id, &raw)) catch |err| {
+        check(self.api.sample.?(&self.native, native_id, &raw)) catch |err| {
             try manager.sample(id, null);
             return err;
         };
@@ -229,14 +275,14 @@ pub const Group = struct {
 
     pub fn publish(self: *Group, id: u64, reaction: u32) !void {
         const native_id = try (try self.active()).nativeId(id);
-        try check(pet_group_publish(&self.native, native_id, reaction));
+        try check(self.api.publish.?(&self.native, native_id, reaction));
     }
 
     pub fn pollReady(self: *Group, id: u64) !bool {
         const manager = try self.active();
         const native_id = try manager.nativeId(id);
         var ready: c_int = 0;
-        try check(pet_group_ready(&self.native, native_id, &ready));
+        try check(self.api.ready.?(&self.native, native_id, &ready));
         if (ready != 0) try manager.markReady(id);
         return ready != 0;
     }
@@ -320,7 +366,7 @@ pub const Group = struct {
     pub fn close(self: *Group) !void {
         const manager = try self.active();
         if (manager.count() != 0) return error.Busy;
-        try check(pet_group_close(&self.native));
+        try check(self.api.close.?(&self.native));
         self.manager = null;
         self.cursor = 0;
         self.drain = .normal;

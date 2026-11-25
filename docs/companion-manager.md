@@ -796,3 +796,18 @@ pathname check/use gap, not a guarantee against hostile ancestors, same-user
 or admin mutation, or unsafe DLL search paths. Independently approved root
 ACLs, packaging, and host worker integration are still required. No new
 static link dependency on BCrypt; Windows regression must verify the code.
+
+## Versioned GNU/MSVC runtime bridge
+
+An explicit companion-runtime-bridge build produces a GNU Windows DLL with
+one versioned C query export. The caller supplies the table size and storage;
+unknown versions and mismatched sizes fail. The Zig group uses the same
+manager and admission budget through either its directly linked supervisor
+or a copied validated function table. No heap ownership crosses the compiler
+boundary. Module lifetime must cover all groups and worker calls. Windows CI
+builds an MSVC Zig executable to load the freshly built fixture bridge, reject
+unsupported ABI versions, sizes and missing callbacks, and open/drain/close
+and reopen the group. This is cross-ABI acceptance, not a production module
+loader or real child launch via the host. Production packaging, an independently
+approved module/installation root, worker ownership and settings integration
+are still required. The default DLL install is unchanged.

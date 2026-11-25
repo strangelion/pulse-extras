@@ -1,0 +1,32 @@
+/* Versioned C ABI; caller retains its own manager and storage. */
+#include "pet_supervisor_win32.h"
+
+typedef struct {
+    uint32_t version, size;
+    SIZE_T (*storage_size)(void);
+    pet_child_result (*open)(pet_supervisor_group *, unsigned, SIZE_T);
+    pet_child_result (*start)(pet_supervisor_group *, const wchar_t *, const uint8_t *,
+        const pet_child_options *, const wchar_t *, const wchar_t *, const wchar_t *, uint64_t *);
+    pet_child_result (*request_stop)(pet_supervisor_group *, uint64_t);
+    pet_child_result (*force_stop)(pet_supervisor_group *, uint64_t);
+    pet_child_result (*reap)(pet_supervisor_group *, uint64_t, DWORD *);
+    pet_child_result (*ready)(pet_supervisor_group *, uint64_t, BOOL *);
+    pet_child_result (*publish)(pet_supervisor_group *, uint64_t, unsigned);
+    pet_child_result (*sample)(pet_supervisor_group *, uint64_t, pet_group_metrics *);
+    pet_child_result (*close)(pet_supervisor_group *);
+} pet_runtime_api_v1;
+
+static const pet_runtime_api_v1 api = {
+    1, sizeof(pet_runtime_api_v1), pet_group_storage_size, pet_group_open,
+    pet_group_start_approved, pet_group_request_stop, pet_group_force_stop,
+    pet_group_reap, pet_group_ready, pet_group_publish, pet_group_sample, pet_group_close
+};
+
+/* No pointers returned on an unsupported version or mismatched table size.
+ * The caller supplies storage of the declared size; no cross-CRT free. */
+__declspec(dllexport) BOOL pulse_companion_runtime_query(uint32_t version,
+    uint32_t size, pet_runtime_api_v1 *out) {
+    if (!out || version != 1 || size != sizeof(api)) return FALSE;
+    *out = api;
+    return TRUE;
+}

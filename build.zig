@@ -427,6 +427,26 @@ pub fn build(b: *std.Build) void {
     const pet_step = b.step("pet-demo", "Build and install the experimental standalone Windows companion");
     pet_step.dependOn(&b.addInstallArtifact(pet, .{}).step);
 
+    // Optional GNU supervisor DLL; a versioned C table is the only exported
+    // contract. The MSVC settings extension need not link GNU CRT objects.
+    const runtime_root = b.createModule(.{
+        .target = pet_target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    runtime_root.addCSourceFiles(.{
+        .files = &.{ "shared/companion/pet_supervisor_win32.c", "shared/companion/pet_runtime_bridge_win32.c" },
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
+    });
+    runtime_root.linkSystemLibrary("psapi", .{});
+    const runtime_bridge = b.addLibrary(.{
+        .name = "pulse_companion_runtime",
+        .linkage = .dynamic,
+        .root_module = runtime_root,
+    });
+    const runtime_step = b.step("companion-runtime-bridge", "Build the experimental versioned native supervisor bridge");
+    runtime_step.dependOn(&b.addInstallArtifact(runtime_bridge, .{}).step);
+
     // Every module also runs its own tests on the host target, so the wrappers
     // are checked even when the probe does not use them yet.
     var host_modules = Modules.add(b, b.graph.host, .Debug, vcs_test_config);
