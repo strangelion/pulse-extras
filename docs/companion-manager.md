@@ -53,12 +53,12 @@ admission until confirmed no child exists. A timeout/termination request
 does not release them. Reject stale commands, report errors, bound queue
 and snapshot sizes. Cancel queued work and drain before plugin unload.
 
-pet_manager.zig now provides fixed 100-slot admission and snapshots using
+pet_manager.zig now provides fixed 1024-slot admission and snapshots using
 the existing runtime Budget, per-instance 128 MiB conservative reservations
 matching the supervisor's current OS limit, non-reused session IDs, pending
 start/stop lifecycle and asset removal guards. Callers must confirmGone only
 on positive evidence. No process-wide manager or new supervisor wiring yet.
-No new allocation or UI code in this model. The 100-slot hard ceiling is not a
+No new allocation or UI code in this model. The 1024-slot hard ceiling is not a
 recommended default; the configured count and total budget are explicit.
 The current single-child supervisor remains unchanged. A future integration
 must use owned process/job handles, retain pending-exit ownership after
@@ -99,7 +99,7 @@ not proof that the settings manager currently runs multiple pets.
 
 The native supervisor now exposes an experimental worker-serialized group
 API in pet_supervisor_win32.h. A process may own either the legacy singleton
-or one group, not both. Up to 100 slots; configured count and total committed
+or one group, not both. Up to 1024 slots; configured count and total committed
 ceiling are checked before creation. Reuse the existing job creation,
 private state channel, memory limits and executable pinning. The caller must
 still independently verify executable digest and root ACLs. No shared
@@ -118,3 +118,7 @@ without early release, force isolation, stale ID rejection and confirmed
 reap. Local Windows execution is unavailable; CI must verify these cases.
 Previous manager model Ubuntu regression passed; Windows was in progress
 when checked. Prior full regression and stress runs at 17a5642 passed.
+
+## Capacity revision: 1024
+
+The hard ceiling is now 1024; actual admission remains bounded by configured count and commit budget. At 128 MiB per child, 1024 reservations total 128 GiB, not preallocated physical memory. Automatic stress remains 100 actual independent processes. A thousand live processes require explicit capacity preflight, bounded ramp-up/shutdown and GUI resource monitoring. Unit tests cover 1024 logical reservations, paging, stale IDs and full release; native test opens 1024 slots but launches two real fixture children under a two-child budget. Use paged copied snapshots (e.g. 32 rows), not 1024 separate control trees. Native storage should remain off small worker stacks. UI and Zig/native adapter are not wired yet. Previous run 45565745997 passed; new code awaits CI.

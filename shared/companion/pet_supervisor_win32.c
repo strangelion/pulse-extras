@@ -1,6 +1,7 @@
 #include "pet_supervisor_win32.h"
 #include <wchar.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define PATH_CAP 1024u
 #define CMD_CAP 1400u
@@ -263,7 +264,7 @@ pet_child_result pet_child_stop(pet_supervisor *owner, DWORD grace_ms,
  * check is a hard safety backstop, not physical memory allocation. */
 static pet_group_slot *group_find(pet_supervisor_group *group, uint64_t id) {
     if (!group || group != active_group || !id) return NULL;
-    for (unsigned i = 0; i < PET_GROUP_MAX; ++i)
+    for (unsigned i = 0; i < group->limit; ++i)
         if (group->slots[i].id == id) return &group->slots[i];
     return NULL;
 }
@@ -272,7 +273,7 @@ pet_child_result pet_group_open(pet_supervisor_group *group, unsigned limit, SIZ
     if (!group || !limit || limit > PET_GROUP_MAX || commit_budget < PET_CHILD_COMMIT_LIMIT)
         return PET_CHILD_INVALID;
     if (InterlockedCompareExchange(&live_owner, 2, 0) != 0) return PET_CHILD_BUSY;
-    *group = (pet_supervisor_group){0};
+    memset(group, 0, sizeof(*group));
     group->limit = limit; group->commit_budget = commit_budget; group->next_id = 1;
     active_group = group;
     return PET_CHILD_OK;
@@ -288,7 +289,7 @@ pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *app
     if (group->count >= group->limit ||
         group->count >= group->commit_budget / PET_CHILD_COMMIT_LIMIT) return PET_CHILD_BUSY;
     if (group->next_id == UINT64_MAX) return PET_CHILD_INVALID;
-    for (unsigned i = 0; i < PET_GROUP_MAX; ++i) {
+    for (unsigned i = 0; i < group->limit; ++i) {
         pet_group_slot *slot = &group->slots[i];
         if (slot->id) continue;
         slot->id = group->next_id++;
@@ -349,7 +350,7 @@ pet_child_result pet_group_close(pet_supervisor_group *group) {
     if (!group || group != active_group) return PET_CHILD_INVALID;
     if (group->count) return PET_CHILD_BUSY;
     active_group = NULL;
-    *group = (pet_supervisor_group){0};
+    memset(group, 0, sizeof(*group));
     InterlockedExchange(&live_owner, 0);
     return PET_CHILD_OK;
 }

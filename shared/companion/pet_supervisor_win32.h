@@ -54,7 +54,7 @@ void pet_child_abandon(pet_supervisor *owner);
 /* One process-wide owner mode: legacy singleton OR one worker-owned group.
  * The group is noncopyable and must remain alive until close succeeds.
  * Count includes unconfirmed startup failures and stopping children. */
-#define PET_GROUP_MAX 100u
+#define PET_GROUP_MAX 1024u
 typedef struct {
     uint64_t id;
     pet_supervisor child;

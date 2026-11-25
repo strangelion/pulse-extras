@@ -4,7 +4,7 @@
 const std = @import("std");
 const Budget = @import("runtime_budget").Budget;
 
-pub const max_instances = 100;
+pub const max_instances = 1024;
 // Must match PET_CHILD_COMMIT_LIMIT in pet_supervisor_win32.h. A reservation
 // is a conservative admission ceiling, not measured private bytes.
 pub const child_commit_ceiling: usize = 128 * 1024 * 1024;
@@ -39,7 +39,7 @@ pub const Manager = struct {
     }
 
     fn find(self: *Manager, id: u64) Error!*Instance {
-        for (&self.slots) |*slot| {
+        for (self.slots[0..self.limit]) |*slot| {
             if (slot.*) |*item| {
                 if (item.id == id) return item;
             }
@@ -53,7 +53,7 @@ pub const Manager = struct {
         if (asset_id == 0) return error.Invalid;
         if (self.count() >= self.limit) return error.Capacity;
         if (self.next_id == std.math.maxInt(u64)) return error.IdExhausted;
-        for (&self.slots) |*slot| {
+        for (self.slots[0..self.limit]) |*slot| {
             if (slot.* == null) {
                 try self.budget.reserve(child_commit_ceiling);
                 const id = self.next_id;
@@ -91,7 +91,7 @@ pub const Manager = struct {
     // Caller must have positive evidence that creation never happened OR
     // that the owned process exited. A kill request/timeout is insufficient.
     pub fn confirmGone(self: *Manager, id: u64) Error!void {
-        for (&self.slots) |*slot| {
+        for (self.slots[0..self.limit]) |*slot| {
             if (slot.*) |item| {
                 if (item.id == id) {
                     slot.* = null;
@@ -107,7 +107,7 @@ pub const Manager = struct {
     // Pending starts and stops both pin the asset until confirmed gone.
     pub fn canRemoveAsset(self: *const Manager, asset_id: u64) bool {
         if (asset_id == 0) return false;
-        for (self.slots) |slot| {
+        for (self.slots[0..self.limit]) |slot| {
             if (slot) |item| {
                 if (item.asset_id == asset_id) return false;
             }
@@ -117,10 +117,20 @@ pub const Manager = struct {
 
     // Bounded value snapshot; consumers never borrow mutable worker slots.
     pub fn snapshot(self: *const Manager, out: []Instance) usize {
+        return self.snapshotPage(0, out);
+    }
+
+    // Offset counts occupied entries. Serialize against mutations or page a copied snapshot.
+    pub fn snapshotPage(self: *const Manager, offset: usize, out: []Instance) usize {
+        var skip = offset;
         var n: usize = 0;
-        for (self.slots) |slot| {
+        for (self.slots[0..self.limit]) |slot| {
             if (n == out.len) break;
             if (slot) |item| {
+                if (skip != 0) {
+                    skip -= 1;
+                    continue;
+                }
                 out[n] = item;
                 n += 1;
             }
@@ -181,4 +191,33 @@ test "invalid limits and exhausted IDs do not consume reservations" {
     m.next_id = std.math.maxInt(u64);
     try std.testing.expectError(error.IdExhausted, m.reserveStart(1));
     try std.testing.expectEqual(@as(usize, 0), m.budget.used);
+}
+
+test "1024 logical slots, last page and full budget recovery" {
+    var m = try Manager.init(max_instances, child_commit_ceiling * max_instances);
+    for (0..max_instances) |i| {
+        const id = try m.reserveStart(1);
+        try std.testing.expectEqual(@as(u64, @intCast(i + 1)), id);
+    }
+    try std.testing.expectEqual(@as(usize, 1024), m.count());
+    try std.testing.expectError(error.Capacity, m.reserveStart(1));
+    var rows: [32]Instance = undefined;
+    try std.testing.expectEqual(@as(usize, 24), m.snapshotPage(1000, &rows));
+    try std.testing.expectEqual(@as(u64, 1024), rows[23].id);
+    try m.requestStop(1024);
+    try std.testing.expectError(error.Capacity, m.reserveStart(1));
+    try m.confirmGone(1024);
+    const replacement = try m.reserveStart(2);
+    try std.testing.expectEqual(@as(u64, 1025), replacement);
+    try std.testing.expectError(error.UnknownInstance, m.confirmGone(1024));
+    try m.confirmGone(replacement);
+    for (1..1024) |id| try m.confirmGone(@intCast(id));
+    try std.testing.expectEqual(@as(usize, 0), m.count());
+}
+
+test "1024 configured slots do not override actual budget" {
+    var m = try Manager.init(max_instances, child_commit_ceiling);
+    const id = try m.reserveStart(1);
+    try std.testing.expectError(error.BudgetExceeded, m.reserveStart(2));
+    try m.confirmGone(id);
 }

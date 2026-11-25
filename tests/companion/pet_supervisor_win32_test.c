@@ -58,7 +58,8 @@ int main(void) {
     DWORD length = GetModuleFileNameW(NULL, path, 1024), code = 99;
     BOOL running = FALSE, forced = FALSE;
     HANDLE observed = NULL;
-    pet_supervisor_group group = {0};
+    static pet_supervisor_group group;
+    _Static_assert(PET_GROUP_MAX == 1024u, "manager capacity contract");
     uint64_t a = 0, b = 0, rejected = 0;
     CHECK(length && length < 1024);
     CHECK(pet_child_start(&owner, L"relative.exe", &options) == PET_CHILD_INVALID);
@@ -104,9 +105,13 @@ int main(void) {
         CHECK(pet_child_stop(&owner, 5000, &forced, &code) == PET_CHILD_OK && !forced && code == 0);
     }
     /* Two live children, one group, distinct state channels. Limit by
-     * conservative memory ceiling even though count cap permits three. */
+     * conservative memory ceiling even though count cap permits 1024. */
     options.smoke = TRUE;
-    CHECK(pet_group_open(&group, 3, PET_CHILD_COMMIT_LIMIT * 2) == PET_CHILD_OK);
+    CHECK(pet_group_open(&group, PET_GROUP_MAX + 1, PET_CHILD_COMMIT_LIMIT) == PET_CHILD_INVALID);
+    CHECK(pet_group_open(&group, PET_GROUP_MAX, PET_CHILD_COMMIT_LIMIT) == PET_CHILD_OK);
+    CHECK(group.limit == PET_GROUP_MAX && !group.count);
+    CHECK(pet_group_close(&group) == PET_CHILD_OK);
+    CHECK(pet_group_open(&group, PET_GROUP_MAX, PET_CHILD_COMMIT_LIMIT * 2) == PET_CHILD_OK);
     CHECK(pet_child_start(&other, path, &options) == PET_CHILD_BUSY);
     CHECK(pet_group_start(&group, L"relative.exe", &options, &rejected) == PET_CHILD_INVALID);
     CHECK(!rejected && !group.count);
