@@ -15,6 +15,7 @@ const identity = @import("vcs_identity");
 const contract = @import("vcs_provider");
 const panel = @import("vcs_panel");
 const ui = @import("pulse_ui_model");
+const context = @import("pulse_context");
 const capabilities = @import("vcs_capabilities");
 const detect = @import("vcs_detect");
 
@@ -253,7 +254,11 @@ pub const Controller = struct {
 /// close. Failed close retains the handle; no new commands are accepted.
 /// Tool/repository approval and provider lifetime belong to the caller.
 pub const Binding = struct {
+    pub const Navigation = context.Navigation(identity.max_path_bytes);
+
     controller: Controller,
+    navigation: Navigation = .{},
+    navigation_generation: ?u64 = null,
     model: ?ui.Panel = null,
     language: panel.Language,
     accepting: bool = false,
@@ -303,6 +308,51 @@ pub const Binding = struct {
         self.accepting = true;
     }
 
+    /// Subscribe only after the panel is live. Callback delivery stores a
+    /// bounded directory ticket; no VCS tool or filesystem lookup runs there.
+    pub fn openNavigation(self: *Binding, host: host_mod.Host) host_mod.Error!void {
+        try self.openNavigationWithTable(try context.Table.init(host.raw()));
+    }
+
+    pub fn openNavigationWithTable(self: *Binding, table: context.Table) host_mod.Error!void {
+        if (!self.accepting) return error.State;
+        try self.navigation.open(table);
+        try self.invalidateNavigation();
+        try self.render();
+    }
+
+    /// Invalidate an old selection before any owner-side publication or
+    /// command. Retry failed cancellation without certifying a drain.
+    fn invalidateNavigation(self: *Binding) host_mod.Error!void {
+        if (!self.navigation.accepting) return;
+        const latest = if (self.navigation.latest) |*value| value else return;
+        if (self.navigation_generation == latest.generation) return;
+        try self.controller.clear();
+        self.navigation_generation = latest.generation;
+    }
+
+    /// The owner can schedule independent repository discovery and approval
+    /// for this ticket. A null directory means clear, not a repository root.
+    pub fn takeNavigation(self: *Binding) host_mod.Error!?Navigation.Ticket {
+        if (!self.accepting) return error.State;
+        try self.invalidateNavigation();
+        if (!self.navigation.pending) return null;
+        try self.render();
+        return self.navigation.take();
+    }
+
+    /// Only apply a still-current, independently authorized resolution.
+    /// A navigation ticket is not itself proof of trust or root identity.
+    pub fn selectResolved(self: *Binding, ticket: *const Navigation.Ticket, provider: contract.Provider, workspace: *const identity.Workspace) host_mod.Error!void {
+        if (!self.accepting) return error.State;
+        try self.invalidateNavigation();
+        if (ticket.directory() == null or !self.navigation.isCurrent(ticket)) {
+            try self.render();
+            return error.State;
+        }
+        try self.selectAuthorized(provider, workspace);
+    }
+
     /// Only the registered panel and declared vocabulary may invoke actions.
     /// Errors are retained for the owner; do not throw across C ABI.
     fn onCommand(user: ?*anyopaque, id: u64, command: abi.StringView) callconv(.c) void {
@@ -312,6 +362,11 @@ pub const Binding = struct {
         if (model.id != id) return;
         const name = abi.slice(command) orelse return;
         self.last_error = null;
+        self.invalidateNavigation() catch |err| {
+            self.last_error = err;
+            self.render() catch {};
+            return;
+        };
         self.controller.command(name) catch |err| {
             self.last_error = err;
         };
@@ -323,7 +378,11 @@ pub const Binding = struct {
     /// Resolved, independently authorized selection only. Never resolve a
     /// repository or spawn a CLI from this UI-thread method.
     pub fn select(self: *Binding, provider: contract.Provider, workspace: *const identity.Workspace) host_mod.Error!void {
-        if (!self.accepting) return error.State;
+        if (!self.accepting or self.navigation.accepting) return error.State;
+        try self.selectAuthorized(provider, workspace);
+    }
+
+    fn selectAuthorized(self: *Binding, provider: contract.Provider, workspace: *const identity.Workspace) host_mod.Error!void {
         self.controller.select(provider, workspace) catch |err| {
             self.last_error = err;
             self.render() catch {};
@@ -347,6 +406,11 @@ pub const Binding = struct {
     /// An explicit owner event can advance a task and repaint. No wait or
     /// recursive dispatch. After closing, the owner may still pump to drain.
     pub fn pump(self: *Binding) host_mod.Error!void {
+        self.invalidateNavigation() catch |err| {
+            self.last_error = err;
+            if (self.accepting) self.render() catch {};
+            return err;
+        };
         self.controller.pump() catch |err| {
             self.last_error = err;
             return err;
@@ -386,6 +450,9 @@ pub const Binding = struct {
     pub fn requestStop(self: *Binding) host_mod.Error!void {
         self.accepting = false;
         var failure: ?host_mod.Error = null;
+        self.navigation.close() catch |err| {
+            failure = err;
+        };
         self.controller.requestStop() catch |err| {
             failure = err;
         };
@@ -398,6 +465,7 @@ pub const Binding = struct {
 
     pub fn checkDrained(self: *const Binding) error{Busy}!void {
         if (self.model != null or self.poisoned) return error.Busy;
+        try self.navigation.checkDrained();
         try self.controller.checkDrained();
     }
 };
@@ -764,5 +832,36 @@ test "model update failure does not free an active host task" {
     try binding.requestStop();
     mock.runWork();
     try binding.pump();
+    try binding.checkDrained();
+}
+
+test "navigation tickets prevent obsolete selection and result publication" {
+    var mock: Mock = .{};
+    var host_ui: MockUi = .{};
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.openWithTable(host_ui.table());
+    // Context adapter callback ownership is tested in pulse_context.
+    // Model the mailbox's latest copied tickets here to exercise the gate.
+    binding.navigation.accepting = true;
+    var first: Binding.Navigation.Ticket = .{ .generation = 1, .len = 3 };
+    @memcpy(first.bytes[0..3], "one");
+    binding.navigation.latest = first;
+    binding.navigation.pending = true;
+    const ticket = (try binding.takeNavigation()).?;
+    const workspace = try identity.Workspace.init(.git, "repo", "repo");
+    try std.testing.expectError(error.State, binding.select(mock.provider(), &workspace));
+    try binding.selectResolved(&ticket, mock.provider(), &workspace);
+    mock.runWork();
+    var second: Binding.Navigation.Ticket = .{ .generation = 2, .len = 3 };
+    @memcpy(second.bytes[0..3], "two");
+    binding.navigation.latest = second;
+    binding.navigation.pending = true;
+    try std.testing.expectError(error.State, binding.selectResolved(&ticket, mock.provider(), &workspace));
+    try binding.pump();
+    try std.testing.expectEqual(panel.Phase.empty, binding.controller.view().phase);
+    try std.testing.expect(binding.controller.view().snapshot == null);
+    const next = (try binding.takeNavigation()).?;
+    try std.testing.expectEqualStrings("two", next.directory().?);
+    try binding.requestStop();
     try binding.checkDrained();
 }
