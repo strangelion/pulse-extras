@@ -99,6 +99,27 @@ pub fn editPreferenceDefault(hex: []const u8, edit: *const PreferenceEdit) !void
     return outcome;
 }
 
+pub const RecoveryReport = @import("companion/pet_recovery_scan.zig").Report;
+
+// Use the same verified module and private-root lease as other maintenance
+// operations. The scan never adopts or deletes any asset or preference.
+pub fn scanRecoveryDefault(hex: []const u8) !RecoveryReport {
+    if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
+    const digest = try parseDigest(hex);
+    var path: [1024]u16 = undefined;
+    const root = try packageRoot(&path);
+    const owner = try std.heap.page_allocator.create(runtime.Owner);
+    owner.* = .{};
+    const outcome = blk: {
+        owner.open(root, digest, 1, 128 * 1024 * 1024) catch |err| break :blk @as(anyerror!RecoveryReport, err);
+        _ = openPrivateDefault(owner) catch |err| break :blk @as(anyerror!RecoveryReport, err);
+        break :blk store.scanRecovery(owner);
+    };
+    owner.close() catch return error.CleanupFailed;
+    std.heap.page_allocator.destroy(owner);
+    return outcome;
+}
+
 pub const ImportResult = local_import.Result;
 pub const ImportCancel = local_import.Cancel;
 pub const ImportRequest = struct {

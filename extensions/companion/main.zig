@@ -26,7 +26,7 @@ const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -74,6 +74,9 @@ const Instance = struct {
     picker_for_dialog: bool = false,
     picker_request: u64 = 0,
     fallback_pick: bool = false,
+    recovery_scan: bool = false,
+    work_recovery_report: ?library.RecoveryReport = null,
+    recovery_report: ?library.RecoveryReport = null,
     picked_folder: ?library.PickedFolder = null,
     dialogs: ?raw.PulseDialogsV1 = null,
     import_cancel_requested: bool = false,
@@ -103,6 +106,7 @@ const Content = struct {
     row_ids: [16][64]u8 = undefined,
     dynamic_ids: [4][64]u8 = undefined,
     library_count: [160]u8 = undefined,
+    recovery_text: [512]u8 = undefined,
     root: ui.Node = undefined,
     value: [256]u8 = undefined,
 };
@@ -134,6 +138,10 @@ fn horizontal(id: []const u8, children: []const ui.Node) ui.Node {
     node.gap = .{ .present = 1, .value = 6 };
     ui.withChildren(&node, children);
     return node;
+}
+
+fn recoveryText(report: library.RecoveryReport, buffer: []u8) ![]const u8 {
+    return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved });
 }
 
 fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
@@ -224,6 +232,16 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     import_count = 3;
                 }
                 content.children[count] = horizontal("library.import-toolbar", content.import_toolbar[0..import_count]);
+                count += 1;
+            }
+            if (config.runtime_sha256.len == 64) {
+                const can_scan = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.import_dialog == 0 and instance.picker_request == 0;
+                content.children[count] = action("library.recovery-scan", "扫描恢复状态（只读）", commands[22], can_scan);
+                count += 1;
+            }
+            if (instance.recovery_report) |report| {
+                const body = recoveryText(report, &content.recovery_text) catch unreachable;
+                content.children[count] = changingLabel(&content.dynamic_ids[2], "library.recovery-report", body);
                 count += 1;
             }
         },
@@ -412,6 +430,14 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
         if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
         return raw.PULSE_TASK_COMPLETED;
     }
+    if (instance.recovery_scan) {
+        instance.work_recovery_report = library.scanRecoveryDefault(config.runtime_sha256) catch |err| {
+            instance.work_error = err;
+            return raw.PULSE_TASK_FAILED;
+        };
+        if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
+        return raw.PULSE_TASK_COMPLETED;
+    }
     if (instance.preference_edit) |*edit| {
         library.editPreferenceDefault(config.runtime_sha256, edit) catch |err| {
             instance.work_error = err;
@@ -564,6 +590,20 @@ fn pollLibrary(instance: *Instance) void {
     }
     diag.status("companion-library-terminal", instance.task_state);
     instance.task_id = 0;
+    if (instance.recovery_scan) {
+        instance.recovery_scan = false;
+        const done = instance.work_done.load(.acquire);
+        if (instance.task_state == raw.PULSE_TASK_COMPLETED and done and instance.work_error == null and instance.work_recovery_report != null) {
+            instance.recovery_report = instance.work_recovery_report;
+            instance.library_status = "恢复扫描完成；未修改素材";
+        } else {
+            instance.recovery_report = null;
+            instance.library_status = if (instance.task_state == raw.PULSE_TASK_CANCELLED) "恢复扫描已取消" else if (done) if (instance.work_error) |err| @errorName(err) else "恢复扫描结果无效" else "恢复扫描未完成";
+        }
+        instance.work_recovery_report = null;
+        refresh(instance);
+        return;
+    }
     if (instance.fallback_pick) {
         instance.fallback_pick = false;
         const done = instance.work_done.load(.acquire);
@@ -640,7 +680,7 @@ fn pollRuntime(instance: *Instance) void {
 }
 
 fn startRuntimeCheck(instance: *Instance) void {
-    if (!instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0 or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick) return;
+    if (!instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0 or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan) return;
     const tasks = instance.tasks orelse return;
     const create = tasks.create orelse return;
     // Existing dispatcher/timer is required: do not create an uncollectable task.
@@ -676,7 +716,7 @@ fn startBuiltin(instance: *Instance) void {
 }
 
 fn startAsset(instance: *Instance, asset_id: u64) void {
-    if (!instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or asset_id == 0) return;
+    if (!instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or asset_id == 0) return;
     if (instance.runtime_task_id != 0) {
         if (instance.task_kind != .builtin_session) return;
         instance.runtime_status = if (instance.session.requestAsset(asset_id)) "已提交新增实例请求" else "暂不可新增实例；请等待或停止";
@@ -1107,6 +1147,15 @@ fn cancelImport(instance: *Instance) void {
     refresh(instance);
 }
 
+fn startRecovery(instance: *Instance) void {
+    if (!instance.active or config.runtime_sha256.len != 64 or instance.dispatch == null or instance.tasks == null or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.preference_edit != null or instance.import_request != null) return;
+    instance.recovery_report = null;
+    instance.work_recovery_report = null;
+    instance.recovery_scan = true;
+    startLibrary(instance, false);
+    if (instance.task_id == 0) instance.recovery_scan = false;
+}
+
 fn startLibrary(instance: *Instance, capture_query: bool) void {
     const tasks = instance.tasks orelse return;
     if (instance.task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0) return;
@@ -1131,10 +1180,10 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     instance.work_done.store(false, .release);
     instance.work_error = null;
     instance.work_snapshot = .{};
-    if (!instance.fallback_pick) instance.library_loaded = false;
+    if (!instance.fallback_pick and !instance.recovery_scan) instance.library_loaded = false;
     const descriptor: raw.PulseTaskDescriptor = .{
         .size = @sizeOf(raw.PulseTaskDescriptor),
-        .title = abi.view(if (instance.fallback_pick) "选择素材文件夹" else if (instance.import_request != null) "导入桌宠素材" else if (instance.preference_edit != null) "保存桌宠偏好" else "读取桌宠素材清单"),
+        .title = abi.view(if (instance.fallback_pick) "选择素材文件夹" else if (instance.recovery_scan) "扫描桌宠恢复状态" else if (instance.import_request != null) "导入桌宠素材" else if (instance.preference_edit != null) "保存桌宠偏好" else "读取桌宠素材清单"),
         .type = abi.view("companion.library"),
         .work = readLibrary,
         .user = instance,
@@ -1142,7 +1191,7 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     var id: u64 = 0;
     if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
         instance.task_id = id;
-        instance.library_status = if (instance.fallback_pick) "正在使用 Windows 文件夹选择器（60 秒超时）" else if (instance.import_request != null) "正在导入本地素材" else if (instance.preference_edit != null) "正在保存素材偏好" else "正在自动读取素材清单";
+        instance.library_status = if (instance.fallback_pick) "正在使用 Windows 文件夹选择器（60 秒超时）" else if (instance.recovery_scan) "正在进行只读恢复扫描" else if (instance.import_request != null) "正在导入本地素材" else if (instance.preference_edit != null) "正在保存素材偏好" else "正在自动读取素材清单";
         armTimer(instance);
         if (instance.timer == null) instance.library_status = "正在读取；宿主自动刷新不可用，可手动检查";
     } else {
@@ -1196,6 +1245,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             19 => showImport(instance),
             20 => cancelImport(instance),
             21 => browseImport(instance),
+            22 => startRecovery(instance),
             else => {},
         }
         return;
@@ -1513,4 +1563,14 @@ test "empty library hides pagination and manual poll unless needed" {
     instance.task_id = 1;
     fill(&instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 4), content.children[4].children.count);
+}
+
+test "recovery summary reports anomalies without promising repair" {
+    var buffer: [512]u8 = undefined;
+    const body = try recoveryText(.{ .registered = 2, .missing = 1, .orphan_packages = 3, .invalid = 4 }, &buffer);
+    try std.testing.expect(std.mem.indexOf(u8, body, "已登记 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "缺失 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "孤立目录 3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "无效项 4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "未执行清理") != null);
 }

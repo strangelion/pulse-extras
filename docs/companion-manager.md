@@ -1087,3 +1087,21 @@ subscription is released on dialog close and during session shutdown. If V2
 or its command subscription is unavailable, the separate toolbar picker
 remains available; if pulse.pickers is also missing, the approved Zig/Windows
 helper remains the final fallback.
+
+## Native read-only recovery diagnostics
+
+The bundled library page now exposes an explicit recovery scan command. It
+uses the existing serialized library task, independently verifies the packaged
+runtime, obtains the normal private-root owner lease, and runs the bounded
+store scan. While scanning, import, preference writes and runtime launch are
+not admitted. Completion is collected only after the host task reaches a
+terminal state and the worker publishes its result. The page retains its
+existing inventory snapshot and reports the last completed scan's registered,
+missing, orphan, pending, invalid, unknown and unreserved counts separately.
+Cancel/failure must not publish a partial result. This is a top-level namespace
+scan, not content verification or a repair plan; the private-root lease may
+initialize normal root/lock infrastructure, but no asset or preference is
+adopted, rewritten, or removed. The C ABI fixture checks command registration
+and visibility; the existing isolated bridge fixture exercises classification.
+Actual host interaction and new CI are NOT VERIFIED at this checkpoint.
+Deletion/recovery journaling remains deliberately disabled.
