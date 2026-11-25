@@ -155,3 +155,9 @@ Use the existing bundled isolated-host workflow. On the market page:
 6. Record host version, exact source revision and whether Windows accepted
    the browser handoff separately from whether the gallery actually loaded.
    This is a manual real-host check, not an automated CI result.
+
+If the diagnostic is accepted but blank, click "图片不可见？本次回退文字显示".
+Verify the node disappears, the diagnostic cannot be submitted again during
+that activation, and no browser opens unless the gallery action is clicked.
+When a task is pending without an automatic timer, use "手动检查任务状态"
+on Market; it must collect the same owned task rather than spawn a duplicate.

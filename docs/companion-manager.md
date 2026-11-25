@@ -1702,3 +1702,22 @@ queue, selected detail and local inventory are not changed. The task is
 collected through the existing host task lifecycle. Tests use a mock
 ShellExecuteW function and never launch the browser in CI. Actual default
 browser behavior (and shell extension latency) remains real-host acceptance.
+
+## Preview fallback hardening
+
+The Preview 3 IMAGE diagnostic is still opt-in. An accepted model update
+does not acknowledge rendering. The explicit "图片不可见？本次回退文字显示"
+action handles an accepted but blank image, removes the node and suppresses
+further diagnostic submissions for the activation, just like an automatic
+model-update rejection. No browser is launched automatically. The fixed
+official gallery remains available, with a manual URL if shell handoff fails.
+Browser handoff may use the existing host tasks table even without dispatch;
+the market renders a manual status collection button whenever a task exists
+without the timer, including browser, batch and unrelated library work.
+The market tree storage and ABI fixture ceiling accommodate the maximum
+combined view. The pinned public SDK preview.h is a file-preview provider
+registration API, not an embedded settings-panel bitmap submission API;
+resources.h exposes stat/settings/audit, not a generic image upload or
+resource URI resolver. Neither is repurposed as an invented image loader.
+Real catalog thumbnail/animation rendering is still gated on verified URI
+and renderer behavior and isolated bounded decoding.
