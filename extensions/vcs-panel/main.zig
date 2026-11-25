@@ -17,7 +17,12 @@ const Instance = struct {
     active: bool = false,
 
     fn start(self: *Instance) host_mod.Error!void {
-        if (self.active) return;
+        if (self.active) {
+            if (self.binding) |*binding| {
+                if (binding.accepting) return;
+            }
+            return error.State;
+        }
         if (self.binding != null) return error.State;
         self.binding = try host_query.Binding.init(try async_host.taskTable(self.host), .en);
         errdefer self.stop() catch |err| diag.status("vcs-rollback-failed", @intFromError(err));
