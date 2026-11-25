@@ -1052,11 +1052,9 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                         GetThreadDpiAwarenessContext());
                     BOOL cursor_ok = awareness == DPI_AWARENESS_PER_MONITOR_AWARE ?
                         GetPhysicalCursorPos(&mouse) : GetCursorPos(&mouse);
-                    if (cursor_ok && GetWindowRect(surface.window, &bounds) &&
-                        bounds.right > bounds.left && bounds.bottom > bounds.top)
-                        (void)pet_gaze_observe(&gaze, now, mouse.x, mouse.y,
-                            (double)bounds.left + ((double)bounds.right - bounds.left) * gaze_x,
-                            (double)bounds.top + ((double)bounds.bottom - bounds.top) * gaze_y);
+                    if (cursor_ok && GetWindowRect(surface.window, &bounds))
+                        (void)pet_gaze_observe_bounds(&gaze, now, mouse.x, mouse.y,
+                            bounds.left, bounds.top, bounds.right, bounds.bottom, gaze_x, gaze_y);
                     else {
                         pet_gaze_reset(&gaze);
                         gaze.next = now + PET_GAZE_INTERVAL;

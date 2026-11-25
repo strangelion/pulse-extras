@@ -53,6 +53,21 @@ static inline int pet_gaze_observe(pet_gaze *g, uint64_t now,
     return g->direction;
 }
 
+/* Screen-space bounds may have a negative origin on secondary monitors. */
+static inline int pet_gaze_observe_bounds(pet_gaze *g, uint64_t now,
+    int32_t x, int32_t y, int32_t left, int32_t top, int32_t right, int32_t bottom,
+    double anchor_x, double anchor_y) {
+    if (right <= left || bottom <= top || !isfinite(anchor_x) || !isfinite(anchor_y) ||
+        anchor_x < 0 || anchor_x > 1 || anchor_y < 0 || anchor_y > 1) {
+        pet_gaze_reset(g);
+        g->next = now + PET_GAZE_INTERVAL;
+        return PET_GAZE_NONE;
+    }
+    return pet_gaze_observe(g, now, x, y,
+        (double)left + ((double)right - left) * anchor_x,
+        (double)top + ((double)bottom - top) * anchor_y);
+}
+
 static inline int pet_gaze_eligible(unsigned version, int enabled, int visible,
     int reduced, int pressed, int activity, unsigned row) {
     return version == 2 && enabled && visible && !reduced && !pressed && !activity && row == 0;

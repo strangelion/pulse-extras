@@ -44,6 +44,8 @@ on:
       - tests/companion/pet_stress_fixtures.py
       - tests/companion/pet_webp_budget_test.c
       - scripts/install_pet_webp.py
+      - scripts/test_install_pet_webp.py
+      - 'shared/companion/pet_gaze_policy.h'
       - .github/workflows/pet-stress.yml
 
 permissions:

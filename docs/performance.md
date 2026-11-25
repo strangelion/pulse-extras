@@ -138,6 +138,7 @@ On Windows with the pinned Zig and Python versions:
 zig build pet-demo -Doptimize=ReleaseSafe --summary all
 python tests/companion/pet_stress.py --count 100 --seconds 30 --output zig-out/stress-synthetic
 python scripts/install_pet_webp.py
+python scripts/install_pet_webp.py --check
 zig build pet-demo -Doptimize=ReleaseSafe -Dpet-libwebp=true --summary all
 python tests/companion/pet_stress_fixtures.py zig-out/bench-fixtures
 python tests/companion/pet_stress.py --count 100 --seconds 30 --package zig-out/bench-fixtures/fixture-v1 fixture-v1 --webp 2 zig-out/bench-fixtures/fixture-v2.webp --output zig-out/stress-mixed
@@ -172,3 +173,11 @@ Use reproducible workloads and report failures as well as successes. Do
 not invent scores for planned extensions or set hard performance gates
 from a single observation. Compare like-for-like runner and workload
 before claiming improvements.
+
+The optional decoder uses `.local/deps/libwebp-1.6.0` and its pinned archive,
+not `zig-out/deps`. The installer is repeatable and can stage from the verified
+local archive without network access. Builds with `-Dpet-libwebp=true` check
+both the archive and source tree before compilation and never download. If a
+staged source differs, move it aside and rerun the installer; a corrupt archive
+must likewise be moved aside before downloading again. The default WIC build
+requires neither Python for this check nor libwebp.

@@ -388,8 +388,9 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{ "user32", "gdi32", "shell32", "ole32", "windowscodecs", "uuid", "advapi32" }) |lib|
         pet_root.linkSystemLibrary(lib, .{});
     // Explicit experimental backend. The default WIC build is unchanged.
-    if (b.option(bool, "pet-libwebp", "Use the pinned static WebP decoder for pet-demo") orelse false) {
-        const source = b.path("zig-out/deps/libwebp-1.6.0");
+    const pet_libwebp = b.option(bool, "pet-libwebp", "Use the pinned static WebP decoder for pet-demo") orelse false;
+    if (pet_libwebp) {
+        const source = b.path(".local/deps/libwebp-1.6.0");
         pet_root.addIncludePath(source);
         pet_root.addCMacro("PULSE_PET_LIBWEBP", "1");
         pet_root.addCSourceFiles(.{
@@ -415,6 +416,14 @@ pub fn build(b: *std.Build) void {
         pet_root.addCSourceFile(.{ .file = b.path("shared/companion/pet_webp_utils.c"), .flags = &.{"-DWEBP_DSP_OMIT_C_CODE=0"} });
     }
     const pet = b.addExecutable(.{ .name = "pulse-pet-demo", .root_module = pet_root });
+    if (pet_libwebp) {
+        // Verify before the compiler attempts to open any third-party source.
+        // Never download implicitly during a build.
+        const verify_webp = b.addSystemCommand(&.{"python"});
+        verify_webp.addFileArg(b.path("scripts/install_pet_webp.py"));
+        verify_webp.addArg("--check");
+        pet.step.dependOn(&verify_webp.step);
+    }
     const pet_step = b.step("pet-demo", "Build and install the experimental standalone Windows companion");
     pet_step.dependOn(&b.addInstallArtifact(pet, .{}).step);
 

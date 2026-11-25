@@ -109,6 +109,23 @@ int main(void) {
     CHECK(gaze.next == 1680);
     CHECK(pet_gaze_observe(&gaze, 1680, 0, 100, 0, 0) == PET_GAZE_NONE);
     CHECK(pet_gaze_observe(&gaze, 1780, 0, 101, 0, 0) == 8);
+    /* Negative desktop origin, explicit center anchor and resized window. */
+    pet_gaze_reset(&gaze);
+    CHECK(pet_gaze_observe_bounds(&gaze, 2000, -1200, -400,
+        -1300, -500, -1100, -300, 0.5, 0.5) == PET_GAZE_NONE);
+    CHECK(pet_gaze_observe_bounds(&gaze, 2100, -1000, -400,
+        -1300, -500, -1100, -300, 0.5, 0.5) == 4);
+    CHECK(pet_gaze_observe_bounds(&gaze, 2200, -1100, -200,
+        -1300, -500, -900, -100, 0.5, 0.5) == 8);
+    CHECK(pet_gaze_observe_bounds(&gaze, 2300, -1100, -400,
+        -1300, -500, -900, -100, 0.5, 1.0) == 0);
+    CHECK(pet_gaze_observe_bounds(&gaze, 2400, 0, 0,
+        10, 10, 10, 20, 0.5, 1.0) == PET_GAZE_NONE);
+    CHECK(!gaze.seeded && gaze.next == 2500);
+    CHECK(pet_gaze_observe_bounds(&gaze, 2500, 100, 0,
+        0, 0, 200, 200, 0.5, 0.5) == PET_GAZE_NONE);
+    CHECK(pet_gaze_observe_bounds(&gaze, 2600, 100, 100,
+        0, 0, 200, 200, 0.5, 0.5) == PET_GAZE_NONE);
     CHECK(pet_gaze_eligible(2, 1, 1, 0, 0, 0, 0));
     CHECK(!pet_gaze_eligible(1, 1, 1, 0, 0, 0, 0));
     CHECK(!pet_gaze_eligible(2, 1, 0, 0, 0, 0, 0));
