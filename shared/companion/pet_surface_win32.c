@@ -72,6 +72,10 @@ static LRESULT CALLBACK pet_window_proc(HWND window, UINT message, WPARAM wparam
     pet_surface *surface = (pet_surface *)GetWindowLongPtrW(window, GWLP_USERDATA);
     if (surface && (message == WM_DISPLAYCHANGE || message == WM_SETTINGCHANGE ||
         message == WM_DPICHANGED)) surface->placement_dirty = TRUE;
+    /* These broadcasts can be sent directly to the window procedure,
+     * not only retrieved by PeekMessage. Re-evaluate civil-time rules. */
+    if (surface && (message == WM_TIMECHANGE || message == WM_SETTINGCHANGE ||
+        message == WM_POWERBROADCAST)) surface->schedule_dirty = TRUE;
     if (message == WM_NCDESTROY) {
         SetWindowLongPtrW(window, GWLP_USERDATA, 0);
         /* CreateWindowExW can fail before its return value is published.

@@ -1001,3 +1001,17 @@ No additional stored preferences, user-edited schedule, SVG support
 or Motion format support. Add projection/boundary tests and a Windows
 package smoke manifest containing a valid schedule. Actual successful
 scheduled appearance change remains a desktop acceptance test.
+
+### Schedule wake boundary hardening
+
+Keep the 15-second fallback for missed wall-clock notifications, but
+cap the deadline at the next local minute boundary. WM_TIMECHANGE,
+WM_SETTINGCHANGE and WM_POWERBROADCAST mark a separate schedule-dirty
+flag directly in the window procedure, including sent messages.
+Returning from a modal menu forces a fresh schedule check. After the
+first default frame becomes visible, revisit an already due automatic
+outfit immediately, even with reduced motion and no animation deadline.
+A pure bounded predicate guards the outfit index before the quarantine
+mask shift. Tests cover clock boundaries, invalid clock/index values,
+fixed mode, quarantine, default fallback and sent window messages.
+No additional timer, worker, persistence or asset decode path.

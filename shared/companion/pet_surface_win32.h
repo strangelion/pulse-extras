@@ -43,6 +43,7 @@ typedef struct {
     BOOL primed;
     unsigned width, height;
     BOOL placement_dirty;
+    BOOL schedule_dirty;
     const pet_resources *resources;
 } pet_surface;
 

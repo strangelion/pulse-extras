@@ -3,6 +3,7 @@
 #include "pet_state_win32.h"
 #include "pet_menu_strings_win32.h"
 #include "pet_idle_policy.h"
+#include "pet_wardrobe_clock.h"
 #include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -296,9 +297,11 @@ static unsigned pet_menu(const pet_resources *resources, HWND window, POINT at, 
 /* Non-cryptographic variation only; no security decisions use this RNG. */
 /* Evaluate only the current local civil time. No catch-up of missed
  * rules after suspend, time-zone change or a clock adjustment. */
-static unsigned scheduled_outfit(const pet_package *package, pet_schedule_fn schedule) {
+static unsigned scheduled_outfit(const pet_package *package, pet_schedule_fn schedule,
+    uint32_t *delay) {
     SYSTEMTIME local;
     GetLocalTime(&local);
+    if (delay) *delay = pet_wardrobe_wait_ms(local.wSecond, local.wMilliseconds);
     unsigned next = schedule(&package->meta, local.wHour * 60u + local.wMinute,
         local.wDayOfWeek, local.wMonth, local.wDay);
     return next <= package->meta.outfit_count ? next : 0;
@@ -624,6 +627,8 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                     }
                     unsigned command = pet_menu(memory->resource_bridge, surface.window, cursor, scale, topmost,
                         reduced, state_slot != NULL, language, &package, &idle, outfit, auto_outfit, 1, NULL);
+                    /* A modal menu may span a civil-time boundary. */
+                    schedule_due = 0;
                     /* Check the owner signal immediately after the modal menu. */
                     if (stop && WaitForSingleObject(stop, 0) == WAIT_OBJECT_0) {
                         stopped = 1; done = 1; break;
@@ -765,16 +770,21 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             }
         }
         if (smoke && now >= smoke_end) break;
+        if (surface.schedule_dirty) {
+            surface.schedule_dirty = FALSE;
+            schedule_due = 0;
+        }
         if (auto_outfit && now >= schedule_due) {
-            schedule_target = scheduled_outfit(&package, schedule);
-            schedule_due = now + 15000;
+            uint32_t delay = 0;
+            schedule_target = scheduled_outfit(&package, schedule, &delay);
+            schedule_due = now + delay;
         }
         if (async_bound && InterlockedCompareExchange(&decode_ctx.ready, 0, 0)) {
             pet_decode_result result = {0};
             int status = take_decode(async, &decode_ctx, &result);
             if (status < 0) goto cleanup;
             if (status == 1 && result.kind == PET_DECODE_OUTFIT && auto_outfit &&
-                result.outfit != (schedule_target = scheduled_outfit(&package, schedule))) {
+                result.outfit != (schedule_target = scheduled_outfit(&package, schedule, NULL))) {
                 /* Wall clock changed while decoding; free rather than commit. */
                 pet_note(memory->resource_bridge, PET_NOTE_CANCELLED);
             } else if (status == 1 && result.kind == PET_DECODE_OUTFIT) {
@@ -831,8 +841,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
          * motion, managed mode or an outstanding optional animation. */
         pet_demo_sample base_point = {0};
         if (sample(version, reaction, now - started, reduced, &base_point)) goto cleanup;
-        int switch_due = auto_outfit && schedule_target != outfit &&
-            !(rejected_outfits & (UINT32_C(1) << schedule_target));
+        int switch_due = pet_wardrobe_switch_due(auto_outfit, outfit, schedule_target, rejected_outfits);
         if (switch_due && shown && !pressed && !activity && !activity_displayed &&
             base_point.row == 0 && !async->busy(async->owner)) {
             pet_idle_interrupt(&idle);
@@ -889,6 +898,9 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         if (!smoke && !shown) {
             if (pet_surface_show(&surface, TRUE) != PET_SURFACE_OK) goto cleanup;
             shown = 1;
+            /* First presentation must remain default. Immediately revisit
+             * a due outfit, even when reduced motion has no frame deadline. */
+            if (switch_due) schedule_due = 0;
         }
         DWORD wait = point.wait_ms ? point.wait_ms : INFINITE;
         if (auto_outfit) {

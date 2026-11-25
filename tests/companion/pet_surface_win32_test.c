@@ -2,6 +2,7 @@
 #include "../../shared/companion/pet_surface_win32.h"
 #include "../../shared/companion/pet_menu_strings_win32.h"
 #include "../../shared/companion/pet_idle_policy.h"
+#include "../../shared/companion/pet_wardrobe_clock.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,6 +68,18 @@ int main(void) {
     quota_fixture q = {{0}, {0}, UINT32_MAX, 0};
     const pet_resources budget = {&q, fixture_reserve, fixture_release, fixture_failed, NULL};
     CHECK(atlas && out);
+    CHECK(pet_wardrobe_wait_ms(0, 0) == 15000);
+    CHECK(pet_wardrobe_wait_ms(44, 999) == 15000);
+    CHECK(pet_wardrobe_wait_ms(45, 1) == 14999);
+    CHECK(pet_wardrobe_wait_ms(59, 999) == 1);
+    CHECK(pet_wardrobe_wait_ms(60, 0) == 15000);
+    CHECK(pet_wardrobe_wait_ms(59, 1000) == 15000);
+    CHECK(!pet_wardrobe_switch_due(0, 0, 1, 0));
+    CHECK(!pet_wardrobe_switch_due(1, 1, 1, 0));
+    CHECK(pet_wardrobe_switch_due(1, 0, 16, 0));
+    CHECK(!pet_wardrobe_switch_due(1, 0, 16, UINT32_C(1) << 16));
+    CHECK(!pet_wardrobe_switch_due(1, 0, UINT32_MAX, 0));
+    CHECK(pet_wardrobe_switch_due(1, 1, 0, 0));
     pet_idle_policy idle = {0};
     CHECK(pet_idle_delay(0) == 120000 && pet_idle_delay(UINT32_MAX) == 240000);
     CHECK(pet_idle_choose(&idle, 2, 1, 0, 0, 0) == PET_IDLE_NONE && !idle.opportunity);
@@ -126,6 +139,12 @@ int main(void) {
 
     CHECK(pet_surface_open(&surface, FALSE, TRUE) == PET_SURFACE_OK);
     CHECK(!IsWindowVisible(surface.window));
+    CHECK(!surface.schedule_dirty);
+    SendMessageW(surface.window, WM_TIMECHANGE, 0, 0);
+    CHECK(surface.schedule_dirty);
+    surface.schedule_dirty = FALSE;
+    SendMessageW(surface.window, WM_SETTINGCHANGE, 0, 0);
+    CHECK(surface.schedule_dirty);
     HCURSOR arrow = LoadCursorW(NULL, MAKEINTRESOURCEW(32512));
     CHECK(arrow != NULL);
     CHECK((HCURSOR)GetClassLongPtrW(surface.window, GCLP_HCURSOR) == arrow);
