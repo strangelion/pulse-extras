@@ -14,6 +14,7 @@ const host_query = @import("vcs_host_query");
 const run = @import("pulse_process");
 
 pub const Digest = [32]u8;
+pub const global_config_name = run.git_global_config_name;
 
 pub fn strictPath(path: []const u8) bool {
     if (!cli.candidatePath(path) or !std.unicode.utf8ValidateSlice(path) or path[path.len - 1] == std.fs.path.sep) return false;
@@ -138,14 +139,16 @@ pub const Policy = struct {
         if (!self.grant.root.eql(directory.slice())) return error.Permission;
         try self.verify();
         if (self.probe.at(self.grant.metadata.slice()) != .directory) return error.Permission;
+        run.validateGitEnvironment(self.environment, self.grant.neutral_cwd.slice()) catch return error.Permission;
         self.runner.configureApproved(.{ .path = self.grant.executable.slice(), .digest = self.grant.executable_digest }, 10 * std.time.ns_per_s) catch return error.Io;
+        self.runner.configureGitIsolation() catch return error.Permission;
         if (builtin.os.tag == .windows) self.runner.configureTree(.windows_job) catch return error.Io;
         const execution: cli.Execution = .{ .approved = .{
             .cwd = self.grant.neutral_cwd,
             .environment = self.environment,
             .gate = .{ .ctx = self, .check = &checkRequest },
         } };
-        _ = cli.probeApproved(.git, &self.grant.executable, &execution, self.runner) catch |err| return switch (err) {
+        const report = cli.probeApproved(.git, &self.grant.executable, &execution, self.runner) catch |err| return switch (err) {
             error.UnsupportedVersion => error.CliTooOld,
             error.InvalidVersion => error.Parse,
             error.UnapprovedExecutable, error.UnapprovedEnvironment, error.PermissionDenied => error.Permission,
@@ -154,6 +157,9 @@ pub const Policy = struct {
             error.Cancelled => error.Cancelled,
             else => error.Io,
         };
+        // GIT_CONFIG_GLOBAL was introduced in Git 2.32. Do not run any
+        // repository command on an older version that ignores isolation.
+        if (!(report.version orelse return error.Parse).atLeast(.{ .major = 2, .minor = 32 })) return error.CliTooOld;
         self.git = git_mod.Git.initApproved(self.runner, self.grant.executable, self.probe, execution) catch return error.Permission;
         const reported = try self.git.resolveWorkspace(self.grant.root.slice());
         if (!self.matchesWorkspace(&reported)) return error.Permission;
@@ -175,10 +181,11 @@ pub const Policy = struct {
 
     fn checkRequest(user: *anyopaque, runner: *run.Runner, request: run.Request) run.Error!void {
         const self: *Policy = @ptrCast(@alignCast(user));
-        if (runner != self.runner or runner.policy != .approved_local) return error.UnapprovedExecutable;
+        if (runner != self.runner or runner.policy != .approved_local or !runner.git_isolation) return error.UnapprovedExecutable;
         const approval = runner.approval orelse return error.UnapprovedExecutable;
         if (!equal(approval.slice(), self.grant.executable.slice()) or !equal(&approval.digest, &self.grant.executable_digest)) return error.UnapprovedExecutable;
         if (!equal(request.cwd orelse return error.UnapprovedEnvironment, self.grant.neutral_cwd.slice()) or request.environ_map != self.environment) return error.UnapprovedEnvironment;
+        try run.validateGitEnvironment(self.environment, self.grant.neutral_cwd.slice());
         const exe = self.grant.executable.slice();
         const root = self.grant.root.slice();
         const version = argvEqual(request.argv, &.{ exe, "--version" });
@@ -234,6 +241,14 @@ const Fixture = struct {
     }
 };
 
+fn configureFixtureEnvironment(environment: *std.process.Environ.Map, cwd: []const u8) !void {
+    var buffer: [identity.max_path_bytes]u8 = undefined;
+    try environment.put("GIT_CONFIG_GLOBAL", try run.gitGlobalConfigPath(cwd, &buffer));
+    try environment.put("GIT_CONFIG_NOSYSTEM", "1");
+    try environment.put("GIT_OPTIONAL_LOCKS", "0");
+    try environment.put("GIT_TERMINAL_PROMPT", "0");
+}
+
 test "grant rejects relative and overlapping paths" {
     const grant = try Fixture.makeGrant();
     try std.testing.expect(std.mem.endsWith(u8, grant.metadata.slice(), std.fs.path.sep_str ++ ".git"));
@@ -268,6 +283,8 @@ test "guard admits exact reviewed argv and rechecks evidence" {
     const exe = policy.grant.executable.slice();
     const root = policy.grant.root.slice();
     try runner.configureApproved(.{ .path = exe, .digest = policy.grant.executable_digest }, 10 * std.time.ns_per_s);
+    try runner.configureGitIsolation();
+    try configureFixtureEnvironment(&environment, policy.grant.neutral_cwd.slice());
     var request: run.Request = .{ .argv = &.{ exe, "--version" }, .cwd = policy.grant.neutral_cwd.slice(), .environ_map = &environment };
     try Policy.checkRequest(&policy, &runner, request);
     request.argv = &.{ exe, "-C", root, "reset", "--hard" };
@@ -330,6 +347,8 @@ test "configured execution gate rejects before attempting nonexistent tool" {
     defer environment.deinit();
     var policy = try fixture.makePolicy(&runner, &environment);
     try runner.configureApproved(.{ .path = policy.grant.executable.slice(), .digest = policy.grant.executable_digest }, 10 * std.time.ns_per_s);
+    try runner.configureGitIsolation();
+    try configureFixtureEnvironment(&environment, policy.grant.neutral_cwd.slice());
     if (builtin.os.tag == .windows) try runner.configureTree(.windows_job);
     const execution: cli.Execution = .{ .approved = .{
         .cwd = policy.grant.neutral_cwd,

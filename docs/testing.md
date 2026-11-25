@@ -99,3 +99,7 @@ Windows evidence tests cover the restricted config grammar, composition without 
 Additional Windows-only fixture checks actual config handle reads and changed content, distinguishes missing from existing marker, and rejects both names of a hard-linked regular file. Junction/reparse and ACL attack fixtures remain pending.
 
 ACL candidate tests cover pure basic ACL grammar, untrusted write/delete/ownership grants, unknown ACEs, invalid SID/ACE size, explicit owner and changed permission fingerprints, plus real Windows process-token SID ownership and exact system-config isolation variable. No real DACL fixture or effective-access proof yet. Latest previous platform CI must be independently confirmed before release.
+
+Git isolation tests cover exact environment values and rejection of arbitrary global config paths and injected config count. The real Windows DACL fixture modifies only a private test file, using native security APIs, and checks that a trusted owner/user with an Everyone read ACE passes while an added Everyone write ACE fails. The final ACL candidate 0a19791 passed full CI 45524845597 and Windows evidence ad59679 passed 45524373830. This revision still requires its own platform CI and real Git isolation launch evidence.
+
+Runner admission regression additionally verifies mandatory isolation controls and reset on executable reconfiguration without spawning a child. The temporary DACL fixture restores the restrictive ACL on failure as well as on success.

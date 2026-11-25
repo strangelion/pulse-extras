@@ -76,6 +76,42 @@ pub fn digestFile(io: std.Io, file: std.Io.File) ![32]u8 {
 /// credential variables, shell startup, or tool configuration injection.
 /// Product-specific policies require separate review, not a blacklist.
 pub fn validateEnvironment(map: *const std.process.Environ.Map) error{UnapprovedEnvironment}!void {
+    return validateEnvironmentInternal(map, null);
+}
+
+/// Only the dedicated isolated Git profile may select a global config file.
+/// The caller must supply an audited, pre-existing empty regular file in the
+/// neutral directory. Never create or truncate it as part of command admission.
+pub const git_global_config_name = "pulse-git-global-empty.conf";
+pub const max_git_config_path_bytes = 2048;
+
+pub fn gitGlobalConfigPath(cwd: []const u8, buffer: []u8) error{UnapprovedEnvironment}![]const u8 {
+    if (!localAbsolute(cwd) or cwd.len == 0 or cwd.len >= max_git_config_path_bytes or std.mem.indexOfScalar(u8, cwd, 0) != null) return error.UnapprovedEnvironment;
+    if (cwd[cwd.len - 1] == std.fs.path.sep or (builtin.os.tag == .windows and cwd[cwd.len - 1] == '/')) return error.UnapprovedEnvironment;
+    const path = std.fmt.bufPrint(buffer, "{s}" ++ std.fs.path.sep_str ++ git_global_config_name, .{cwd}) catch return error.UnapprovedEnvironment;
+    if (path.len > max_git_config_path_bytes) return error.UnapprovedEnvironment;
+    return path;
+}
+
+pub fn validateGitEnvironment(map: *const std.process.Environ.Map, cwd: []const u8) error{UnapprovedEnvironment}!void {
+    var buffer: [max_git_config_path_bytes]u8 = undefined;
+    const expected = try gitGlobalConfigPath(cwd, &buffer);
+    try validateEnvironmentInternal(map, expected);
+    for ([_][]const u8{ "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_CONFIG_GLOBAL" }, [_][]const u8{ "1", "0", "0", expected }) |key, value| {
+        if (!std.mem.eql(u8, map.get(key) orelse return error.UnapprovedEnvironment, value)) return error.UnapprovedEnvironment;
+    }
+}
+
+pub fn verifyEmptyGitConfig(io: std.Io, cwd: []const u8) !void {
+    var buffer: [max_git_config_path_bytes]u8 = undefined;
+    const path = try gitGlobalConfigPath(cwd, &buffer);
+    const file = try std.Io.Dir.openFileAbsolute(io, path, .{ .follow_symlinks = false });
+    defer file.close(io);
+    const stat = try file.stat(io);
+    if (stat.kind != .file or stat.size != 0) return error.UnapprovedEnvironment;
+}
+
+fn validateEnvironmentInternal(map: *const std.process.Environ.Map, git_global: ?[]const u8) error{UnapprovedEnvironment}!void {
     var iterator = map.iterator();
     while (iterator.next()) |entry| {
         const key = entry.key_ptr.*;
@@ -88,7 +124,8 @@ pub fn validateEnvironment(map: *const std.process.Environ.Map) error{Unapproved
             std.mem.eql(u8, key, "LC_ALL") or
             (std.mem.eql(u8, key, "GIT_TERMINAL_PROMPT") and std.mem.eql(u8, value, "0")) or
             (std.mem.eql(u8, key, "GIT_OPTIONAL_LOCKS") and std.mem.eql(u8, value, "0")) or
-            (std.mem.eql(u8, key, "GIT_CONFIG_NOSYSTEM") and std.mem.eql(u8, value, "1"));
+            (std.mem.eql(u8, key, "GIT_CONFIG_NOSYSTEM") and std.mem.eql(u8, value, "1")) or
+            (std.mem.eql(u8, key, "GIT_CONFIG_GLOBAL") and git_global != null and std.mem.eql(u8, value, git_global.?));
         if (!allowed) return error.UnapprovedEnvironment;
         if (std.mem.eql(u8, key, "SystemRoot") or std.mem.eql(u8, key, "WINDIR") or std.mem.eql(u8, key, "TEMP") or std.mem.eql(u8, key, "TMP")) {
             if (!localAbsolute(value)) return error.UnapprovedEnvironment;
@@ -137,4 +174,24 @@ test "system Git configuration can only be disabled with an exact value" {
     try map.put("GIT_CONFIG_NOSYSTEM", "1");
     try map.put("GIT_CONFIG_GLOBAL", "unapproved");
     try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
+}
+
+test "isolated Git environment requires exact controls and fixed global file" {
+    var map = std.process.Environ.Map.init(std.testing.allocator);
+    defer map.deinit();
+    const cwd = if (builtin.os.tag == .windows) "C:\\neutral" else "/neutral";
+    var buffer: [max_git_config_path_bytes]u8 = undefined;
+    const path = try gitGlobalConfigPath(cwd, &buffer);
+    try map.put("GIT_CONFIG_GLOBAL", path);
+    try map.put("GIT_CONFIG_NOSYSTEM", "1");
+    try map.put("GIT_OPTIONAL_LOCKS", "0");
+    try std.testing.expectError(error.UnapprovedEnvironment, validateGitEnvironment(&map, cwd));
+    try map.put("GIT_TERMINAL_PROMPT", "0");
+    try validateGitEnvironment(&map, cwd);
+    try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
+    try map.put("GIT_CONFIG_GLOBAL", "other.conf");
+    try std.testing.expectError(error.UnapprovedEnvironment, validateGitEnvironment(&map, cwd));
+    try map.put("GIT_CONFIG_GLOBAL", path);
+    try map.put("GIT_CONFIG_COUNT", "1");
+    try std.testing.expectError(error.UnapprovedEnvironment, validateGitEnvironment(&map, cwd));
 }

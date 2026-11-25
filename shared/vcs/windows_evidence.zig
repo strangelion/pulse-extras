@@ -46,6 +46,9 @@ extern "kernel32" fn CreateHardLinkW(new_path: [*:0]const u16, existing: [*:0]co
 extern "kernel32" fn GetCurrentDirectoryW(capacity: u32, path: [*]u16) callconv(.winapi) u32;
 extern "kernel32" fn WideCharToMultiByte(codepage: u32, flags: u32, input: [*]const u16, input_len: i32, output: [*]u8, output_len: i32, default_char: ?*const u8, used_default: ?*i32) callconv(.winapi) i32;
 
+extern "advapi32" fn ConvertStringSecurityDescriptorToSecurityDescriptorW(text: [*:0]const u16, revision: u32, descriptor: *?*anyopaque, size: ?*u32) callconv(.winapi) i32;
+extern "advapi32" fn ConvertSidToStringSidW(sid: *const anyopaque, text: *?[*:0]u16) callconv(.winapi) i32;
+extern "advapi32" fn SetSecurityInfo(handle: Handle, object_type: u32, information: u32, owner: ?*anyopaque, group: ?*anyopaque, dacl: ?*anyopaque, sacl: ?*anyopaque) callconv(.winapi) u32;
 extern "advapi32" fn GetSecurityInfo(handle: Handle, object_type: u32, information: u32, owner: *?*anyopaque, group: ?*?*anyopaque, dacl: *?*anyopaque, sacl: ?*?*anyopaque, descriptor: *?*anyopaque) callconv(.winapi) u32;
 extern "advapi32" fn IsValidSecurityDescriptor(descriptor: *const anyopaque) callconv(.winapi) i32;
 extern "advapi32" fn GetSecurityDescriptorDacl(descriptor: *const anyopaque, present: *i32, dacl: *?*anyopaque, defaulted: *i32) callconv(.winapi) i32;
@@ -426,6 +429,12 @@ pub fn collect(grant: *const approval.Grant) Error!Observation {
     install.update("pulse-win-install-v1");
     (try observeIdentity(grant.executable.slice(), false)).hashInto(&install);
     (try observeIdentity(grant.neutral_cwd.slice(), true)).hashInto(&install);
+    var global_buffer: [identity.max_path_bytes]u8 = undefined;
+    const global = try join(grant.neutral_cwd.slice(), approval.global_config_name, &global_buffer);
+    const empty = try openChecked(global, false, true);
+    defer empty.close();
+    if (empty.info.size_high != 0 or empty.info.size_low != 0) return error.Permission;
+    FileIdentity.from(empty.info).hashInto(&install);
     var repo = Sha256.init(.{});
     repo.update("pulse-win-repo-v1");
     (try observeIdentity(grant.root.slice(), true)).hashInto(&repo);
@@ -477,6 +486,11 @@ pub fn aclEvidence(grant: *const approval.Grant, principals: *const Principals, 
     var install_walk: AclWalk = .{ .principals = principals, .hash = &install };
     (try walkChecked(grant.executable.slice(), false, false, &install_walk)).close();
     (try walkChecked(grant.neutral_cwd.slice(), true, false, &install_walk)).close();
+    var global_buffer: [identity.max_path_bytes]u8 = undefined;
+    const global = try join(grant.neutral_cwd.slice(), approval.global_config_name, &global_buffer);
+    const global_file = try walkChecked(global, false, true, &install_walk);
+    defer global_file.close();
+    if (global_file.info.size_high != 0 or global_file.info.size_low != 0) return error.Permission;
     // Hash presence and exact value as well as ACLs of controlled directories.
     for ([_][]const u8{ "SystemRoot", "WINDIR", "TEMP", "TMP" }) |key| {
         install.update(key);
@@ -677,4 +691,75 @@ test "Windows process token user is an owned SID, not implicit approval" {
     try std.testing.expect(!principals.contains(user.slice()));
     try principals.add(user);
     try std.testing.expect(principals.contains(user.slice()));
+}
+
+/// Test-only fixture helpers. The production verifier never changes a DACL.
+fn fixtureOwner(handle: Handle) !Sid {
+    var owner: ?*anyopaque = null;
+    var dacl: ?*anyopaque = null;
+    var descriptor: ?*anyopaque = null;
+    const status = GetSecurityInfo(handle, 1, 5, &owner, null, &dacl, null, &descriptor);
+    defer if (descriptor) |memory| {
+        _ = LocalFree(memory);
+    };
+    if (status != 0) return error.TestUnexpectedResult;
+    return Sid.fromNative(owner orelse return error.TestUnexpectedResult);
+}
+
+fn fixtureSetDacl(handle: Handle, text: []const u8) !void {
+    const wide = try Wide.init(text);
+    var descriptor: ?*anyopaque = null;
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(wide.z(), 1, &descriptor, null) == 0) return error.TestUnexpectedResult;
+    const sd = descriptor orelse return error.TestUnexpectedResult;
+    defer _ = LocalFree(sd);
+    var present: i32 = 0;
+    var defaulted: i32 = 0;
+    var dacl: ?*anyopaque = null;
+    if (GetSecurityDescriptorDacl(sd, &present, &dacl, &defaulted) == 0 or present == 0) return error.TestUnexpectedResult;
+    // Protected DACL, only the private test file is affected.
+    if (SetSecurityInfo(handle, 1, 0x80000004, null, null, dacl, null) != 0) return error.TestUnexpectedResult;
+}
+
+test "Windows native DACL rejects added untrusted write grant" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const file = try tmp.dir.createFile(io, "acl-fixture", .{ .exclusive = true });
+    file.close(io);
+    var cwd: [identity.max_path_bytes]u8 = undefined;
+    var path_buffer: [identity.max_path_bytes]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buffer, "{s}\\.zig-cache\\tmp\\{s}\\acl-fixture", .{ try currentDirectory(&cwd), tmp.sub_path });
+    const wide = try Wide.init(path);
+    const handle = CreateFileW(wide.z(), 0x60080, 7, null, 3, 0x00200000, null) orelse return error.TestUnexpectedResult;
+    if (@intFromPtr(handle) == std.math.maxInt(usize)) return error.TestUnexpectedResult;
+    defer _ = CloseHandle(handle);
+    var info: FileInfo = undefined;
+    if (GetFileInformationByHandle(handle, &info) == 0) return error.TestUnexpectedResult;
+    const opened: Opened = .{ .handle = handle, .info = info };
+    const user = try currentProcessUser();
+    var principals: Principals = .{};
+    try principals.add(user);
+    try principals.add(try fixtureOwner(handle));
+    var native_sid: ?[*:0]u16 = null;
+    if (ConvertSidToStringSidW(user.slice().ptr, &native_sid) == 0) return error.TestUnexpectedResult;
+    const sid_string = native_sid orelse return error.TestUnexpectedResult;
+    defer _ = LocalFree(@ptrCast(sid_string));
+    var sid_buffer: [256]u8 = undefined;
+    const len = WideCharToMultiByte(65001, 0x80, sid_string, @intCast(std.mem.len(sid_string)), &sid_buffer, sid_buffer.len, null, null);
+    if (len <= 0) return error.TestUnexpectedResult;
+    const sid = sid_buffer[0..@intCast(len)];
+    var sddl_buffer: [512]u8 = undefined;
+    var safe_buffer: [512]u8 = undefined;
+    const safe = try std.fmt.bufPrint(&safe_buffer, "D:P(A;;FA;;;{s})(A;;FR;;;WD)", .{sid});
+    try fixtureSetDacl(handle, safe);
+    defer fixtureSetDacl(handle, safe) catch {};
+    var first = Sha256.init(.{});
+    var walk: AclWalk = .{ .principals = &principals, .hash = &first };
+    try walk.inspect(opened);
+    const changed = try std.fmt.bufPrint(&sddl_buffer, "D:P(A;;FA;;;{s})(A;;FW;;;WD)", .{sid});
+    try fixtureSetDacl(handle, changed);
+    try std.testing.expectError(error.Permission, walk.inspect(opened));
+    // Restore restrictive permissions before the temporary directory cleanup.
+    try fixtureSetDacl(handle, safe);
 }

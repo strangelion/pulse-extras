@@ -140,6 +140,7 @@ pub const Runner = struct {
     policy: ExecutionPolicy = .compatibility,
     tree_policy: TreePolicy = .direct_child,
     approval: ?trust.OwnedApproval = null,
+    git_isolation: bool = false,
     log: event_log.Log = .{},
     max_timeout_ns: u64 = default_max_timeout_ns,
     completed: usize = 0,
@@ -164,6 +165,7 @@ pub const Runner = struct {
         if (self.pending != null or self.live_outcomes != 0) return error.Busy;
         if (max_timeout_ns == 0 or policy == .approved_local) return error.InvalidRequest;
         self.approval = null;
+        self.git_isolation = false;
         self.policy = policy;
         self.max_timeout_ns = max_timeout_ns;
     }
@@ -174,6 +176,15 @@ pub const Runner = struct {
         try self.configure(.explicit_local, max_timeout_ns);
         self.approval = owned;
         self.policy = .approved_local;
+    }
+
+    /// Opt in only after explicit executable approval. Reset on reconfigure.
+    /// This does not establish repository trust or a filesystem sandbox.
+    pub fn configureGitIsolation(self: *Runner) Error!void {
+        if (self.state != .active) return error.Stopped;
+        if (self.pending != null or self.live_outcomes != 0) return error.Busy;
+        if (self.policy != .approved_local or self.approval == null) return error.UnapprovedExecutable;
+        self.git_isolation = true;
     }
 
     pub fn configureTree(self: *Runner, policy: TreePolicy) Error!void {
@@ -260,7 +271,11 @@ pub const Runner = struct {
         if (self.policy == .approved_local) {
             const approval = self.approval orelse return error.UnapprovedExecutable;
             if (!std.mem.eql(u8, approval.slice(), request.argv[0])) return error.UnapprovedExecutable;
-            try trust.validateEnvironment(request.environ_map.?);
+            if (self.git_isolation) {
+                try trust.validateGitEnvironment(request.environ_map.?, request.cwd.?);
+            } else {
+                try trust.validateEnvironment(request.environ_map.?);
+            }
         }
         if (self.live_outcomes >= max_live_outcomes) return error.OutputBudgetExceeded;
         const reservation = std.math.add(usize, request.stdout_limit, request.stderr_limit) catch return error.OutputBudgetExceeded;
@@ -293,6 +308,12 @@ pub const Runner = struct {
             approval.view().verify(self.io, request.argv[0]) catch |err| switch (err) {
                 error.Canceled => return error.Cancelled,
                 else => return error.UnapprovedExecutable,
+            };
+        }
+        if (self.git_isolation) {
+            trust.verifyEmptyGitConfig(self.io, request.cwd.?) catch |err| switch (err) {
+                error.Canceled => return error.Cancelled,
+                else => return error.UnapprovedEnvironment,
             };
         }
         const result = (if (self.tree_policy == .windows_job)
@@ -466,6 +487,10 @@ fn validateEnvironment(environment: *const std.process.Environ.Map) error{Invali
         if (std.mem.indexOfScalar(u8, key, 0) != null or std.mem.indexOfScalar(u8, key, '=') != null or std.mem.indexOfScalar(u8, value, 0) != null) return error.InvalidRequest;
     }
 }
+
+pub const git_global_config_name = trust.git_global_config_name;
+pub const gitGlobalConfigPath = trust.gitGlobalConfigPath;
+pub const validateGitEnvironment = trust.validateGitEnvironment;
 
 const testing = std.testing;
 
@@ -850,4 +875,28 @@ test "Windows job cancellation drains owned result and permits reuse" {
     try runner.checkDrained();
     runner.requestStop();
     try runner.finishStop();
+}
+
+test "Git isolation is explicit and reset by executable reconfiguration" {
+    var runner = Runner.init(testing.allocator, testing.io);
+    try testing.expectError(error.UnapprovedExecutable, runner.configureGitIsolation());
+    const exe = if (@import("builtin").os.tag == .windows) "C:\\approved.exe" else "/approved";
+    const cwd = if (@import("builtin").os.tag == .windows) "C:\\neutral" else "/neutral";
+    try runner.configureApproved(.{ .path = exe, .digest = @splat(0) }, std.time.ns_per_s);
+    try runner.configureGitIsolation();
+    var map = std.process.Environ.Map.init(testing.allocator);
+    defer map.deinit();
+    var buffer: [trust.max_git_config_path_bytes]u8 = undefined;
+    const global = try gitGlobalConfigPath(cwd, &buffer);
+    try map.put("GIT_CONFIG_GLOBAL", global);
+    try map.put("GIT_CONFIG_NOSYSTEM", "1");
+    try map.put("GIT_TERMINAL_PROMPT", "0");
+    const request: Request = .{ .argv = &.{ exe, "--version" }, .cwd = cwd, .environ_map = &map, .timeout_ns = 1 };
+    try testing.expectError(error.UnapprovedEnvironment, runner.validateRequest(request));
+    try map.put("GIT_OPTIONAL_LOCKS", "0");
+    _ = try runner.validateRequest(request);
+    try runner.configureApproved(.{ .path = exe, .digest = @splat(0) }, std.time.ns_per_s);
+    try testing.expect(!runner.git_isolation);
+    try testing.expectError(error.UnapprovedEnvironment, runner.validateRequest(request));
+    try runner.checkDrained();
 }
