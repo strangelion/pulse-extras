@@ -22,7 +22,7 @@ explicit non-claims. Registry acceptance and shipping extensions are still open.
 | Data | Database and scientific data preview | Planned |
 | DevKit | Project and toolchain management | Planned |
 | Compare | Recursive directory comparison | Planned |
-| Companion | Optional lightweight file-manager pet / event bridge | Candidate; feasibility and demand not verified ([scope](docs/product-scope.md)) |
+| Companion | Optional lightweight desktop pets / OpenPets event bridge | Standalone runtime, managed import and two 100-process hidden benchmarks verified at recorded revisions; native settings UI and online installation pending ([manager](docs/companion-manager.md), [measurements](docs/performance.md)) |
 | Forge | Reusable authoring components, bounded recipes and maintenance tooling | Design only; external Agents first, independent product conditional ([design](docs/forge-architecture.md)) |
 
 ## Build and test
@@ -40,13 +40,15 @@ The DLLs are installed under zig-out/. Full CI also checks the pinned upstream h
 regenerates bindings with `zig translate-c` (`python scripts/generate_bindings.py --check`),
 and exercises the Windows DLL through a C loader harness. Documentation-only changes
 use a lightweight scope check; isolated VCS code changes run both-platform regression
-and DLL builds. Manual runs and all other changes run full CI. See [testing](docs/testing.md).
+and DLL builds. Isolated companion changes run companion tests and native Windows lanes;
+manual runs and mixed/shared changes run full CI. See [testing](docs/testing.md).
 Python 3 is used only by CI and SDK verification tools.
 
 - [Architecture](docs/architecture.md)
 - [Product scope, reuse and dependency policy](docs/product-scope.md)
 - [Shared Runtime: memory, lifecycle and resource safety](docs/shared-runtime.md)
 - [Testing and CI coverage](docs/testing.md)
+- [Extension capabilities and measured performance](docs/performance.md)
 - [VCS architecture and capability matrix](docs/vcs-architecture.md)
 - [Roadmap](docs/roadmap.md)
 - [Forge authoring architecture](docs/forge-architecture.md)

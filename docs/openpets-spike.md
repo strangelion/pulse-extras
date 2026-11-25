@@ -1402,3 +1402,8 @@ This supersedes earlier automatic 100-child synthetic/mixed policy notes.
 Manual runs still support all four profiles and upload diagnostics on
 failure. Run full synthetic and mixed stress at performance milestones
 and before release; no claim that omitted tests passed.
+
+For a consolidated, commit-scoped benchmark comparison and reproduction
+instructions, see [performance.md](performance.md). The earlier prototype
+results above are historical; the newer parallel CI and import checkpoints
+are tracked separately.

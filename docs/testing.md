@@ -32,9 +32,10 @@ The same workflow is triggered on every push, pull request and manual dispatch. 
 | --- | --- | --- |
 | docs | Only README.md and Markdown under docs/ | Classifier tests and scope/gate only; no Zig install or functional tests |
 | vcs | Only Zig source under shared/vcs/ plus allowed Markdown | Both OSes: Python checks, Zig format, all unit/real-repository integration tests and ReleaseSafe DLL build; no Windows SDK regeneration or C loader |
+| companion | Only classified companion source/test paths and allowed Markdown | Windows/Linux companion regression, Windows native IPC and desktop lanes, fast ZIP test; no unrelated VCS or SDK/DLL checks |
 | full | Everything else, mixed/unknown changes, tags, new/rewritten branches, unavailable/empty diff, manual dispatch | All existing checks including SDK regeneration and Windows C loader |
 
-Push scope uses the entire before-to-after diff, not just the last commit. PR scope compares the checked-out merge tree against its base SHA. Renames are considered as old and new paths; unavailable diffs default to full. The classifier is tested in scripts/test_ci_scope.py. Workflow, build.zig, toolchain/SDK locks, SDK wrappers, process runner, extensions, scripts and test changes always require full CI. A new build dependency on documentation requires revisiting the allowlist.
+Push scope uses the entire before-to-after diff, not just the last commit. PR scope compares the checked-out merge tree against its base SHA. Renames are considered as old and new paths; unavailable diffs default to full. The classifier is tested in scripts/test_ci_scope.py. Workflow, build.zig, toolchain/SDK locks, SDK wrappers, process runner, extensions, scripts and unclassified test changes always require full CI. A new build dependency on documentation requires revisiting the allowlist.
 
 A docs-only green gate validates scope only, not earlier commits or code. Reduced VCS checks do not prove the omitted ABI tests. Run the workflow manually (full) before release, after a series of reduced runs, or when a prior code check failed. There is no scheduled cache keepalive or extra periodic workflow. If configuring branch protection, use the stable **Regression gate** check after its first run; do not require an intentionally omitted individual step. Existing protection settings are not changed by this workflow.
 
@@ -69,3 +70,14 @@ RT0 non-host candidate tests: Windows job ABI/layout, suspended child capture an
 See [Shared Runtime host acceptance](shared-runtime-host-acceptance.md) for the deferred NOT VERIFIED matrix. The merge gate is current full CI on Windows/Ubuntu; a green ancestor is not sufficient. Added tests for owned approval, bounded diagnostic export and quota-aware session rotation. Crash-safe recovery remains a separate non-host gate; no automatic scan/delete on prefix.
 
 Windows CI 45453154189 was canceled in the aggregate test step after ~29m40s; Ubuntu passed 129/131 (two platform skips). Isolated Windows Job Object tests now precede the full suite with test-name and phase output and a 4-minute step deadline. The full suite remains mandatory and has its own 15-minute deadline. Do not ignore a hang or skip the backend tests to merge. Phase markers are test-only.
+
+## Parallel native lanes and performance evidence
+
+The Windows native companion IPC and desktop jobs now run in parallel with
+Windows/Linux general checks; the stable Regression gate requires every
+applicable lane. Each desktop job builds its own test helper. The fast ZIP
+regression runs ahead of the broad Zig suite. Automatic two-child codec
+and import preflight is separate from manual heavy benchmarks. See
+[performance.md](performance.md) for historical run IDs, workloads, raw
+resource measurements, limitations and per-extension evidence. A docs-only
+commit must never be interpreted as evidence that an earlier code change passed.

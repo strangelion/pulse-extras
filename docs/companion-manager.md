@@ -468,3 +468,11 @@ docs and VCS retain explicit skip semantics. Classify the catalog store
 and real import integration adapters as companion paths. Workflow edits
 trigger full CI; automatic codec preflight and manual heavy benchmarks
 remain separate. Actual latency and the repaired ZIP tests await CI.
+
+## Performance evidence
+
+See [performance.md](performance.md) for verified full 100-process synthetic
+and mixed profiles, exact raw units, historical CI sources, resource budget
+semantics and remaining host capacity/soak tests. Keep measurements scoped
+to their commit and workload; neither 1024 backend slots nor the signed
+configuration range is a measured live-process capacity.
