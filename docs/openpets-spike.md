@@ -1258,3 +1258,15 @@ The two solid-color WebP streams were generated with Pillow lossless
 encoding and fully decoded and pixel-compared locally. Pin their SHA-256
 in the standard-library fixture writer to reject transcription errors.
 Windows WIC decoding and new native tests remain CI acceptance gates.
+
+### Repair benchmark fixture and isolate pixel regression data
+
+Run 45559833982 passed synthetic-hidden but failed mixed-hidden on the
+embedded fixture SHA-256 check. Run 45559833971 passed Ubuntu but failed
+the Windows native fixture at line 278: the newly added dense pixel test
+overwrote the sparse cell used by subsequent checks. Keep the dense
+reference comparison in a separate cell (row 10, column 6), preserving
+all existing assertions for row 10, column 7. Regenerate both lossless
+solid-color streams from Pillow and use the exact matching digests.
+Retain all integrity and pixel comparisons. No production code changes;
+rerun both CI profiles before further runtime architecture changes.

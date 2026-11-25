@@ -250,7 +250,7 @@ int main(void) {
      * and every intermediate alpha. Compare every output byte at each scale. */
     for (unsigned y = 0; y < PET_FRAME_HEIGHT; ++y)
         for (unsigned x = 0; x < PET_FRAME_WIDTH; ++x) {
-            uint8_t *p = atlas + pixel_offset(10, 7, x, y);
+            uint8_t *p = atlas + pixel_offset(10, 6, x, y);
             p[0] = (uint8_t)(x + y);
             p[1] = (uint8_t)(3 * x + y);
             p[2] = (uint8_t)(x + 7 * y);
@@ -258,8 +258,8 @@ int main(void) {
         }
     const unsigned scales[] = {50, 67, 100, 133, 200};
     for (unsigned i = 0; i < sizeof(scales) / sizeof(scales[0]); ++i) {
-        CHECK(pet_surface_resize(&surface, scales[i], atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OK);
-        CHECK(matches_reference(&surface, atlas, 10, 7));
+        CHECK(pet_surface_resize(&surface, scales[i], atlas, bytes, 2, 10, 6, 20, 20, 255) == PET_SURFACE_OK);
+        CHECK(matches_reference(&surface, atlas, 10, 6));
     }
     CHECK(!IsWindowVisible(surface.window));
     /* Use the existing large allocation as a synthetic four-cell strip.
