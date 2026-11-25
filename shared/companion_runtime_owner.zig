@@ -177,9 +177,11 @@ pub const Owner = struct {
     // separate nested market namespace. Never share it with pet inventory.
     pub fn openMarketRoot(self: *Owner) ![:0]const u16 {
         if (!self.opened or !self.lease_opened or self.store_faulted or self.market_lease_opened) return error.OwnerUnavailable;
+        const parent_len = std.mem.indexOfScalar(u16, &self.lease.path, 0) orelse return error.InvalidRoot;
+        if (parent_len == 0) return error.InvalidRoot;
+        const parent: [:0]const u16 = self.lease.path[0..parent_len :0];
         const open_lease: LeaseOpen = @ptrCast(GetProcAddress(self.module, "pulse_companion_private_open_v1") orelse return error.MissingLeaseApi);
         self.market_lease_close = @ptrCast(GetProcAddress(self.module, "pulse_companion_private_close_v1") orelse return error.MissingLeaseApi);
-        const parent = std.mem.sliceTo(&self.lease.path, 0);
         const code = open_lease(&self.market_lease, @sizeOf(Lease), parent.ptr);
         if (code != 0) {
             if (code == 3) return error.PrivateRootBusy;
