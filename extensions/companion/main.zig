@@ -8,6 +8,7 @@ const ui = @import("pulse_ui_model");
 const mount = @import("pulse_ui_mount");
 const diag = @import("pulse_diagnostics");
 const library = @import("companion_library");
+const config = @import("companion_config");
 const builtin = @import("builtin");
 
 const TimerCallback = *const fn (?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.winapi) void;
@@ -21,6 +22,7 @@ const allocator = std.heap.page_allocator;
 const title = "Pulse Companion";
 const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
+const TaskKind = enum { library, runtime_check };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
 const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites" };
 
@@ -45,6 +47,9 @@ const Instance = struct {
     posting: std.atomic.Value(bool) = .init(false),
     dispatch_token: std.atomic.Value(u64) = .init(0),
     task_id: u64 = 0,
+    task_kind: TaskKind = .library,
+    runtime_status: []const u8 = if (config.runtime_sha256.len == 0) "未打包运行时；无法启动桌宠" else "切换至运行管理时检查同包运行时",
+    runtime_checked: bool = false,
     task_state: u32 = raw.PULSE_TASK_RUNNING,
     work_done: std.atomic.Value(bool) = .init(false),
     work_error: ?anyerror = null,
@@ -158,7 +163,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 }
             }
         },
-        .running => content.children[2] = label("running.status", "运行管理尚未连接宿主进程监督器。当前不显示实例数量或资源统计。"),
+        .running => content.children[2] = changingLabel(&content.dynamic_ids[0], "running.status", instance.runtime_status),
         .market => content.children[2] = label("market.status", "市场服务已独立实现，尚未连接宿主工作线程。搜索、下载和安装暂不可用。"),
         .global => {
             const value = if (instance.loaded) std.fmt.bufPrint(&content.value, "已保存的下载并发偏好：{d}（1–8）", .{instance.saved}) catch unreachable else "下载并发偏好尚未确认";
@@ -285,6 +290,19 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
     return raw.PULSE_TASK_COMPLETED;
 }
 
+fn checkRuntime(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callconv(.c) raw.PulseTaskState {
+    const instance: *Instance = @ptrCast(@alignCast(user orelse return raw.PULSE_TASK_FAILED));
+    defer instance.work_done.store(true, .release);
+    if (context == null) return raw.PULSE_TASK_FAILED;
+    const canceled = context[0].cancelled orelse return raw.PULSE_TASK_FAILED;
+    if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
+    library.checkRuntime(config.runtime_sha256) catch |err| {
+        instance.work_error = err;
+        return raw.PULSE_TASK_FAILED;
+    };
+    return if (canceled(context[0].context) != 0) raw.PULSE_TASK_CANCELLED else raw.PULSE_TASK_COMPLETED;
+}
+
 fn observe(user: ?*anyopaque, snapshot: [*c]const raw.PulseTaskSnapshot) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
     if (snapshot == null or snapshot[0].size < @sizeOf(raw.PulseTaskSnapshot) or snapshot[0].id != instance.task_id) return;
@@ -361,7 +379,11 @@ fn pollLibrary(instance: *Instance) void {
     const release = tasks.release orelse return;
     instance.task_state = raw.PULSE_TASK_RUNNING;
     if (get(tasks.context, instance.task_id, observe, instance) != abi.ok) {
-        instance.library_status = "无法读取任务状态；保留任务所有权";
+        if (instance.task_kind == .runtime_check) {
+            instance.runtime_status = "无法读取运行时任务状态；保留任务所有权";
+        } else {
+            instance.library_status = "无法读取任务状态；保留任务所有权";
+        }
         refresh(instance);
         return;
     }
@@ -370,7 +392,11 @@ fn pollLibrary(instance: *Instance) void {
     }
     if (instance.task_state != raw.PULSE_TASK_COMPLETED and instance.task_state != raw.PULSE_TASK_FAILED and instance.task_state != raw.PULSE_TASK_CANCELLED and instance.task_state != raw.PULSE_TASK_PARTIAL) return;
     if (release(tasks.context, instance.task_id) != abi.ok) {
-        instance.library_status = "任务释放失败；请重试";
+        if (instance.task_kind == .runtime_check) {
+            instance.runtime_status = "运行时任务释放失败；请重试";
+        } else {
+            instance.library_status = "任务释放失败；请重试";
+        }
         refresh(instance);
         return;
     }
@@ -378,6 +404,13 @@ fn pollLibrary(instance: *Instance) void {
     diag.status("companion-library-terminal", instance.task_state);
     instance.task_id = 0;
     const done = instance.work_done.load(.acquire);
+    if (instance.task_kind == .runtime_check) {
+        instance.runtime_checked = instance.task_state == raw.PULSE_TASK_COMPLETED and done and instance.work_error == null;
+        instance.runtime_status = if (instance.runtime_checked) "同包运行时已通过加载及关闭检查；实例启动尚未接入" else if (done) if (instance.work_error) |err| @errorName(err) else "运行时检查未完成" else "运行时检查已取消";
+        refresh(instance);
+        if (instance.section == .library and !instance.library_loaded) startLibrary(instance, false);
+        return;
+    }
     if (instance.task_state == raw.PULSE_TASK_COMPLETED and done and instance.work_error == null) {
         instance.library_snapshot = instance.work_snapshot;
         instance.library_loaded = true;
@@ -386,6 +419,38 @@ fn pollLibrary(instance: *Instance) void {
     } else {
         instance.library_loaded = false;
         instance.library_status = if (instance.task_state == raw.PULSE_TASK_CANCELLED) "读取已取消" else if (done) if (instance.work_error) |err| @errorName(err) else "读取结果无效" else "读取未完成";
+    }
+    refresh(instance);
+    if (instance.section == .running) startRuntimeCheck(instance);
+}
+
+fn startRuntimeCheck(instance: *Instance) void {
+    if (!instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.task_id != 0) return;
+    const tasks = instance.tasks orelse return;
+    const create = tasks.create orelse return;
+    // Existing dispatcher/timer is required: do not create an uncollectable task.
+    if (instance.dispatch == null) {
+        instance.runtime_status = "宿主自动刷新不可用；未启动运行时检查";
+        return;
+    }
+    instance.work_done.store(false, .release);
+    instance.work_error = null;
+    instance.task_kind = .runtime_check;
+    const descriptor: raw.PulseTaskDescriptor = .{
+        .size = @sizeOf(raw.PulseTaskDescriptor),
+        .title = abi.view("检查桌宠运行时"),
+        .type = abi.view("companion.runtime"),
+        .work = checkRuntime,
+        .user = instance,
+    };
+    var id: u64 = 0;
+    if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
+        instance.task_id = id;
+        instance.runtime_status = "正在验证并打开同包运行时";
+        armTimer(instance);
+        if (instance.timer == null) instance.runtime_status = "自动收集不可用；切换页面重试检查";
+    } else {
+        instance.runtime_status = "宿主拒绝运行时检查任务";
     }
     refresh(instance);
 }
@@ -414,6 +479,7 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     instance.work_done.store(false, .release);
     instance.work_error = null;
     instance.work_snapshot = .{};
+    instance.task_kind = .library;
     instance.library_loaded = false;
     const descriptor: raw.PulseTaskDescriptor = .{
         .size = @sizeOf(raw.PulseTaskDescriptor),
@@ -445,7 +511,9 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
+                if (instance.task_id != 0 and instance.timer == null) pollLibrary(instance);
                 if (instance.section == .library and !instance.library_loaded and instance.task_id == 0) startLibrary(instance, false);
+                if (instance.section == .running) startRuntimeCheck(instance);
                 refresh(instance);
             },
             4 => load(instance),
@@ -473,6 +541,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
 
 fn close(instance: *Instance) host_mod.Error!void {
     instance.active = false;
+    instance.runtime_checked = false;
     stopTimer(instance);
     if (instance.task_id != 0) {
         const tasks = instance.tasks orelse return error.State;
@@ -562,6 +631,8 @@ fn open(instance: *Instance) host_mod.Error!void {
         if (instance.task_id != 0) armTimer(instance);
     } else if (instance.section == .library) {
         startLibrary(instance, false);
+    } else if (instance.section == .running) {
+        startRuntimeCheck(instance);
     }
     if (instance.resources != null) {
         load(instance);

@@ -142,14 +142,6 @@ def main() -> int:
     command(["zig", "version"], out / "02-zig-version.log")
     command(["git", "rev-parse", "HEAD"], out / "03-source-revision.log")
     command(["git", "status", "--porcelain", "--untracked-files=no"], out / "04-source-status.log")
-    build = out / "build"
-    command(["zig", "build", "-Dtarget=x86_64-windows-msvc", "-Doptimize=ReleaseSafe",
-             "--prefix", str(build), "--summary", "all"], out / "05-build.log")
-    matches = list(build.rglob("pulse_companion.dll"))
-    if len(matches) != 1:
-        raise RuntimeError("expected exactly one freshly built Companion DLL")
-    dll = matches[0]
-    manifest = dll.parent / "manifest.json"
     package = out / "companion-dev.pulse-ext"
     common = [py, str(author), "--pulse", str(pulse), "--json"]
     evidence = {
@@ -157,10 +149,11 @@ def main() -> int:
         "source_revision": (out / "03-source-revision.log").read_text().strip(),
         "tracked_source_dirty": bool((out / "04-source-status.log").read_text().strip()),
         "host_sha256": sha256(pulse),
-        "dll_sha256": sha256(dll),
         "real_host_accepted": False,
     }
     members = []
+    runtime_build = None
+    helper_build = None
     if args.prepare_helper:
         helper_build = out / "helper-build"
         helper_build.mkdir(exist_ok=False)
@@ -176,15 +169,29 @@ def main() -> int:
             command(["zig", "build", "companion-runtime-bridge", "-Doptimize=ReleaseSafe",
                      "--prefix", str(runtime_build), "--summary", "all"], out / "05-runtime-build.log")
             evidence["runtime"] = binary_evidence(runtime_build, RUNTIME_NAME)
-            members.append(stage_package_file(runtime_build / "bin" / RUNTIME_NAME,
-                                              dll.parent, RUNTIME_NAME, evidence["runtime"]["sha256"]))
-            members.append(stage_package_file(helper_build / "bin" / HELPER_NAME,
-                                              dll.parent, HELPER_NAME, evidence["helper"]["sha256"]))
-            if args.prepare_helper == "libwebp":
-                for notice in ("COPYING", "PATENTS"):
-                    source = REPO / ".local" / "deps" / "libwebp-1.6.0" / notice
-                    members.append(stage_package_file(source, dll.parent,
-                                                      f"libwebp-{notice}.txt", sha256(source)))
+    build = out / "build"
+    build_args = ["zig", "build", "-Dtarget=x86_64-windows-msvc", "-Doptimize=ReleaseSafe",
+                  "--prefix", str(build), "--summary", "all"]
+    if args.bundle_runtime:
+        build_args.append("-Dcompanion-runtime-sha256=" + evidence["runtime"]["sha256"])
+    command(build_args, out / "05-build.log")
+    matches = list(build.rglob("pulse_companion.dll"))
+    if len(matches) != 1:
+        raise RuntimeError("expected exactly one freshly built Companion DLL")
+    dll = matches[0]
+    evidence["dll_sha256"] = sha256(dll)
+    manifest = dll.parent / "manifest.json"
+    if args.bundle_runtime:
+        assert runtime_build is not None and helper_build is not None
+    members.append(stage_package_file(runtime_build / "bin" / RUNTIME_NAME,
+                                      dll.parent, RUNTIME_NAME, evidence["runtime"]["sha256"]))
+    members.append(stage_package_file(helper_build / "bin" / HELPER_NAME,
+                                      dll.parent, HELPER_NAME, evidence["helper"]["sha256"]))
+    if args.prepare_helper == "libwebp":
+        for notice in ("COPYING", "PATENTS"):
+            source = REPO / ".local" / "deps" / "libwebp-1.6.0" / notice
+            members.append(stage_package_file(source, dll.parent,
+                                              f"libwebp-{notice}.txt", sha256(source)))
     manifest_args = common + ["native-manifest", str(REPO / "extensions/companion/manifest.dev.json"),
                               "--library", str(dll), "--output", str(manifest)]
     for member in members:
@@ -201,7 +208,7 @@ def main() -> int:
         stream.write("\n")
     print(f"Verified development package: {package}", flush=True)
     if args.bundle_runtime:
-        print("Runtime and helper included in verified package; host runtime activation is not wired.")
+        print("Runtime and helper included in verified package; Running page supports a one-shot runtime check.")
     elif args.prepare_helper:
         print("Standalone helper evidence collected; helper is not packaged, approved or launched.")
     if not args.launch:

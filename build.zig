@@ -21,9 +21,9 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
-    all: [32]std.Build.Module.Import = undefined,
+    all: [33]std.Build.Module.Import = undefined,
 
-    fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module) Modules {
+    fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module, companion_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
             .root_source_file = b.path("shared/pulse/raw/pulse_all.zig"),
             .target = target,
@@ -263,7 +263,7 @@ const Modules = struct {
             },
         });
         const companion_library = b.createModule(.{
-            .root_source_file = b.path("shared/companion/pet_library_read.zig"),
+            .root_source_file = b.path("shared/companion_extension.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{.{ .name = "runtime_budget", .module = runtime_budget }},
@@ -271,6 +271,7 @@ const Modules = struct {
         var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod, .vcs_capabilities = vcs_capabilities, .vcs_identity = vcs_identity, .vcs_risk = vcs_risk, .vcs_detect = vcs_detect, .vcs_provider = vcs_provider, .vcs_cli = vcs_cli, .vcs_snapshot = vcs_snapshot, .vcs_git = vcs_git, .vcs_jj = vcs_jj, .vcs_svn = vcs_svn };
         modules.all = .{
             .{ .name = "companion_library", .module = companion_library },
+            .{ .name = "companion_config", .module = companion_config },
             .{ .name = "pulse_raw", .module = raw },
             .{ .name = "pulse_abi", .module = abi },
             .{ .name = "pulse_host", .module = host },
@@ -328,7 +329,11 @@ pub fn build(b: *std.Build) void {
     vcs_test_options.addOption([]const u8, "svn_working_copy", environ.get("PULSE_TEST_SVN_WC") orelse "");
     const vcs_test_config = vcs_test_options.createModule();
 
-    var dll_modules = Modules.add(b, target, optimize, vcs_test_config);
+    const companion_options = b.addOptions();
+    companion_options.addOption([]const u8, "runtime_sha256", b.option([]const u8, "companion-runtime-sha256", "Approved runtime DLL digest for bundled Companion") orelse "");
+    const companion_config = companion_options.createModule();
+
+    var dll_modules = Modules.add(b, target, optimize, vcs_test_config, companion_config);
     const dll = b.addLibrary(.{
         .name = "pulse_abi_probe",
         .linkage = .dynamic,
@@ -369,7 +374,7 @@ pub fn build(b: *std.Build) void {
     // Standalone companion uses the existing GNU Windows native ABI.
     // Explicit step: no demo in the default production DLL install.
     const pet_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu });
-    var pet_modules = Modules.add(b, pet_target, optimize, vcs_test_config);
+    var pet_modules = Modules.add(b, pet_target, optimize, vcs_test_config, companion_config);
     const pet_root = b.createModule(.{
         .root_source_file = b.path("shared/companion/pet_demo.zig"),
         .target = pet_target,
@@ -449,7 +454,7 @@ pub fn build(b: *std.Build) void {
 
     // Every module also runs its own tests on the host target, so the wrappers
     // are checked even when the probe does not use them yet.
-    var host_modules = Modules.add(b, b.graph.host, .Debug, vcs_test_config);
+    var host_modules = Modules.add(b, b.graph.host, .Debug, vcs_test_config, companion_config);
     const import_integration = b.step("test-companion-import", "Run Windows real-helper and durable inventory integration");
     if (b.graph.host.result.os.tag == .windows and b.graph.host.result.cpu.arch == .x86_64) {
         const import_root = b.createModule(.{

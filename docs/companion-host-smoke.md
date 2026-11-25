@@ -91,3 +91,17 @@ The package installation now has a supported distribution path, but the
 entry DLL does not yet activate the Runtime Owner or spawn pets. The new
 option does not claim production signing, live host acceptance or permission
 to launch anything outside the explicitly isolated development host.
+
+## First actual host runtime validation
+
+For bundled packages, build the native runtime first, then pass its exact
+SHA-256 to the MSVC entry DLL as a build option. The package manifest also
+binds that same digest. No environment-provided executable approval or UI
+path is used. Enter Running in the real host: a serialized host task resolves
+the actual entry DLL location, validates the pinned companion runtime, opens
+an empty group, and closes it again before returning. Existing task/timer
+collection publishes explicit status; single-DLL packages report unavailable.
+No persistent worker or child is launched yet. This tests the installed
+package path and ABI in the host, without risking live children on unload.
+The caller still relies on Pulse's verified immutable package installation;
+independent ACL policy and actual real-host acceptance remain to verify.
