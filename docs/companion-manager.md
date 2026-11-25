@@ -751,3 +751,17 @@ interactive input/navigation identities remain stable. Search/refresh is
 explicit, not a scan on each keystroke. Tests add actual DLL timer/dispatch
 collection without touching user data, and changed label IDs. Real host
 retest required; no new filesystem writes or process launches.
+
+## Compact native library layout and shared edit token
+
+After the first real-host screenshot, group search/refresh and favorites
+in a horizontal toolbar with visible caption and input placeholder. Hide
+manual poll except when automatic polling is unavailable; show separate
+empty-library/no-match messages and hide pagination for 16 or fewer rows.
+Group download preference controls horizontally as well. Use the same
+canonical PCT1 content token in read-only result rows and the owner writer
+so future edit commands can carry the selected snapshot instead of silently
+re-reading a new version for overwrite. Integration test compares the actual
+persisted reader token against the writer's shared codec. No new writes or
+ACL changes in the DLL. Real-host layout retest and MSVC write integration
+remain pending; new CI not yet verified.

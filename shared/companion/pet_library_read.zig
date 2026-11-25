@@ -12,6 +12,7 @@ pub const Row = struct {
     len: u8,
     paired: bool,
     favorite: bool = false,
+    preference_version: catalog.PreferenceVersion = .{},
     tag_count: usize = 0,
     first_tag: [64]u8 = undefined,
     first_tag_len: usize = 0,
@@ -184,10 +185,12 @@ fn readPinned(dir: usize, root: [:0]const u16, out: *Snapshot, options: Options)
         var pref_path: [1024]u16 = undefined;
         const pref = try appendPath(&pref_path, root, wide_leaf[0..leaf_len]);
         var pref_bytes: [catalog.max_preferences_bytes]u8 = undefined;
-        if (try readRecord(pref, &pref_bytes)) |len| {
+        const present = try readRecord(pref, &pref_bytes);
+        if (present) |len| {
             try catalog.decodePreferences(&entry, pref_bytes[0..len]);
         }
         if (!matches(&entry, options)) continue;
+        row.preference_version = try catalog.preferenceVersion(&entry, present != null);
         row.favorite = entry.favorite;
         row.tag_count = entry.tag_count;
         if (entry.tagAt(0)) |tag| {

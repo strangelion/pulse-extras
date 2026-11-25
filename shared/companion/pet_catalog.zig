@@ -290,6 +290,21 @@ test "tag storage and search input are bounded" {
 // validated inventory; this record is not authorization to launch a path.
 pub const max_preferences_bytes = 4 + 8 + 1 + 64 + 2 + max_tags * (1 + max_tag_bytes);
 
+/// Content token shared by library snapshots and the private owner writer.
+/// Not monotonic: identical content may recur. Presence distinguishes defaults.
+pub const PreferenceVersion = struct {
+    present: bool = false,
+    digest: [32]u8 = @splat(0),
+};
+
+pub fn preferenceVersion(entry: *const Entry, present: bool) Error!PreferenceVersion {
+    var bytes: [max_preferences_bytes]u8 = undefined;
+    const data = try encodePreferences(entry, &bytes);
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
+    return .{ .present = present, .digest = digest };
+}
+
 pub fn encodePreferences(entry: *const Entry, out: []u8) Error![]const u8 {
     const source = entry.source_id.slice();
     var needed: usize = 15 + source.len;

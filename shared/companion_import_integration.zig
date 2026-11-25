@@ -145,6 +145,7 @@ test "real approved helper imports package and reload deduplicates" {
     try @import("companion/pet_library_read.zig").readFilteredAt(std.mem.span(root_wide), &snapshot, .{ .query = "SECOND", .favorites_only = true });
     try std.testing.expectEqual(@as(usize, 1), snapshot.count);
     try std.testing.expect(snapshot.rows[0].favorite);
+    try std.testing.expect(std.meta.eql(snapshot.rows[0].preference_version, try catalog.preferenceVersion(&reloaded, true)));
     try std.testing.expectEqual(@as(usize, 2), snapshot.rows[0].tag_count);
     try @import("companion/pet_library_read.zig").readFilteredAt(std.mem.span(root_wide), &snapshot, .{ .query = "no-match" });
     try std.testing.expectEqual(@as(usize, 0), snapshot.count);

@@ -49,21 +49,36 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
     for (unsigned i = 0; i < 12; ++i) REQUIRE(same(t->commands[i], commands[i]));
     const PulseUiModelNode *root = t->root;
     REQUIRE(root->size == sizeof(*root) && root->type == PULSE_UI_MODEL_STACK);
-    REQUIRE(root->children.present && root->children.data && (root->children.count == 3 || root->children.count == 5 || root->children.count == 7));
+    REQUIRE(root->children.present && root->children.data && (root->children.count >= 3 && root->children.count <= 24));
     const PulseUiModelNode *nav = root->children.data;
     REQUIRE(nav->children.present && nav->children.count == 4 && nav->children.data);
     for (unsigned i = 0; i < 4; ++i) {
         const PulseUiModelNode *n = nav->children.data + i;
         REQUIRE(n->size == sizeof(*n) && n->type == PULSE_UI_MODEL_BUTTON && n->command.present && same(n->command.value, commands[i]));
     }
-    f->global = root->children.count == 7 && same(root->children.data[4].command.value, commands[4]);
+    f->global = same(root->children.data[1].id, "global");
     f->enabled_less = f->enabled_more = 0;
     if (f->global) {
-        const PulseUiModelNode *less = root->children.data + 5, *more = less + 1;
+        REQUIRE(root->children.count == 5);
+        const PulseUiModelNode *toolbar = root->children.data + 4;
+        REQUIRE(toolbar->children.present && toolbar->children.count == 3 && toolbar->children.data);
+        const PulseUiModelNode *less = toolbar->children.data + 1, *more = less + 1;
         REQUIRE(less->enabled.present && more->enabled.present);
         REQUIRE(same(less->command.value, commands[5]) && same(more->command.value, commands[6]));
         f->enabled_less = (int)less->enabled.value;
         f->enabled_more = (int)more->enabled.value;
+    }
+    if (same(root->children.data[1].id, "library")) {
+        REQUIRE(root->children.count >= 5);
+        const PulseUiModelNode *toolbar = root->children.data + 4;
+        REQUIRE(toolbar->children.present && toolbar->children.data &&
+                (toolbar->children.count == 3 || toolbar->children.count == 4));
+        REQUIRE(toolbar->children.data[0].type == PULSE_UI_MODEL_TEXT_INPUT);
+        REQUIRE(toolbar->children.data[0].placeholder.present);
+        REQUIRE(same(toolbar->children.data[1].command.value, commands[7]));
+        REQUIRE(same(toolbar->children.data[2].command.value, commands[11]));
+        if (toolbar->children.count == 4)
+            REQUIRE(same(toolbar->children.data[3].command.value, commands[8]));
     }
     return PULSE_OK;
 }

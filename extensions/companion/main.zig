@@ -62,7 +62,9 @@ const Instance = struct {
 const Content = struct {
     declared: [commands.len]abi.StringView = undefined,
     navigation: [4]ui.Node = undefined,
-    children: [26]ui.Node = undefined,
+    children: [24]ui.Node = undefined,
+    toolbar: [4]ui.Node = undefined,
+    paging: [2]ui.Node = undefined,
     states: [1]ui.State = undefined,
     row_text: [16][256]u8 = undefined,
     row_ids: [16][64]u8 = undefined,
@@ -92,6 +94,15 @@ fn action(id: []const u8, body: []const u8, command: []const u8, enabled: bool) 
     return node;
 }
 
+fn horizontal(id: []const u8, children: []const ui.Node) ui.Node {
+    var node = ui.node(ui.NodeKind.stack);
+    node.id = abi.view(id);
+    node.orientation = .{ .present = 1, .value = abi.view("horizontal") };
+    node.gap = .{ .present = 1, .value = 6 };
+    ui.withChildren(&node, children);
+    return node;
+}
+
 fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     for (commands, 0..) |command, n| content.declared[n] = abi.view(command);
     const selected: usize = @backingInt(instance.section);
@@ -110,22 +121,35 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     switch (instance.section) {
         .library => {
             content.children[2] = changingLabel(&content.dynamic_ids[0], "library.status", instance.library_status);
-            content.children[3] = action("library.reload", "搜索 / 刷新素材", commands[7], instance.tasks != null and instance.task_id == 0);
-            content.children[4] = action("library.poll", "手动检查（备用）", commands[8], instance.tasks != null and instance.task_id != 0 and instance.timer == null);
-            content.children[5] = ui.node(ui.NodeKind.text_input);
-            content.children[5].id = abi.view("library.query");
-            content.children[5].text = .{ .present = 1, .value = abi.view("来源 ID 或标签") };
-            content.children[5].state = .{ .present = 1, .value = abi.view("library.query") };
-            content.children[6] = action(if (instance.favorites_only) "library.favorites.on" else "library.favorites.off", if (instance.favorites_only) "仅收藏：开启" else "仅收藏：关闭", commands[11], instance.tasks != null and instance.task_id == 0);
-            count = 7;
+            content.children[3] = label("library.search-label", "搜索素材来源 ID 或标签");
+            content.children[3].role = .{ .present = 1, .value = abi.view("caption") };
+            content.toolbar[0] = ui.node(ui.NodeKind.text_input);
+            content.toolbar[0].id = abi.view("library.query");
+            content.toolbar[0].text = .{ .present = 1, .value = abi.view("搜索素材来源 ID 或标签") };
+            content.toolbar[0].placeholder = .{ .present = 1, .value = abi.view("输入 ID 或标签") };
+            content.toolbar[0].state = .{ .present = 1, .value = abi.view("library.query") };
+            content.toolbar[1] = action("library.reload", "搜索 / 刷新", commands[7], instance.tasks != null and instance.task_id == 0);
+            content.toolbar[2] = action(if (instance.favorites_only) "library.favorites.on" else "library.favorites.off", if (instance.favorites_only) "仅收藏：开" else "仅收藏：关", commands[11], instance.tasks != null and instance.task_id == 0);
+            const fallback = instance.task_id != 0 and instance.timer == null;
+            content.toolbar[3] = action("library.poll", "手动检查", commands[8], fallback);
+            content.children[4] = horizontal("library.toolbar", content.toolbar[0..if (fallback) @as(usize, 4) else 3]);
+            count = 5;
             if (instance.library_loaded) {
                 const snapshot = &instance.library_snapshot;
                 const end = @min(snapshot.count, instance.library_offset + 16);
-                const line = std.fmt.bufPrint(&content.library_count, "清单共 {d} 项 · 匹配 {d} 项 · 当前显示 {d}–{d}", .{ snapshot.total, snapshot.count, if (snapshot.count == 0) 0 else instance.library_offset + 1, end }) catch unreachable;
-                content.children[7] = changingLabel(&content.dynamic_ids[1], "library.count", line);
-                content.children[8] = action("library.previous", "上一页", commands[9], instance.library_offset > 0);
-                content.children[9] = action("library.next", "下一页", commands[10], end < snapshot.count);
-                count = 10;
+                const line = std.fmt.bufPrint(&content.library_count, "共 {d} 项 · 匹配 {d} 项 · 显示 {d}–{d}", .{ snapshot.total, snapshot.count, if (snapshot.count == 0) 0 else instance.library_offset + 1, end }) catch unreachable;
+                content.children[5] = changingLabel(&content.dynamic_ids[1], "library.count", line);
+                count = 6;
+                if (snapshot.count == 0) {
+                    content.children[count] = if (snapshot.total == 0) label("library.empty", "暂无本地素材；导入功能尚未接入。") else label("library.no-match", "没有匹配的素材，请调整搜索条件。");
+                    count += 1;
+                }
+                if (snapshot.count > 16) {
+                    content.paging[0] = action("library.previous", "上一页", commands[9], instance.library_offset > 0);
+                    content.paging[1] = action("library.next", "下一页", commands[10], end < snapshot.count);
+                    content.children[count] = horizontal("library.pagination", &content.paging);
+                    count += 1;
+                }
                 for (snapshot.rows[instance.library_offset..end], 0..) |*row, n| {
                     const body = std.fmt.bufPrint(&content.row_text[n], "#{d}  {s} · {s} · {s} · 标签 {d} {s}", .{ row.id, row.sourceId(), if (row.paired) "双摘要记录" else "待重验", if (row.favorite) "已收藏" else "未收藏", row.tag_count, row.first_tag[0..row.first_tag_len] }) catch unreachable;
                     const id = std.fmt.bufPrint(&content.row_ids[n], "asset-{x}-{x}", .{ row.id, std.hash.Wyhash.hash(0, body) }) catch unreachable;
@@ -140,10 +164,11 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             const value = if (instance.loaded) std.fmt.bufPrint(&content.value, "已保存的下载并发偏好：{d}（1–8）", .{instance.saved}) catch unreachable else "下载并发偏好尚未确认";
             content.children[2] = changingLabel(&content.dynamic_ids[2], "settings.value", value);
             content.children[3] = changingLabel(&content.dynamic_ids[3], "settings.status", instance.status);
-            content.children[4] = action("settings.refresh", "重新读取设置", commands[4], instance.resources != null and instance.pending == 0);
-            content.children[5] = action("settings.less", "减少并发", commands[5], instance.loaded and instance.pending == 0 and instance.saved > 1);
-            content.children[6] = action("settings.more", "增加并发", commands[6], instance.loaded and instance.pending == 0 and instance.saved < 8);
-            count = 7;
+            content.toolbar[0] = action("settings.refresh", "重新读取", commands[4], instance.resources != null and instance.pending == 0);
+            content.toolbar[1] = action("settings.less", "减少并发", commands[5], instance.loaded and instance.pending == 0 and instance.saved > 1);
+            content.toolbar[2] = action("settings.more", "增加并发", commands[6], instance.loaded and instance.pending == 0 and instance.saved < 8);
+            content.children[4] = horizontal("settings.toolbar", content.toolbar[0..3]);
+            count = 5;
         },
     }
     content.root = ui.node(ui.NodeKind.stack);
@@ -612,9 +637,9 @@ test "four section tree declares only real navigation and preference actions" {
         try std.testing.expectEqual(@as(u32, commands.len), tree.command_count);
         try std.testing.expectEqual(@as(u32, 4), content.children[0].children.count);
         try std.testing.expectEqualStrings(commands[n][10..], abi.slice(content.children[1].id).?);
-        try std.testing.expectEqual(@as(u32, if (instance.section == .global or instance.section == .library) 7 else 3), content.root.children.count);
+        try std.testing.expectEqual(@as(u32, if (instance.section == .global or instance.section == .library) 5 else 3), content.root.children.count);
     }
-    try std.testing.expectEqual(@as(u32, 0), content.children[6].enabled.value);
+    try std.testing.expectEqual(@as(u32, 0), content.toolbar[2].enabled.value);
 }
 
 test "library view bounds rows and uses stable IDs" {
@@ -627,12 +652,12 @@ test "library view bounds rows and uses stable IDs" {
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     fill(&instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 26), content.root.children.count);
-    try std.testing.expect(std.mem.startsWith(u8, abi.slice(content.children[10].id).?, "asset-1-"));
+    try std.testing.expectEqual(@as(u32, 23), content.root.children.count);
+    try std.testing.expect(std.mem.startsWith(u8, abi.slice(content.children[7].id).?, "asset-1-"));
     instance.library_offset = 16;
     fill(&instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 11), content.root.children.count);
-    try std.testing.expect(std.mem.startsWith(u8, abi.slice(content.children[10].id).?, "asset-11-"));
+    try std.testing.expectEqual(@as(u32, 8), content.root.children.count);
+    try std.testing.expect(std.mem.startsWith(u8, abi.slice(content.children[7].id).?, "asset-11-"));
 }
 
 test "dynamic labels replace identity only when text changes" {
@@ -643,4 +668,20 @@ test "dynamic labels replace identity only when text changes" {
     try std.testing.expect(!std.mem.eql(u8, abi.slice(first.id).?, abi.slice(second.id).?));
     const again = changingLabel(&b, "status", "old");
     try std.testing.expectEqualStrings(abi.slice(first.id).?, abi.slice(again.id).?);
+}
+
+test "empty library hides pagination and manual poll unless needed" {
+    var instance: Instance = .{ .host = undefined, .library_loaded = true };
+    var content: Content = undefined;
+    var tree: ui.Tree = undefined;
+    fill(&instance, &content, &tree);
+    try std.testing.expectEqual(@as(u32, 7), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 3), content.children[4].children.count);
+    try std.testing.expectEqualStrings("library.empty", abi.slice(content.children[6].id).?);
+    instance.library_snapshot.total = 1;
+    fill(&instance, &content, &tree);
+    try std.testing.expectEqualStrings("library.no-match", abi.slice(content.children[6].id).?);
+    instance.task_id = 1;
+    fill(&instance, &content, &tree);
+    try std.testing.expectEqual(@as(u32, 4), content.children[4].children.count);
 }

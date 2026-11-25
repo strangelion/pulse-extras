@@ -30,10 +30,7 @@ fn check(code: c_int) !void {
     };
 }
 
-pub const Version = struct {
-    present: bool,
-    digest: [32]u8,
-};
+pub const Version = catalog.PreferenceVersion;
 
 pub const Snapshot = struct {
     entry: catalog.Entry,
@@ -50,14 +47,6 @@ pub const Result = struct {
     snapshot: Snapshot,
     changed: bool,
 };
-
-fn version(entry: *const catalog.Entry, present: bool) !Version {
-    var bytes: [catalog.max_preferences_bytes]u8 = undefined;
-    const data = try catalog.encodePreferences(entry, &bytes);
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
-    return .{ .present = present, .digest = digest };
-}
 
 /// Do not copy an open owner. Keep it at a stable address and serialize all
 /// operations, including close. Parent must already be independently approved.
@@ -104,7 +93,7 @@ pub const Owner = struct {
         // package metadata. This entry represents local preferences only.
         var entry = try catalog.Entry.init(id, source, source, .v1);
         const present = try store.load(path, &entry);
-        return .{ .entry = entry, .version = try version(&entry, present) };
+        return .{ .entry = entry, .version = try catalog.preferenceVersion(&entry, present) };
     }
 
     pub fn apply(self: *Owner, id: u64, source: []const u8, expected: Version, change: Change) !Result {
@@ -121,7 +110,7 @@ pub const Owner = struct {
             .remove_tag => |tag| current.entry.removeTag(tag),
         };
         if (!changed) return .{ .snapshot = current, .changed = false };
-        const next = try version(&current.entry, true);
+        const next = try catalog.preferenceVersion(&current.entry, true);
         store.save(path, &current.entry) catch |err| {
             // A failed write/rename may be ambiguous. Refuse subsequent
             // writes until the owner is closed and disk state is reloaded.
