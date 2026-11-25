@@ -123,10 +123,27 @@ static int same(PulseStringView s, const char *text) {
     return s.data && s.length == n && memcmp(s.data, text, n) == 0;
 }
 
+/* Mirror the upstream textInput label rule on every tree create/update,
+ * not just the default view. A placeholder is insufficient. */
+static PulseStatus check_input_labels(const PulseUiModelNode *node, unsigned depth) {
+    REQUIRE(node && depth <= 32);
+    if (node->type == PULSE_UI_MODEL_TEXT_INPUT) {
+        REQUIRE(node->text.present && node->text.value.data && node->text.value.length);
+    }
+    if (node->children.present) {
+        REQUIRE(!node->children.count || node->children.data);
+        for (unsigned i = 0; i < node->children.count; ++i) {
+            PulseStatus status = check_input_labels(node->children.data + i, depth + 1);
+            if (status != PULSE_OK) return status;
+        }
+    }
+    return PULSE_OK;
+}
 static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
     REQUIRE(t && t->size == sizeof(*t) && t->root && t->command_count == COMMAND_COUNT && t->commands);
     for (unsigned i = 0; i < COMMAND_COUNT; ++i) REQUIRE(same(t->commands[i], commands[i]));
     const PulseUiModelNode *root = t->root;
+    REQUIRE(check_input_labels(root, 0) == PULSE_OK);
     REQUIRE(root->size == sizeof(*root) && root->type == PULSE_UI_MODEL_STACK);
     REQUIRE(root->children.present && root->children.data && (root->children.count >= 3 && root->children.count <= 36));
     const PulseUiModelNode *nav = root->children.data;
@@ -228,7 +245,7 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
                 (toolbar->children.count == 3 || toolbar->children.count == 4));
         const PulseUiModelNode *search = root->children.data + 3;
         REQUIRE(search->type == PULSE_UI_MODEL_TEXT_INPUT && search->placeholder.present);
-        REQUIRE(search->glyph.present && same(search->glyph.value, "search") && !search->text.present);
+        REQUIRE(search->glyph.present && same(search->glyph.value, "search") && same(search->text.value, "搜索素材"));
         REQUIRE(same(search->state.value, "library.query"));
         REQUIRE(same(toolbar->children.data[0].command.value, commands[7]));
         REQUIRE(same(toolbar->children.data[1].command.value, commands[11]));

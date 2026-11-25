@@ -260,3 +260,18 @@ functional/lifecycle acceptance, measured resource baseline, documented
 nonblocking compatibility gaps, no unresolved blocking safety defects,
 and separately verified formal candidate. Public publication is not
 implied.
+
+### D2 installed host activation defect
+
+Actual Windows/Pulse acceptance: official install and native enable passed;
+isolated host launched and listed the enabled package. Clicking Open logged
+companion-entry, companion-activate-failed=1, companion-deactivate and
+companion-destroy. The host unloaded the failed instance. Activation and
+settings rendering remain FAIL until retested. Upstream pinned ui_tree.cpp
+requires a nonempty accessible text label on every TextInput; initial
+library search had only a placeholder, and the former fake ABI tests
+explicitly expected no text. The fix routes all Companion text inputs
+through one labeled constructor, checks recursive trees in Zig and C,
+and logs raw settings-create/query status, subscription index on failure
+and error name. This addresses a concrete upstream contract violation;
+actual 1.0.61 activation still requires a successful rerun with a new package.

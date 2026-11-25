@@ -137,3 +137,16 @@ verifying a package or returning a PID is not real-host acceptance.
 Formal signing/release follows [release.md](release.md), separately
 authorized. Do not add new test-only runtime UI or package modes merely
 to pass manual acceptance.
+
+### Activation failure triage
+
+An enabled package in the palette is not a loaded/active DLL. Before a
+fresh isolated run set ABI_PROBE_LOG to a new absolute log file in the
+local acceptance directory. Click Open; inspect companion-entry,
+companion-settings-create, companion-settings-query-model,
+companion-commands-subscribed and companion-activate. If activation fails,
+the error name and raw stage status identify the rejected SDK operation.
+The GUI process stdout file may be empty; failed activation normally calls
+deactivate/destroy and unloads the module. Rebuild a new verified test
+package after a code fix, retain the previous revision and do not reuse
+its old hash as the fixed package. Actual UI acceptance is still required.

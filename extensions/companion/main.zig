@@ -324,10 +324,7 @@ fn fillQuarantine(report: *const library.RecoverySnapshot, offset: usize, conten
         } else |_| {}
     }
     if (eligible) {
-        content.cleanup_toolbar[0] = ui.node(ui.NodeKind.text_input);
-        content.cleanup_toolbar[0].id = abi.view("quarantine.id");
-        content.cleanup_toolbar[0].state = .{ .present = 1, .value = abi.view("quarantine.id") };
-        content.cleanup_toolbar[0].placeholder = .{ .present = 1, .value = abi.view("输入隔离素材 ID") };
+        content.cleanup_toolbar[0] = inputField("quarantine.id", "隔离素材 ID", "输入隔离素材 ID");
         content.cleanup_toolbar[1] = action("quarantine.purge", "永久清理", commands[27], enabled);
         content.quarantine_nodes[count] = horizontal("quarantine.cleanup", &content.cleanup_toolbar);
         count += 1;
@@ -339,12 +336,20 @@ fn fillQuarantine(report: *const library.RecoverySnapshot, offset: usize, conten
     return node;
 }
 
-fn searchInput(id: []const u8, prompt: []const u8) ui.Node {
+// Pulse's native UI parser requires nonempty text on every textInput.
+// A placeholder is not an accessible label, even on a search control.
+fn inputField(id: []const u8, caption: []const u8, prompt: []const u8) ui.Node {
     var node = ui.node(ui.NodeKind.text_input);
     node.id = abi.view(id);
-    node.placeholder = .{ .present = 1, .value = abi.view(prompt) };
-    node.glyph = .{ .present = 1, .value = abi.view("search") };
+    node.text = .{ .present = 1, .value = abi.view(caption) };
     node.state = .{ .present = 1, .value = abi.view(id) };
+    node.placeholder = .{ .present = 1, .value = abi.view(prompt) };
+    return node;
+}
+
+fn searchInput(id: []const u8, caption: []const u8, prompt: []const u8) ui.Node {
+    var node = inputField(id, caption, prompt);
+    node.glyph = .{ .present = 1, .value = abi.view("search") };
     node.flex = .{ .present = 1, .value = 1 };
     return node;
 }
@@ -461,7 +466,7 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
     const idle = marketIdle(instance);
     const busy = instance.market_request != null and instance.task_id != 0;
     content.children[2] = changingLabel(&content.dynamic_ids[0], "market.status", instance.market_status);
-    content.children[3] = searchInput("market.query", "搜索精选、原创桌宠名称或来源 ID");
+    content.children[3] = searchInput("market.query", "搜索市场", "搜索精选、原创桌宠名称或来源 ID");
     content.children[3].enabled = .{ .present = 1, .value = @intFromBool(!busy) };
     content.market_actions[0] = action("market.search", "在线搜索", commands[31], idle);
     content.market_actions[1] = action("market.offline", "离线缓存", commands[32], idle);
@@ -583,10 +588,7 @@ fn profileText(profile: library.Profile, buffer: []u8) []const u8 {
 
 fn fillProfileControls(content: *Content, edit_enabled: bool, launch_enabled: bool) ui.Node {
     content.profile_group[0] = label("library.profile.help", "选定素材 ID 后配置启动效果：缩放50–200:置顶0/1:低动态0/1。例如125:1:0。仅影响新启动的实例。");
-    content.profile_group[1] = ui.node(ui.NodeKind.text_input);
-    content.profile_group[1].id = abi.view("library.profile");
-    content.profile_group[1].state = .{ .present = 1, .value = abi.view("library.profile") };
-    content.profile_group[1].placeholder = .{ .present = 1, .value = abi.view("100:0:0") };
+    content.profile_group[1] = inputField("library.profile", "启动效果配置", "100:0:0");
     content.profile_controls[0] = action("library.profile-default", "保存默认配置", commands[70], edit_enabled);
     content.profile_controls[1] = action("library.profile-alternate", "保存备用配置", commands[71], edit_enabled);
     content.profile_controls[2] = action("library.profile-reset", "重置默认", commands[72], edit_enabled);
@@ -696,11 +698,8 @@ fn decodePolicyFields(fields: *const [16][]const u8) !library.RuntimePolicy {
     return library.RuntimePolicy.decode(encoded[0..len]);
 }
 
-fn policyInput(key: []const u8, prompt: []const u8, enabled: bool) ui.Node {
-    var node = ui.node(ui.NodeKind.text_input);
-    node.id = abi.view(key);
-    node.state = .{ .present = 1, .value = abi.view(key) };
-    node.placeholder = .{ .present = 1, .value = abi.view(prompt) };
+fn policyInput(key: []const u8, caption: []const u8, prompt: []const u8, enabled: bool) ui.Node {
+    var node = inputField(key, caption, prompt);
     node.enabled = .{ .present = 1, .value = @intFromBool(enabled) };
     return node;
 }
@@ -712,15 +711,15 @@ fn fillPolicyEditor(content: *Content, enabled: bool) ui.Node {
     content.policy_nodes[0].text = .{ .present = 1, .value = abi.view("Pulse 插件激活时自动执行已保存计划") };
     content.policy_nodes[0].enabled = .{ .present = 1, .value = @intFromBool(enabled) };
     content.policy_nodes[1] = label("policy.launch-help", "每批数量（1–16）与批次间隔（100–3000 ms）");
-    content.policy_numeric[0] = policyInput(policy_keys[1], "每批数量", enabled);
-    content.policy_numeric[1] = policyInput(policy_keys[2], "间隔 ms", enabled);
+    content.policy_numeric[0] = policyInput(policy_keys[1], "每批数量", "每批数量", enabled);
+    content.policy_numeric[1] = policyInput(policy_keys[2], "间隔 ms", "间隔 ms", enabled);
     content.policy_nodes[2] = horizontal("policy.launch-fields", content.policy_numeric[0..2]);
     content.policy_nodes[3] = label("policy.stop-help", "协作退出（0–5000 ms）与总超时（不超过 10000 ms，至少多 2000 ms）");
-    content.policy_numeric[2] = policyInput(policy_keys[3], "协作退出 ms", enabled);
-    content.policy_numeric[3] = policyInput(policy_keys[4], "总超时 ms", enabled);
+    content.policy_numeric[2] = policyInput(policy_keys[3], "协作退出 ms", "协作退出 ms", enabled);
+    content.policy_numeric[3] = policyInput(policy_keys[4], "总超时 ms", "总超时 ms", enabled);
     content.policy_nodes[4] = horizontal("policy.stop-fields", content.policy_numeric[2..4]);
     content.policy_nodes[5] = label("policy.entries-help", "最多八项；每行：素材ID:数量:配置（0默认/1备用）；builtin 为内置；空行忽略。");
-    for (0..8) |n| content.policy_nodes[6 + n] = policyInput(policy_keys[5 + n], "例如 builtin:2:0", enabled);
+    for (0..8) |n| content.policy_nodes[6 + n] = policyInput(policy_keys[5 + n], policy_keys[5 + n], "例如 builtin:2:0", enabled);
     content.policy_nodes[14] = ui.node(ui.NodeKind.checkbox);
     content.policy_nodes[14].id = abi.view(policy_keys[13]);
     content.policy_nodes[14].state = .{ .present = 1, .value = abi.view(policy_keys[13]) };
@@ -780,7 +779,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             content.children[2] = changingLabel(&content.dynamic_ids[0], "library.status", instance.library_status);
             // Standalone full-width native input, not a label beside a
             // narrow field. Host chooses theme, font and icon rendering.
-            content.children[3] = searchInput("library.query", "搜索素材来源 ID、编号或标签");
+            content.children[3] = searchInput("library.query", "搜索素材", "搜索素材来源 ID、编号或标签");
             const idle = instance.tasks != null and instance.task_id == 0;
             content.toolbar[0] = action("library.reload", if (instance.search_token != 0 and instance.dispatch != null) "刷新素材库" else "搜索", commands[7], idle);
             content.toolbar[1] = action(if (instance.favorites_only) "library.favorites.on" else "library.favorites.off", if (instance.favorites_only) "仅收藏：开" else "仅收藏：关", commands[11], idle);
@@ -807,19 +806,13 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     count += 1;
                 }
                 if (config.helper_sha256.len == 64 and snapshot.count != 0) {
-                    content.asset_toolbar[0] = ui.node(ui.NodeKind.text_input);
-                    content.asset_toolbar[0].id = abi.view("library.asset-id");
-                    content.asset_toolbar[0].state = .{ .present = 1, .value = abi.view("library.asset-id") };
-                    content.asset_toolbar[0].placeholder = .{ .present = 1, .value = abi.view("输入素材 ID") };
+                    content.asset_toolbar[0] = inputField("library.asset-id", "素材 ID", "输入素材 ID");
                     const live = instance.runtime_task_id != 0 and instance.task_kind == .builtin_session;
                     content.asset_toolbar[1] = action("library.start", "启动指定素材", commands[15], instance.preference_edit == null and !instance.stop_requested and (instance.runtime_task_id == 0 or (live and instance.session.canStart())));
                     content.children[count] = horizontal("library.start-toolbar", &content.asset_toolbar);
                     count += 1;
                     const edit_enabled = config.runtime_sha256.len == 64 and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.tasks != null;
-                    content.preference_toolbar[0] = ui.node(ui.NodeKind.text_input);
-                    content.preference_toolbar[0].id = abi.view("library.tag");
-                    content.preference_toolbar[0].state = .{ .present = 1, .value = abi.view("library.tag") };
-                    content.preference_toolbar[0].placeholder = .{ .present = 1, .value = abi.view("标签（最多 64 字节）") };
+                    content.preference_toolbar[0] = inputField("library.tag", "标签", "标签（最多 64 字节）");
                     content.preference_toolbar[1] = action("library.favorite-toggle", "切换收藏", commands[16], edit_enabled);
                     content.preference_toolbar[2] = action("library.tag-add", "添加标签", commands[17], edit_enabled);
                     content.preference_toolbar[3] = action("library.tag-remove", "移除标签", commands[18], edit_enabled);
@@ -878,7 +871,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             const can_start = config.runtime_sha256.len == 64 and config.helper_sha256.len == 64 and !instance.stop_requested and ((instance.runtime_task_id == 0 and instance.runtime_checked) or (live and instance.session.canStart()));
             content.toolbar[0] = action("running.start", if (live) "再启动内置桌宠" else "启动内置桌宠", commands[12], can_start);
             content.toolbar[1] = action("running.stop", "停止全部桌宠", commands[13], live and !instance.stop_requested);
-            content.children[3] = searchInput("running.query", "搜索素材来源、实例编号、素材编号或 PID");
+            content.children[3] = searchInput("running.query", "搜索实例", "搜索素材来源、实例编号、素材编号或 PID");
             content.children[4] = horizontal("running.toolbar", content.toolbar[0..2]);
             const readable = if (instance.panel) |panel| panel.table.get_state != null else false;
             const clearable = if (instance.panel) |panel| panel.table.set_states != null else false;
@@ -908,10 +901,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 content.children[6] = changingLabel(&content.dynamic_ids[1], "running.metrics", status);
                 count = 7;
                 if (instance.running_rows.count != 0) {
-                    content.stop_toolbar[0] = ui.node(ui.NodeKind.text_input);
-                    content.stop_toolbar[0].id = abi.view("running.stop-id");
-                    content.stop_toolbar[0].state = .{ .present = 1, .value = abi.view("running.stop-id") };
-                    content.stop_toolbar[0].placeholder = .{ .present = 1, .value = abi.view("输入实例 ID") };
+                    content.stop_toolbar[0] = inputField("running.stop-id", "实例 ID", "输入实例 ID");
                     const can_stop = !instance.stop_requested and instance.session.pending_stop.load(.acquire) == 0 and instance.session.stopping_id.load(.acquire) == 0 and phase == .running and !instance.session.pending_start.load(.acquire);
                     content.stop_toolbar[1] = action("running.stop-one", "停止指定实例", commands[14], can_stop);
                     content.children[count] = horizontal("running.stop-toolbar", &content.stop_toolbar);
@@ -1000,15 +990,9 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             const limits_text = std.fmt.bufPrint(&content.limits_text, "实例上限 {d} · 提交内存预算 {d} MiB · 有效上限 {d}（每实例预留 {d} MiB；系统资源不足仍会拒绝）", .{ limits.instances, limits.commit_mib, instance.runtime_policy.effective(limits), if (instance.runtime_policy.capture_crashes) @as(usize, 256) else @as(usize, 128) }) catch unreachable;
             content.children[5] = changingLabel(&content.limits_id, "settings.limits", limits_text);
             const editable = instance.loaded and instance.pending == 0 and instance.runtime_task_id == 0;
-            content.limits_inputs[0] = ui.node(ui.NodeKind.text_input);
-            content.limits_inputs[0].id = abi.view("settings.instances");
-            content.limits_inputs[0].state = .{ .present = 1, .value = abi.view("settings.instances") };
-            content.limits_inputs[0].placeholder = .{ .present = 1, .value = abi.view("实例上限（1–1024）") };
+            content.limits_inputs[0] = inputField("settings.instances", "实例上限", "实例上限（1–1024）");
             content.limits_inputs[0].enabled = .{ .present = 1, .value = @intFromBool(editable) };
-            content.limits_inputs[1] = ui.node(ui.NodeKind.text_input);
-            content.limits_inputs[1].id = abi.view("settings.commit-mib");
-            content.limits_inputs[1].state = .{ .present = 1, .value = abi.view("settings.commit-mib") };
-            content.limits_inputs[1].placeholder = .{ .present = 1, .value = abi.view("内存预算 MiB（128–131072）") };
+            content.limits_inputs[1] = inputField("settings.commit-mib", "内存预算 MiB", "内存预算 MiB（128–131072）");
             content.limits_inputs[1].enabled = .{ .present = 1, .value = @intFromBool(editable) };
             content.children[6] = horizontal("settings.runtime-inputs", &content.limits_inputs);
             content.children[7] = action("settings.limits-save", "保存运行限制（下次启动生效）", commands[52], editable);
@@ -1018,7 +1002,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 content.children[9] = fillPolicyEditor(content, policy_editable);
             } else {
                 content.children[8] = label("settings.policy-help", "旧宿主兼容编辑：自动(0/1):每批数量:间隔ms:协作退出ms:总超时ms[:最小化隐藏0/1][:保留历史0/1]；追加 ;素材ID:数量:配置(0默认/1备用)。");
-                content.children[9] = policyInput("settings.runtime-policy", "0:4:500:2000:10000;builtin:2:0", policy_editable);
+                content.children[9] = policyInput("settings.runtime-policy", "启动与退出策略", "0:4:500:2000:10000;builtin:2:0", policy_editable);
             }
             content.policy_actions[0] = action("settings.policy-save", "保存启动与退出策略", commands[80], policy_editable);
             content.policy_actions[1] = action("settings.plan-start", "执行已保存启动计划", commands[81], policy_editable and instance.runtime_policy.count != 0);
@@ -2339,15 +2323,7 @@ fn showImportWithSelection(instance: *Instance, selection: *const Selection) voi
     if (!instance.active or instance.section != .library or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0) return;
     const dialogs = instance.dialogs orelse return;
     const embedded_picker = instance.dialog_v2_table != null and instance.picker_api != null and !instance.dialog_picker_disabled;
-    var fields = [_]ui.Node{ ui.node(ui.NodeKind.text_input), ui.node(ui.NodeKind.text_input), ui.node(ui.NodeKind.button) };
-    fields[0].id = abi.view("import.path");
-    fields[0].text = .{ .present = 1, .value = abi.view("素材文件夹") };
-    fields[0].placeholder = .{ .present = 1, .value = abi.view("本地绝对路径，例如 C:\\Pets\\cat") };
-    fields[0].state = .{ .present = 1, .value = abi.view("import.path") };
-    fields[1].id = abi.view("import.id");
-    fields[1].text = .{ .present = 1, .value = abi.view("来源 ID") };
-    fields[1].placeholder = .{ .present = 1, .value = abi.view("pet.json 中的 id") };
-    fields[1].state = .{ .present = 1, .value = abi.view("import.id") };
+    var fields = [_]ui.Node{ inputField("import.path", "素材文件夹", "本地绝对路径，例如 C:\\Pets\\cat"), inputField("import.id", "来源 ID", "pet.json 中的 id"), ui.node(ui.NodeKind.button) };
     var root = ui.node(ui.NodeKind.stack);
     root.id = abi.view("import.form");
     root.gap = .{ .present = 1, .value = 8 };
@@ -3131,6 +3107,7 @@ fn close(instance: *Instance) host_mod.Error!void {
 fn open(instance: *Instance) host_mod.Error!void {
     if (instance.page != 0) return error.State;
     instance.dialog_picker_disabled = false;
+    diag.event("companion-query-optional-interfaces");
     instance.dialogs = try instance.host.queryOptional(raw.PulseDialogsV1, raw.PULSE_DIALOGS_INTERFACE_NAME, raw.PULSE_DIALOGS_VERSION_1);
     if (instance.dialogs) |table| {
         if (table.show == null or table.close == null) instance.dialogs = null;
@@ -3152,13 +3129,18 @@ fn open(instance: *Instance) host_mod.Error!void {
         const create = pages.create orelse return error.Unavailable;
         const query = pages.query orelse return error.Unavailable;
         _ = pages.remove orelse return error.Unavailable;
-        try host_mod.mapStatus(create(pages.context, abi.view(title), &tree, &instance.page));
+        const create_status = create(pages.context, abi.view(title), &tree, &instance.page);
+        diag.status("companion-settings-create", create_status);
+        try host_mod.mapStatus(create_status);
         if (instance.page == 0) return error.State;
         var table = std.mem.zeroes(ui.TableV1);
-        try host_mod.mapStatus(query(pages.context, instance.page, abi.view(ui.interface_name), ui.version_1, &table, @sizeOf(ui.TableV1)));
+        const query_status = query(pages.context, instance.page, abi.view(ui.interface_name), ui.version_1, &table, @sizeOf(ui.TableV1));
+        diag.status("companion-settings-query-model", query_status);
+        try host_mod.mapStatus(query_status);
         if (table.size < @sizeOf(ui.TableV1) or table.version < ui.version_1) return error.Abi;
         instance.panel = .{ .table = table, .id = instance.page };
     } else {
+        diag.event("companion-workspace-fallback");
         instance.panel = try ui.Panel.open(instance.host, title, &tree);
         instance.page = instance.panel.?.id;
         if (mount.Mount.init(instance.host)) |placement| {
@@ -3167,8 +3149,15 @@ fn open(instance: *Instance) host_mod.Error!void {
     }
     if (instance.panel) |*panel| {
         if (panel.table.update == null or panel.table.subscribe_command == null or (instance.pages == null and panel.table.close == null)) return error.Unavailable;
-        for (commands, 0..) |command, n| instance.subscriptions[n] = try panel.subscribeCommand(command, onCommand, instance);
+        for (commands, 0..) |command, n| {
+            instance.subscriptions[n] = panel.subscribeCommand(command, onCommand, instance) catch |err| {
+                diag.status("companion-subscribe-failed-index", n);
+                return err;
+            };
+        }
+        diag.event("companion-commands-subscribed");
     }
+    diag.event("companion-query-resources-tasks-dispatch");
     instance.resources = try instance.host.queryOptional(raw.PulseResourcesV1, raw.PULSE_RESOURCES_INTERFACE_NAME, raw.PULSE_RESOURCES_VERSION_1);
     if (instance.resources) |resources| {
         if (resources.settings_get == null or resources.settings_set == null or resources.cancel_request == null) instance.resources = null;
@@ -3211,6 +3200,7 @@ fn activate(user: ?*anyopaque) callconv(.c) abi.Status {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return abi.error_argument));
     open(instance) catch |err| {
         diag.status("companion-activate-failed", @intFromError(err));
+        diag.event(@errorName(err));
         return abi.error_initialization;
     };
     diag.event("companion-activate");
@@ -3263,6 +3253,16 @@ test "settings preference validates exact value and duplicate keys" {
     try std.testing.expectError(error.InvalidSettings, readPreference(.{ .values = &values, .count = 1 }));
 }
 
+fn expectInputLabels(node: *const ui.Node) !void {
+    if (node.type == ui.NodeKind.text_input) {
+        try std.testing.expectEqual(@as(u32, 1), node.text.present);
+        try std.testing.expect((abi.slice(node.text.value) orelse "").len != 0);
+    }
+    if (node.children.present != 0) {
+        for (0..node.children.count) |n| try expectInputLabels(&node.children.data[n]);
+    }
+}
+
 test "four section tree declares only real navigation and preference actions" {
     const instance = try std.testing.allocator.create(Instance);
     defer std.testing.allocator.destroy(instance);
@@ -3272,6 +3272,7 @@ test "four section tree declares only real navigation and preference actions" {
     for (0..names.len) |n| {
         instance.section = @fromBackingInt(@intCast(n));
         fill(instance, &content, &tree);
+        try expectInputLabels(&content.root);
         try std.testing.expectEqual(@as(u32, commands.len), tree.command_count);
         try std.testing.expectEqual(@as(u32, 4), content.children[0].children.count);
         try std.testing.expectEqualStrings(commands[n][10..], abi.slice(content.children[1].id).?);
@@ -3437,7 +3438,7 @@ test "quarantine rows distinguish unknown size from measured zero" {
     try std.testing.expect(std.mem.indexOf(u8, zero, "来源未证实") != null);
 }
 
-test "search field uses a native placeholder and separate controls" {
+test "search field has an accessible label and a native placeholder" {
     const instance = try std.testing.allocator.create(Instance);
     defer std.testing.allocator.destroy(instance);
     instance.* = .{ .host = undefined };
@@ -3447,7 +3448,8 @@ test "search field uses a native placeholder and separate controls" {
     try std.testing.expectEqual(ui.NodeKind.text_input, content.children[3].type);
     try std.testing.expectEqualStrings("library.query", abi.slice(content.children[3].state.value).?);
     try std.testing.expectEqualStrings("search", abi.slice(content.children[3].glyph.value).?);
-    try std.testing.expectEqual(@as(u32, 0), content.children[3].text.present);
+    try std.testing.expectEqual(@as(u32, 1), content.children[3].text.present);
+    try std.testing.expectEqualStrings("搜索素材", abi.slice(content.children[3].text.value).?);
     try std.testing.expectEqualStrings(commands[7], abi.slice(content.toolbar[0].command.value).?);
     try std.testing.expectEqualStrings(commands[28], abi.slice(content.toolbar[2].command.value).?);
 }
@@ -3640,6 +3642,7 @@ test "native policy fields use canonical booleans and reject injected records" {
     try std.testing.expectError(error.InvalidPolicy, decodePolicyFields(&fields));
     var content: Content = undefined;
     const editor = fillPolicyEditor(&content, false);
+    try expectInputLabels(&editor);
     try std.testing.expectEqual(@as(u32, 18), editor.children.count);
     try std.testing.expectEqual(ui.NodeKind.checkbox, content.policy_nodes[0].type);
     try std.testing.expectEqual(@as(u32, 0), content.policy_nodes[0].enabled.value);
