@@ -902,3 +902,18 @@ with explicit diagnostics. Stop All remains available. The bundled fixture
 now starts two actual helpers, stops ID 1, verifies ID 2 remains, then stops
 all. The pilot limit stays eight. This does not yet authorize managed asset
 starts or make the limit configurable.
+
+## Managed asset launch from the library
+
+The library accepts a selected numeric asset ID only if the displayed row
+has both fingerprints. The runtime worker independently resolves LocalAppData,
+acquires the existing protected private-root ACL/owner lease via a separate
+versioned bridge export, rereads inventory.pci and resolves the deterministic
+pet directory. The child verifies the exact SHA-256/SHA-512 pair before
+readiness; display data is not launch approval. The lease stays owned until
+Group shutdown. Existing incompatible ACLs fail closed; no ACL repair or
+arbitrary UI path is accepted. Built-in pets use a reserved max-u64 model ID,
+separate from managed IDs. A single pending start carries the selected ID.
+The UI switches to Running for results. This is not a sandbox against
+same-user programs. Managed launch is implemented but full isolated-host
+fixture and actual imported asset acceptance are still required.

@@ -1,5 +1,6 @@
 /* Versioned C ABI; caller retains its own manager and storage. */
 #include "pet_supervisor_win32.h"
+#include "pet_private_root_win32.h"
 
 typedef struct {
     uint32_t version, size;
@@ -30,4 +31,16 @@ __declspec(dllexport) BOOL pulse_companion_runtime_query(uint32_t version,
     if (!out || version != 2 || size != sizeof(api)) return FALSE;
     *out = api;
     return TRUE;
+}
+
+/* Independent versioned lease ABI; all storage belongs to the caller. */
+__declspec(dllexport) pet_private_result pulse_companion_private_open_v1(
+    pet_private_root *lease, SIZE_T size, const wchar_t *parent) {
+    if (!lease || size != sizeof(*lease)) return PET_PRIVATE_INVALID;
+    return pet_private_root_open(lease, parent);
+}
+__declspec(dllexport) pet_private_result pulse_companion_private_close_v1(
+    pet_private_root *lease, SIZE_T size) {
+    if (!lease || size != sizeof(*lease)) return PET_PRIVATE_INVALID;
+    return pet_private_root_close(lease);
 }

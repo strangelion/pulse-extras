@@ -24,7 +24,7 @@ const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -77,7 +77,8 @@ const Content = struct {
     children: [24]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
-    states: [2]ui.State = undefined,
+    states: [3]ui.State = undefined,
+    asset_toolbar: [2]ui.Node = undefined,
     stop_toolbar: [2]ui.Node = undefined,
     row_text: [16][256]u8 = undefined,
     row_ids: [16][64]u8 = undefined,
@@ -163,6 +164,16 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     content.children[count] = horizontal("library.pagination", &content.paging);
                     count += 1;
                 }
+                if (config.helper_sha256.len == 64 and snapshot.count != 0) {
+                    content.asset_toolbar[0] = ui.node(ui.NodeKind.text_input);
+                    content.asset_toolbar[0].id = abi.view("library.asset-id");
+                    content.asset_toolbar[0].state = .{ .present = 1, .value = abi.view("library.asset-id") };
+                    content.asset_toolbar[0].placeholder = .{ .present = 1, .value = abi.view("输入素材 ID") };
+                    const live = instance.runtime_task_id != 0 and instance.task_kind == .builtin_session;
+                    content.asset_toolbar[1] = action("library.start", "启动指定素材", commands[15], !instance.stop_requested and (instance.runtime_task_id == 0 or (live and instance.session.canStart())));
+                    content.children[count] = horizontal("library.start-toolbar", &content.asset_toolbar);
+                    count += 1;
+                }
                 for (snapshot.rows[instance.library_offset..end], 0..) |*row, n| {
                     const body = std.fmt.bufPrint(&content.row_text[n], "#{d}  {s} · {s} · {s} · 标签 {d} {s}", .{ row.id, row.sourceId(), if (row.paired) "双摘要记录" else "待重验", if (row.favorite) "已收藏" else "未收藏", row.tag_count, row.first_tag[0..row.first_tag_len] }) catch unreachable;
                     const id = std.fmt.bufPrint(&content.row_ids[n], "asset-{x}-{x}", .{ row.id, std.hash.Wyhash.hash(0, body) }) catch unreachable;
@@ -240,6 +251,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     tree.command_count = content.declared.len;
     content.states[0] = .{ .key = abi.view("library.query"), .value = abi.view(instance.query[0..instance.query_len]) };
     content.states[1] = .{ .key = abi.view("running.stop-id"), .value = abi.view("") };
+    content.states[2] = .{ .key = abi.view("library.asset-id"), .value = abi.view("") };
     tree.states = &content.states;
     tree.state_count = content.states.len;
 }
@@ -516,8 +528,8 @@ fn pollRuntime(instance: *Instance) void {
     const done = instance.runtime_done.load(.acquire);
     if (instance.task_kind == .builtin_session) {
         instance.stop_requested = false;
-        instance.runtime_status = if (done and instance.runtime_error != null) @errorName(instance.runtime_error.?) else if (instance.runtime_task_state == raw.PULSE_TASK_COMPLETED or instance.runtime_task_state == raw.PULSE_TASK_CANCELLED) "全部内置桌宠已退出" else "运行任务未完成";
-        if (done and instance.runtime_error != null) instance.runtime_checked = false;
+        instance.runtime_status = if (done and instance.runtime_error != null) @errorName(instance.runtime_error.?) else if (instance.runtime_task_state == raw.PULSE_TASK_COMPLETED or instance.runtime_task_state == raw.PULSE_TASK_CANCELLED) "全部桌宠已退出" else "运行任务未完成";
+        instance.runtime_checked = done and instance.runtime_error == null;
     } else {
         instance.runtime_checked = instance.runtime_task_state == raw.PULSE_TASK_COMPLETED and done and instance.runtime_error == null;
         instance.runtime_status = if (instance.runtime_checked) "同包运行时已通过检查；可启动内置桌宠" else if (done) if (instance.runtime_error) |err| @errorName(err) else "运行时检查未完成" else "运行时检查已取消";
@@ -557,10 +569,15 @@ fn startRuntimeCheck(instance: *Instance) void {
 }
 
 fn startBuiltin(instance: *Instance) void {
-    if (!instance.active or !instance.runtime_checked or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested) return;
+    if (!instance.runtime_checked) return;
+    startAsset(instance, library.builtin_asset_id);
+}
+
+fn startAsset(instance: *Instance, asset_id: u64) void {
+    if (!instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or asset_id == 0) return;
     if (instance.runtime_task_id != 0) {
         if (instance.task_kind != .builtin_session) return;
-        instance.runtime_status = if (instance.session.requestStart()) "已提交新增实例请求" else "暂不可新增实例；请等待或停止";
+        instance.runtime_status = if (instance.session.requestAsset(asset_id)) "已提交新增实例请求" else "暂不可新增实例；请等待或停止";
         refresh(instance);
         return;
     }
@@ -569,12 +586,13 @@ fn startBuiltin(instance: *Instance) void {
     instance.runtime_done.store(false, .release);
     instance.runtime_error = null;
     instance.session.reset();
+    instance.session.start_asset.store(asset_id, .release);
     instance.running_rows = .{};
     instance.stop_requested = false;
     instance.task_kind = .builtin_session;
     const descriptor: raw.PulseTaskDescriptor = .{
         .size = @sizeOf(raw.PulseTaskDescriptor),
-        .title = abi.view("运行内置桌宠"),
+        .title = abi.view("运行桌宠"),
         .type = abi.view("companion.session"),
         .work = runBuiltin,
         .user = instance,
@@ -582,7 +600,7 @@ fn startBuiltin(instance: *Instance) void {
     var id: u64 = 0;
     if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
         instance.runtime_task_id = id;
-        instance.runtime_status = "内置桌宠任务已提交";
+        instance.runtime_status = "桌宠任务已提交";
         armTimer(instance);
         if (instance.timer == null) instance.runtime_status = "自动收集不可用；切换页面重试检查";
     } else {
@@ -623,6 +641,31 @@ fn stopOne(instance: *Instance) void {
         return;
     }
     instance.runtime_status = "实例 ID 不存在或已在退出";
+    refresh(instance);
+}
+
+fn startLibraryAsset(instance: *Instance) void {
+    if (!instance.library_loaded) return;
+    const panel = instance.panel orelse return;
+    const get_state = panel.table.get_state orelse return;
+    var bytes: [32]u8 = undefined;
+    var needed: u32 = 0;
+    if (get_state(panel.table.context, panel.id, abi.view("library.asset-id"), &bytes, bytes.len, &needed) != abi.ok or needed == 0 or needed >= bytes.len) {
+        instance.library_status = "请输入有效素材 ID";
+        refresh(instance);
+        return;
+    }
+    const id = std.fmt.parseInt(u64, bytes[0..needed], 10) catch 0;
+    if (id != 0 and id != library.builtin_asset_id) {
+        for (instance.library_snapshot.rows[0..instance.library_snapshot.count]) |row| {
+            if (row.id != id or !row.paired) continue;
+            startAsset(instance, id);
+            instance.section = .running;
+            refresh(instance);
+            return;
+        }
+    }
+    instance.library_status = "素材不存在、未匹配或需要双摘要重验";
     refresh(instance);
 }
 
@@ -678,7 +721,8 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         if (!std.mem.eql(u8, candidate, name)) continue;
         if (n >= 4 and n <= 6 and instance.section != .global) return;
         if (n >= 7 and n <= 11 and instance.section != .library) return;
-        if (n >= 12 and instance.section != .running) return;
+        if (n >= 12 and n <= 14 and instance.section != .running) return;
+        if (n == 15 and instance.section != .library) return;
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
@@ -707,6 +751,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             12 => startBuiltin(instance),
             13 => stopBuiltin(instance),
             14 => stopOne(instance),
+            15 => startLibraryAsset(instance),
             else => {},
         }
         return;

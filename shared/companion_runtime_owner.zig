@@ -20,6 +20,14 @@ const Info = extern struct {
     index_low: u32,
 };
 const Query = *const fn (u32, u32, *runtime.NativeApi) callconv(.c) c_int;
+const Lease = extern struct {
+    parent: usize = 0,
+    root: usize = 0,
+    lock: usize = 0,
+    path: [1024]u16 = @splat(0),
+};
+const LeaseOpen = *const fn (*Lease, usize, [*:0]const u16) callconv(.c) c_int;
+const LeaseClose = *const fn (*Lease, usize) callconv(.c) c_int;
 
 extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, ?*anyopaque) callconv(.winapi) usize;
 extern "kernel32" fn CloseHandle(usize) callconv(.winapi) c_int;
@@ -75,6 +83,9 @@ pub const Owner = struct {
     image_handle: usize = invalid,
     module: usize = 0,
     opened: bool = false,
+    lease: Lease = .{},
+    lease_opened: bool = false,
+    lease_close: ?LeaseClose = null,
 
     /// Worker only. Root must already be independently approved; the file
     /// pin denies writes/deletes, and the module stays loaded through drain.
@@ -119,6 +130,24 @@ pub const Owner = struct {
         self.opened = true;
     }
 
+    pub fn privateRoot(self: *Owner, parent: [:0]const u16) ![:0]const u16 {
+        if (!self.opened or self.module == 0) return error.Invalid;
+        if (!self.lease_opened) {
+            const open_lease: LeaseOpen = @ptrCast(GetProcAddress(self.module, "pulse_companion_private_open_v1") orelse return error.MissingLeaseApi);
+            self.lease_close = @ptrCast(GetProcAddress(self.module, "pulse_companion_private_close_v1") orelse return error.MissingLeaseApi);
+            const code = open_lease(&self.lease, @sizeOf(Lease), parent.ptr);
+            if (code != 0) {
+                if (code == 3) return error.PrivateRootBusy;
+                if (code == 4) return error.CleanupFailed;
+                return error.PrivateRootRejected;
+            }
+            self.lease_opened = true;
+        }
+        const len = std.mem.indexOfScalar(u16, &self.lease.path, 0) orelse return error.InvalidRoot;
+        if (len == 0) return error.InvalidRoot;
+        return self.lease.path[0..len :0];
+    }
+
     // Last-resort terminal shutdown. Caller must report unconfirmed exit.
     pub fn abandon(self: *Owner) !void {
         if (self.opened) {
@@ -134,6 +163,11 @@ pub const Owner = struct {
         if (self.opened) {
             try self.group.close();
             self.opened = false;
+        }
+        if (self.lease_close) |close_lease| {
+            if (close_lease(&self.lease, @sizeOf(Lease)) != 0) return error.CleanupFailed;
+            self.lease_close = null;
+            self.lease_opened = false;
         }
         if (self.module != 0) {
             if (FreeLibrary(self.module) == 0) return error.CleanupFailed;

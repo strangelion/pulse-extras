@@ -223,11 +223,37 @@ pub const Group = struct {
         return self.startNative(manager, path[0..len :0], &approval.digest, asset_id, options, package);
     }
 
+    pub const builtin_asset_id = std.math.maxInt(u64);
+
+    // Wide fixed-path adapter for the host-owned private lease. Resolve an
+    // inventory ID anew; the child validates the exact dual fingerprint.
+    pub fn startManagedWide(self: *Group, helper: [:0]const u16, helper_digest: *const [32]u8, index: *const inventory.Inventory, root: [:0]const u16, asset_id: u64) !Start {
+        const manager = try self.active();
+        if (self.drain != .normal) return error.Draining;
+        const record = try index.get(asset_id);
+        const digest = record.digest orelse return error.UnverifiedAsset;
+        const secondary = record.secondary orelse return error.UnverifiedAsset;
+        const hex = fingerprint.pairHex(.{ .primary = digest, .secondary = secondary });
+        var expected: [194]u16 = @splat(0);
+        for (hex, 0..) |ch, i| expected[i] = ch;
+        var leaf_buf: [32]u8 = undefined;
+        const leaf = try std.fmt.bufPrint(&leaf_buf, "\\pet-{x:0>16}", .{asset_id});
+        var dir: [1024]u16 = undefined;
+        if (root.len + leaf.len >= dir.len) return error.Invalid;
+        @memcpy(dir[0..root.len], root);
+        for (leaf, 0..) |ch, i| dir[root.len + i] = ch;
+        const len = root.len + leaf.len;
+        dir[len] = 0;
+        var source: [65]u16 = @splat(0);
+        for (record.sourceId(), 0..) |ch, i| source[i] = ch;
+        return self.startNative(manager, helper, helper_digest, asset_id, .{}, .{ .directory = dir[0..len :0], .source_id = source[0..record.len :0], .expected_sha = expected[0..193 :0] });
+    }
+
     // Built-in development pet only; no asset ID or arbitrary command from UI.
     pub fn startBuiltin(self: *Group, path: [:0]const u16, digest: *const [32]u8) !Start {
         const manager = try self.active();
         if (self.drain != .normal) return error.Draining;
-        return self.startNative(manager, path, digest, 1, .{}, null);
+        return self.startNative(manager, path, digest, builtin_asset_id, .{}, null);
     }
 
     fn startNative(self: *Group, manager: *model.Manager, path: [:0]const u16, digest: *const [32]u8, asset_id: u64, options: Options, package: ?Package) !Start {

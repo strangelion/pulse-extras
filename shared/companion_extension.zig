@@ -6,6 +6,8 @@ const library = @import("companion/pet_library_read.zig");
 const runtime = @import("companion_runtime_owner.zig");
 const group = @import("companion_group.zig");
 const model = @import("companion/pet_manager.zig");
+const inventory = @import("companion/pet_inventory.zig");
+pub const builtin_asset_id = group.Group.builtin_asset_id;
 
 pub const Snapshot = library.Snapshot;
 pub const readFilteredDefault = library.readFilteredDefault;
@@ -69,6 +71,7 @@ pub const Session = struct {
     ready: std.atomic.Value(usize) = .init(0),
     denied: std.atomic.Value(usize) = .init(0),
     pending_start: std.atomic.Value(bool) = .init(false),
+    start_asset: std.atomic.Value(u64) = .init(builtin_asset_id),
     pending_stop: std.atomic.Value(u64) = .init(0),
     stopping_id: std.atomic.Value(u64) = .init(0),
     snapshot_lock: std.atomic.Value(bool) = .init(false),
@@ -87,8 +90,15 @@ pub const Session = struct {
     // Called only by the UI producer. A duplicate request is not queued.
     // Worker revalidates native admission before each actual launch.
     pub fn requestStart(self: *Session) bool {
-        if (!self.canStart()) return false;
-        return !self.pending_start.swap(true, .acq_rel);
+        return self.requestAsset(builtin_asset_id);
+    }
+
+    // Single UI producer, worker reads only after pending_start publishes.
+    pub fn requestAsset(self: *Session, asset_id: u64) bool {
+        if (asset_id == 0 or !self.canStart()) return false;
+        self.start_asset.store(asset_id, .monotonic);
+        self.pending_start.store(true, .release);
+        return true;
     }
 
     pub fn requestStop(self: *Session, id: u64) bool {
@@ -118,6 +128,7 @@ pub const Session = struct {
         self.stopping_id.store(0, .release);
         self.publishRows(&.{});
         self.pending_start.store(false, .release);
+        self.start_asset.store(builtin_asset_id, .release);
         self.owned.store(0, .release);
         self.ready.store(0, .release);
         self.denied.store(0, .release);
@@ -158,12 +169,29 @@ pub fn runBuiltin(session: *Session, runtime_hex: []const u8, helper_hex: []cons
     return outcome;
 }
 
+fn launchAsset(owner: *runtime.Owner, helper: [:0]const u16, digest: *const [32]u8, asset_id: u64) !group.Start {
+    if (asset_id == builtin_asset_id) return owner.group.startBuiltin(helper, digest);
+    var path: [1024]u16 = undefined;
+    const root = try library.knownRoot(&path);
+    // Only the known-folder resolver chooses the parent, not the UI.
+    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\PulseExtras-Companion");
+    if (!std.mem.endsWith(u16, root, suffix) or root.len <= suffix.len) return error.InvalidRoot;
+    const parent_len = root.len - suffix.len;
+    path[parent_len] = 0;
+    const approved = try owner.privateRoot(path[0..parent_len :0]);
+    const index = try std.heap.page_allocator.create(inventory.Inventory);
+    defer std.heap.page_allocator.destroy(index);
+    index.* = .{};
+    try library.readManagedIndex(approved, index);
+    return owner.group.startManagedWide(helper, digest, index, approved, asset_id);
+}
+
 fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, digest: [32]u8, helper: [:0]const u16, helper_digest: *const [32]u8, canceled: *const fn (?*anyopaque) callconv(.c) u32, context: ?*anyopaque) !void {
     if (canceled(context) != 0) return;
     session.set(.starting);
     try owner.open(root, digest, session_limit, session_limit * model.child_commit_ceiling);
     if (canceled(context) != 0) return;
-    const started = try owner.group.startBuiltin(helper, helper_digest);
+    const started = try launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire));
     var failure: ?anyerror = started.failure;
     var rows: [group.max_tick_slots]group.TickResult = undefined;
     var begin = GetTickCount64();
@@ -172,7 +200,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
         if (session.pending_start.load(.acquire)) {
             session.set(.starting);
             if (canceled(context) == 0) {
-                if (owner.group.startBuiltin(helper, helper_digest)) |next| {
+                if (launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire))) |next| {
                     if (next.failure) |err| failure = err;
                     begin = GetTickCount64();
                 } else |_| {
@@ -274,8 +302,10 @@ test "session admits only one pending start within the pilot limit" {
     try std.testing.expect(!session.requestStart());
     session.owned.store(1, .release);
     session.set(.running);
-    try std.testing.expect(session.requestStart());
+    try std.testing.expect(session.requestAsset(27));
+    try std.testing.expectEqual(@as(u64, 27), session.start_asset.load(.acquire));
     try std.testing.expect(!session.requestStart());
+    try std.testing.expectEqual(@as(u64, 27), session.start_asset.load(.acquire));
     session.pending_start.store(false, .release);
     session.owned.store(session_limit, .release);
     try std.testing.expect(!session.requestStart());

@@ -14,7 +14,7 @@
 static const char *commands[] = {
     "companion.library", "companion.running", "companion.market", "companion.global",
     "companion.settings.refresh", "companion.download.less", "companion.download.more",
-    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one"
+    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start"
 };
 typedef struct {
     uint64_t page, next, pending, version;
@@ -30,8 +30,8 @@ typedef struct {
     uint64_t dispatch_id;
     char saved, requested;
     uint32_t operation;
-    PulseUiClickFn click[15];
-    void *users[15];
+    PulseUiClickFn click[16];
+    void *users[16];
     uint64_t task, aux_task;
     PulseTaskWorkFn aux_work;
     void *aux_user;
@@ -51,8 +51,8 @@ static int same(PulseStringView s, const char *text) {
 }
 
 static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
-    REQUIRE(t && t->size == sizeof(*t) && t->root && t->command_count == 15 && t->commands);
-    for (unsigned i = 0; i < 15; ++i) REQUIRE(same(t->commands[i], commands[i]));
+    REQUIRE(t && t->size == sizeof(*t) && t->root && t->command_count == 16 && t->commands);
+    for (unsigned i = 0; i < 16; ++i) REQUIRE(same(t->commands[i], commands[i]));
     const PulseUiModelNode *root = t->root;
     REQUIRE(root->size == sizeof(*root) && root->type == PULSE_UI_MODEL_STACK);
     REQUIRE(root->children.present && root->children.data && (root->children.count >= 3 && root->children.count <= 24));
@@ -131,7 +131,7 @@ static PulseStatus PULSE_CALL update(void *ctx, uint64_t page, const PulseUiMode
 static PulseStatus PULSE_CALL subscribe(void *ctx, uint64_t page, PulseStringView command, PulseUiClickFn click, void *user, uint64_t *id) {
     Fixture *f = ctx;
     REQUIRE(page && page == f->page && click && user && id);
-    for (unsigned i = 0; i < 15; ++i) {
+    for (unsigned i = 0; i < 16; ++i) {
         if (!same(command, commands[i])) continue;
         REQUIRE(!f->click[i]);
         if (f->fail_subscribe && i == 2) return PULSE_ERROR_STATE;
@@ -367,7 +367,7 @@ static int deliver(Fixture *f, PulseStatus status, int wrong_operation) {
     return 0;
 }
 static int click(Fixture *f, unsigned i) {
-    CHECK(i < 15 && f->click[i] && f->page);
+    CHECK(i < 16 && f->click[i] && f->page);
     f->click[i](f->users[i], f->page, view(commands[i]));
     return 0;
 }
@@ -377,7 +377,7 @@ static int cycle(PulsePluginEntryV1Fn entry, int fallback) {
     PulseHostV1 host = {.size=sizeof(host), .version=1, .context=&f, .query_interface=query};
     PulsePluginV1 out = {.size=sizeof(out), .version=1};
     CHECK(entry(&host, &out) == PULSE_OK && out.instance && out.activate && out.deactivate && out.destroy);
-    CHECK(out.activate(out.instance) == PULSE_OK && f.created == 1 && f.subscribed == 15 && f.pending && f.task);
+    CHECK(out.activate(out.instance) == PULSE_OK && f.created == 1 && f.subscribed == 16 && f.pending && f.task);
     CHECK(click(&f, 3) == 0 && f.global && !f.enabled_more);
     CHECK(deliver(&f, PULSE_OK, 0) == 0 && f.enabled_more && f.enabled_less);
     CHECK(click(&f, 6) == 0 && f.pending && f.requested == '5' && !f.enabled_more);
@@ -394,7 +394,7 @@ static int cycle(PulsePluginEntryV1Fn entry, int fallback) {
     CHECK(click(&f, 4) == 0 && f.pending);
     f.fail_remove = 1;
     out.deactivate(out.instance);
-    CHECK(!f.pending && f.canceled == 1 && f.page && f.subscribed == 15);
+    CHECK(!f.pending && f.canceled == 1 && f.page && f.subscribed == 16);
     CHECK(f.task_canceled == 1 && f.task_state == PULSE_TASK_CANCELLED);
     CHECK(click(&f, 6) == 0 && !f.pending); /* inactive callbacks cannot save */
     f.fail_remove = 0;

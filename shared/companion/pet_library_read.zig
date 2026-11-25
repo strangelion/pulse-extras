@@ -80,7 +80,7 @@ fn appendPath(out: []u16, base: []const u16, tail: []const u16) ![:0]const u16 {
 // Resolve only system DLLs, never search the application directory or PATH.
 // The MSVC cross-build needs no external Windows SDK import libraries.
 // Keep the libraries loaded until the allocated path has been freed.
-fn knownRoot(out: []u16) ![:0]const u16 {
+pub fn knownRoot(out: []u16) ![:0]const u16 {
     const system32 = 0x00000800; // LOAD_LIBRARY_SEARCH_SYSTEM32
     const shell = LoadLibraryExW(std.unicode.wtf8ToWtf16LeStringLiteral("shell32.dll"), null, system32);
     if (shell == 0) return error.KnownFolderUnavailable;
@@ -227,6 +227,16 @@ fn matches(entry: *const catalog.Entry, options: Options) bool {
         if (!found) return false;
     }
     return true;
+}
+
+// The caller retains the independently approved private root lease.
+pub fn readManagedIndex(root: [:0]const u16, out: *inventory.Inventory) !void {
+    if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
+    var name: [1024]u16 = undefined;
+    const path = try appendPath(&name, root, std.unicode.wtf8ToWtf16LeStringLiteral("\\inventory.pci"));
+    var bytes: [inventory.max_bytes]u8 = undefined;
+    const size = (try readRecord(path, &bytes)) orelse return error.UnknownAsset;
+    try inventory.decode(out, bytes[0..size]);
 }
 
 fn readRecord(path: [:0]const u16, bytes: []u8) !?usize {
