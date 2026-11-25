@@ -37,15 +37,19 @@ pub const Package = extern struct {
     outfits: [16]Outfit = @splat(.{}),
     rule_count: u32 = 0,
     rules: [32]ScheduleRule = @splat(.{}),
+    pet_id: [65]u8 = @splat(0),
+    outfit_ids: [16][33]u8 = @splat(@splat(0)),
+    activity_ids: [16][33]u8 = @splat(@splat(0)),
 };
 
 comptime {
-    if (@sizeOf(Representation) != 88 or @sizeOf(Item) != 1660 or @sizeOf(Outfit) != 241 or @sizeOf(ScheduleRule) != 28 or @sizeOf(Package) != 31328) @compileError("Classic package ABI mismatch");
+    if (@sizeOf(Representation) != 88 or @sizeOf(Item) != 1660 or @sizeOf(Outfit) != 241 or @sizeOf(ScheduleRule) != 28 or @sizeOf(Package) != 32452) @compileError("Classic package ABI mismatch");
 }
 
 pub fn project(allocator: std.mem.Allocator, input: []const u8, id: []const u8) !Package {
     const meta = try assets.parseMetadata(allocator, input, id);
     var result: Package = .{ .version = if (meta.layout == .v1) 1 else 2 };
+    @memcpy(result.pet_id[0..id.len], id);
     for (meta.wardrobe.outfits[0..meta.wardrobe.count], 0..) |*outfit, i| {
         if (outfit.format != .webp) return error.UnsupportedFormat;
         const name = outfit.displayName();
@@ -54,6 +58,8 @@ pub fn project(allocator: std.mem.Allocator, input: []const u8, id: []const u8) 
         const path = try outfit.path(&buffer);
         const leaf = path["outfits/".len..];
         @memcpy(result.outfits[i].leaf[0..leaf.len], leaf);
+        const outfit_id = outfit.id.slice();
+        @memcpy(result.outfit_ids[i][0..outfit_id.len], outfit_id);
         result.outfit_count += 1;
     }
     for (meta.wardrobe.rules[0..meta.wardrobe.rule_count]) |rule| {
@@ -89,6 +95,8 @@ pub fn project(allocator: std.mem.Allocator, input: []const u8, id: []const u8) 
             const leaf = path["activities/".len..];
             @memcpy(entry.leaf[0..leaf.len], leaf);
         }
+        const activity_id = activity.id.slice();
+        @memcpy(result.activity_ids[result.count][0..activity_id.len], activity_id);
         result.count += 1;
     }
     return result;
@@ -158,6 +166,9 @@ test "outfit-specific representations retain exact primary and variant leaves" {
     const result = try project(std.testing.allocator, input, "a");
     try std.testing.expectEqual(@as(u32, 1), result.outfit_count);
     try std.testing.expectEqualStrings("night.webp", std.mem.sliceTo(&result.outfits[0].leaf, 0));
+    try std.testing.expectEqualStrings("a", std.mem.sliceTo(&result.pet_id, 0));
+    try std.testing.expectEqualStrings("night", std.mem.sliceTo(&result.outfit_ids[0], 0));
+    try std.testing.expectEqualStrings("nap", std.mem.sliceTo(&result.activity_ids[0], 0));
     try std.testing.expectEqualStrings("nap.webp", std.mem.sliceTo(&result.items[0].reps[1].leaf, 0));
     try std.testing.expectEqualStrings("nap.default.webp", std.mem.sliceTo(&result.items[0].reps[0].leaf, 0));
     try std.testing.expectEqual(@as(u32, 8), result.items[0].reps[0].frames);

@@ -397,7 +397,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     int received_testing = 0;
     HKEY settings = NULL;
     pet_config saved = {0, 0, 100, 0};
-    int can_save = 0;
+    int can_save = 0, prefs_writable = 0, prefs_dirty = 0;
     const wchar_t *path = NULL, *package_dir = NULL, *package_id = NULL;
     int check_package = 0, check_task = 0, async_bound = 0;
     pet_package package = {0};
@@ -535,6 +535,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         if (status == ERROR_FILE_NOT_FOUND) {
             /* Defer creation until a clean, visible exit. */
             can_save = 1;
+            prefs_writable = 1;
         } else if (status == ERROR_SUCCESS) {
             pet_config_result result = pet_config_load(settings, &saved);
             can_save = result == PET_CONFIG_OK || result == PET_CONFIG_MISSING;
@@ -545,6 +546,18 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             }
         }
         if (!can_save) fputs("Saved companion settings unavailable or incompatible; using defaults without overwrite.\n", stderr);
+        if (package_dir && settings && can_save) {
+            pet_preferences prefs;
+            pet_config_result result = pet_preferences_load(settings, package.meta.pet_id, &prefs);
+            prefs_writable = result == PET_CONFIG_OK || result == PET_CONFIG_MISSING;
+            if (result == PET_CONFIG_OK && !pet_preferences_apply(&package.meta, &prefs,
+                &outfit, &auto_outfit, &idle.enabled)) prefs_writable = 0;
+            if (!prefs_writable) {
+                outfit = 0; auto_outfit = package.meta.rule_count != 0; idle.enabled = 0;
+                fputs("Pet preferences unavailable or incompatible; using defaults without overwrite.\n", stderr);
+                pet_note(memory->resource_bridge, PET_NOTE_IO_FAILURE);
+            }
+        }
     }
     /* Process-local DPI policy before window creation. No host mutation. */
     /* Per-monitor awareness keeps the explicit physical pixel scale stable.
@@ -553,7 +566,16 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         (void)SetProcessDPIAware();
     atlas = package_dir ? pet_package_load_atlas(memory, &package, outfit, validate, &bytes) :
         (path ? pet_demo_load_webp(memory, path, version, validate, &bytes) : synthetic_atlas(memory, &bytes));
+    if (!atlas && package_dir && outfit) {
+        /* A restored fixed outfit can fail its full decode after header
+         * admission. Preserve the stored preference unless explicitly edited. */
+        outfit = 0;
+        atlas = pet_package_load_atlas(memory, &package, outfit, validate, &bytes);
+        pet_note(memory->resource_bridge, PET_NOTE_IO_FAILURE);
+        fputs("Saved outfit decode failed; default appearance retained.\n", stderr);
+    }
     if (!atlas) goto cleanup;
+    idle.unavailable = unavailable_activities(&package, outfit);
     if (pet_surface_open_scaled(&surface, topmost, FALSE, scale) != PET_SURFACE_OK) goto cleanup;
     if (smoke) {
         /* Synthetic metadata only; do not display a modal menu or save settings. */
@@ -645,17 +667,20 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                     } else if (command == MENU_OUTFIT_AUTO && package.meta.rule_count) {
                         auto_outfit = 1;
                         rejected_outfits = 0; /* explicit retry */
+                        prefs_dirty = 1;
                         schedule_due = 0;
                     } else if (command >= MENU_OUTFIT_FIRST &&
                         command - MENU_OUTFIT_FIRST <= package.meta.outfit_count && package.meta.outfit_count) {
                         unsigned next = command - MENU_OUTFIT_FIRST;
                         auto_outfit = 0;
+                        prefs_dirty = 1;
                         if (next != outfit && !request_decode(memory->resource_bridge, async, PET_DECODE_OUTFIT, next, 0))
                             fputs("Outfit decode admission failed; previous appearance retained.\n", stderr);
                     } else if (command >= MENU_AUTO_FIRST &&
                         command - MENU_AUTO_FIRST < package.meta.count && !state_slot) {
                         unsigned index = command - MENU_AUTO_FIRST;
                         pet_idle_toggle(&idle, index);
+                        prefs_dirty = 1;
                     } else if (command >= MENU_ACTIVITY_FIRST &&
                         command - MENU_ACTIVITY_FIRST < package.meta.count && !state_slot && !reduced &&
                         !((idle.failed | idle.unavailable) & pet_idle_bit(command - MENU_ACTIVITY_FIRST))) {
@@ -938,6 +963,14 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             (topmost ? PET_CONFIG_TOPMOST : 0) | (reduced ? PET_CONFIG_REDUCED : 0)};
         if (!settings || pet_config_save(settings, &next) != PET_CONFIG_OK)
             fputs("Companion settings not saved; existing incompatible data preserved.\n", stderr);
+        if (package_dir && prefs_dirty && prefs_writable) {
+            pet_preferences prefs;
+            if (!settings || !pet_preferences_capture(&package.meta, outfit, auto_outfit, idle.enabled, &prefs) ||
+                pet_preferences_save(settings, &prefs) != PET_CONFIG_OK) {
+                pet_note(memory->resource_bridge, PET_NOTE_IO_FAILURE);
+                fputs("Pet preferences not saved; existing incompatible or full record preserved.\n", stderr);
+            }
+        }
     }
 cleanup:
     /* Joining precedes closing every borrowed file/event and freeing

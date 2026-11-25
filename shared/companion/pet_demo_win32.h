@@ -59,11 +59,12 @@ typedef struct {
     pet_package_outfit outfits[PET_PACKAGE_MAX];
     uint32_t rule_count;
     pet_schedule_rule rules[32];
+    char pet_id[65], outfit_ids[PET_PACKAGE_MAX][33], activity_ids[PET_PACKAGE_MAX][33];
 } pet_package_meta;
 _Static_assert(sizeof(pet_package_rep) == 88, "package representation ABI");
 _Static_assert(sizeof(pet_package_item) == 1660, "package item ABI");
 _Static_assert(sizeof(pet_schedule_rule) == 28, "schedule rule ABI");
-_Static_assert(sizeof(pet_package_meta) == 31328, "package metadata ABI");
+_Static_assert(sizeof(pet_package_meta) == 32452, "package metadata ABI");
 typedef uint32_t (*pet_schedule_fn)(const pet_package_meta *, uint32_t, uint32_t, uint32_t, uint32_t);
 typedef int (*pet_package_parse_fn)(const pet_memory *, const uint8_t *, size_t,
     const uint8_t *, size_t, pet_package_meta *);

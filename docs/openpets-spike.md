@@ -1015,3 +1015,37 @@ A pure bounded predicate guards the outfit index before the quarantine
 mask shift. Tests cover clock boundaries, invalid clock/index values,
 fixed mode, quarantine, default fallback and sent window messages.
 No additional timer, worker, persistence or asset decode path.
+
+## Classic preference persistence — opt-in stable identities
+
+Runs 45551544424, 45552353150 and 45552525799 passed Windows, Ubuntu
+and the regression gate. The package ABI now owns the validated pet ID
+(up to 64 bytes), outfit IDs and logical activity IDs (32 each), with
+matching C/Zig size assertions. Keep SettingsV1 unchanged. A separate
+fixed 10,024-byte PetPreferencesV1 REG_BINARY table under the existing
+key holds at most 16 pet IDs, one auto/default/fixed outfit ID and up
+to 16 enabled logical activity IDs per pet. No asset paths, names,
+cooldown history, failure quarantine or resource handles are persisted.
+The format checks exact length/type/magic/version, bounded canonical
+zero-padded IDs, duplicate records/activities and unused zero slots.
+Full or invalid records are preserved; no automatic eviction.
+
+Only explicit --remember reads or writes preferences. Restore by exact
+ID after package admission; unknown outfits follow the current creator
+policy (or default), removed activities are ignored and newly declared
+activities are off. Reorder and rename do not affect ID matching.
+A restored fixed WebP is decoded before the first visible frame,
+with default fallback on full-decode failure. No startup failure alone
+rewrites preferences. Explicit outfit mode/selection or automatic
+activity toggle marks preferences dirty. On normal visible exit save
+the committed fixed appearance or Auto and current enabled IDs; a
+pending or failed manual decode cannot persist an unpresented outfit.
+No write for diagnostic modes, non-remember runs or unchanged prefs.
+Re-read the table at save to preserve other pet records; simultaneous
+writers are still last-writer-wins (not an atomic compare-and-swap).
+The logical pet ID is the identity, not a source-authenticated package
+identity. This remains a standalone experimental storage seam, not
+Pulse host-managed preferences or user-editable schedule. Registry
+tests use an isolated volatile key, including reorder, removed IDs,
+cross-pet isolation, full table and corrupt-value preservation.
+Native restored artwork and desktop restart acceptance remain pending.
