@@ -1,6 +1,7 @@
 //! Owned C-ABI projection of validated Classic WebP metadata.
 const std = @import("std");
 const assets = @import("pet_assets.zig");
+const wardrobe = @import("pet_wardrobe.zig");
 
 pub const Representation = extern struct {
     frames: u32 = 0,
@@ -18,16 +19,28 @@ pub const Outfit = extern struct {
     leaf: [80]u8 = @splat(0),
 };
 
+pub const ScheduleRule = extern struct {
+    outfit: u32 = 0,
+    flags: u32 = 0, // enabled=1, time=2, days=4, dates=8
+    time_from: u32 = 0,
+    time_to: u32 = 0,
+    days: u32 = 0,
+    date_from: u32 = 0,
+    date_to: u32 = 0,
+};
+
 pub const Package = extern struct {
     version: u32 = 0,
     count: u32 = 0,
     outfit_count: u32 = 0,
     items: [16]Item = @splat(.{}),
     outfits: [16]Outfit = @splat(.{}),
+    rule_count: u32 = 0,
+    rules: [32]ScheduleRule = @splat(.{}),
 };
 
 comptime {
-    if (@sizeOf(Representation) != 88 or @sizeOf(Item) != 1660 or @sizeOf(Outfit) != 241 or @sizeOf(Package) != 30428) @compileError("Classic package ABI mismatch");
+    if (@sizeOf(Representation) != 88 or @sizeOf(Item) != 1660 or @sizeOf(Outfit) != 241 or @sizeOf(ScheduleRule) != 28 or @sizeOf(Package) != 31328) @compileError("Classic package ABI mismatch");
 }
 
 pub fn project(allocator: std.mem.Allocator, input: []const u8, id: []const u8) !Package {
@@ -42,6 +55,25 @@ pub fn project(allocator: std.mem.Allocator, input: []const u8, id: []const u8) 
         const leaf = path["outfits/".len..];
         @memcpy(result.outfits[i].leaf[0..leaf.len], leaf);
         result.outfit_count += 1;
+    }
+    for (meta.wardrobe.rules[0..meta.wardrobe.rule_count]) |rule| {
+        var projected: ScheduleRule = .{ .outfit = rule.outfit, .flags = if (rule.enabled) 1 else 0 };
+        if (rule.time) |range| {
+            projected.flags |= 2;
+            projected.time_from = range.from;
+            projected.time_to = range.to;
+        }
+        if (rule.days) |days| {
+            projected.flags |= 4;
+            projected.days = days;
+        }
+        if (rule.dates) |range| {
+            projected.flags |= 8;
+            projected.date_from = range.from;
+            projected.date_to = range.to;
+        }
+        result.rules[result.rule_count] = projected;
+        result.rule_count += 1;
     }
     for (meta.activities.items[0..meta.activities.count]) |*activity| {
         const item = &result.items[result.count];
@@ -60,6 +92,33 @@ pub fn project(allocator: std.mem.Allocator, input: []const u8, id: []const u8) 
         result.count += 1;
     }
     return result;
+}
+
+/// Native schedule selection over owned validated metadata. Keep matching
+/// semantics in the original pure wardrobe Rule, not a second C parser.
+pub fn resolveSchedule(meta: *const Package, minute: u32, weekday: u32, month: u32, day: u32) callconv(.c) u32 {
+    if (meta.rule_count > 32 or meta.outfit_count > 16 or minute >= 1440 or weekday >= 7 or
+        month < 1 or month > 12 or day < 1 or day > 31) return 0;
+    const moment: wardrobe.Moment = .{
+        .minute = @intCast(minute),
+        .weekday = @intCast(weekday),
+        .month = @intCast(month),
+        .day = @intCast(day),
+    };
+    for (meta.rules[0..meta.rule_count]) |rule| {
+        if (rule.outfit > meta.outfit_count or rule.flags & ~@as(u32, 15) != 0 or
+            rule.time_from >= 1440 or rule.time_to >= 1440 or rule.days > 127 or
+            rule.date_from > 1231 or rule.date_to > 1231) continue;
+        const match: wardrobe.Rule = .{
+            .outfit = @intCast(rule.outfit),
+            .enabled = rule.flags & 1 != 0,
+            .time = if (rule.flags & 2 != 0) .{ .from = @intCast(rule.time_from), .to = @intCast(rule.time_to) } else null,
+            .days = if (rule.flags & 4 != 0) @intCast(rule.days) else null,
+            .dates = if (rule.flags & 8 != 0) .{ .from = @intCast(rule.date_from), .to = @intCast(rule.date_to) } else null,
+        };
+        if (match.matches(moment)) return rule.outfit;
+    }
+    return 0;
 }
 
 pub fn parse(allocator: std.mem.Allocator, input: [*]const u8, len: usize, id: [*]const u8, id_len: usize, out: *Package) c_int {
@@ -108,4 +167,17 @@ test "outfit-specific representations retain exact primary and variant leaves" {
 test "SVG outfit is not silently discarded" {
     const input = "{\"id\":\"a\",\"displayName\":\"A\",\"description\":\"A\",\"spritesheetPath\":\"spritesheet.webp\",\"wardrobe\":{\"outfits\":[{\"id\":\"night\",\"displayName\":\"Night\",\"spritesheetPath\":\"outfits/night.svg\"}]}}";
     try std.testing.expectError(error.UnsupportedFormat, project(std.testing.allocator, input, "a"));
+}
+
+test "native schedule projection preserves ordered local civil time semantics" {
+    const input = "{\"id\":\"a\",\"displayName\":\"A\",\"description\":\"A\",\"spritesheetPath\":\"spritesheet.webp\",\"wardrobe\":{\"outfits\":[{\"id\":\"night\",\"displayName\":\"Night\",\"spritesheetPath\":\"outfits/night.webp\"},{\"id\":\"winter\",\"displayName\":\"Winter\",\"spritesheetPath\":\"outfits/winter.webp\"}],\"schedule\":[{\"outfit\":\"default\",\"enabled\":false,\"when\":{\"days\":[\"fri\"]}},{\"outfit\":\"winter\",\"when\":{\"dates\":{\"from\":\"12-20\",\"to\":\"01-02\"}}},{\"outfit\":\"night\",\"when\":{\"days\":[\"fri\"],\"time\":{\"from\":\"22:00\",\"to\":\"07:00\"}}}]}}";
+    const meta = try project(std.testing.allocator, input, "a");
+    try std.testing.expectEqual(@as(u32, 3), meta.rule_count);
+    try std.testing.expectEqual(@as(u32, 2), resolveSchedule(&meta, 1380, 5, 12, 25));
+    try std.testing.expectEqual(@as(u32, 1), resolveSchedule(&meta, 1320, 5, 11, 20));
+    try std.testing.expectEqual(@as(u32, 0), resolveSchedule(&meta, 420, 5, 11, 20));
+    try std.testing.expectEqual(@as(u32, 0), resolveSchedule(&meta, 120, 6, 11, 21));
+    try std.testing.expectEqual(@as(u32, 2), resolveSchedule(&meta, 0, 0, 1, 2));
+    try std.testing.expectEqual(@as(u32, 0), resolveSchedule(&meta, 1440, 5, 12, 25));
+    try std.testing.expectEqual(@as(u32, 0), resolveSchedule(&meta, 0, 0, 2, 30));
 }

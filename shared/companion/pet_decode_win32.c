@@ -233,7 +233,7 @@ BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wcha
     if (!data) goto cleanup;
     stage = "metadata-parse";
     if (parse(memory, data, length, id8, id_len, &package->meta) ||
-        package->meta.count > PET_PACKAGE_MAX || package->meta.outfit_count > PET_PACKAGE_MAX ||
+        package->meta.count > PET_PACKAGE_MAX || package->meta.outfit_count > PET_PACKAGE_MAX || package->meta.rule_count > 32 ||
         (package->meta.version != 1 && package->meta.version != 2)) goto cleanup;
     pet_free(memory, data, length); data = NULL;
     stage = "base-open";

@@ -51,13 +51,20 @@ typedef struct {
     uint8_t name[161], leaf[80];
 } pet_package_outfit;
 typedef struct {
+    uint32_t outfit, flags, time_from, time_to, days, date_from, date_to;
+} pet_schedule_rule;
+typedef struct {
     uint32_t version, count, outfit_count;
     pet_package_item items[PET_PACKAGE_MAX];
     pet_package_outfit outfits[PET_PACKAGE_MAX];
+    uint32_t rule_count;
+    pet_schedule_rule rules[32];
 } pet_package_meta;
 _Static_assert(sizeof(pet_package_rep) == 88, "package representation ABI");
 _Static_assert(sizeof(pet_package_item) == 1660, "package item ABI");
-_Static_assert(sizeof(pet_package_meta) == 30428, "package metadata ABI");
+_Static_assert(sizeof(pet_schedule_rule) == 28, "schedule rule ABI");
+_Static_assert(sizeof(pet_package_meta) == 31328, "package metadata ABI");
+typedef uint32_t (*pet_schedule_fn)(const pet_package_meta *, uint32_t, uint32_t, uint32_t, uint32_t);
 typedef int (*pet_package_parse_fn)(const pet_memory *, const uint8_t *, size_t,
     const uint8_t *, size_t, pet_package_meta *);
 typedef struct {
@@ -96,5 +103,5 @@ typedef struct {
 } pet_async;
 int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_sample_fn sample, pet_demo_validate_fn validate,
     pet_activity_sample_fn sample_activity, pet_demo_validate_fn validate_activity,
-    pet_package_parse_fn parse_package);
+    pet_package_parse_fn parse_package, pet_schedule_fn schedule);
 #endif

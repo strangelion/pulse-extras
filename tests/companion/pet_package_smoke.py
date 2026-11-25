@@ -70,7 +70,9 @@ def main() -> None:
         outfits = root / "outfits"
         outfits.mkdir()
         manifest["wardrobe"] = {"outfits": [{"id": "night", "displayName": "Night",
-                                             "spritesheetPath": "outfits/night.webp"}]}
+                                             "spritesheetPath": "outfits/night.webp"}],
+                                "schedule": [{"outfit": "night", "when": {
+                                    "time": {"from": "22:00", "to": "07:00"}}}]}
         manifest["activities"][0]["outfitId"] = "night"
         manifest["activities"][0]["outfitVariants"] = [
             {"outfitId": "default", "spritesheetPath": "activities/nap.default.webp",

@@ -22,7 +22,9 @@ const ActivitySampleFn = *const fn (u32, u32, u64, *Sample) callconv(.c) c_int;
 
 const PackageParseFn = *const fn (*const memory.Bridge, [*]const u8, usize, [*]const u8, usize, *package.Package) callconv(.c) c_int;
 
-extern "c" fn pet_demo_run(*const memory.Bridge, *const async_decode.Bridge, SampleFn, ValidateFn, ActivitySampleFn, ValidateFn, PackageParseFn) c_int;
+const ScheduleFn = *const fn (*const package.Package, u32, u32, u32, u32) callconv(.c) u32;
+
+extern "c" fn pet_demo_run(*const memory.Bridge, *const async_decode.Bridge, SampleFn, ValidateFn, ActivitySampleFn, ValidateFn, PackageParseFn, ScheduleFn) c_int;
 
 fn layoutFor(version: u32) ?assets.Layout {
     return switch (version) {
@@ -90,7 +92,7 @@ pub fn main(init: std.process.Init) !void {
     const bridge = memory.Bridge.init(&group.pool, &resource_bridge);
     var async_owner = async_decode.Owner.init(init.io, &group);
     const async_bridge = async_decode.Bridge.init(&async_owner);
-    const result = pet_demo_run(&bridge, &async_bridge, sampleFrame, validateWebp, sampleActivity, validateActivity, parsePackage);
+    const result = pet_demo_run(&bridge, &async_bridge, sampleFrame, validateWebp, sampleActivity, validateActivity, parsePackage, package.resolveSchedule);
     // C must stop before releasing its pinned package and notification.
     // Idempotent stop is a defensive final drain, not a replacement.
     async_owner.stop();

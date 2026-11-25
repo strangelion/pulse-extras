@@ -156,7 +156,7 @@ static void close_settings(const pet_resources *resources, HKEY key) {
 
 enum {
     MENU_TOPMOST = 100, MENU_REDUCED, MENU_RESET, MENU_INTERACT,
-    MENU_EXIT, MENU_ACTIVITY_FIRST = 300, MENU_AUTO_FIRST = 400, MENU_OUTFIT_FIRST = 500, MENU_SCALE_50 = 200, MENU_SCALE_75, MENU_SCALE_100,
+    MENU_EXIT, MENU_ACTIVITY_FIRST = 300, MENU_AUTO_FIRST = 400, MENU_OUTFIT_FIRST = 500, MENU_OUTFIT_AUTO = 517, MENU_SCALE_50 = 200, MENU_SCALE_75, MENU_SCALE_100,
     MENU_SCALE_125, MENU_SCALE_150, MENU_SCALE_200
 };
 
@@ -184,7 +184,7 @@ static BOOL destroy_menu(const pet_resources *resources, HMENU menu, unsigned co
  * still owns the bounded job termination fallback. */
 static unsigned pet_menu(const pet_resources *resources, HWND window, POINT at, unsigned scale, int topmost,
     int reduced, int managed, pet_language language, const pet_package *package,
-    const pet_idle_policy *idle, unsigned outfit, int display, int *built) {
+    const pet_idle_policy *idle, unsigned outfit, int auto_outfit, int display, int *built) {
     if (built) *built = 0;
     unsigned attached = 1;
     pet_menu_strings strings = pet_menu_labels(language, GetUserDefaultUILanguage());
@@ -209,7 +209,13 @@ static unsigned pet_menu(const pet_resources *resources, HWND window, POINT at, 
     if (package && package->meta.outfit_count) {
         HMENU outfits = tracked_menu(resources);
         if (!outfits) { destroy_menu(resources, menu, attached); return 0; }
-        if (!AppendMenuW(outfits, MF_STRING | (!outfit ? MF_CHECKED : 0),
+        if (package->meta.rule_count &&
+            (!AppendMenuW(outfits, MF_STRING | (auto_outfit ? MF_CHECKED : 0),
+                MENU_OUTFIT_AUTO, strings.auto_outfit) ||
+             !AppendMenuW(outfits, MF_SEPARATOR, 0, NULL))) {
+            destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0;
+        }
+        if (!AppendMenuW(outfits, MF_STRING | (!auto_outfit && !outfit ? MF_CHECKED : 0),
             MENU_OUTFIT_FIRST, strings.default_outfit)) {
             destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0;
         }
@@ -224,7 +230,7 @@ static unsigned pet_menu(const pet_resources *resources, HWND window, POINT at, 
                 escaped[j++] = name[k];
             }
             escaped[j] = 0;
-            if (!AppendMenuW(outfits, MF_STRING | (outfit == i + 1 ? MF_CHECKED : 0),
+            if (!AppendMenuW(outfits, MF_STRING | (!auto_outfit && outfit == i + 1 ? MF_CHECKED : 0),
                 MENU_OUTFIT_FIRST + i + 1, escaped)) {
                 destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0;
             }
@@ -288,6 +294,16 @@ static unsigned pet_menu(const pet_resources *resources, HWND window, POINT at, 
 }
 
 /* Non-cryptographic variation only; no security decisions use this RNG. */
+/* Evaluate only the current local civil time. No catch-up of missed
+ * rules after suspend, time-zone change or a clock adjustment. */
+static unsigned scheduled_outfit(const pet_package *package, pet_schedule_fn schedule) {
+    SYSTEMTIME local;
+    GetLocalTime(&local);
+    unsigned next = schedule(&package->meta, local.wHour * 60u + local.wMinute,
+        local.wDayOfWeek, local.wMonth, local.wDay);
+    return next <= package->meta.outfit_count ? next : 0;
+}
+
 static uint32_t unavailable_activities(const pet_package *package, unsigned outfit) {
     uint32_t mask = 0;
     for (unsigned i = 0; i < package->meta.count; ++i)
@@ -361,7 +377,7 @@ static int take_decode(const pet_async *async, native_decode *ctx, pet_decode_re
 
 int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_sample_fn sample, pet_demo_validate_fn validate,
     pet_activity_sample_fn sample_activity, pet_demo_validate_fn validate_activity,
-    pet_package_parse_fn parse_package) {
+    pet_package_parse_fn parse_package, pet_schedule_fn schedule) {
     if (!memory || !memory->context || !memory->allocate || !memory->release || !memory->resource_bridge ||
         !async || !async->owner || !async->bind || !async->submit || !async->start || !async->take ||
         !async->invalidate || !async->busy || !async->stop) return 1;
@@ -390,7 +406,10 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     uint64_t activity_started = 0;
     int activity_displayed = 0;
     pet_idle_policy idle = {0};
-    unsigned outfit = 0;
+    unsigned outfit = 0, schedule_target = 0;
+    int auto_outfit = 0;
+    uint64_t schedule_due = 0;
+    uint32_t rejected_outfits = 0;
     uint32_t outfit_failures[PET_OUTFIT_SLOTS] = {0};
     unsigned active_index = PET_IDLE_NONE;
     uint32_t rng = (uint32_t)GetTickCount64() ^ GetCurrentProcessId();
@@ -400,7 +419,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     if (!pet_reserve(memory->resource_bridge, PET_RESOURCE_ARGV, 1)) goto cleanup;
     argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv) pet_release(memory->resource_bridge, PET_RESOURCE_ARGV, 1);
-    if (!argv || !sample || !validate || !sample_activity || !validate_activity || !parse_package) goto cleanup;
+    if (!argv || !sample || !validate || !sample_activity || !validate_activity || !parse_package || !schedule) goto cleanup;
     for (int i = 1; i < argc; ++i) {
         if (wcscmp(argv[i], L"--smoke") == 0 && !smoke) smoke = 1;
         else if (!reduced_set && (wcscmp(argv[i], L"--reduced-motion") == 0 ||
@@ -483,6 +502,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             goto cleanup;
         }
         version = package.meta.version;
+        auto_outfit = package.meta.rule_count != 0;
         idle.unavailable = unavailable_activities(&package, outfit);
         if (check_package) { rc = 0; goto cleanup; }
         if (!pet_reserve(memory->resource_bridge, PET_RESOURCE_NOTIFY, 1)) goto cleanup;
@@ -535,13 +555,14 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     if (smoke) {
         /* Synthetic metadata only; do not display a modal menu or save settings. */
         package.meta.outfit_count = 1;
+        package.meta.rule_count = 1;
         package.meta.count = 1;
         memcpy(package.meta.outfits[0].name, "Test outfit", sizeof("Test outfit"));
         memcpy(package.meta.items[0].name, "Test activity", sizeof("Test activity"));
         package.meta.items[0].reps[0].frames = 4;
         int built = 0;
         (void)pet_menu(memory->resource_bridge, surface.window, (POINT){0, 0},
-            scale, topmost, reduced, state_slot != NULL, language, &package, &idle, 0, 0, &built);
+            scale, topmost, reduced, state_slot != NULL, language, &package, &idle, 0, 1, 0, &built);
         ZeroMemory(&package.meta, sizeof(package.meta));
         if (!built) goto cleanup;
     }
@@ -602,7 +623,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                         last_row = base.row; last_column = base.column;
                     }
                     unsigned command = pet_menu(memory->resource_bridge, surface.window, cursor, scale, topmost,
-                        reduced, state_slot != NULL, language, &package, &idle, outfit, 1, NULL);
+                        reduced, state_slot != NULL, language, &package, &idle, outfit, auto_outfit, 1, NULL);
                     /* Check the owner signal immediately after the modal menu. */
                     if (stop && WaitForSingleObject(stop, 0) == WAIT_OBJECT_0) {
                         stopped = 1; done = 1; break;
@@ -616,9 +637,14 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                         reduced = !reduced;
                         started = GetTickCount64();
                         if (!state_slot) reaction = PET_STATE_IDLE;
+                    } else if (command == MENU_OUTFIT_AUTO && package.meta.rule_count) {
+                        auto_outfit = 1;
+                        rejected_outfits = 0; /* explicit retry */
+                        schedule_due = 0;
                     } else if (command >= MENU_OUTFIT_FIRST &&
                         command - MENU_OUTFIT_FIRST <= package.meta.outfit_count && package.meta.outfit_count) {
                         unsigned next = command - MENU_OUTFIT_FIRST;
+                        auto_outfit = 0;
                         if (next != outfit && !request_decode(memory->resource_bridge, async, PET_DECODE_OUTFIT, next, 0))
                             fputs("Outfit decode admission failed; previous appearance retained.\n", stderr);
                     } else if (command >= MENU_AUTO_FIRST &&
@@ -739,11 +765,19 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             }
         }
         if (smoke && now >= smoke_end) break;
+        if (auto_outfit && now >= schedule_due) {
+            schedule_target = scheduled_outfit(&package, schedule);
+            schedule_due = now + 15000;
+        }
         if (async_bound && InterlockedCompareExchange(&decode_ctx.ready, 0, 0)) {
             pet_decode_result result = {0};
             int status = take_decode(async, &decode_ctx, &result);
             if (status < 0) goto cleanup;
-            if (status == 1 && result.kind == PET_DECODE_OUTFIT) {
+            if (status == 1 && result.kind == PET_DECODE_OUTFIT && auto_outfit &&
+                result.outfit != (schedule_target = scheduled_outfit(&package, schedule))) {
+                /* Wall clock changed while decoding; free rather than commit. */
+                pet_note(memory->resource_bridge, PET_NOTE_CANCELLED);
+            } else if (status == 1 && result.kind == PET_DECODE_OUTFIT) {
                 pet_demo_sample base = {0};
                 if (result.outfit <= package.meta.outfit_count && result.pixels &&
                     !sample(version, PET_STATE_IDLE, 0, reduced, &base) &&
@@ -760,7 +794,12 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                     reaction = PET_STATE_IDLE;
                     started = GetTickCount64();
                     last_row = base.row; last_column = base.column;
-                } else fputs("Outfit switch failed; previous appearance retained.\n", stderr);
+                } else {
+                    if (auto_outfit && result.outfit < PET_OUTFIT_SLOTS)
+                        rejected_outfits |= UINT32_C(1) << result.outfit;
+                    pet_note(memory->resource_bridge, PET_NOTE_IO_FAILURE);
+                    fputs("Outfit switch failed; previous appearance retained.\n", stderr);
+                }
             } else if (status == 1 && result.kind == PET_DECODE_ACTIVITY &&
                 result.outfit == outfit && result.activity < package.meta.count &&
                 !reduced && !pressed && !activity) {
@@ -775,6 +814,8 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             } else if (status == 2) {
                 if (result.kind == PET_DECODE_ACTIVITY && result.outfit == outfit)
                     pet_idle_failed(&idle, result.activity);
+                if (result.kind == PET_DECODE_OUTFIT && auto_outfit && result.outfit < PET_OUTFIT_SLOTS)
+                    rejected_outfits |= UINT32_C(1) << result.outfit;
                 fputs("Package decode failed; previous appearance retained.\n", stderr);
             }
             pet_free(memory, result.pixels, result.bytes);
@@ -790,7 +831,18 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
          * motion, managed mode or an outstanding optional animation. */
         pet_demo_sample base_point = {0};
         if (sample(version, reaction, now - started, reduced, &base_point)) goto cleanup;
-        int available = shown && !state_slot && !smoke && !reduced && !pressed &&
+        int switch_due = auto_outfit && schedule_target != outfit &&
+            !(rejected_outfits & (UINT32_C(1) << schedule_target));
+        if (switch_due && shown && !pressed && !activity && !activity_displayed &&
+            base_point.row == 0 && !async->busy(async->owner)) {
+            pet_idle_interrupt(&idle);
+            if (!request_decode(memory->resource_bridge, async, PET_DECODE_OUTFIT, schedule_target, 0)) {
+                /* No frame-rate retry storm. Explicit Auto selection retries. */
+                rejected_outfits |= UINT32_C(1) << schedule_target;
+                fputs("Scheduled outfit decode admission failed; previous appearance retained.\n", stderr);
+            }
+        }
+        int available = !switch_due && shown && !state_slot && !smoke && !reduced && !pressed &&
             !activity && (!async_bound || !async->busy(async->owner)) && base_point.row == 0;
         uint32_t delay_random = activity_random(&rng);
         uint32_t choice_random = activity_random(&rng);
@@ -839,6 +891,10 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             shown = 1;
         }
         DWORD wait = point.wait_ms ? point.wait_ms : INFINITE;
+        if (auto_outfit) {
+            uint64_t delay = schedule_due > now ? schedule_due - now : 0;
+            if (delay < wait) wait = (DWORD)delay;
+        }
         if (idle.opportunity) {
             uint64_t delay = idle.opportunity > now ? idle.opportunity - now : 0;
             if (delay < wait) wait = (DWORD)delay;

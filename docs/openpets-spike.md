@@ -972,3 +972,32 @@ The Windows run for phase 5 was still in progress at the start of
 this change; this revision requires CI before claiming native pass.
 WIC internals, OS allocation overhead, desktop responsiveness and
 host acceptance remain unverified by these counters.
+
+## Classic Wardrobe automatic selection — runtime phase
+
+The owned package ABI projects up to 32 validated schedule rules (28
+bytes each), keeping the Zig wardrobe.Rule matcher as the sole
+condition evaluator via an explicit native callback. No JSON, dynamic
+allocation or file operation is required to select a schedule target.
+Native local civil time is checked at most every 15 seconds while
+automatic mode is enabled and again before presenting a completed
+outfit decode. The wait loop caps its existing deadline; no new
+timer or worker is installed. Startup presents the default first,
+then requests a scheduled outfit after the first visible idle pose.
+No replay of missed rules on resume or wall-clock adjustment.
+
+Packages with a schedule start in automatic mode. The localized
+outfit menu offers Automatic (schedule) and fixed choices; selecting
+a fixed outfit disables automatic mode for this session, even if
+the requested decode fails. Auto reselect resets failed target
+quarantine. A scheduled switch waits for capture and current activity
+or reaction to finish, suppresses new automatic idle activity when
+a different healthy outfit is due, and uses the existing bounded
+latest-task path. Completed auto artwork is rejected if the current
+schedule no longer selects it. Failed decode, admission or presentation
+quarantines that target for this session, avoiding repeated per-frame
+decode/error storms. Manual selection can still explicitly retry.
+No additional stored preferences, user-edited schedule, SVG support
+or Motion format support. Add projection/boundary tests and a Windows
+package smoke manifest containing a valid schedule. Actual successful
+scheduled appearance change remains a desktop acceptance test.

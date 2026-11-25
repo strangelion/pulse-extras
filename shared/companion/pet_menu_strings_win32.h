@@ -8,7 +8,7 @@ typedef enum {
 } pet_language;
 
 typedef struct {
-    const wchar_t *size, *topmost, *reduced, *reset, *interact, *exit, *activities, *automatic, *outfit, *default_outfit;
+    const wchar_t *size, *topmost, *reduced, *reset, *interact, *exit, *activities, *automatic, *outfit, *default_outfit, *auto_outfit;
 } pet_menu_strings;
 
 static inline BOOL pet_language_parse(const wchar_t *text, pet_language *language) {
@@ -34,11 +34,11 @@ static inline pet_language pet_language_resolve(pet_language requested, LANGID s
 static inline pet_menu_strings pet_menu_labels(pet_language requested, LANGID system_ui) {
     switch (pet_language_resolve(requested, system_ui)) {
     case PET_LANGUAGE_ZH_CN:
-        return (pet_menu_strings){L"大小", L"窗口置顶", L"减少动态效果", L"重置位置", L"播放互动动画", L"退出宠物", L"自定义活动", L"自动活动", L"服装", L"默认服装"};
+        return (pet_menu_strings){L"大小", L"窗口置顶", L"减少动态效果", L"重置位置", L"播放互动动画", L"退出宠物", L"自定义活动", L"自动活动", L"服装", L"默认服装", L"按时间表自动换装"};
     case PET_LANGUAGE_ZH_TW:
-        return (pet_menu_strings){L"大小", L"視窗置頂", L"減少動態效果", L"重設位置", L"播放互動動畫", L"結束桌寵", L"自訂活動", L"自動活動", L"服裝", L"預設服裝"};
+        return (pet_menu_strings){L"大小", L"視窗置頂", L"減少動態效果", L"重設位置", L"播放互動動畫", L"結束桌寵", L"自訂活動", L"自動活動", L"服裝", L"預設服裝", L"依時間表自動換裝"};
     default:
-        return (pet_menu_strings){L"Size", L"Always on top", L"Reduce motion", L"Reset position", L"Play animation", L"Exit pet", L"Idle activities", L"Automatic activities", L"Outfit", L"Default"};
+        return (pet_menu_strings){L"Size", L"Always on top", L"Reduce motion", L"Reset position", L"Play animation", L"Exit pet", L"Idle activities", L"Automatic activities", L"Outfit", L"Default", L"Automatic (schedule)"};
     }
 }
 #endif
