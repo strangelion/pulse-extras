@@ -40,16 +40,20 @@ pub const Package = extern struct {
     pet_id: [65]u8 = @splat(0),
     outfit_ids: [16][33]u8 = @splat(@splat(0)),
     activity_ids: [16][33]u8 = @splat(@splat(0)),
+    gaze_x: f32 = 0.5,
+    gaze_y: f32 = 1,
 };
 
 comptime {
-    if (@sizeOf(Representation) != 88 or @sizeOf(Item) != 1660 or @sizeOf(Outfit) != 241 or @sizeOf(ScheduleRule) != 28 or @sizeOf(Package) != 32452) @compileError("Classic package ABI mismatch");
+    if (@sizeOf(Representation) != 88 or @sizeOf(Item) != 1660 or @sizeOf(Outfit) != 241 or @sizeOf(ScheduleRule) != 28 or @sizeOf(Package) != 32460) @compileError("Classic package ABI mismatch");
 }
 
 pub fn project(allocator: std.mem.Allocator, input: []const u8, id: []const u8) !Package {
     const meta = try assets.parseMetadata(allocator, input, id);
     var result: Package = .{ .version = if (meta.layout == .v1) 1 else 2 };
     @memcpy(result.pet_id[0..id.len], id);
+    result.gaze_x = @floatCast(meta.gaze_anchor.x);
+    result.gaze_y = @floatCast(meta.gaze_anchor.y);
     for (meta.wardrobe.outfits[0..meta.wardrobe.count], 0..) |*outfit, i| {
         if (outfit.format != .webp) return error.UnsupportedFormat;
         const name = outfit.displayName();
@@ -191,4 +195,10 @@ test "native schedule projection preserves ordered local civil time semantics" {
     try std.testing.expectEqual(@as(u32, 2), resolveSchedule(&meta, 0, 0, 1, 2));
     try std.testing.expectEqual(@as(u32, 0), resolveSchedule(&meta, 1440, 5, 12, 25));
     try std.testing.expectEqual(@as(u32, 0), resolveSchedule(&meta, 0, 0, 2, 30));
+}
+
+test "native gaze projection owns the normalized anchor" {
+    const meta = try project(std.testing.allocator, "{\"id\":\"a\",\"displayName\":\"A\",\"description\":\"A\",\"spritesheetPath\":\"spritesheet.webp\",\"spriteVersionNumber\":2,\"gazeAnchor\":{\"x\":0.25,\"y\":0.75}}", "a");
+    try std.testing.expectEqual(@as(f32, 0.25), meta.gaze_x);
+    try std.testing.expectEqual(@as(f32, 0.75), meta.gaze_y);
 }

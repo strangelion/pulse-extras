@@ -32,11 +32,32 @@ pub const Layout = enum {
     }
 };
 
+pub const GazeAnchor = struct { x: f64 = 0.5, y: f64 = 1 };
+
 pub const Metadata = struct {
     layout: Layout,
     activities: activities.Catalog = .{},
     wardrobe: wardrobe.Wardrobe = .{},
+    gaze_anchor: GazeAnchor = .{},
 };
+
+fn normalized(value: std.json.Value) error{InvalidMetadata}!f64 {
+    const number: f64 = switch (value) {
+        .integer => @floatFromInt(value.integer),
+        .float => value.float,
+        else => return error.InvalidMetadata,
+    };
+    if (!std.math.isFinite(number) or number < 0 or number > 1) return error.InvalidMetadata;
+    return number;
+}
+
+fn parseGazeAnchor(value: std.json.Value) error{InvalidMetadata}!GazeAnchor {
+    if (value != .object) return error.InvalidMetadata;
+    return .{
+        .x = try normalized(value.object.get("x") orelse return error.InvalidMetadata),
+        .y = try normalized(value.object.get("y") orelse return error.InvalidMetadata),
+    };
+}
 
 fn safePetId(id: []const u8) bool {
     if (id.len == 0 or id.len > 64 or std.mem.eql(u8, id, "builtin")) return false;
@@ -77,13 +98,14 @@ pub fn parseMetadata(allocator: std.mem.Allocator, input: []const u8, expected_i
         if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "displayName") or
             std.mem.eql(u8, key, "description") or std.mem.eql(u8, key, "spritesheetPath") or
             std.mem.eql(u8, key, "spriteVersionNumber") or std.mem.eql(u8, key, "activities") or
-            std.mem.eql(u8, key, "wardrobe")) continue;
+            std.mem.eql(u8, key, "wardrobe") or std.mem.eql(u8, key, "gazeAnchor")) continue;
         return error.UnsupportedFormat;
     }
     const clothes = wardrobe.parse(object.get("wardrobe")) catch return error.InvalidMetadata;
     var outfit_ids: [wardrobe.max_outfits]activities.Id = undefined;
     const catalog = activities.parse(object.get("activities"), clothes.copyIds(&outfit_ids)) catch return error.InvalidMetadata;
-    return .{ .layout = layout, .activities = catalog, .wardrobe = clothes };
+    const anchor = if (object.get("gazeAnchor")) |value| try parseGazeAnchor(value) else GazeAnchor{};
+    return .{ .layout = layout, .activities = catalog, .wardrobe = clothes, .gaze_anchor = anchor };
 }
 
 fn le16(bytes: []const u8) u32 {
@@ -244,4 +266,21 @@ test "wardrobe-aware activity metadata resolves declared outfit only" {
     try t.expectEqual(@as(u8, 1), meta.wardrobe.count);
     try t.expect(meta.activities.items[0].resolve("night") != null);
     try t.expect(meta.activities.items[0].resolve("default") == null);
+}
+
+test "gaze anchors require normalized finite numeric coordinates" {
+    const prefix = "{\"id\":\"a\",\"displayName\":\"A\",\"description\":\"A\",\"spritesheetPath\":\"spritesheet.webp\",\"spriteVersionNumber\":2";
+    const default = try parseMetadata(t.allocator, prefix ++ "}", "a");
+    try t.expectEqual(@as(f64, 0.5), default.gaze_anchor.x);
+    try t.expectEqual(@as(f64, 1), default.gaze_anchor.y);
+    const explicit = try parseMetadata(t.allocator, prefix ++ ",\"gazeAnchor\":{\"x\":0,\"y\":0.25}}", "a");
+    try t.expectEqual(@as(f64, 0), explicit.gaze_anchor.x);
+    try t.expectEqual(@as(f64, 0.25), explicit.gaze_anchor.y);
+    for ([_][]const u8{
+        prefix ++ ",\"gazeAnchor\":null}",
+        prefix ++ ",\"gazeAnchor\":{\"x\":0}}",
+        prefix ++ ",\"gazeAnchor\":{\"x\":\"0.5\",\"y\":1}}",
+        prefix ++ ",\"gazeAnchor\":{\"x\":-0.1,\"y\":0}}",
+        prefix ++ ",\"gazeAnchor\":{\"x\":1,\"y\":1.01}}",
+    }) |input| try t.expectError(error.InvalidMetadata, parseMetadata(t.allocator, input, "a"));
 }

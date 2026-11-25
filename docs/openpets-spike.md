@@ -1068,3 +1068,28 @@ No change to the bounded 16-pet table, version, or write-on-clean-visible-
 exit policy. Regression tests cover selective updates, missing IDs,
 invalid flags, other-pet rejection and first-record capture.
 Concurrent same-pet writes still use last-writer-wins semantics.
+
+## Classic V2 idle cursor gaze
+
+Implement the pinned OpenPets metadata.ts gazeAnchor validation (finite
+normalized coordinates, default bottom center), owned f32 C ABI anchor
+projection, and the codex-pets-core.ts sixteen clockwise sectors from
+up, zero-based rows 9/10, 24-pixel dead zone and 1200ms stationary
+timeout. V1 admits valid anchor metadata but never uses gaze frames.
+The native single-surface anchor uses actual scaled frame bounds; no
+carrier inset, flip, DIP transform or multi-window coordination. The
+dead zone is native physical pixels rather than Electron DIPs.
+Only visible, idle, unreduced Classic V2 artwork from an explicit
+file/package is eligible; synthetic smoke, capture, activities and
+nonidle frames disable it. Seed cursor on entry without staring at a
+stationary pointer. Cap the existing wait at the 100ms sample
+deadline, stop sampling when ineligible, no hooks, additional timers,
+worker, extra atlas or per-sample logging. The current static gaze cell
+is presented only on change; when gaze is inactive keep the existing
+Classic idle animation (not an exact Electron renderer idle policy).
+Reset/suspend on menu/geometry change and successful outfit commit.
+The localized menu toggles gaze for this session; default enabled,
+no persistent gaze flag yet. Tests cover anchors, all sector centers,
+dead zone, motion timeout, eligibility and suspension; package smoke
+validates admitted and invalid anchors without WIC. Real artwork
+visual/CPU acceptance still required.

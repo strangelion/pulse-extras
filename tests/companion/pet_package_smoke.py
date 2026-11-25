@@ -40,6 +40,14 @@ def main() -> None:
                 assert stage in result.stderr, result.stderr
 
         check(True)
+        manifest["gazeAnchor"] = {"x": 0.5, "y": 0.25}
+        (root / "pet.json").write_text(json.dumps(manifest), encoding="utf-8")
+        check(True)  # valid metadata on V1 is inert
+        manifest["gazeAnchor"]["x"] = -0.1
+        (root / "pet.json").write_text(json.dumps(manifest), encoding="utf-8")
+        check(False, stage=b"metadata-parse")
+        manifest["gazeAnchor"]["x"] = 0.5
+        (root / "pet.json").write_text(json.dumps(manifest), encoding="utf-8")
         check(True, folder=root.resolve(strict=True))
         task = subprocess.run([str(exe), "--check-package-task", str(root), "cat"],
                               timeout=20, capture_output=True)

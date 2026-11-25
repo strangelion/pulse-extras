@@ -3,6 +3,7 @@
 #include "../../shared/companion/pet_menu_strings_win32.h"
 #include "../../shared/companion/pet_idle_policy.h"
 #include "../../shared/companion/pet_wardrobe_clock.h"
+#include "../../shared/companion/pet_gaze_policy.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,6 +69,33 @@ int main(void) {
     quota_fixture q = {{0}, {0}, UINT32_MAX, 0};
     const pet_resources budget = {&q, fixture_reserve, fixture_release, fixture_failed, NULL};
     CHECK(atlas && out);
+    /* All sixteen sector centers, clockwise from up. */
+    for (unsigned i = 0; i < 16; ++i) {
+        double angle = i * 0.39269908169872415481;
+        CHECK(pet_gaze_direction(100 * sin(angle), -100 * cos(angle)) == (int)i);
+    }
+    CHECK(pet_gaze_direction(24, 0) == PET_GAZE_NONE);
+    CHECK(pet_gaze_direction(25, 0) == 4);
+    CHECK(pet_gaze_direction(-100, 0) == 12);
+    CHECK(pet_gaze_direction(100, 100) == 6);
+    pet_gaze gaze;
+    pet_gaze_reset(&gaze);
+    CHECK(pet_gaze_observe(&gaze, 100, 0, -100, 0, 0) == PET_GAZE_NONE);
+    CHECK(pet_gaze_observe(&gaze, 200, 100, 0, 0, 0) == 4 && gaze.next == 300);
+    CHECK(pet_gaze_observe(&gaze, 1399, 100, 0, 0, 0) == 4);
+    CHECK(pet_gaze_observe(&gaze, 1400, 100, 0, 0, 0) == PET_GAZE_NONE);
+    pet_gaze_suspend(&gaze, 1500);
+    CHECK(pet_gaze_observe(&gaze, 1679, 0, 100, 0, 0) == PET_GAZE_NONE);
+    CHECK(gaze.next == 1680);
+    CHECK(pet_gaze_observe(&gaze, 1680, 0, 100, 0, 0) == PET_GAZE_NONE);
+    CHECK(pet_gaze_observe(&gaze, 1780, 0, 101, 0, 0) == 8);
+    CHECK(pet_gaze_eligible(2, 1, 1, 0, 0, 0, 0));
+    CHECK(!pet_gaze_eligible(1, 1, 1, 0, 0, 0, 0));
+    CHECK(!pet_gaze_eligible(2, 1, 0, 0, 0, 0, 0));
+    CHECK(!pet_gaze_eligible(2, 1, 1, 1, 0, 0, 0));
+    CHECK(!pet_gaze_eligible(2, 1, 1, 0, 1, 0, 0));
+    CHECK(!pet_gaze_eligible(2, 1, 1, 0, 0, 1, 0));
+    CHECK(!pet_gaze_eligible(2, 1, 1, 0, 0, 0, 3));
     CHECK(pet_wardrobe_wait_ms(0, 0) == 15000);
     CHECK(pet_wardrobe_wait_ms(44, 999) == 15000);
     CHECK(pet_wardrobe_wait_ms(45, 1) == 14999);

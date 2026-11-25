@@ -4,6 +4,7 @@
 #include "pet_menu_strings_win32.h"
 #include "pet_idle_policy.h"
 #include "pet_wardrobe_clock.h"
+#include "pet_gaze_policy.h"
 #include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -157,7 +158,7 @@ static void close_settings(const pet_resources *resources, HKEY key) {
 
 enum {
     MENU_TOPMOST = 100, MENU_REDUCED, MENU_RESET, MENU_INTERACT,
-    MENU_EXIT, MENU_ACTIVITY_FIRST = 300, MENU_AUTO_FIRST = 400, MENU_OUTFIT_FIRST = 500, MENU_OUTFIT_AUTO = 517, MENU_SCALE_50 = 200, MENU_SCALE_75, MENU_SCALE_100,
+    MENU_EXIT, MENU_GAZE, MENU_ACTIVITY_FIRST = 300, MENU_AUTO_FIRST = 400, MENU_OUTFIT_FIRST = 500, MENU_OUTFIT_AUTO = 517, MENU_SCALE_50 = 200, MENU_SCALE_75, MENU_SCALE_100,
     MENU_SCALE_125, MENU_SCALE_150, MENU_SCALE_200
 };
 
@@ -185,7 +186,8 @@ static BOOL destroy_menu(const pet_resources *resources, HMENU menu, unsigned co
  * still owns the bounded job termination fallback. */
 static unsigned pet_menu(const pet_resources *resources, HWND window, POINT at, unsigned scale, int topmost,
     int reduced, int managed, pet_language language, const pet_package *package,
-    const pet_idle_policy *idle, unsigned outfit, int auto_outfit, int display, int *built) {
+    const pet_idle_policy *idle, unsigned outfit, int auto_outfit, int gaze_supported,
+    int gaze_enabled, int display, int *built) {
     if (built) *built = 0;
     unsigned attached = 1;
     pet_menu_strings strings = pet_menu_labels(language, GetUserDefaultUILanguage());
@@ -279,6 +281,8 @@ static unsigned pet_menu(const pet_resources *resources, HWND window, POINT at, 
     }
     if (!AppendMenuW(menu, MF_STRING | (topmost ? MF_CHECKED : 0), MENU_TOPMOST, strings.topmost) ||
         !AppendMenuW(menu, MF_STRING | (reduced ? MF_CHECKED : 0), MENU_REDUCED, strings.reduced) ||
+        (gaze_supported && !AppendMenuW(menu, MF_STRING | (gaze_enabled ? MF_CHECKED : 0) |
+            (reduced ? MF_GRAYED : 0), MENU_GAZE, strings.gaze)) ||
         !AppendMenuW(menu, MF_STRING, MENU_RESET, strings.reset) ||
         !AppendMenuW(menu, MF_STRING | (managed || reduced ? MF_GRAYED : 0), MENU_INTERACT, strings.interact) ||
         !AppendMenuW(menu, MF_SEPARATOR, 0, NULL) ||
@@ -387,6 +391,9 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     int rc = 1, argc = 0, reduced = 0, smoke = 0;
     unsigned reaction = PET_STATE_IDLE;
     unsigned version = 2, scale = 100;
+    int gaze_enabled = 1, gaze_supported = 0;
+    pet_gaze gaze = {.direction = PET_GAZE_NONE};
+    double gaze_x = 0.5, gaze_y = 1.0;
     int topmost = 0, scale_set = 0, topmost_set = 0, reduced_set = 0;
     int remember = 0, reset_position = 0, stopped = 0;
     pet_language language = PET_LANGUAGE_SYSTEM;
@@ -507,6 +514,8 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             goto cleanup;
         }
         version = package.meta.version;
+        gaze_x = package.meta.gaze_x;
+        gaze_y = package.meta.gaze_y;
         auto_outfit = package.meta.rule_count != 0;
         idle.unavailable = unavailable_activities(&package, outfit);
         if (check_package) { rc = 0; goto cleanup; }
@@ -579,6 +588,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         fputs("Saved outfit decode failed; default appearance retained.\n", stderr);
     }
     if (!atlas) goto cleanup;
+    gaze_supported = version == 2 && (path || package_dir) && !smoke;
     idle.unavailable = unavailable_activities(&package, outfit);
     if (pet_surface_open_scaled(&surface, topmost, FALSE, scale) != PET_SURFACE_OK) goto cleanup;
     if (smoke) {
@@ -591,7 +601,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         package.meta.items[0].reps[0].frames = 4;
         int built = 0;
         (void)pet_menu(memory->resource_bridge, surface.window, (POINT){0, 0},
-            scale, topmost, reduced, state_slot != NULL, language, &package, &idle, 0, 1, 0, &built);
+            scale, topmost, reduced, state_slot != NULL, language, &package, &idle, 0, 1, 1, 1, 0, &built);
         ZeroMemory(&package.meta, sizeof(package.meta));
         if (!built) goto cleanup;
     }
@@ -652,9 +662,10 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                         last_row = base.row; last_column = base.column;
                     }
                     unsigned command = pet_menu(memory->resource_bridge, surface.window, cursor, scale, topmost,
-                        reduced, state_slot != NULL, language, &package, &idle, outfit, auto_outfit, 1, NULL);
+                        reduced, state_slot != NULL, language, &package, &idle, outfit, auto_outfit, gaze_supported, gaze_enabled, 1, NULL);
                     /* A modal menu may span a civil-time boundary. */
                     schedule_due = 0;
+                    pet_gaze_suspend(&gaze, GetTickCount64());
                     /* Check the owner signal immediately after the modal menu. */
                     if (stop && WaitForSingleObject(stop, 0) == WAIT_OBJECT_0) {
                         stopped = 1; done = 1; break;
@@ -668,6 +679,9 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                         reduced = !reduced;
                         started = GetTickCount64();
                         if (!state_slot) reaction = PET_STATE_IDLE;
+                    } else if (command == MENU_GAZE && gaze_supported && !reduced) {
+                        gaze_enabled = !gaze_enabled;
+                        pet_gaze_reset(&gaze);
                     } else if (command == MENU_OUTFIT_AUTO && package.meta.rule_count) {
                         auto_outfit = 1;
                         rejected_outfits = 0; /* explicit retry */
@@ -775,6 +789,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         if (done || (shown && !IsWindowVisible(surface.window))) break;
         if (pressed && GetCapture() != surface.window) pressed = 0;
         if (surface.placement_dirty) {
+            pet_gaze_suspend(&gaze, GetTickCount64());
             surface.placement_dirty = FALSE;
             POINT center = {clamp_long((int64_t)x + surface.width / 2),
                 clamp_long((int64_t)y + surface.height / 2)};
@@ -827,6 +842,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                     result.pixels = NULL;
                     outfit_failures[outfit] = idle.failed;
                     outfit = result.outfit;
+                    pet_gaze_suspend(&gaze, GetTickCount64());
                     if (!auto_outfit) prefs_dirty |= PET_PREF_OUTFIT_CHANGED;
                     idle.failed = outfit_failures[outfit];
                     idle.unavailable = unavailable_activities(&package, outfit);
@@ -905,6 +921,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             }
         }
         if (activity) {
+            pet_gaze_reset(&gaze);
             if (!activity_displayed || point.column != last_column) {
                 if (pet_surface_present_activity(&surface, activity, activity_bytes,
                     activity_frames, point.column, x, y, 255) != PET_SURFACE_OK)
@@ -916,6 +933,24 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             }
         } else {
             if (sample(version, reaction, now - started, reduced, &point)) goto cleanup;
+            if (pet_gaze_eligible(version, gaze_supported && gaze_enabled, shown, reduced,
+                pressed, activity_displayed, point.row)) {
+                if (now >= gaze.next) {
+                    POINT mouse;
+                    if (GetCursorPos(&mouse))
+                        (void)pet_gaze_observe(&gaze, now, mouse.x, mouse.y,
+                            (double)x + surface.width * gaze_x, (double)y + surface.height * gaze_y);
+                    else {
+                        pet_gaze_reset(&gaze);
+                        gaze.next = now + PET_GAZE_INTERVAL;
+                    }
+                }
+                if (gaze.direction >= 0) {
+                    point.row = 9u + (unsigned)gaze.direction / 8u;
+                    point.column = (unsigned)gaze.direction % 8u;
+                    point.wait_ms = 0; /* static cell until cursor deadline */
+                }
+            } else if (gaze.seeded || gaze.moved) pet_gaze_reset(&gaze);
             if (activity_displayed || point.row != last_row || point.column != last_column) {
                 if (pet_surface_present(&surface, atlas, bytes, version, point.row,
                     point.column, x, y, 255) != PET_SURFACE_OK) goto cleanup;
@@ -933,6 +968,11 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             if (switch_due) schedule_due = 0;
         }
         DWORD wait = point.wait_ms ? point.wait_ms : INFINITE;
+        if (pet_gaze_eligible(version, gaze_supported && gaze_enabled, shown, reduced,
+            pressed, activity != NULL, base_point.row)) {
+            uint64_t delay = gaze.next > now ? gaze.next - now : 0;
+            if (delay < wait) wait = (DWORD)delay;
+        }
         if (auto_outfit) {
             uint64_t delay = schedule_due > now ? schedule_due - now : 0;
             if (delay < wait) wait = (DWORD)delay;
