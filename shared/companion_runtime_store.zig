@@ -46,7 +46,11 @@ pub fn scanRecoveryDetailed(owner: *runtime.Owner) !recovery.Snapshot {
     // not an apparent zero-size directory. No authorization to delete.
     snapshot.summary.quarantine_unmeasured = snapshot.summary.quarantined_registered + snapshot.summary.quarantined_removed;
     for (snapshot.quarantine[0..snapshot.quarantine_count]) |*detail| {
-        if (detail.state == .blocked) continue;
+        if (detail.state == .blocked) {
+            if (recovery.hasReceipt(rows[0..count], detail.id)) detail.receipt_state = .invalid;
+            continue;
+        }
+        if (detail.state == .unregistered_retained) detail.receipt_state = try inspectReceipt(owner, detail.id);
         const bytes = owner.quarantineUsage(detail.id) catch |err| switch (err) {
             error.MissingStoreApi => break,
             error.InvalidRecord, error.StoreIo, error.StoreBusy => continue,
@@ -63,6 +67,21 @@ pub fn scanRecoveryDetailed(owner: *runtime.Owner) !recovery.Snapshot {
     return snapshot;
 }
 
+fn inspectReceipt(owner: *runtime.Owner, id: u64) !recovery.ReceiptState {
+    const value = (owner.readRemovalReceipt(id) catch |err| switch (err) {
+        error.MissingStoreApi => return .unavailable,
+        error.InvalidRecord, error.InvalidReceipt => return .invalid,
+        error.StoreIo, error.StoreBusy => return .unavailable,
+        else => return err,
+    }) orelse return .absent;
+    const identity = owner.quarantineIdentity(id) catch |err| switch (err) {
+        error.MissingStoreApi, error.StoreIo, error.StoreBusy => return .unavailable,
+        error.InvalidRecord => return .invalid,
+        else => return err,
+    };
+    return if (value.volume == identity.volume and value.file_index == identity.file_index) .matched_identity else .invalid;
+}
+
 fn checkedRemoval(owner: *runtime.Owner, index: *inventory.Inventory, expected: inventory.Record, state: recovery.RemovalState) !void {
     if (try owner.group.remaining() != 0) return error.ActiveInstances;
     if (!try loadInventory(owner, index)) return error.UnknownAsset;
@@ -72,7 +91,9 @@ fn checkedRemoval(owner: *runtime.Owner, index: *inventory.Inventory, expected: 
     const rows = try std.heap.page_allocator.alloc(recovery.Row, recovery.max_rows);
     defer std.heap.page_allocator.free(rows);
     const count = try owner.scanStore(rows);
+    if (recovery.hasReceipt(rows[0..count], expected.id)) return error.RecoveryRequired;
     if (try recovery.removalState(rows[0..count], expected.id) != state) return error.RecoveryRequired;
+    if (try owner.readRemovalReceipt(expected.id) != null) return error.RecoveryRequired;
 }
 
 // A same-volume no-replace rename is the durable recovery marker. The
@@ -84,8 +105,10 @@ pub fn quarantineRemove(owner: *runtime.Owner, expected: inventory.Record) !void
     index.* = .{};
     try checkedRemoval(owner, index, expected, .normal);
     try index.remove(expected.id);
-    owner.moveQuarantine(expected.id, false) catch return error.RecoveryRequired;
+    const identity = owner.moveQuarantineBound(expected.id) catch return error.RecoveryRequired;
     saveInventory(owner, index) catch return error.RecoveryRequired;
+    // Committed inventory must not be described as rolled back on receipt failure.
+    owner.writeRemovalReceipt(.{ .record = expected, .volume = identity.volume, .file_index = identity.file_index }) catch return error.RemovalCommittedWithoutReceipt;
 }
 
 // Explicit recovery only for an interrupted removal whose registered

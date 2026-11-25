@@ -1239,3 +1239,22 @@ accepted as deletion authority. Old or interrupted quarantines must remain
 unproven rather than be automatically assigned a receipt. Unknown receipt
 files currently remain visible as unknown scan entries; classification and
 transaction integration are subsequent steps. CI is not yet verified.
+
+## Receipt publication bound to the actual removal
+
+The V2 native move returns the volume serial and directory file index from
+the exact handle that performed the no-replace rename. A receipt-producing
+removal requires the new writer and V2 move; no unbound V1 fallback.
+Inventory removal is committed before immutable PRC1 publication. Failure
+after inventory commit reports RemovalCommittedWithoutReceipt and retains
+the quarantine; no rollback or synthetic receipt is claimed. A crash
+between inventory commit and receipt publication leaves an unproven copy.
+Receipt and pending receipt names are classified separately; either blocks
+a registered removal or restore, and pending/conflicting receipt names
+block the target quarantine. The bounded diagnostic checks the receipt
+checksum and current directory identity for unregistered copies; old or
+failed receipts never authorize cleanup. Matching identity does not
+validate package contents or authenticate a same-user write. The fixture
+checks actual transaction identity and immutable overwrite refusal, rather
+than synthetic receipts. Permanent deletion remains disabled. New CI and
+actual host acceptance are unverified.

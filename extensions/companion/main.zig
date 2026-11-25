@@ -116,7 +116,7 @@ const Content = struct {
     quarantine_paging: [2]ui.Node = undefined,
     quarantine_heading: [160]u8 = undefined,
     quarantine_heading_id: [64]u8 = undefined,
-    quarantine_text: [4][160]u8 = undefined,
+    quarantine_text: [4][224]u8 = undefined,
     quarantine_ids: [4][64]u8 = undefined,
     root: ui.Node = undefined,
     value: [256]u8 = undefined,
@@ -168,7 +168,7 @@ fn fillImportToolbar(nodes: *[3]ui.Node, embedded_picker: bool, enabled: bool, i
 }
 
 fn recoveryText(report: library.RecoveryReport, buffer: []u8) ![]const u8 {
-    return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d} · 隔离待恢复 {d} · 未登记保留 {d}。隔离逻辑字节：待恢复 {d} B · 未登记 {d} B · 未统计目录 {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved, report.quarantined_registered, report.quarantined_removed, report.quarantine_registered_bytes, report.quarantine_removed_bytes, report.quarantine_unmeasured });
+    return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d} · 隔离待恢复 {d} · 未登记保留 {d}。隔离逻辑字节：待恢复 {d} B · 未登记 {d} B · 未统计目录 {d}。凭证 {d} · 待处理凭证 {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved, report.quarantined_registered, report.quarantined_removed, report.quarantine_registered_bytes, report.quarantine_removed_bytes, report.quarantine_unmeasured, report.receipts, report.receipt_pending });
 }
 
 fn recoverySuffix(snapshot: *const library.RecoverySnapshot, id: u64) []const u8 {
@@ -188,8 +188,14 @@ fn quarantineText(detail: library.QuarantineDetail, buffer: []u8) ![]const u8 {
         .unregistered_retained => "未登记保留（来源未证实）",
         .blocked => "异常，需人工检查",
     };
-    if (detail.logical_bytes) |bytes| return std.fmt.bufPrint(buffer, "#{d} · {s} · {d} B", .{ detail.id, state, bytes });
-    return std.fmt.bufPrint(buffer, "#{d} · {s} · 大小未统计", .{ detail.id, state });
+    const evidence: []const u8 = switch (detail.receipt_state) {
+        .absent => "",
+        .matched_identity => " · 凭证身份匹配",
+        .invalid => " · 凭证异常",
+        .unavailable => " · 凭证未验证",
+    };
+    if (detail.logical_bytes) |bytes| return std.fmt.bufPrint(buffer, "#{d} · {s}{s} · {d} B", .{ detail.id, state, evidence, bytes });
+    return std.fmt.bufPrint(buffer, "#{d} · {s}{s} · 大小未统计", .{ detail.id, state, evidence });
 }
 
 fn fillQuarantine(report: *const library.RecoverySnapshot, offset: usize, content: *Content) ui.Node {
@@ -722,7 +728,7 @@ fn pollLibrary(instance: *Instance) void {
         instance.library_status = if (removal) |request| (if (request.action == .quarantine) "素材已隔离移除；文件仍保留" else "中断移除已恢复；请重新扫描") else if (was_import) (if (instance.import_result != null and instance.import_result.? == .existing) "素材已存在；未重复复制" else "素材已导入并重新读取") else if (was_edit) "偏好已保存并重新读取" else if (instance.library_snapshot.missing) "固定目录中尚无素材清单（未创建文件）" else "已读取持久化清单；尚未验证素材文件";
     } else {
         instance.library_loaded = false;
-        instance.library_status = if (removal != null and done and instance.removal_committed) "操作已提交；请刷新并重新扫描" else if (removal != null and instance.task_state == raw.PULSE_TASK_CANCELLED) "任务取消；请刷新确认磁盘状态" else if (was_import and done and instance.import_result != null) "导入已提交；请刷新确认库存" else if (instance.task_state == raw.PULSE_TASK_CANCELLED) (if (was_import or was_edit) "任务已取消；请刷新确认磁盘状态" else "读取已取消") else if (done) if (instance.work_error) |err| @errorName(err) else "读取结果无效" else "读取未完成";
+        instance.library_status = if (removal != null and done and instance.work_error == error.RemovalCommittedWithoutReceipt) "移除已提交；凭证写入失败，保留隔离文件，禁止清理" else if (removal != null and done and instance.removal_committed) "操作已提交；请刷新并重新扫描" else if (removal != null and instance.task_state == raw.PULSE_TASK_CANCELLED) "任务取消；请刷新确认磁盘状态" else if (was_import and done and instance.import_result != null) "导入已提交；请刷新确认库存" else if (instance.task_state == raw.PULSE_TASK_CANCELLED) (if (was_import or was_edit) "任务已取消；请刷新确认磁盘状态" else "读取已取消") else if (done) if (instance.work_error) |err| @errorName(err) else "读取结果无效" else "读取未完成";
     }
     refresh(instance);
 }

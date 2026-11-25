@@ -4,7 +4,7 @@ const std = @import("std");
 const inventory = @import("pet_inventory.zig");
 
 pub const max_rows = 4096;
-pub const Kind = enum(u32) { unknown, package, pending, preference, inventory, inventory_pending, lock, quarantine };
+pub const Kind = enum(u32) { unknown, package, pending, preference, inventory, inventory_pending, lock, quarantine, receipt, receipt_pending };
 pub const Row = extern struct {
     id: u64,
     kind: u32,
@@ -25,6 +25,8 @@ pub const Report = struct {
     quarantine_registered_bytes: u64 = 0,
     quarantine_removed_bytes: u64 = 0,
     quarantine_unmeasured: usize = 0,
+    receipts: usize = 0,
+    receipt_pending: usize = 0,
 };
 
 pub fn classify(index: *const inventory.Inventory, rows: []const Row) !Report {
@@ -32,11 +34,11 @@ pub fn classify(index: *const inventory.Inventory, rows: []const Row) !Report {
     var report: Report = .{};
     var seen: [inventory.max_entries]bool = @splat(false);
     for (rows) |row| {
-        if (row.kind > @backingInt(Kind.quarantine)) return error.InvalidScan;
+        if (row.kind > @backingInt(Kind.receipt_pending)) return error.InvalidScan;
         const kind: Kind = @fromBackingInt(row.kind);
         const directory = (row.attributes & 0x10) != 0;
         const reparse = (row.attributes & 0x400) != 0;
-        if ((kind == .package or kind == .pending or kind == .preference or kind == .quarantine) != (row.id != 0)) return error.InvalidScan;
+        if ((kind == .package or kind == .pending or kind == .preference or kind == .quarantine or kind == .receipt or kind == .receipt_pending) != (row.id != 0)) return error.InvalidScan;
         if (row.id != 0 and row.id >= index.next_id) report.unreserved += 1;
         if (reparse) {
             report.invalid += 1;
@@ -84,6 +86,16 @@ pub fn classify(index: *const inventory.Inventory, rows: []const Row) !Report {
                 } else |_| {
                     report.quarantined_removed += 1;
                 }
+            },
+            .receipt => if (directory) {
+                report.invalid += 1;
+            } else {
+                report.receipts += 1;
+            },
+            .receipt_pending => if (directory) {
+                report.invalid += 1;
+            } else {
+                report.receipt_pending += 1;
             },
             .inventory_pending => if (directory) {
                 report.invalid += 1;
@@ -137,12 +149,13 @@ pub fn removalState(rows: []const Row, id: u64) !RemovalState {
     if (id == 0 or rows.len > max_rows) return error.InvalidScan;
     var normal: bool = false;
     var quarantined: bool = false;
+    var has_receipt: bool = false;
     for (rows) |row| {
-        if (row.kind > @backingInt(Kind.quarantine)) return error.InvalidScan;
+        if (row.kind > @backingInt(Kind.receipt_pending)) return error.InvalidScan;
         const kind: Kind = @fromBackingInt(row.kind);
         if (kind == .inventory_pending) return error.RecoveryRequired;
         if (row.id != id) continue;
-        if ((row.attributes & 0x400) != 0 or kind == .pending) return error.RecoveryRequired;
+        if ((row.attributes & 0x400) != 0 or kind == .pending or kind == .receipt_pending) return error.RecoveryRequired;
         const directory = (row.attributes & 0x10) != 0;
         switch (kind) {
             .package => {
@@ -154,10 +167,14 @@ pub fn removalState(rows: []const Row, id: u64) !RemovalState {
                 quarantined = true;
             },
             .preference => if (directory) return error.RecoveryRequired,
+            .receipt => {
+                if (directory or has_receipt) return error.RecoveryRequired;
+                has_receipt = true;
+            },
             else => return error.InvalidScan,
         }
     }
-    if (normal == quarantined) return error.RecoveryRequired;
+    if (normal == quarantined or (normal and has_receipt)) return error.RecoveryRequired;
     return if (normal) .normal else .quarantined;
 }
 
@@ -200,10 +217,12 @@ pub const RegisteredDetail = struct {
 
 pub const max_quarantine_details = 64;
 pub const QuarantineState = enum { interrupted_removal, unregistered_retained, blocked };
+pub const ReceiptState = enum { absent, matched_identity, invalid, unavailable };
 pub const QuarantineDetail = struct {
     id: u64,
     state: QuarantineState,
     logical_bytes: ?u64 = null,
+    receipt_state: ReceiptState = .absent,
 };
 
 pub const Snapshot = struct {
@@ -241,6 +260,13 @@ pub const Snapshot = struct {
 
 // Keep registered IDs and a separately bounded quarantine list. Neither
 // diagnostic snapshot proves contents, provenance or authority to mutate.
+pub fn hasReceipt(rows: []const Row, id: u64) bool {
+    for (rows) |row| {
+        if (row.id == id and (row.kind == @backingInt(Kind.receipt) or row.kind == @backingInt(Kind.receipt_pending))) return true;
+    }
+    return false;
+}
+
 pub fn inspect(index: *const inventory.Inventory, rows: []const Row) !Snapshot {
     var result: Snapshot = .{ .summary = try classify(index, rows) };
     var global_pending = false;
@@ -252,7 +278,7 @@ pub fn inspect(index: *const inventory.Inventory, rows: []const Row) !Snapshot {
         for (rows) |row| {
             if (row.id == record.id and (row.kind == @backingInt(Kind.package) or row.kind == @backingInt(Kind.quarantine) or row.kind == @backingInt(Kind.pending))) has_target = true;
         }
-        const state: RegisteredState = if (record.digest == null or record.secondary == null or global_pending)
+        const state: RegisteredState = if (record.digest == null or record.secondary == null or global_pending or hasReceipt(rows, record.id))
             .blocked
         else if (removalState(rows, record.id)) |status|
             switch (status) {
@@ -338,4 +364,21 @@ test "quarantine detail cap retains smallest IDs and reports omitted entries" {
     for (snapshot.quarantine[0..snapshot.quarantine_count], 1..) |detail, id| {
         try std.testing.expectEqual(@as(u64, id), detail.id);
     }
+}
+
+test "receipt names block registered recovery and pending receipt blocks removal" {
+    var index: inventory.Inventory = .{};
+    try index.publishPair(try index.reserve(), "cat", .{ .primary = @splat(1), .secondary = @splat(2) });
+    const quarantine: Row = .{ .id = 1, .kind = @backingInt(Kind.quarantine), .attributes = 0x10 };
+    const receipt_row: Row = .{ .id = 1, .kind = @backingInt(Kind.receipt), .attributes = 0x80 };
+    const pending: Row = .{ .id = 1, .kind = @backingInt(Kind.receipt_pending), .attributes = 0x80 };
+    const snapshot = try inspect(&index, &.{ quarantine, receipt_row });
+    try std.testing.expectEqual(RegisteredState.blocked, snapshot.stateFor(1).?);
+    try std.testing.expectEqual(QuarantineState.blocked, snapshot.quarantine[0].state);
+    try std.testing.expectEqual(@as(usize, 1), snapshot.summary.receipts);
+    try std.testing.expectError(error.RecoveryRequired, removalState(&.{ quarantine, pending }, 1));
+    try std.testing.expectError(error.RecoveryRequired, removalState(&.{ quarantine, receipt_row, receipt_row }, 1));
+    try index.remove(1);
+    const removed = try inspect(&index, &.{ quarantine, receipt_row });
+    try std.testing.expectEqual(QuarantineState.unregistered_retained, removed.quarantine[0].state);
 }

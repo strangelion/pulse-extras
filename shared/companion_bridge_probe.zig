@@ -245,6 +245,7 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     if (measured == 0 or interrupted.summary.quarantine_removed_bytes != 0 or interrupted.summary.quarantine_unmeasured != 0) return error.UnexpectedQuarantineUsage;
     if (try owner.quarantineUsage(record.id) != measured) return error.UnexpectedQuarantineUsage;
     if (interrupted.quarantine_count != 1 or interrupted.quarantine[0].id != record.id or interrupted.quarantine[0].state != .interrupted_removal or interrupted.quarantine[0].logical_bytes != measured) return error.UnexpectedQuarantineUsage;
+    if (try owner.readRemovalReceipt(record.id) != null) return error.UnexpectedReceipt;
     try store.restoreInterruptedRemoval(owner, record);
     const restored = try store.scanRecoveryDetailed(owner);
     if (!std.meta.eql(report, restored.summary) or restored.stateFor(record.id) != .normal) return error.RestoreFailed;
@@ -255,6 +256,7 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     const retained = try store.scanRecoveryDetailed(owner);
     if (retained.stateFor(record.id) != null) return error.UnexpectedRecoveryScan;
     if (retained.quarantine_count != 1 or retained.quarantine[0].id != record.id or retained.quarantine[0].state != .unregistered_retained or retained.quarantine[0].logical_bytes != measured) return error.UnexpectedQuarantineUsage;
+    if (retained.quarantine[0].receipt_state != .matched_identity or retained.summary.receipts != 1) return error.UnexpectedReceipt;
     if (!try store.loadInventory(owner, index) or index.count != 4 or index.next_id != 6) return error.InventoryNotPersisted;
     if (store.restoreInterruptedRemoval(owner, record)) |_| {
         return error.RestoredRemovedId;
@@ -267,13 +269,10 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     const after_reimport = try store.scanRecovery(owner);
     if (after_reimport.quarantined_removed != 1 or after_reimport.registered != 4) return error.UnexpectedRecoveryScan;
     std.debug.print("Quarantine removal, interrupted recovery and fresh-ID reimport verified\n", .{});
-    // Exercise the immutable typed storage independently. These synthetic
-    // directory identity values are fixture-only, not cleanup credentials.
-    const receipt = @import("companion/pet_removal_receipt.zig");
-    const sample: receipt.Receipt = .{ .record = record, .volume = 42, .file_index = 1234 };
-    if (try owner.readRemovalReceipt(record.id) != null) return error.UnexpectedReceipt;
-    try owner.writeRemovalReceipt(sample);
-    if (!std.meta.eql(sample, (try owner.readRemovalReceipt(record.id)) orelse return error.MissingReceipt)) return error.UnexpectedReceipt;
+    // Verify the actual transaction bound the native rename identity.
+    const sample = (try owner.readRemovalReceipt(record.id)) orelse return error.MissingReceipt;
+    const identity = try owner.quarantineIdentity(record.id);
+    if (!std.meta.eql(sample.record, record) or sample.volume != identity.volume or sample.file_index != identity.file_index) return error.UnexpectedReceipt;
     var replacement = sample;
     replacement.file_index += 1;
     if (owner.writeRemovalReceipt(replacement)) |_| {

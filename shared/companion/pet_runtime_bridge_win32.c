@@ -78,7 +78,8 @@ typedef struct {
     uint32_t kind, attributes;
 } pet_scan_row;
 enum { SCAN_UNKNOWN, SCAN_PACKAGE, SCAN_PENDING, SCAN_PREFERENCE,
-    SCAN_INVENTORY, SCAN_INVENTORY_PENDING, SCAN_LOCK, SCAN_QUARANTINE };
+    SCAN_INVENTORY, SCAN_INVENTORY_PENDING, SCAN_LOCK, SCAN_QUARANTINE,
+    SCAN_RECEIPT, SCAN_RECEIPT_PENDING };
 #define PET_SCAN_MAX 4096u
 
 static pet_scan_row scan_row(const WIN32_FIND_DATAW *data) {
@@ -102,6 +103,8 @@ static pet_scan_row scan_row(const WIN32_FIND_DATAW *data) {
         else if (!wcscmp(name + 20, L".pending")) row.kind = SCAN_PENDING;
         else if (!wcscmp(name + 20, L".pct")) row.kind = SCAN_PREFERENCE;
         else if (!wcscmp(name + 20, L".removed")) row.kind = SCAN_QUARANTINE;
+        else if (!wcscmp(name + 20, L".prc")) row.kind = SCAN_RECEIPT;
+        else if (!wcscmp(name + 20, L".prc.pending")) row.kind = SCAN_RECEIPT_PENDING;
         if (row.kind != SCAN_UNKNOWN) row.id = id;
     }
     return row;
@@ -138,8 +141,12 @@ __declspec(dllexport) pet_store_result pulse_companion_scan_v1(
  * The lease pins the canonical root. This does not walk or delete content.
  * The caller must revalidate inventory and confirm no live child owns it.
  * A same-user process can still mutate this private namespace. */
-__declspec(dllexport) pet_store_result pulse_companion_quarantine_v1(
-    const pet_private_root *lease, SIZE_T size, uint64_t id, BOOL restore) {
+static pet_store_result move_quarantine(
+    const pet_private_root *lease, SIZE_T size, uint64_t id, BOOL restore,
+    uint32_t *volume, uint64_t *file_index) {
+    if (!volume || !file_index) return PET_STORE_INVALID;
+    *volume = 0;
+    *file_index = 0;
     if (!live_lease(lease, size) || !id || (restore != FALSE && restore != TRUE))
         return PET_STORE_INVALID;
     wchar_t normal[PET_PRIVATE_PATH_CAP], removed[PET_PRIVATE_PATH_CAP];
@@ -180,9 +187,26 @@ __declspec(dllexport) pet_store_result pulse_companion_quarantine_v1(
             ? PET_STORE_OK : PET_STORE_IO;
     }
     if (!CloseHandle(file)) result = PET_STORE_CLEANUP_FAILED;
+    if (result == PET_STORE_OK) {
+        *volume = info.dwVolumeSerialNumber;
+        *file_index = ((uint64_t)info.nFileIndexHigh << 32) | info.nFileIndexLow;
+    }
     return result;
 }
 
+__declspec(dllexport) pet_store_result pulse_companion_quarantine_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id, BOOL restore) {
+    uint32_t volume;
+    uint64_t file_index;
+    return move_quarantine(lease, size, id, restore, &volume, &file_index);
+}
+
+/* V2 returns identity from the exact rename handle, not a path lookup. */
+__declspec(dllexport) pet_store_result pulse_companion_quarantine_v2(
+    const pet_private_root *lease, SIZE_T size, uint64_t id, BOOL restore,
+    uint32_t *volume, uint64_t *file_index) {
+    return move_quarantine(lease, size, id, restore, volume, file_index);
+}
 
 /* Logical bytes, not NTFS allocated bytes. Only the known Classic package
  * directory shape is traversed. No content reads, writes or link following.
@@ -280,6 +304,28 @@ __declspec(dllexport) pet_store_result pulse_companion_quarantine_usage_v1(
     pet_store_result result = usage_directory(path, 0, &count);
     if (result == PET_STORE_OK) *bytes = count.bytes;
     return result;
+}
+
+/* Read-only current directory identity; not deletion authorization. */
+__declspec(dllexport) pet_store_result pulse_companion_quarantine_identity_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id,
+    uint32_t *volume, uint64_t *file_index) {
+    if (!volume || !file_index) return PET_STORE_INVALID;
+    *volume = 0;
+    *file_index = 0;
+    if (!live_lease(lease, size) || !id) return PET_STORE_INVALID;
+    wchar_t path[PET_PRIVATE_PATH_CAP];
+    int n = swprintf(path, PET_PRIVATE_PATH_CAP, L"%ls\\pet-%016llx.removed",
+        lease->path, (unsigned long long)id);
+    if (n <= 0 || n >= (int)PET_PRIVATE_PATH_CAP) return PET_STORE_INVALID;
+    HANDLE file;
+    BY_HANDLE_FILE_INFORMATION info;
+    pet_store_result result = usage_open(path, TRUE, &file, &info);
+    if (result != PET_STORE_OK) return result;
+    if (!CloseHandle(file)) return PET_STORE_CLEANUP_FAILED;
+    *volume = info.dwVolumeSerialNumber;
+    *file_index = ((uint64_t)info.nFileIndexHigh << 32) | info.nFileIndexLow;
+    return *file_index ? PET_STORE_OK : PET_STORE_INVALID;
 }
 
 /* Independent fixed-ID receipt ABI. The caller owns the typed codec. */

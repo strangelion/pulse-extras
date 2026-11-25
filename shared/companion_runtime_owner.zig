@@ -34,6 +34,8 @@ const StoreRead = *const fn (*const Lease, usize, u64, [*]u8, usize, *usize) cal
 const StoreWrite = *const fn (*const Lease, usize, u64, [*]const u8, usize) callconv(.c) c_int;
 const StoreScan = *const fn (*const Lease, usize, [*]scan.Row, usize, *usize) callconv(.c) c_int;
 const StoreQuarantine = *const fn (*const Lease, usize, u64, c_int) callconv(.c) c_int;
+const StoreQuarantineV2 = *const fn (*const Lease, usize, u64, c_int, *u32, *u64) callconv(.c) c_int;
+const StoreQuarantineIdentity = *const fn (*const Lease, usize, u64, *u32, *u64) callconv(.c) c_int;
 const StoreQuarantineUsage = *const fn (*const Lease, usize, u64, *u64) callconv(.c) c_int;
 
 extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, ?*anyopaque) callconv(.winapi) usize;
@@ -246,6 +248,43 @@ pub const Owner = struct {
 
     // Internal fixed-name move; the store layer validates durable identity
     // and recovery state. No caller-supplied path or recursive deletion.
+    pub const DirectoryIdentity = struct {
+        volume: u32 = 0,
+        file_index: u64 = 0,
+    };
+
+    pub fn quarantineIdentity(self: *Owner, id: u64) !DirectoryIdentity {
+        if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
+        if (id == 0) return error.InvalidRecord;
+        const query: StoreQuarantineIdentity = @ptrCast(GetProcAddress(self.module, "pulse_companion_quarantine_identity_v1") orelse return error.MissingStoreApi);
+        var identity: DirectoryIdentity = .{};
+        checkStore(query(&self.lease, @sizeOf(Lease), id, &identity.volume, &identity.file_index)) catch |err| {
+            if (err == error.CleanupFailed) self.store_faulted = true;
+            return err;
+        };
+        if (identity.file_index == 0) return error.InvalidRecord;
+        return identity;
+    }
+
+    // No unbound V1 fallback for a receipt-producing removal.
+    pub fn moveQuarantineBound(self: *Owner, id: u64) !DirectoryIdentity {
+        if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
+        if (id == 0) return error.InvalidRecord;
+        if (try self.group.remaining() != 0) return error.ActiveInstances;
+        _ = GetProcAddress(self.module, "pulse_companion_receipt_write_v1") orelse return error.MissingStoreApi;
+        const move: StoreQuarantineV2 = @ptrCast(GetProcAddress(self.module, "pulse_companion_quarantine_v2") orelse return error.MissingStoreApi);
+        var identity: DirectoryIdentity = .{};
+        checkStore(move(&self.lease, @sizeOf(Lease), id, 0, &identity.volume, &identity.file_index)) catch |err| {
+            self.store_faulted = true;
+            return err;
+        };
+        if (identity.file_index == 0) {
+            self.store_faulted = true;
+            return error.InvalidRecord;
+        }
+        return identity;
+    }
+
     pub fn moveQuarantine(self: *Owner, id: u64, restore: bool) !void {
         if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
         if (id == 0) return error.InvalidRecord;
