@@ -1,5 +1,6 @@
 //! Experimental OpenPets v1 local IPC wire codec.
-//! Pure wire codec, Windows discovery validation and bounded response framing.
+//! Pure wire codec, Windows discovery validation, bounded framing and a mockable probe.
+//! OS authentication and deadline-aware I/O are adapter responsibilities.
 //! No discovery file I/O, socket access, process creation, or host callbacks.
 //! Contract: OpenPetsHQ/openpets@2f02bb04d872dec6923a47572343305235c63482.
 //! Caller owns buffers and transport; never log requests (they contain tokens).
@@ -410,4 +411,304 @@ test "response framer enforces storage and wire caps including the LF" {
     framer.reset();
     try framer.feed("abc\n");
     try testing.expectEqualStrings("abc\n", try framer.finish());
+}
+
+// Read-only transaction gate. The OS adapter is deliberately not implemented
+// here: it must establish trust on actual handles, not just parse path strings.
+pub const ProbeKind = enum { hello, status };
+pub const TransportError = error{ Unavailable, Untrusted, TimedOut, Canceled, IoFailure };
+pub const ProbeError = TransportError || error{ InvalidDiscovery, InvalidId, InvalidToken, InvalidLease, NoSpaceLeft, InvalidFrame, InvalidResponse, MismatchedId, OutOfMemory, InvalidProgress };
+
+/// All callbacks run on a worker, never on the Pulse UI thread.
+/// Deadlines use the same monotonic clock as now_ms, in milliseconds.
+/// read_trusted_discovery must validate owner, ACL and reparse safety on the
+/// opened file and its parent path, and detect oversized input (not truncate).
+/// connect_verified must open a local pipe, verify its server PID and trusted
+/// process identity on the opened connection before returning success.
+/// A failed connect must clean up its own partial handles. A successful one
+/// transfers one connection to the transaction until close. No reconnects.
+/// I/O must honor the absolute deadline, cancel and drain pending operations
+/// before returning, and never retain passed slices. read returns zero on EOF.
+/// close must be nonblocking after I/O has drained, and must release all
+/// connection-owned handles. No callback may log credentials or wire bytes.
+/// This contract is a test seam, not proof of Windows authentication.
+pub const ProbeTransport = struct {
+    context: *anyopaque,
+    now_ms: *const fn (*anyopaque) u64,
+    read_trusted_discovery: *const fn (*anyopaque, []u8, u64) TransportError!usize,
+    connect_verified: *const fn (*anyopaque, []const u8, u32, u64) TransportError!void,
+    write: *const fn (*anyopaque, []const u8, u64) TransportError!usize,
+    read: *const fn (*anyopaque, []u8, u64) TransportError!usize,
+    close: *const fn (*anyopaque) void,
+
+    fn checkDeadline(self: ProbeTransport, deadline: u64) TransportError!void {
+        if (self.now_ms(self.context) >= deadline) return error.TimedOut;
+    }
+};
+
+pub const connect_budget_ms: u64 = 2000;
+pub const response_budget_ms: u64 = 3000;
+
+/// One reusable, caller-owned workspace per in-flight probe. No allocation
+/// proportional to peer-supplied sizes. Do not share concurrently.
+pub const ProbeWorkspace = struct {
+    discovery: [max_message_bytes]u8,
+    response: [max_message_bytes]u8,
+    request: [1024]u8,
+    chunk: [1024]u8,
+    parse_scratch: [64 * 1024]u8,
+
+    pub fn clear(self: *ProbeWorkspace) void {
+        @memset(&self.discovery, 0);
+        @memset(&self.response, 0);
+        @memset(&self.request, 0);
+        @memset(&self.chunk, 0);
+        @memset(&self.parse_scratch, 0);
+    }
+};
+
+/// One hello or status exchange. Never acquires a lease, mutates a pet,
+/// launches a process, falls back to TCP, or retries an ambiguous request.
+/// Discovery and connect share a 2s budget; writing and reading share a
+/// further 3s budget. Partial progress never refreshes either deadline.
+/// Only the adapter can enforce time limits within a blocking OS call.
+/// Caller provides workspace and a fresh request ID for every transaction.
+pub fn probe(transport: ProbeTransport, workspace: *ProbeWorkspace, id: []const u8, kind: ProbeKind) ProbeError!Response {
+    defer workspace.clear();
+    if (!safeAtom(id, 1, 120)) return error.InvalidId;
+
+    const connect_deadline = transport.now_ms(transport.context) +| connect_budget_ms;
+    try transport.checkDeadline(connect_deadline);
+    const discovery_len = try transport.read_trusted_discovery(transport.context, &workspace.discovery, connect_deadline);
+    try transport.checkDeadline(connect_deadline);
+    if (discovery_len == 0 or discovery_len > workspace.discovery.len) return error.InvalidDiscovery;
+
+    var discovery: WindowsDiscovery = undefined;
+    var discovery_allocator = std.heap.FixedBufferAllocator.init(&workspace.parse_scratch);
+    try parseWindowsDiscovery(discovery_allocator.allocator(), workspace.discovery[0..discovery_len], &discovery);
+    defer discovery.clear();
+    @memset(&workspace.discovery, 0);
+    @memset(&workspace.parse_scratch, 0);
+
+    try transport.checkDeadline(connect_deadline);
+    try transport.connect_verified(transport.context, discovery.endpoint(), discovery.pid, connect_deadline);
+    defer transport.close(transport.context);
+    try transport.checkDeadline(connect_deadline);
+
+    const request: Request = switch (kind) {
+        .hello => .hello,
+        .status => .status,
+    };
+    const message = try encode(&workspace.request, id, discovery.token(), request);
+    discovery.clear();
+    const response_deadline = transport.now_ms(transport.context) +| response_budget_ms;
+
+    var sent: usize = 0;
+    while (sent < message.len) {
+        try transport.checkDeadline(response_deadline);
+        const written = try transport.write(transport.context, message[sent..], response_deadline);
+        try transport.checkDeadline(response_deadline);
+        if (written == 0 or written > message.len - sent) return error.InvalidProgress;
+        sent += written;
+    }
+    @memset(&workspace.request, 0);
+
+    var framer = ResponseFramer.init(&workspace.response);
+    while (true) {
+        try transport.checkDeadline(response_deadline);
+        const received = try transport.read(transport.context, &workspace.chunk, response_deadline);
+        try transport.checkDeadline(response_deadline);
+        if (received > workspace.chunk.len) return error.InvalidProgress;
+        if (received == 0) break;
+        try framer.feed(workspace.chunk[0..received]);
+    }
+
+    var response_allocator = std.heap.FixedBufferAllocator.init(&workspace.parse_scratch);
+    const result = try decode(response_allocator.allocator(), try framer.finish(), id, request);
+    try transport.checkDeadline(response_deadline);
+    return result;
+}
+
+const ProbeMock = struct {
+    const Scenario = enum {
+        success,
+        untrusted_file,
+        untrusted_peer,
+        late_connect,
+        zero_write,
+        invalid_write_count,
+        canceled_write,
+        late_read,
+        invalid_read_count,
+        truncated,
+        trailing_bytes,
+        wrong_id,
+        rejected,
+    };
+
+    scenario: Scenario = .success,
+    clock: u64 = 100,
+    connected: bool = false,
+    connects: usize = 0,
+    closes: usize = 0,
+    writes: usize = 0,
+    reads: usize = 0,
+    sent: [1024]u8 = undefined,
+    sent_len: usize = 0,
+    read_offset: usize = 0,
+
+    const hello_response = "{\"id\":\"probe-1\",\"ok\":true,\"result\":{\"ok\":true,\"protocol\":\"openpets-ipc\",\"protocolVersion\":1}}\n";
+    const status_response = "{\"id\":\"probe-1\",\"ok\":true,\"result\":{\"ok\":true,\"protocolVersion\":1,\"appRunning\":true,\"paused\":false,\"defaultPetVisible\":true}}\n";
+
+    fn fromContext(ctx: *anyopaque) *ProbeMock {
+        return @ptrCast(@alignCast(ctx));
+    }
+
+    fn now(ctx: *anyopaque) u64 {
+        return fromContext(ctx).clock;
+    }
+
+    fn readDiscovery(ctx: *anyopaque, buffer: []u8, deadline: u64) TransportError!usize {
+        const self = fromContext(ctx);
+        if (self.scenario == .untrusted_file) return error.Untrusted;
+        if (self.clock >= deadline) return error.TimedOut;
+        @memcpy(buffer[0..discovery_fixture.len], discovery_fixture);
+        return discovery_fixture.len;
+    }
+
+    fn connect(ctx: *anyopaque, endpoint: []const u8, pid: u32, deadline: u64) TransportError!void {
+        const self = fromContext(ctx);
+        self.connects += 1;
+        if (self.scenario == .untrusted_peer or pid != 42 or !std.mem.eql(u8, endpoint, pipe_prefix ++ "0123456789abcdef-42")) return error.Untrusted;
+        self.connected = true;
+        if (self.scenario == .late_connect) self.clock = deadline;
+    }
+
+    fn writeChunk(ctx: *anyopaque, bytes: []const u8, deadline: u64) TransportError!usize {
+        const self = fromContext(ctx);
+        if (!self.connected) return error.IoFailure;
+        if (self.clock >= deadline) return error.TimedOut;
+        self.writes += 1;
+        switch (self.scenario) {
+            .zero_write => return 0,
+            .invalid_write_count => return bytes.len + 1,
+            .canceled_write => return error.Canceled,
+            else => {},
+        }
+        const count = @min(bytes.len, 7);
+        if (count > self.sent.len - self.sent_len) return error.IoFailure;
+        @memcpy(self.sent[self.sent_len..][0..count], bytes[0..count]);
+        self.sent_len += count;
+        return count;
+    }
+
+    fn readChunk(ctx: *anyopaque, bytes: []u8, deadline: u64) TransportError!usize {
+        const self = fromContext(ctx);
+        if (!self.connected) return error.IoFailure;
+        if (self.clock >= deadline) return error.TimedOut;
+        self.reads += 1;
+        if (self.scenario == .invalid_read_count) return bytes.len + 1;
+        if (self.scenario == .late_read) self.clock = deadline;
+        const is_status = std.mem.indexOf(u8, self.sent[0..self.sent_len], "\"method\":\"status\"") != null;
+        const response: []const u8 = switch (self.scenario) {
+            .truncated => hello_response[0 .. hello_response.len - 1],
+            .trailing_bytes => hello_response ++ "x",
+            .wrong_id => "{\"id\":\"different\",\"ok\":true,\"result\":{\"ok\":true,\"protocol\":\"openpets-ipc\",\"protocolVersion\":1}}\n",
+            .rejected => "{\"id\":null,\"ok\":false,\"error\":{\"code\":\"invalid_token\",\"message\":\"rejected\"}}\n",
+            else => if (is_status) status_response else hello_response,
+        };
+        const count = @min(@min(bytes.len, 9), response.len - self.read_offset);
+        @memcpy(bytes[0..count], response[self.read_offset..][0..count]);
+        self.read_offset += count;
+        return count;
+    }
+
+    fn close(ctx: *anyopaque) void {
+        const self = fromContext(ctx);
+        self.connected = false;
+        self.closes += 1;
+        @memset(&self.sent, 0);
+        self.sent_len = 0;
+    }
+
+    fn transport(self: *ProbeMock) ProbeTransport {
+        return .{
+            .context = self,
+            .now_ms = now,
+            .read_trusted_discovery = readDiscovery,
+            .connect_verified = connect,
+            .write = writeChunk,
+            .read = readChunk,
+            .close = close,
+        };
+    }
+};
+
+test "read-only probe handles partial writes and reads and closes once" {
+    var workspace: ProbeWorkspace = undefined;
+    var mock: ProbeMock = .{};
+    try testing.expect((try probe(mock.transport(), &workspace, "probe-1", .hello)) == .hello);
+    try testing.expect(mock.writes > 1 and mock.reads > 1);
+    try testing.expectEqual(@as(usize, 1), mock.closes);
+    try testing.expect(!mock.connected);
+    for (workspace.request) |byte| try testing.expectEqual(@as(u8, 0), byte);
+    for (workspace.discovery) |byte| try testing.expectEqual(@as(u8, 0), byte);
+    for (workspace.parse_scratch) |byte| try testing.expectEqual(@as(u8, 0), byte);
+
+    mock = .{};
+    const response = try probe(mock.transport(), &workspace, "probe-1", .status);
+    try testing.expect(response.status.running and response.status.visible and !response.status.paused);
+    try testing.expectEqual(@as(usize, 1), mock.closes);
+}
+
+test "probe never writes credentials on untrusted discovery or connection" {
+    var workspace: ProbeWorkspace = undefined;
+    var mock: ProbeMock = .{ .scenario = .untrusted_file };
+    try testing.expectError(error.Untrusted, probe(mock.transport(), &workspace, "probe-1", .hello));
+    try testing.expectEqual(@as(usize, 0), mock.connects);
+    try testing.expectEqual(@as(usize, 0), mock.writes);
+    try testing.expectEqual(@as(usize, 0), mock.closes);
+
+    mock = .{ .scenario = .untrusted_peer };
+    try testing.expectError(error.Untrusted, probe(mock.transport(), &workspace, "probe-1", .hello));
+    try testing.expectEqual(@as(usize, 1), mock.connects);
+    try testing.expectEqual(@as(usize, 0), mock.writes);
+    try testing.expectEqual(@as(usize, 0), mock.closes);
+}
+
+test "probe cleans up on timeouts cancellation and invalid adapter progress" {
+    var workspace: ProbeWorkspace = undefined;
+    const cases = [_]struct { scenario: ProbeMock.Scenario, expected: ProbeError }{
+        .{ .scenario = .late_connect, .expected = error.TimedOut },
+        .{ .scenario = .zero_write, .expected = error.InvalidProgress },
+        .{ .scenario = .invalid_write_count, .expected = error.InvalidProgress },
+        .{ .scenario = .canceled_write, .expected = error.Canceled },
+        .{ .scenario = .late_read, .expected = error.TimedOut },
+        .{ .scenario = .invalid_read_count, .expected = error.InvalidProgress },
+    };
+    for (cases) |case| {
+        var mock: ProbeMock = .{ .scenario = case.scenario };
+        try testing.expectError(case.expected, probe(mock.transport(), &workspace, "probe-1", .hello));
+        try testing.expectEqual(@as(usize, 1), mock.closes);
+        try testing.expect(!mock.connected);
+        for (workspace.request) |byte| try testing.expectEqual(@as(u8, 0), byte);
+    }
+}
+
+test "probe rejects truncated extra and mismatched responses without retries" {
+    var workspace: ProbeWorkspace = undefined;
+    const cases = [_]struct { scenario: ProbeMock.Scenario, expected: ProbeError }{
+        .{ .scenario = .truncated, .expected = error.InvalidFrame },
+        .{ .scenario = .trailing_bytes, .expected = error.InvalidFrame },
+        .{ .scenario = .wrong_id, .expected = error.MismatchedId },
+    };
+    for (cases) |case| {
+        var mock: ProbeMock = .{ .scenario = case.scenario };
+        try testing.expectError(case.expected, probe(mock.transport(), &workspace, "probe-1", .hello));
+        try testing.expectEqual(@as(usize, 1), mock.connects);
+        try testing.expectEqual(@as(usize, 1), mock.closes);
+    }
+    var mock: ProbeMock = .{ .scenario = .rejected };
+    try testing.expect((try probe(mock.transport(), &workspace, "probe-1", .hello)) == .rejected);
+    try testing.expectEqual(@as(usize, 1), mock.closes);
 }
