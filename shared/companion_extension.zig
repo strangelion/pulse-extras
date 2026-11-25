@@ -131,7 +131,7 @@ pub fn importDefault(runtime_hex: []const u8, helper_hex: []const u8, request: *
     @memcpy(exe[root.len..][0..suffix.len], suffix);
     const len = root.len + suffix.len;
     exe[len] = 0;
-    var threaded = std.Io.Threaded.init(std.heap.page_allocator);
+    var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
     defer threaded.deinit();
     const owner = try std.heap.page_allocator.create(runtime.Owner);
     owner.* = .{};
