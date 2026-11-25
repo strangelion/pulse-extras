@@ -72,6 +72,9 @@ jobs:
           path: ${{ runner.temp }}/pulse-zig-archives
           key: zig-archive-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.zig-version', 'scripts/zig-downloads.json') }}
       - run: python scripts/install_zig.py
+      - name: Prepare benchmark output directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force zig-out | Out-Null
       - name: Stage pinned static WebP decoder
         if: matrix.profile == 'mixed-hidden' || matrix.profile == 'mixed-visible'
         run: python scripts/install_pet_webp.py
