@@ -362,45 +362,110 @@ fn extractEntry(source: FileSource, entry: *const Entry, output: ?std.Io.File) !
     if (!input.consumed()) return error.CorruptPayload;
 }
 
-/// Extract to a newly created child of an approved private scratch root.
-/// The caller owns the root and serializes access. Never reuse "unpacked".
-/// On any failure, leave only this fresh unpublished subtree for explicit
-/// recovery. Do not recursively delete unknown/preexisting files. Output
-/// must still pass the existing package validator before import.
-pub fn extractFile(io: std.Io, archive: std.Io.File, scratch: std.Io.Dir) !void {
-    var plan: Plan = .{};
-    try inspectFile(io, archive, &plan);
-    try scratch.createDir(io, "unpacked", .default_dir);
-    const root = try scratch.openDir(io, "unpacked", .{ .follow_symlinks = false });
-    defer root.close(io);
-    const source: FileSource = .{ .io = io, .file = archive };
-    var outfits = false;
-    var activities = false;
-    for (plan.entries[0..plan.count]) |*entry| {
-        if (entry.directory) {
-            try extractEntry(source, entry, null);
-            continue;
-        }
-        const path = entry.path();
-        var parent = root;
-        var leaf = path;
-        var opened = false;
-        defer if (opened) parent.close(io);
-        if (std.mem.indexOfScalar(u8, path, '/')) |slash| {
-            const folder = path[0..slash];
-            const created = if (eq(folder, "outfits")) &outfits else &activities;
-            if (!created.*) {
-                try root.createDir(io, folder, .default_dir);
-                created.* = true;
+/// Owned extraction record. Keep it alive through import and cleanup.
+/// The scratch directory must be approved, private, and serialized. Never
+/// adopt an existing unpacked directory, even after an interrupted session.
+pub const Stage = struct {
+    plan: Plan = .{},
+    owned: [max_entries]bool = @splat(false),
+    root_created: bool = false,
+    outfits: bool = false,
+    activities: bool = false,
+    complete: bool = false,
+
+    pub fn extract(self: *Stage, io: std.Io, archive: std.Io.File, scratch: std.Io.Dir) !void {
+        if (self.root_created) return error.Busy;
+        try inspectFile(io, archive, &self.plan);
+        try scratch.createDir(io, "unpacked", .default_dir);
+        self.root_created = true;
+        const root = try scratch.openDir(io, "unpacked", .{ .follow_symlinks = false });
+        defer root.close(io);
+        const source: FileSource = .{ .io = io, .file = archive };
+        for (self.plan.entries[0..self.plan.count], 0..) |*entry, n| {
+            if (entry.directory) {
+                try extractEntry(source, entry, null);
+                continue;
             }
-            parent = try root.openDir(io, folder, .{ .follow_symlinks = false });
-            opened = true;
-            leaf = path[slash + 1 ..];
+            const path = entry.path();
+            var parent = root;
+            var leaf = path;
+            var opened = false;
+            defer if (opened) parent.close(io);
+            if (std.mem.indexOfScalar(u8, path, '/')) |slash| {
+                const folder = path[0..slash];
+                const created = if (eq(folder, "outfits")) &self.outfits else &self.activities;
+                if (!created.*) {
+                    try root.createDir(io, folder, .default_dir);
+                    created.* = true;
+                }
+                parent = try root.openDir(io, folder, .{ .follow_symlinks = false });
+                opened = true;
+                leaf = path[slash + 1 ..];
+            }
+            const file = try parent.createFile(io, leaf, .{ .exclusive = true });
+            self.owned[n] = true;
+            defer file.close(io);
+            try extractEntry(source, entry, file);
         }
-        const file = try parent.createFile(io, leaf, .{ .exclusive = true });
-        defer file.close(io);
-        try extractEntry(source, entry, file);
+        self.complete = true;
     }
+
+    /// Remove only this session's known files and directories. Unknown
+    /// files block directory removal rather than being recursively deleted.
+    /// On failure keep ownership flags for explicit retry.
+    pub fn cleanup(self: *Stage, io: std.Io, scratch: std.Io.Dir) !void {
+        self.complete = false;
+        if (!self.root_created) return;
+        {
+            const root = try scratch.openDir(io, "unpacked", .{ .follow_symlinks = false });
+            defer root.close(io);
+            var failed = false;
+            for (self.plan.entries[0..self.plan.count], 0..) |*entry, n| {
+                if (!self.owned[n]) continue;
+                const path = entry.path();
+                var parent = root;
+                var leaf = path;
+                var opened = false;
+                defer if (opened) parent.close(io);
+                if (std.mem.indexOfScalar(u8, path, '/')) |slash| {
+                    parent = root.openDir(io, path[0..slash], .{ .follow_symlinks = false }) catch {
+                        failed = true;
+                        continue;
+                    };
+                    opened = true;
+                    leaf = path[slash + 1 ..];
+                }
+                parent.deleteFile(io, leaf) catch |err| {
+                    if (err != error.FileNotFound) {
+                        failed = true;
+                        continue;
+                    }
+                };
+                self.owned[n] = false;
+            }
+            if (failed) return error.CleanupFailed;
+            if (self.outfits) {
+                try root.deleteDir(io, "outfits");
+                self.outfits = false;
+            }
+            if (self.activities) {
+                try root.deleteDir(io, "activities");
+                self.activities = false;
+            }
+        }
+        try scratch.deleteDir(io, "unpacked");
+        self.root_created = false;
+        self.plan.count = 0;
+        self.plan.total = 0;
+        self.plan.file_count = 0;
+    }
+};
+
+/// Compatibility helper for callers explicitly taking ownership of the
+/// extracted subtree. New managed imports should use Stage directly.
+pub fn extractFile(io: std.Io, archive: std.Io.File, scratch: std.Io.Dir) !void {
+    var stage: Stage = .{};
+    try stage.extract(io, archive, scratch);
 }
 
 const Bytes = struct {
@@ -552,4 +617,36 @@ test "raw deflate exact length CRC and compressed boundary" {
     try std.testing.expectError(error.CorruptPayload, extractEntry(source, &entry, null));
     entry.compressed = 2;
     try std.testing.expectError(error.ReadFailed, extractEntry(source, &entry, null));
+}
+
+test "owned ZIP cleanup leaves unknown files and never adopts old staging" {
+    var bytes: [2048]u8 = undefined;
+    const archive_bytes = fixture(&bytes, &.{ "pet.json", "spritesheet.webp", "outfits/night.webp" });
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const archive = try tmp.dir.createFile(io, "archive.zip", .{ .read = true });
+    defer archive.close(io);
+    try archive.writeStreamingAll(io, archive_bytes);
+    var stage: Stage = .{};
+    try stage.extract(io, archive, tmp.dir);
+    try std.testing.expect(stage.complete);
+    var other: Stage = .{};
+    try std.testing.expectError(error.PathAlreadyExists, other.extract(io, archive, tmp.dir));
+    try other.cleanup(io, tmp.dir);
+    {
+        const root = try tmp.dir.openDir(io, "unpacked", .{ .follow_symlinks = false });
+        defer root.close(io);
+        const extra = try root.createFile(io, "keep.txt", .{ .exclusive = true });
+        extra.close(io);
+    }
+    if (stage.cleanup(io, tmp.dir)) |_| return error.ExpectedCleanupFailure else |_| {}
+    try std.testing.expect(stage.root_created and !stage.complete);
+    {
+        const root = try tmp.dir.openDir(io, "unpacked", .{ .follow_symlinks = false });
+        defer root.close(io);
+        try root.deleteFile(io, "keep.txt");
+    }
+    try stage.cleanup(io, tmp.dir);
+    try std.testing.expect(!stage.root_created);
 }

@@ -8,6 +8,24 @@ const catalog = @import("companion/pet_catalog.zig");
 const trust = @import("process_trust");
 const process = @import("pulse_process");
 const http = @import("companion/pet_market_http_win32.zig");
+const download = @import("companion/pet_market_download.zig");
+const installer = @import("companion_market_install.zig");
+const Group = @import("runtime_group").Group;
+const Budget = @import("runtime_budget").Budget;
+
+const FixtureTransport = struct {
+    bytes: []const u8,
+
+    pub fn get(self: *FixtureTransport, _: download.Kind, _: []const u8, sink: *download.Sink) !void {
+        try sink.headers(self.bytes.len);
+        var offset: usize = 0;
+        while (offset < self.bytes.len) {
+            const end = @min(self.bytes.len, offset + 37);
+            try sink.append(self.bytes[offset..end]);
+            offset = end;
+        }
+    }
+};
 
 test {
     _ = http;
@@ -70,7 +88,32 @@ test "real approved helper imports package and reload deduplicates" {
     const source_digest = try helper.probe(source, "fixture-v1");
     var owner: importing.Coordinator = .{};
     try std.testing.expect(!try store.loadInventory(root_wide, &owner.index));
-    const result = try store.importPackage(root_wide, &owner, &helper, source, "fixture-v1");
+    // Independent Python ZIP writer, actual concurrent transfer/store,
+    // extraction, approved executable, and durable inventory publication.
+    var zip_buf: [4096]u8 = undefined;
+    var zip_path_buf: [4096]u8 = undefined;
+    const zip_path = try fixturePath(3, &zip_path_buf);
+    const archive_file = try std.Io.Dir.openFileAbsolute(io, zip_path, .{ .follow_symlinks = false });
+    defer archive_file.close(io);
+    const archive_size = (try archive_file.stat(io)).size;
+    try std.testing.expect(archive_size > 0 and archive_size <= zip_buf.len);
+    const n = try archive_file.readPositionalAll(io, &zip_buf, 0);
+    try std.testing.expectEqual(archive_size, @as(u64, n));
+    const scratch = try std.Io.Dir.cwd().openDir(io, root_path, .{ .follow_symlinks = false });
+    defer scratch.close(io);
+    var group = Group.init(std.testing.allocator, 0, 0, 2);
+    var tasks = @import("companion/pet_market_tasks.zig").Tasks(FixtureTransport).init(io, scratch, &group);
+    defer tasks.shutdown() catch @panic("download fixture cleanup failed");
+    const request = try tasks.start(.zip, "https://zip.openpets.dev/pets/fixture-v1/base.zip", .{ .bytes = zip_buf[0..n] });
+    const archive = try tasks.join(request);
+    var stage: installer.Install = .{};
+    var disk = Budget.init(2 * 1024 * 1024 * 1024);
+    defer stage.cleanup(io, scratch, &disk) catch @panic("ZIP fixture cleanup failed");
+    const result = try stage.run(io, scratch, root_path, &disk, archive, root_wide, &owner, &helper, "fixture-v1");
+    try stage.cleanup(io, scratch, &disk);
+    try std.testing.expectEqual(@as(usize, 0), disk.used);
+    try tasks.release(request);
+    try group.checkDrained();
     try std.testing.expectEqual(@as(u64, 1), result.imported);
     var restarted: importing.Coordinator = .{};
     try std.testing.expect(try store.loadInventory(root_wide, &restarted.index));

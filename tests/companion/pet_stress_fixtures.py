@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import zipfile
 
 V1 = "UklGRpwAAABXRUJQVlA4TI8AAAAv/8XTAQfQpcKVu/8BAEX6/58i+p/63//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//97/8qAAA="
 V2 = "UklGRrgAAABXRUJQVlA4TKsAAAAv/8U7AgdQ2oaUqv8BAUnS//2BEf3P+M9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+nwYA"
@@ -39,6 +40,11 @@ def main():
         "description": "Original stress fixture",
         "spritesheetPath": "spritesheet.webp"
     }), encoding="utf-8")
+    # Independent ZIP writer; real deflated manifest and atlas payloads.
+    with zipfile.ZipFile(root / "fixture-v1.zip", "x",
+                         compression=zipfile.ZIP_DEFLATED) as archive:
+        for leaf in ("pet.json", "spritesheet.webp"):
+            archive.write(package / leaf, f"fixture-v1/{leaf}")
     (root / "fixture-v2.webp").write_bytes(decode_atlas(V2, 192, 1536, 2288,
         '9ab0cd6bc08d58f85485c7e88ee62b4f261e1f5bfdebf5b86ddd5fab363e242d'))
 

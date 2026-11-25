@@ -523,3 +523,23 @@ never block on join/shutdown. Production root approval and end-to-end market
 installation remain pending. Prior Ubuntu regression passed and prior
 Windows native adapter/codec preflight passed; latest Windows CI was still
 running when work started. New code awaits pinned formatting and CI.
+
+## Owned archive-to-inventory integration
+
+The previous WinHTTP regression 45587907507 passed. Add a tracked ZIP Stage
+that records only files/directories exclusively created by this operation,
+including partially written files. Cleanup removes only recorded files and
+empty owned directories, retains failed ownership for retry, and refuses
+an existing unpacked subtree. Add a serialized Windows Install adapter
+for a sealed download result and approved scratch directory/path. It
+reserves worst-case 640 MiB for unpacked data and a second package copy
+until cleanup, separate from archive/download reservation; persistent
+asset disk quota is not implemented. The caller must provide the same
+budget and matching private scratch handle/path for cleanup. Test with a
+real Python-generated Deflate ZIP from the existing WebP fixture, actual
+concurrent download dispatcher using controlled fixture bytes, actual ZIP
+extraction, approved helper, persisted dual digest, reloaded inventory and
+duplicate detection. No external network is required. Add unknown-file
+cleanup and preexisting-directory tests. Live HTTPS end-to-end and UI,
+production root ACL provisioning, crash recovery and persistent asset
+quota remain pending. New code awaits CI.
