@@ -402,3 +402,12 @@ requires all accounted resources to drain at native exit. Scope counters
 are not measurements of WIC internals, GDI overhead, registry/menu/IPC
 resources or total process memory. See companion spike for limits and
 remaining lifecycle/diagnostic integration.
+
+Companion phase 3 owns a shared Group with one running and one queued
+slot; the native buffer bridge reuses the group's pool. A dedicated
+decode handoff adapter consumes shared LatestTask using copyable
+future results and a stable caller-owned decoded-byte mailbox.
+No owning pointer is returned through the future; stale results are
+freed only after actual join. External resource accounting callbacks
+are synchronized for subsequent worker integration. Native WIC and the
+Windows wait loop are not yet connected to that adapter.

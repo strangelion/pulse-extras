@@ -1,6 +1,7 @@
 //! Standalone experimental desktop companion executable, not a Pulse plugin.
 const std = @import("std");
 const memory = @import("pet_memory.zig");
+const Group = @import("runtime_group").Group;
 const resources = @import("pet_resources.zig");
 const animation = @import("animation.zig");
 const assets = @import("pet_assets.zig");
@@ -82,12 +83,13 @@ fn parsePackage(bridge: *const memory.Bridge, input: [*]const u8, len: usize, id
 }
 
 pub fn main() !void {
-    var owner = memory.BoundedAllocator.init(std.heap.page_allocator, memory.limit);
+    var group = Group.init(std.heap.page_allocator, memory.limit, 1, 1);
     var resource_owner: resources.Owner = .{};
     const resource_bridge = resources.Bridge.init(&resource_owner);
-    const bridge = memory.Bridge.init(&owner, &resource_bridge);
+    const bridge = memory.Bridge.init(&group.pool, &resource_bridge);
     const result = pet_demo_run(&bridge, sampleFrame, validateWebp, sampleActivity, validateActivity, parsePackage);
-    const stats = owner.stats();
+    const group_stats = group.diagnostics();
+    const stats = group_stats.memory;
     // A single bounded shutdown diagnostic; no per-frame logging.
     std.debug.print("Companion heap: live={d} allocations={d} peak={d} denied={d}\n", .{ stats.live_bytes, stats.live_allocations, stats.reserved_peak, stats.denied });
     std.debug.print("Companion resources: files={d} codec={d} dib={d} cleanup_failures={d} peaks={d}/{d}/{d}\n", .{ resource_owner.files.used, resource_owner.codecs.used, resource_owner.dib.used, resource_owner.cleanup_failures, resource_owner.files.peak, resource_owner.codecs.peak, resource_owner.dib.peak });
@@ -97,7 +99,8 @@ pub fn main() !void {
     var log_buffer: [4096]u8 = undefined;
     const report = try resource_owner.log.encode(&log_buffer);
     std.debug.print("{s}", .{report});
-    try owner.checkDrained();
+    std.debug.print("Companion tasks: queued={d} running={d} peaks={d}/{d} rejected={d}\n", .{ group_stats.queued, group_stats.running, group_stats.queue_peak, group_stats.running_peak, group_stats.rejected });
+    try group.checkDrained();
     try resource_owner.checkDrained();
     if (result != 0) return error.CompanionDemoFailed;
 }

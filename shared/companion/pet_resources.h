@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Session-local, serialized owner. NULL is allowed only for the low-level
+/* Session-local owner, callbacks synchronize shared accounting. NULL is allowed only for the low-level
  * surface unit fixture, which has no runtime owner. */
 enum { PET_RESOURCE_FILE = 0, PET_RESOURCE_CODEC = 1, PET_RESOURCE_DIB = 2 };
 typedef struct {

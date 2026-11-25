@@ -326,7 +326,7 @@ changed; the sample pixels are not distributable pet artwork.
 Build on Windows from repository root with the pinned Zig:
 
 ```powershell
-zig build-exe -target x86_64-windows-gnu -O ReleaseSafe shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 --dep runtime_allocator --dep runtime_budget --dep runtime_event_log -Mroot=shared/companion/pet_demo.zig -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_budget -Mruntime_allocator=shared/runtime/allocator.zig -target x86_64-windows-gnu -O ReleaseSafe -Mruntime_budget=shared/runtime/budget.zig -target x86_64-windows-gnu -O ReleaseSafe -Mruntime_event_log=shared/runtime/event_log.zig '-femit-bin=pulse-pet-demo.exe'
+zig build-exe -target x86_64-windows-gnu -O ReleaseSafe shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 --dep runtime_allocator --dep runtime_budget --dep runtime_event_log --dep runtime_group -Mroot=shared/companion/pet_demo.zig -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_budget -Mruntime_allocator=shared/runtime/allocator.zig -target x86_64-windows-gnu -O ReleaseSafe -Mruntime_budget=shared/runtime/budget.zig -target x86_64-windows-gnu -O ReleaseSafe -Mruntime_event_log=shared/runtime/event_log.zig -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_allocator -Mruntime_group=shared/runtime/group.zig '-femit-bin=pulse-pet-demo.exe'
 .\pulse-pet-demo.exe
 .\pulse-pet-demo.exe --reduced-motion
 .\pulse-pet-demo.exe --webp-v2 C:\path\to\spritesheet.webp
@@ -823,3 +823,35 @@ retained for CI diagnostics; not all diagnostics have been migrated.
 Tests cover quotas, denial/rollback, invalid release, failed cleanup and
 zero-resource drain even on rejected package fixtures. No asynchronous
 decode or host-global quota. Windows CI and desktop stress still required.
+
+## Shared Group and latest-only decode handoff — phase 3
+
+The standalone entry now owns the shared runtime Group (48 MiB, one
+queued and one running task reservation). The existing C allocation
+bridge borrows its pool rather than creating another independent
+allocator. The final drain gate checks both heap and task reservations.
+External resource callbacks use short synchronized accounting sections
+without holding locks over OS calls. Owner diagnostic reads are after
+all users have finished.
+
+pet_decode_task.zig is the tested adapter for asynchronous decoded
+buffers. The existing LatestTask contract forbids owning outputs.
+Use a copyable request and bool result with a stable caller-owned
+mailbox; the worker writes the buffer and optionally notifies the
+owner, which must still join the future before reading/freeing it.
+A replaced or invalidated generation cannot transfer its pixels.
+One active and one replaceable queued request share the same Group.
+Invalidation never waits on foreign code; shutdown requests stop,
+joins the actual worker and frees its mailbox. The consumer owns any
+transferred bytes until presentation or rejection. Tests cover stale
+completion, replacement, invalidation, shutdown and budget denial.
+No change to shared LatestTask semantics or detached thread fallback.
+
+The adapter is not yet wired to the Windows UI message loop or WIC.
+Startup, manual and automatic decode remain synchronous in the demo.
+Next integrate a caller-owned threaded I/O instance, bounded notification
+event, pinned input lifetimes, asynchronous WIC calls, and a worker
+completion/transactional presentation path. WIC cancellation is not
+guaranteed to interrupt a native call; parent process supervision
+remains a separate safety boundary. Do not claim nonblocking native
+decode, timing or host unload acceptance until the real path is tested.
