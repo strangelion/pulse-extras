@@ -326,9 +326,20 @@ pub fn rejectionFor(err: anyerror) Rejection {
 }
 
 pub const RunningRow = model.Instance;
+pub const RunningSource = struct {
+    id: u64 = 0,
+    bytes: [64]u8 = @splat(0),
+    len: usize = 0,
+
+    pub fn text(self: *const RunningSource) []const u8 {
+        return self.bytes[0..self.len];
+    }
+};
+
 pub const RunningSnapshot = struct {
     count: usize = 0,
     rows: [session_limit]RunningRow = undefined,
+    sources: [session_limit]RunningSource = @splat(.{}),
 };
 
 pub const Session = struct {
@@ -383,6 +394,23 @@ pub const Session = struct {
         defer self.snapshot_lock.store(false, .release);
         self.snapshot.count = @min(rows.len, session_limit);
         @memcpy(self.snapshot.rows[0..self.snapshot.count], rows[0..self.snapshot.count]);
+        self.snapshot.sources = @splat(.{});
+    }
+
+    fn publishNamedRows(self: *Session, rows: []const RunningRow, sources: *const [session_limit]RunningSource) void {
+        if (self.snapshot_lock.swap(true, .acquire)) return;
+        defer self.snapshot_lock.store(false, .release);
+        self.snapshot.count = @min(rows.len, session_limit);
+        @memcpy(self.snapshot.rows[0..self.snapshot.count], rows[0..self.snapshot.count]);
+        self.snapshot.sources = @splat(.{});
+        for (rows[0..self.snapshot.count], 0..) |row, n| {
+            for (sources) |source| {
+                if (source.id == row.id) {
+                    self.snapshot.sources[n] = source;
+                    break;
+                }
+            }
+        }
     }
 
     pub fn copyRows(self: *Session, out: *RunningSnapshot) void {
@@ -390,6 +418,7 @@ pub const Session = struct {
         defer self.snapshot_lock.store(false, .release);
         out.count = self.snapshot.count;
         @memcpy(out.rows[0..out.count], self.snapshot.rows[0..out.count]);
+        out.sources = self.snapshot.sources;
     }
 
     pub fn reject(self: *Session, reason: Rejection) void {
@@ -446,14 +475,35 @@ pub fn runBuiltin(session: *Session, runtime_hex: []const u8, helper_hex: []cons
     return outcome;
 }
 
-fn launchAsset(owner: *runtime.Owner, helper: [:0]const u16, digest: *const [32]u8, asset_id: u64) !group.Start {
-    if (asset_id == builtin_asset_id) return owner.group.startBuiltin(helper, digest);
-    const approved = try openPrivateDefault(owner);
-    const index = try std.heap.page_allocator.create(inventory.Inventory);
-    defer std.heap.page_allocator.destroy(index);
-    index.* = .{};
-    try library.readManagedIndex(approved, index);
-    return owner.group.startManagedWide(helper, digest, index, approved, asset_id);
+fn launchAsset(owner: *runtime.Owner, helper: [:0]const u16, digest: *const [32]u8, asset_id: u64, sources: *[session_limit]RunningSource) !group.Start {
+    var free: ?*RunningSource = null;
+    for (sources) |*source| {
+        if (source.id == 0) {
+            free = source;
+            break;
+        }
+    }
+    const slot = free orelse return error.Capacity;
+    var name: RunningSource = .{};
+    const started = if (asset_id == builtin_asset_id) blk: {
+        const builtin_name = "内置桌宠";
+        @memcpy(name.bytes[0..builtin_name.len], builtin_name);
+        name.len = builtin_name.len;
+        break :blk try owner.group.startBuiltin(helper, digest);
+    } else blk: {
+        const approved = try openPrivateDefault(owner);
+        const index = try std.heap.page_allocator.create(inventory.Inventory);
+        defer std.heap.page_allocator.destroy(index);
+        index.* = .{};
+        try library.readManagedIndex(approved, index);
+        const record = try index.get(asset_id);
+        @memcpy(name.bytes[0..record.len], record.sourceId());
+        name.len = record.len;
+        break :blk try owner.group.startManagedWide(helper, digest, index, approved, asset_id);
+    };
+    name.id = started.id;
+    slot.* = name;
+    return started;
 }
 
 fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, digest: [32]u8, helper: [:0]const u16, helper_digest: *const [32]u8, canceled: *const fn (?*anyopaque) callconv(.c) u32, context: ?*anyopaque) !void {
@@ -461,7 +511,8 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
     session.set(.starting);
     try owner.open(root, digest, session_limit, session_limit * model.child_commit_ceiling);
     if (canceled(context) != 0) return;
-    const started = try launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire));
+    var sources: [session_limit]RunningSource = @splat(.{});
+    const started = try launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire), &sources);
     var failure: ?anyerror = started.failure;
     var rows: [group.max_tick_slots]group.TickResult = undefined;
     var begin = GetTickCount64();
@@ -470,7 +521,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
         if (session.pending_start.load(.acquire)) {
             session.set(.starting);
             if (canceled(context) == 0) {
-                if (launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire))) |next| {
+                if (launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire), &sources)) |next| {
                     if (next.failure) |err| failure = err;
                     begin = GetTickCount64();
                 } else |err| {
@@ -511,6 +562,9 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
         for (rows[0..count]) |row| {
             if (row.failure) |err| failure = err;
             if (row.exit_code) |code| {
+                for (&sources) |*source| {
+                    if (source.id == row.id) source.* = .{};
+                }
                 if (row.id == stopping) {
                     session.stopping_id.store(0, .release);
                 } else if (code != 0) {
@@ -536,7 +590,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
                 private_bytes += metrics.private_bytes;
             }
         }
-        session.publishRows(items[0..owned]);
+        session.publishNamedRows(items[0..owned], &sources);
         session.owned.store(owned, .release);
         session.ready.store(ready, .release);
         session.working_set.store(working_set, .release);
@@ -673,4 +727,23 @@ test "cleanup request copies receipt and refuses unmeasured or blocked entries" 
     try std.testing.expectError(error.MissingReceipt, RemovalRequest.initCleanup(&detail));
     detail.receipt_state = .cleanup_started;
     try std.testing.expectError(error.RecoveryRequired, RemovalRequest.initCleanup(&detail));
+}
+
+test "running source labels follow stable instance IDs across row reorder" {
+    var session: Session = .{};
+    var sources: [session_limit]RunningSource = @splat(.{});
+    sources[0] = .{ .id = 9, .len = 3 };
+    @memcpy(sources[0].bytes[0..3], "cat");
+    sources[1] = .{ .id = 11, .len = 3 };
+    @memcpy(sources[1].bytes[0..3], "dog");
+    const rows = [_]RunningRow{ .{ .id = 11, .asset_id = 2 }, .{ .id = 9, .asset_id = 1 } };
+    session.publishNamedRows(&rows, &sources);
+    var copy: RunningSnapshot = .{};
+    session.copyRows(&copy);
+    try std.testing.expectEqualStrings("dog", copy.sources[0].text());
+    try std.testing.expectEqualStrings("cat", copy.sources[1].text());
+    session.publishNamedRows(rows[0..1], &sources);
+    session.copyRows(&copy);
+    try std.testing.expectEqual(@as(usize, 1), copy.count);
+    try std.testing.expectEqual(@as(u64, 0), copy.sources[1].id);
 }

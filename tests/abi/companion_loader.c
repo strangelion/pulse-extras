@@ -17,7 +17,7 @@
 static const char *commands[] = {
     "companion.library", "companion.running", "companion.market", "companion.global",
     "companion.settings.refresh", "companion.download.less", "companion.download.more",
-    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear"
+    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear"
 };
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 /* Optional 1.0.61 picker ABI: independent C layout matching the supplied
@@ -89,7 +89,9 @@ typedef struct {
     void *dialog_command_user;
     uint64_t dialog_command_subscription;
     unsigned dialog_states_updated;
-    uint64_t search_token;
+    uint64_t search_token, running_search_token;
+    PulseUiStateChangedFn running_search_changed;
+    void *running_search_user;
     PulseUiStateChangedFn search_changed;
     void *search_user;
     char search_value[257];
@@ -130,21 +132,27 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
         f->enabled_more = (int)more->enabled.value;
     }
     if (same(root->children.data[1].id, "running")) {
-        REQUIRE(root->children.count >= 4 && root->children.count <= 14);
-        const PulseUiModelNode *toolbar = root->children.data + 3;
+        REQUIRE(root->children.count >= 6 && root->children.count <= 17);
+        const PulseUiModelNode *search = root->children.data + 3;
+        REQUIRE(search->type == PULSE_UI_MODEL_TEXT_INPUT && same(search->state.value, "running.query"));
+        const PulseUiModelNode *toolbar = root->children.data + 4;
         REQUIRE(toolbar->children.present && toolbar->children.count == 2);
         f->start_enabled = (int)toolbar->children.data[0].enabled.value;
         f->stop_enabled = (int)toolbar->children.data[1].enabled.value;
         f->first_frame = 0;
         f->two_ready = 0;
-        f->running_rows = root->children.count >= 6 ? root->children.count - 6 : 0;
+        f->running_rows = 0;
         f->only_second = 0;
-        if (f->running_rows == 1) {
-            const PulseStringView row = root->children.data[6].text.value;
-            f->only_second = row.data && row.length >= 5 && memcmp(row.data, "ID 2 ", 5) == 0;
+        for (unsigned n = 9; n < root->children.count; ++n) {
+            const PulseUiModelNode *row = root->children.data + n;
+            if (!row->id.data || row->id.length < 9 || memcmp(row->id.data, "instance-", 9)) continue;
+            ++f->running_rows;
+            const PulseStringView text = row->text.value;
+            if (text.data && text.length >= 5 && memcmp(text.data, "ID 2 ", 5) == 0) f->only_second = 1;
         }
-        if (root->children.count >= 5) {
-            const PulseStringView text = root->children.data[4].text.value;
+        f->only_second = f->only_second && f->running_rows == 1;
+        if (root->children.count >= 7) {
+            const PulseStringView text = root->children.data[6].text.value;
             const char *prefix = "首帧已确认";
             const char *two = "首帧已确认 · 运行 2/2";
             f->first_frame = text.data && text.length >= strlen(prefix) &&
@@ -242,13 +250,24 @@ static PulseStatus model(Fixture *f, void *out, uint32_t size) {
 }
 static PulseStatus PULSE_CALL subscribe_search(void *ctx, uint64_t page, PulseStringView key, uint32_t sources, PulseUiStateChangedFn cb, void *user, uint64_t *token) {
     Fixture *f = ctx;
-    REQUIRE(page == f->page && !f->search_token && same(key, "library.query") && sources == PULSE_UI_STATE_USER && cb && token);
+    REQUIRE(page == f->page && sources == PULSE_UI_STATE_USER && cb && token);
+    if (same(key, "running.query")) {
+        REQUIRE(!f->running_search_token);
+        f->running_search_token = ++f->next; f->running_search_changed = cb; f->running_search_user = user;
+        *token = f->running_search_token;
+        return PULSE_OK;
+    }
+    REQUIRE(!f->search_token && same(key, "library.query"));
     f->search_token = ++f->next; f->search_changed = cb; f->search_user = user;
     *token = f->search_token;
     return PULSE_OK;
 }
 static PulseStatus PULSE_CALL unsubscribe_search(void *ctx, uint64_t token) {
     Fixture *f = ctx;
+    if (token && token == f->running_search_token) {
+        f->running_search_token = 0; f->running_search_changed = NULL; f->running_search_user = NULL;
+        return PULSE_OK;
+    }
     REQUIRE(token && token == f->search_token);
     f->search_token = 0; f->search_changed = NULL; f->search_user = NULL;
     return PULSE_OK;
@@ -650,7 +669,7 @@ static int automatic(PulsePluginEntryV1Fn entry) {
     out.deactivate(out.instance);
     out.destroy(out.instance);
     pump(&f);
-    CHECK(!f.queued && !f.search_token);
+    CHECK(!f.queued && !f.search_token && !f.running_search_token);
     DeleteCriticalSection(&f.dispatch_lock);
     return 0;
 }
@@ -733,6 +752,13 @@ static int bundled_session(PulsePluginEntryV1Fn entry) {
             for (unsigned i = 0; i < 100 && f.aux_task; ++i) { Sleep(20); pump(&f); }
             CHECK(!f.aux_task && f.aux_released == 1 && f.task == session);
             CHECK(click(&f, 1) == 0 && f.first_frame && f.stop_enabled);
+            CHECK(f.running_rows == 2 && f.running_search_token && f.running_search_changed);
+            PulseUiStateChange change = {.key=view("running.query"), .value=view("#2"), .revision=1, .source_mask=PULSE_UI_STATE_USER};
+            PulseUiStateBatch batch = {.revision=1, .changes=&change, .count=1};
+            f.running_search_changed(f.running_search_user, f.page, &batch);
+            CHECK(f.running_rows == 1 && f.only_second);
+            change.value = view(""); change.revision = 2; batch.revision = 2;
+            f.running_search_changed(f.running_search_user, f.page, &batch);
             CHECK(f.running_rows == 2 && click(&f, 14) == 0);
             for (unsigned i = 0; i < 400 && f.task && !f.only_second; ++i) { Sleep(20); pump(&f); }
             CHECK(f.task && f.only_second && f.stop_enabled);

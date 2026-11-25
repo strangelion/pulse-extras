@@ -26,7 +26,7 @@ const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -100,6 +100,10 @@ const Instance = struct {
     search_ticks: u8 = 0,
     search_events: ?raw.PulseUiEventsV1 = null,
     search_token: u64 = 0,
+    running_search_token: u64 = 0,
+    running_search_revision: u64 = 0,
+    running_query: [256]u8 = undefined,
+    running_query_len: usize = 0,
     favorites_only: bool = false,
     status: []const u8 = "设置尚未读取",
 };
@@ -112,7 +116,7 @@ const Content = struct {
     import_toolbar: [3]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
-    states: [5]ui.State = undefined,
+    states: [6]ui.State = undefined,
     preference_toolbar: [4]ui.Node = undefined,
     asset_toolbar: [2]ui.Node = undefined,
     stop_toolbar: [2]ui.Node = undefined,
@@ -124,6 +128,9 @@ const Content = struct {
     quarantine_nodes: [7]ui.Node = undefined,
     cleanup_toolbar: [2]ui.Node = undefined,
     quarantine_paging: [2]ui.Node = undefined,
+    running_count: [96]u8 = undefined,
+    running_count_id: [64]u8 = undefined,
+    running_search_toolbar: [2]ui.Node = undefined,
     quarantine_heading: [160]u8 = undefined,
     quarantine_heading_id: [64]u8 = undefined,
     quarantine_text: [4][224]u8 = undefined,
@@ -250,6 +257,39 @@ fn fillQuarantine(report: *const library.RecoverySnapshot, offset: usize, conten
     return node;
 }
 
+fn searchInput(id: []const u8, prompt: []const u8) ui.Node {
+    var node = ui.node(ui.NodeKind.text_input);
+    node.id = abi.view(id);
+    node.placeholder = .{ .present = 1, .value = abi.view(prompt) };
+    node.glyph = .{ .present = 1, .value = abi.view("search") };
+    node.state = .{ .present = 1, .value = abi.view(id) };
+    node.flex = .{ .present = 1, .value = 1 };
+    return node;
+}
+
+fn containsFolded(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len > haystack.len) return false;
+    for (0..haystack.len - needle.len + 1) |n| {
+        if (std.ascii.eqlIgnoreCase(haystack[n..][0..needle.len], needle)) return true;
+    }
+    return false;
+}
+
+fn runningMatches(item: library.RunningRow, source: []const u8, query: []const u8) bool {
+    var terms = std.mem.tokenizeAny(u8, query, " \t");
+    while (terms.next()) |term| {
+        if (containsFolded(source, term)) continue;
+        const numeric = if (std.mem.startsWith(u8, term, "#")) term[1..] else term;
+        const id = std.fmt.parseInt(u64, numeric, 10) catch return false;
+        if (item.id == id or item.asset_id == id) continue;
+        if (item.metrics) |metrics| {
+            if (metrics.pid != 0 and metrics.pid == id) continue;
+        }
+        return false;
+    }
+    return true;
+}
+
 fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     for (commands, 0..) |command, n| content.declared[n] = abi.view(command);
     const selected: usize = @backingInt(instance.section);
@@ -270,12 +310,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             content.children[2] = changingLabel(&content.dynamic_ids[0], "library.status", instance.library_status);
             // Standalone full-width native input, not a label beside a
             // narrow field. Host chooses theme, font and icon rendering.
-            content.children[3] = ui.node(ui.NodeKind.text_input);
-            content.children[3].id = abi.view("library.query");
-            content.children[3].placeholder = .{ .present = 1, .value = abi.view("搜索素材来源 ID、编号或标签") };
-            content.children[3].glyph = .{ .present = 1, .value = abi.view("search") };
-            content.children[3].state = .{ .present = 1, .value = abi.view("library.query") };
-            content.children[3].flex = .{ .present = 1, .value = 1 };
+            content.children[3] = searchInput("library.query", "搜索素材来源 ID、编号或标签");
             const idle = instance.tasks != null and instance.task_id == 0;
             content.toolbar[0] = action("library.reload", if (instance.search_token != 0 and instance.dispatch != null) "刷新素材库" else "搜索", commands[7], idle);
             content.toolbar[1] = action(if (instance.favorites_only) "library.favorites.on" else "library.favorites.off", if (instance.favorites_only) "仅收藏：开" else "仅收藏：关", commands[11], idle);
@@ -364,8 +399,14 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             const can_start = config.runtime_sha256.len == 64 and config.helper_sha256.len == 64 and !instance.stop_requested and ((instance.runtime_task_id == 0 and instance.runtime_checked) or (live and instance.session.canStart()));
             content.toolbar[0] = action("running.start", if (live) "再启动内置桌宠" else "启动内置桌宠", commands[12], can_start);
             content.toolbar[1] = action("running.stop", "停止全部桌宠", commands[13], live and !instance.stop_requested);
-            content.children[3] = horizontal("running.toolbar", content.toolbar[0..2]);
-            count = 4;
+            content.children[3] = searchInput("running.query", "搜索素材来源、实例编号、素材编号或 PID");
+            content.children[4] = horizontal("running.toolbar", content.toolbar[0..2]);
+            const readable = if (instance.panel) |panel| panel.table.get_state != null else false;
+            const clearable = if (instance.panel) |panel| panel.table.set_states != null else false;
+            content.running_search_toolbar[0] = action("running.search", "搜索", commands[29], readable);
+            content.running_search_toolbar[1] = action("running.search-clear", "清空搜索", commands[30], clearable);
+            content.children[5] = horizontal("running.search-actions", if (instance.running_search_token != 0) content.running_search_toolbar[1..2] else &content.running_search_toolbar);
+            count = 6;
             if (live) {
                 const phase: library.Phase = @fromBackingInt(@intCast(instance.session.phase.load(.acquire)));
                 const rejection: library.Rejection = @fromBackingInt(@intCast(instance.session.last_rejection.load(.acquire)));
@@ -385,8 +426,8 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     .running => "首帧已确认",
                     .stopping => "正在退出",
                 }, instance.session.ready.load(.acquire), instance.session.owned.load(.acquire), instance.session.denied.load(.acquire), instance.session.working_set.load(.acquire) / 1024, instance.session.private_bytes.load(.acquire) / 1024, reason }) catch unreachable;
-                content.children[4] = changingLabel(&content.dynamic_ids[1], "running.metrics", status);
-                count = 5;
+                content.children[6] = changingLabel(&content.dynamic_ids[1], "running.metrics", status);
+                count = 7;
                 if (instance.running_rows.count != 0) {
                     content.stop_toolbar[0] = ui.node(ui.NodeKind.text_input);
                     content.stop_toolbar[0].id = abi.view("running.stop-id");
@@ -396,7 +437,14 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     content.stop_toolbar[1] = action("running.stop-one", "停止指定实例", commands[14], can_stop);
                     content.children[count] = horizontal("running.stop-toolbar", &content.stop_toolbar);
                     count += 1;
+                    var matched: usize = 0;
+                    const count_index = count;
+                    count += 1;
                     for (instance.running_rows.rows[0..instance.running_rows.count], 0..) |item, n| {
+                        const source = instance.running_rows.sources[n].text();
+                        if (!runningMatches(item, source, instance.running_query[0..instance.running_query_len])) continue;
+                        matched += 1;
+                        const name = if (source.len != 0) source else "来源未采集";
                         const state = switch (item.state) {
                             .starting => "启动中",
                             .running => "运行中",
@@ -404,12 +452,18 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                         };
                         const body = if (item.metrics) |metrics| blk: {
                             if (metrics.cpu_core_percent) |cpu| {
-                                break :blk std.fmt.bufPrint(&content.row_text[n], "ID {d} · {s} · PID {d} · CPU {d:.1}% · 工作集 {d} KiB · 私有 {d} KiB · 句柄 {d}", .{ item.id, state, metrics.pid, cpu, metrics.working_set / 1024, metrics.private_bytes / 1024, metrics.handles }) catch unreachable;
+                                break :blk std.fmt.bufPrint(&content.row_text[n], "ID {d} · {s} · 素材 {d} · {s} · PID {d} · CPU {d:.1}% · 工作集 {d} KiB · 私有 {d} KiB · 句柄 {d}", .{ item.id, name, item.asset_id, state, metrics.pid, cpu, metrics.working_set / 1024, metrics.private_bytes / 1024, metrics.handles }) catch unreachable;
                             }
-                            break :blk std.fmt.bufPrint(&content.row_text[n], "ID {d} · {s} · PID {d} · CPU — · 工作集 {d} KiB · 私有 {d} KiB · 句柄 {d}", .{ item.id, state, metrics.pid, metrics.working_set / 1024, metrics.private_bytes / 1024, metrics.handles }) catch unreachable;
-                        } else std.fmt.bufPrint(&content.row_text[n], "ID {d} · {s} · 暂无资源采样", .{ item.id, state }) catch unreachable;
+                            break :blk std.fmt.bufPrint(&content.row_text[n], "ID {d} · {s} · 素材 {d} · {s} · PID {d} · CPU — · 工作集 {d} KiB · 私有 {d} KiB · 句柄 {d}", .{ item.id, name, item.asset_id, state, metrics.pid, metrics.working_set / 1024, metrics.private_bytes / 1024, metrics.handles }) catch unreachable;
+                        } else std.fmt.bufPrint(&content.row_text[n], "ID {d} · {s} · 素材 {d} · {s} · 暂无资源采样", .{ item.id, name, item.asset_id, state }) catch unreachable;
                         const id = std.fmt.bufPrint(&content.row_ids[n], "instance-{x}-{x}", .{ item.id, std.hash.Wyhash.hash(0, body) }) catch unreachable;
                         content.children[count] = label(id, body);
+                        count += 1;
+                    }
+                    const line = std.fmt.bufPrint(&content.running_count, "匹配 {d} / {d} 个实例", .{ matched, instance.running_rows.count }) catch unreachable;
+                    content.children[count_index] = changingLabel(&content.running_count_id, "running.count", line);
+                    if (matched == 0) {
+                        content.children[count] = label("running.no-match", "没有匹配的实例，请调整搜索词。");
                         count += 1;
                     }
                 }
@@ -441,6 +495,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     content.states[2] = .{ .key = abi.view("library.asset-id"), .value = abi.view("") };
     content.states[3] = .{ .key = abi.view("library.tag"), .value = abi.view("") };
     content.states[4] = .{ .key = abi.view("quarantine.id"), .value = abi.view("") };
+    content.states[5] = .{ .key = abi.view("running.query"), .value = abi.view(instance.running_query[0..instance.running_query_len]) };
     tree.states = &content.states;
     tree.state_count = content.states.len;
 }
@@ -758,6 +813,44 @@ fn clearSearch(instance: *Instance) void {
     startLibrary(instance, false);
 }
 
+fn onRunningSearchChanged(user: ?*anyopaque, panel: u64, batch: [*c]const raw.PulseUiStateBatch) callconv(.c) void {
+    const instance: *Instance = @ptrCast(@alignCast(user orelse return));
+    if (!instance.active or panel != instance.page or instance.section != .running or instance.running_search_token == 0) return;
+    if (batch == null or batch[0].changes == null or batch[0].count > 128) return;
+    var changed = false;
+    for (0..batch[0].count) |n| {
+        const change = batch[0].changes[n];
+        if (change.source_mask & @as(u32, raw.PULSE_UI_STATE_USER) == 0 or change.revision <= instance.running_search_revision) continue;
+        const key = abi.slice(change.key) orelse continue;
+        if (!std.mem.eql(u8, key, "running.query")) continue;
+        instance.running_search_revision = change.revision;
+        const value = abi.slice(change.value) orelse continue;
+        if (!validSearch(value) or std.mem.eql(u8, value, instance.running_query[0..instance.running_query_len])) continue;
+        @memcpy(instance.running_query[0..value.len], value);
+        instance.running_query_len = value.len;
+        changed = true;
+    }
+    // Only the copied bounded snapshot is filtered. No process or I/O calls.
+    if (changed) refresh(instance);
+}
+
+fn manualRunningSearch(instance: *Instance, clear: bool) void {
+    const panel = if (instance.panel) |*value| value else return;
+    if (clear) {
+        const states = [_]ui.State{.{ .key = abi.view("running.query"), .value = abi.view("") }};
+        panel.setStates(&states) catch return;
+        instance.running_query_len = 0;
+    } else {
+        const get_state = panel.table.get_state orelse return;
+        var bytes: [257]u8 = undefined;
+        var needed: u32 = 0;
+        if (get_state(panel.table.context, panel.id, abi.view("running.query"), &bytes, bytes.len, &needed) != abi.ok or needed > 256 or !validSearch(bytes[0..needed])) return;
+        @memcpy(instance.running_query[0..needed], bytes[0..needed]);
+        instance.running_query_len = needed;
+    }
+    refresh(instance);
+}
+
 fn subscribeSearch(instance: *Instance) void {
     var table = std.mem.zeroes(raw.PulseUiEventsV1);
     if (instance.pages) |pages| {
@@ -773,6 +866,8 @@ fn subscribeSearch(instance: *Instance) void {
     if (subscribe(table.context, instance.page, abi.view("library.query"), @intCast(raw.PULSE_UI_STATE_USER), onSearchChanged, instance, &token) != abi.ok or token == 0) return;
     instance.search_events = table;
     instance.search_token = token;
+    var running_token: u64 = 0;
+    if (subscribe(table.context, instance.page, abi.view("running.query"), @intCast(raw.PULSE_UI_STATE_USER), onRunningSearchChanged, instance, &running_token) == abi.ok and running_token != 0) instance.running_search_token = running_token;
 }
 
 fn pollLibrary(instance: *Instance) void {
@@ -1532,7 +1627,8 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         if (n >= 4 and n <= 6 and instance.section != .global) return;
         if (n >= 7 and n <= 11 and instance.section != .library) return;
         if (n >= 12 and n <= 14 and instance.section != .running) return;
-        if (n >= 15 and instance.section != .library) return;
+        if (n >= 15 and n <= 28 and instance.section != .library) return;
+        if (n >= 29 and instance.section != .running) return;
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
@@ -1576,6 +1672,8 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             24 => showRemoval(instance, .restore_interrupted),
             27 => showRemoval(instance, .purge),
             28 => clearSearch(instance),
+            29 => manualRunningSearch(instance, false),
+            30 => manualRunningSearch(instance, true),
             25 => if (instance.recovery_report != null and instance.quarantine_offset >= quarantine_page_size) {
                 instance.quarantine_offset -= quarantine_page_size;
                 refresh(instance);
@@ -1599,6 +1697,16 @@ fn close(instance: *Instance) host_mod.Error!void {
     stopTimer(instance);
     instance.search_pending = false;
     instance.search_ticks = 0;
+    if (instance.running_search_token != 0) {
+        const events = instance.search_events orelse return error.State;
+        const unsubscribe = events.unsubscribe orelse return error.Unavailable;
+        host_mod.mapStatus(unsubscribe(events.context, instance.running_search_token)) catch |err| switch (err) {
+            error.State => {},
+            else => return err,
+        };
+        instance.running_search_token = 0;
+        instance.running_search_revision = 0;
+    }
     if (instance.search_token != 0) {
         const events = instance.search_events orelse return error.State;
         const unsubscribe = events.unsubscribe orelse return error.Unavailable;
@@ -1846,7 +1954,7 @@ test "four section tree declares only real navigation and preference actions" {
         try std.testing.expectEqualStrings(commands[n][10..], abi.slice(content.children[1].id).?);
         const expected: u32 = switch (instance.section) {
             .global, .library => 5,
-            .running => 4,
+            .running => 6,
             .market => 3,
         };
         try std.testing.expectEqual(expected, content.root.children.count);
@@ -1859,8 +1967,9 @@ test "running view exposes bounded start and stop actions" {
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     fill(&instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 4), content.root.children.count);
-    try std.testing.expectEqual(@as(u32, 2), content.children[3].children.count);
+    try std.testing.expectEqual(@as(u32, 6), content.root.children.count);
+    try std.testing.expectEqual(ui.NodeKind.text_input, content.children[3].type);
+    try std.testing.expectEqual(@as(u32, 2), content.children[4].children.count);
     try std.testing.expectEqualStrings(commands[12], abi.slice(content.toolbar[0].command.value).?);
     try std.testing.expectEqualStrings(commands[13], abi.slice(content.toolbar[1].command.value).?);
     try std.testing.expectEqual(@as(u32, 0), content.toolbar[0].enabled.value);
@@ -1869,7 +1978,7 @@ test "running view exposes bounded start and stop actions" {
     instance.task_kind = .builtin_session;
     instance.session.set(.running);
     fill(&instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 5), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 7), content.root.children.count);
     try std.testing.expectEqual(@as(u32, 0), content.toolbar[0].enabled.value);
     try std.testing.expectEqual(@as(u32, 1), content.toolbar[1].enabled.value);
     instance.stop_requested = true;
@@ -2029,4 +2138,16 @@ test "typing copies latest user query without mutating the worker input" {
     applySearch(&instance);
     try std.testing.expectEqualStrings("猫", instance.query[0..instance.query_len]);
     try std.testing.expect(!validSearch("a\x00b"));
+}
+
+test "running search matches source and exact IDs without treating missing PID as zero" {
+    const item: library.RunningRow = .{ .id = 12, .asset_id = 5, .metrics = .{ .pid = 345, .private_bytes = 0, .working_set = 0, .handles = 0 } };
+    try std.testing.expect(runningMatches(item, "cat", "CAT 345"));
+    try std.testing.expect(runningMatches(item, "cat", "#12"));
+    try std.testing.expect(runningMatches(item, "cat", "5"));
+    try std.testing.expect(!runningMatches(item, "cat", "34"));
+    try std.testing.expect(!runningMatches(item, "cat", "dog"));
+    const missing: library.RunningRow = .{ .id = 12, .asset_id = 5 };
+    try std.testing.expect(!runningMatches(missing, "cat", "0"));
+    try std.testing.expect(runningMatches(missing, "猫", "猫"));
 }

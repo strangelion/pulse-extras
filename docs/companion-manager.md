@@ -1403,3 +1403,22 @@ Unsubscribe before page teardown; no permanent idle polling. The C ABI
 fixture checks native node shape and coalesced event-to-worker admission,
 and unit tests cover copied draft, user/programmatic separation and ID
 matching. Exact icon placement and IME interaction need real-host testing.
+
+## Unified running-instance search
+
+The running page shares the native search-input construction and a distinct
+state key with the library. Search operates entirely on the copied bounded
+session snapshot, with exact numeric instance/asset IDs or sampled PID and
+case-insensitive source-ID substring matching (space-separated terms).
+Unknown PID never matches zero. The runtime worker copies the source ID from
+the same approved inventory record used for launch, or the built-in name,
+into bounded per-instance storage; it releases the label on confirmed reap
+and publishes labels alongside rows under the existing snapshot lock.
+Filtering is independent of the library's current search or pagination.
+The original aggregate metrics and stop-all/stop-one controls retain their
+scope; a filter is never permission to terminate a PID. Native user-state
+events update results immediately, while unavailable events retain a manual
+search button. Clear is an explicit native state update. Unit tests cover
+identity and source association after reorder, and the real DLL fixture
+filters two running pets, restores both rows and exercises targeted stop.
+The installed-host rendering and keyboard behavior remain unverified.
