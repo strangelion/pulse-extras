@@ -228,8 +228,7 @@ pub fn inspect(index: *const inventory.Inventory, rows: []const Row) !Snapshot {
                 .normal => .normal,
                 .quarantined => .interrupted_removal,
             }
-        else |_|
-            if (has_target) .blocked else .missing;
+        else |_| if (has_target) .blocked else .missing;
         result.details[result.count] = .{ .id = record.id, .state = state };
         result.count += 1;
     }
