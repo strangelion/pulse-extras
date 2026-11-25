@@ -225,6 +225,8 @@ fn save(instance: *Instance, next: u8) void {
 fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callconv(.c) raw.PulseTaskState {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return raw.PULSE_TASK_FAILED));
     defer instance.work_done.store(true, .release);
+    diag.event("companion-library-worker-start");
+    defer diag.event("companion-library-worker-end");
     if (context == null) return raw.PULSE_TASK_FAILED;
     const canceled = context[0].cancelled orelse return raw.PULSE_TASK_FAILED;
     if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
@@ -265,6 +267,7 @@ fn pollLibrary(instance: *Instance) void {
         refresh(instance);
         return;
     }
+    diag.status("companion-library-terminal", instance.task_state);
     instance.task_id = 0;
     const done = instance.work_done.load(.acquire);
     if (instance.task_state == raw.PULSE_TASK_COMPLETED and done and instance.work_error == null) {
@@ -451,12 +454,17 @@ fn activate(user: ?*anyopaque) callconv(.c) abi.Status {
         diag.status("companion-activate-failed", @intFromError(err));
         return abi.error_initialization;
     };
+    diag.event("companion-activate");
     return abi.ok;
 }
 
 fn deactivate(user: ?*anyopaque) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
-    close(instance) catch |err| diag.status("companion-deactivate-failed", @intFromError(err));
+    close(instance) catch |err| {
+        diag.status("companion-deactivate-failed", @intFromError(err));
+        return;
+    };
+    diag.event("companion-deactivate");
 }
 
 fn destroy(user: ?*anyopaque) callconv(.c) void {
@@ -467,6 +475,7 @@ fn destroy(user: ?*anyopaque) callconv(.c) void {
     };
     // The pinned host keeps the DLL and task userdata alive through stop;
     // destroy is called only after host task workers/cancel callbacks return.
+    diag.event("companion-destroy");
     allocator.destroy(instance);
 }
 
@@ -479,6 +488,7 @@ export fn PulsePluginEntryV1(host_ptr: ?*const abi.HostV1, out_ptr: ?*abi.Plugin
     const out = out_ptr orelse return abi.error_abi;
     if (host.size < @sizeOf(abi.HostV1) or out.size < @sizeOf(abi.PluginV1) or host.version != abi.abi_version or out.version != abi.abi_version) return abi.error_abi;
     const validated = host_mod.Host.init(host) catch return abi.error_unavailable;
+    diag.event("companion-entry");
     const instance = allocator.create(Instance) catch return abi.error_initialization;
     instance.* = .{ .host = validated };
     out.* = .{ .size = @sizeOf(abi.PluginV1), .version = abi.abi_version, .instance = instance, .activate = activate, .deactivate = deactivate, .destroy = destroy };

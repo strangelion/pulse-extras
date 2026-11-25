@@ -721,3 +721,17 @@ to the production DLL; approved parent provisioning and a compatible MSVC
 backend remain open. Test on a fresh private child with actual ACL lease,
 second-owner rejection, stale edit, Unicode tag, reload, and no-op.
 No automatic cleanup of user content. New integration CI pending.
+
+## First isolated real-host smoke package
+
+Add a development-only manifest and Windows preparation script that invokes
+matching official SDK tooling, captures the host contract and source/binary
+hashes, builds the existing MSVC DLL and verifies a local package. Explicit
+--launch installs and enables only in a fresh isolated store/profile.
+Opt-in lifecycle logs contain fixed event names and terminal status, not
+inventory contents. See [manual acceptance](companion-host-smoke.md).
+The read-only library still reads the real LocalAppData known-folder path;
+the script never seeds, deletes or modifies that inventory. User testing
+is now appropriate for rendering/settings/tasks, not process launch or
+preference editing. MSVC writer integration remains unresolved; no release
+eligibility or real-host result is claimed.
