@@ -20,17 +20,23 @@ pub const page_size = 12;
 pub const queue_capacity = 8;
 pub const JobState = enum(u32) { waiting, downloading, installing, imported, existing, failed, canceled, cleanup_required };
 pub const JobProgress = struct {
-    state: std.atomic.Value(u32) = .init(@intFromEnum(JobState.waiting)),
-    received: std.atomic.Value(usize) = .init(0),
-    expected: std.atomic.Value(usize) = .init(0),
+    state: std.atomic.Value(u32) = .init(@backingInt(JobState.waiting)),
+    transfer: http.Progress = .{},
     canceled: std.atomic.Value(bool) = .init(false),
 
+    // Called only by this job's transfer thread. Never call Pulse's borrowed
+    // host cancellation callback from a concurrent WinHTTP callback.
+    fn transferCanceled(context: ?*anyopaque) callconv(.c) u32 {
+        const self: *JobProgress = @ptrCast(@alignCast(context orelse return 1));
+        return @intFromBool(self.canceled.load(.acquire));
+    }
+
     pub fn set(self: *JobProgress, state: JobState) void {
-        self.state.store(@intFromEnum(state), .release);
+        self.state.store(@backingInt(state), .release);
     }
 
     pub fn get(self: *const JobProgress) JobState {
-        return @enumFromInt(self.state.load(.acquire));
+        return @fromBackingInt(@intCast(self.state.load(.acquire)));
     }
 };
 
@@ -42,8 +48,7 @@ pub const Progress = struct {
         self.http_progress.reset();
         for (&self.jobs) |*job| {
             job.set(.waiting);
-            job.received.store(0, .release);
-            job.expected.store(0, .release);
+            job.transfer.reset();
             job.canceled.store(false, .release);
         }
     }
@@ -302,6 +307,11 @@ fn executeBatch(service: *BatchService, consumer: *Consumer, batch: *const Batch
             }
             const selected = &batch.selections[next];
             service.now = try now();
+            // Tasks copy the transport into their stable owned slots. Each
+            // transfer can publish progress and observe row cancellation
+            // while the host worker is resolving another row or importing.
+            service.transport.cancel = .{ .callback = JobProgress.transferCanceled, .context = job };
+            service.transport.progress = &job.transfer;
             const id = service.startPackageStrict(&root, &selected.result, &selected.hit, selected.full) catch |err| {
                 failJob(job, out, err);
                 if (err == error.CleanupFailed or err == error.TransportCleanupFailed) {
@@ -320,8 +330,6 @@ fn executeBatch(service: *BatchService, consumer: *Consumer, batch: *const Batch
             const job = &progress.jobs[n];
             if (stopping or job.canceled.load(.acquire)) try service.cancelPackage(id);
             const status = try service.packageProgress(id);
-            job.received.store(status.received, .release);
-            job.expected.store(status.expected, .release);
             if (!status.finished) continue;
             job.set(.installing);
             var job_cancel: JobCancel = .{ .host = host_cancel, .job = job };
@@ -381,10 +389,19 @@ fn runBatchWork(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: 
     };
     var safe = true;
     const result = executeBatch(&service, &consumer, batch, out, progress, cancel, &safe);
-    const shutdown = service.shutdown();
+    // Cancel any remaining transfer before joining, including callbacks
+    // blocked on another job's serialized import. Preserve committed states.
     for (progress.jobs[0..batch.count]) |*job| {
         switch (job.get()) {
-            .waiting, .downloading, .installing => failJob(job, out, error.Canceled),
+            .waiting, .downloading, .installing => job.canceled.store(true, .release),
+            else => {},
+        }
+    }
+    const shutdown = service.shutdown();
+    const terminal_error = if (result) |_| error.Canceled else |err| err;
+    for (progress.jobs[0..batch.count]) |*job| {
+        switch (job.get()) {
+            .waiting, .downloading, .installing => failJob(job, out, terminal_error),
             else => {},
         }
     }
@@ -486,4 +503,25 @@ test "batch rejects invalid capacity and stale rows without transfer admission" 
     progress.reset();
     try std.testing.expectEqual(JobState.waiting, progress.jobs[0].get());
     try std.testing.expect(!progress.jobs[0].canceled.load(.acquire));
+    try std.testing.expectEqual(@as(u32, 0), JobProgress.transferCanceled(&progress.jobs[0]));
+    progress.jobs[0].canceled.store(true, .release);
+    try std.testing.expectEqual(@as(u32, 1), JobProgress.transferCanceled(&progress.jobs[0]));
+    try std.testing.expectEqual(@as(u32, 0), JobProgress.transferCanceled(&progress.jobs[1]));
+    try std.testing.expectEqual(@as(u32, 1), JobProgress.transferCanceled(null));
+    progress.jobs[1].transfer.received.store(123, .release);
+    try std.testing.expectEqual(@as(usize, 0), progress.jobs[0].transfer.received.load(.acquire));
+    progress.reset();
+    try std.testing.expectEqual(@as(usize, 0), progress.jobs[1].transfer.received.load(.acquire));
+}
+
+test "batch terminal failure does not masquerade as user cancellation" {
+    var out: Outcome = .{};
+    var job: JobProgress = .{};
+    failJob(&job, &out, error.NetworkFailed);
+    try std.testing.expectEqual(JobState.failed, job.get());
+    try std.testing.expectEqual(@as(usize, 1), out.batch_failed);
+    try std.testing.expectEqual(@as(usize, 0), out.batch_canceled);
+    failJob(&job, &out, error.Canceled);
+    try std.testing.expectEqual(JobState.canceled, job.get());
+    try std.testing.expectEqual(@as(usize, 1), out.batch_canceled);
 }

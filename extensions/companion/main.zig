@@ -369,7 +369,7 @@ fn fillMarketQueue(instance: *const Instance, content: *Content) ui.Node {
             .canceled => "已取消",
             .cleanup_required => "需要恢复",
         };
-        const body = std.fmt.bufPrint(&content.market_queue_text[n], "{s} · {s} · {s} · {d}/{d} B{s}", .{ selected.hit.displayName(), if (selected.full) "完整包" else "基础包", status, if (batch_busy or instance.market_queue_done) progress.received.load(.acquire) else 0, if (batch_busy or instance.market_queue_done) progress.expected.load(.acquire) else 0, if (batch_busy) "（点击取消）" else if (!instance.market_queue_done) "（点击移除）" else "" }) catch unreachable;
+        const body = std.fmt.bufPrint(&content.market_queue_text[n], "{s} · {s} · {s} · {d}/{d} B{s}", .{ selected.hit.displayName(), if (selected.full) "完整包" else "基础包", status, if (batch_busy or instance.market_queue_done) progress.transfer.received.load(.acquire) else 0, if (batch_busy or instance.market_queue_done) progress.transfer.expected.load(.acquire) else 0, if (batch_busy) "（点击取消）" else if (!instance.market_queue_done) "（点击移除）" else "" }) catch unreachable;
         const id = std.fmt.bufPrint(&content.market_queue_ids[n], "queue-{d}-{x}", .{ n, std.hash.Wyhash.hash(0, body) }) catch unreachable;
         const cancelable = state == .waiting or state == .downloading or state == .installing;
         content.market_queue_nodes[n + 1] = action(id, body, commands[62 + n], (batch_busy and cancelable and !progress.canceled.load(.acquire)) or (idle and !instance.market_queue_done));
@@ -1207,7 +1207,7 @@ fn pollLibrary(instance: *Instance) void {
             }
             instance.library_loaded = false;
             instance.recovery_report = null;
-            instance.market_status = if (instance.market_queue_cleanup) "队列清理未确认；已提交项仍有效，请检查恢复状态" else "队列已结束；逐项查看结果，重新搜索后可重试失败项";
+            instance.market_status = if (instance.market_queue_cleanup) "队列清理未确认；已提交项仍有效，请检查恢复状态" else if (instance.task_state == raw.PULSE_TASK_CANCELLED) "队列已取消；已提交项仍有效" else if (instance.work_error) |err| @errorName(err) else if (!done or instance.task_state != raw.PULSE_TASK_COMPLETED) "队列未确认完成；请检查本地素材库" else "队列已结束；逐项查看结果，重新搜索后可重试失败项";
         } else if (done and instance.market_outcome.installed != null) {
             instance.library_loaded = false;
             instance.recovery_report = null;
@@ -2124,7 +2124,11 @@ fn marketQueueItem(instance: *Instance, index: usize) void {
     if (index >= instance.market_queue.count) return;
     if (instance.market_request) |request| {
         if (request != .batch) return;
-        instance.market_progress.jobs[index].canceled.store(true, .release);
+        const job = &instance.market_progress.jobs[index];
+        switch (job.get()) {
+            .waiting, .downloading, .installing => job.canceled.store(true, .release),
+            else => return,
+        }
     } else {
         if (!marketIdle(instance) or instance.market_queue_done) return;
         instance.market_queue.remove(index);
@@ -2138,6 +2142,14 @@ fn cancelMarket(instance: *Instance) void {
     const cancel = tasks.cancel orelse return;
     if (cancel(tasks.context, instance.task_id) == abi.ok) {
         instance.market_cancel_requested = true;
+        if (instance.market_request.? == .batch) {
+            for (instance.market_progress.jobs[0..instance.market_queue.count]) |*job| {
+                switch (job.get()) {
+                    .waiting, .downloading, .installing => job.canceled.store(true, .release),
+                    else => {},
+                }
+            }
+        }
         instance.market_status = "已请求取消；等待网络或 Helper 安全返回";
     } else {
         instance.market_status = "取消请求失败；仍保留任务所有权";

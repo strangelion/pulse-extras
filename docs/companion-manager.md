@@ -1569,3 +1569,34 @@ per-item cancellation timing, actual installed-host rendering, thumbnail
 rendering through a verified image ABI, cache maintenance for interrupted
 scratch, and independent provenance/license metadata persistence remain
 acceptance or follow-up gaps. Do not describe these as completed.
+
+## Market queue formatting and callback ownership follow-up
+
+Regression #245 reported the exact Zig 0.17.1 formatter corrections:
+use @backingInt and @fromBackingInt(@intCast(...)) for the queue state
+enum. Apply the formatter's reported diff, without changing the pinned
+toolchain or weakening the format gate. The local execution environment
+does not have the pinned Zig binary; current CI remains the verification
+authority.
+
+Each copied transfer transport now receives only its own stable atomic
+job cancellation and progress record. Row cancellation and byte progress
+remain observable while the serialized host worker imports another row.
+Cancel-all sets the outstanding job flags after the host accepts the
+cancel request. Native timeout and join bounds still apply; this is not
+a promise of immediate interruption of a blocked WinHTTP syscall.
+Terminal network/root errors mark unfinished jobs failed rather than
+reporting user cancellation; committed rows remain intact. Test isolation
+of per-job cancellation and progress, and error versus cancellation.
+
+Local reference bundle 1.0.61 Preview 3 (20261124): the manifest hashes
+match the inspected ui_model.h, api-catalog.json, AGENTS.md,
+pulse-plugin-author SKILL.md and model_builder.hpp. The native model
+enumerates IMAGE = 44; the C++ builder maps source to glyph, fit to kind,
+alt text to text and minimum height to min_height. This does not establish
+accepted URI schemes, resource resolution, decoder isolation, or host
+retention behavior. The local reference is not the build pin and must not
+be committed. No preview source is supplied until the actual host contract
+and isolated runtime behavior are established. Catalog V3's validated
+Pet projection still has no author/license field: originality and source
+identity are not license evidence.
