@@ -211,7 +211,7 @@ pub fn sample(rep: Representation, elapsed: u64) ?Sample {
 }
 
 const t = std.testing;
-const primary = "{\"id\":\"nap\",\"displayName\":\" Nap \",\"outfitId\":\"default\",\"spritesheetPath\":\"activities/nap.webp\",\"frameCount\":12,\"fps\":7}";
+const fixture_primary = "{\"id\":\"nap\",\"displayName\":\" Nap \",\"outfitId\":\"default\",\"spritesheetPath\":\"activities/nap.webp\",\"frameCount\":12,\"fps\":7}";
 
 fn parseFixture(input: []const u8, outfits: []const Id) !Catalog {
     const parsed = try std.json.parseFromSlice(std.json.Value, t.allocator, input, .{});
@@ -220,7 +220,7 @@ fn parseFixture(input: []const u8, outfits: []const Id) !Catalog {
 }
 
 test "owned metadata and exact inventory" {
-    const c = try parseFixture("[" ++ primary ++ "]", &.{});
+    const c = try parseFixture("[" ++ fixture_primary ++ "]", &.{});
     try t.expectEqual(@as(u8, 1), c.count);
     try t.expectEqualStrings("Nap", c.items[0].displayName());
     const rep = c.items[0].resolve("default").?;
@@ -242,7 +242,7 @@ test "outfit variants are exact and reject undeclared or repeated IDs" {
     try t.expectError(error.InvalidInventory, c.validateInventory(&.{ .{ .path = "activities/nap.webp", .bytes = 100 }, .{ .path = "activities/nap.webp", .bytes = 200 } }));
     try t.expectError(error.InvalidActivity, parseFixture(data, &.{}));
     try t.expectError(error.InvalidActivity, parseFixture(data, &.{ winter, winter }));
-    try t.expectError(error.InvalidActivity, parseFixture("[" ++ primary ++ "," ++ primary ++ "]", &.{}));
+    try t.expectError(error.InvalidActivity, parseFixture("[" ++ fixture_primary ++ "," ++ fixture_primary ++ "]", &.{}));
 }
 
 test "reject fractional short long and path-traversal activities" {

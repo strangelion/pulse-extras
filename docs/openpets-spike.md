@@ -627,3 +627,9 @@ Use a typed @splat(false) inventory bitmap, without changing the limit
 or bypassing formatting. Add UTF-16 length, invalid UTF-8/control and
 aggregate inventory boundary regressions. The corrected build still
 requires CI confirmation; activity rendering remains pending.
+
+Run 45542056702 passed formatting, but Ubuntu compilation reported
+two parameter-shadowing errors caused by the module-scope test fixture
+named primary. Rename only that fixture to fixture_primary and update
+its references. No change to the activity format, playback or inventory
+policy. The new revision still needs full regression verification.
