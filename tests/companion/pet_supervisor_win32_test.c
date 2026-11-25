@@ -18,11 +18,30 @@ int main(void) {
     if (argc > 1 && wcscmp(argv[1], L"--stop-handle") == 0) {
         HANDLE stop = (HANDLE)(uintptr_t)wcstoull(argv[2], NULL, 10);
         BOOL ignore = argc > 5 && wcscmp(argv[5], L"--smoke") == 0;
+        HANDLE mapping = NULL, event = NULL;
+        for (int i = 3; i + 1 < argc; ++i) {
+            if (wcscmp(argv[i], L"--state-map") == 0)
+                mapping = (HANDLE)(uintptr_t)wcstoull(argv[++i], NULL, 10);
+            else if (wcscmp(argv[i], L"--state-event") == 0)
+                event = (HANDLE)(uintptr_t)wcstoull(argv[++i], NULL, 10);
+        }
         LocalFree(argv);
         if (ignore) { Sleep(INFINITE); return 2; }
+        if (!mapping || !event) return 4;
+        const volatile LONG *slot = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(LONG));
+        if (!slot) return 5;
+        /* Child must not be able to map writable memory or signal host event. */
+        void *write_view = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(LONG));
+        if (write_view) { UnmapViewOfFile(write_view); return 6; }
+        if (SetEvent(event)) return 7;
+        if (WaitForSingleObject(event, 5000) != WAIT_OBJECT_0) return 8;
+        DWORD word = pet_state_read(slot);
         DWORD result = WaitForSingleObject(stop, 10000);
-        CloseHandle(stop);
-        return result == WAIT_OBJECT_0 ? 0 : 3;
+        DWORD final = pet_state_read(slot);
+        UnmapViewOfFile((const void *)slot);
+        CloseHandle(mapping); CloseHandle(event); CloseHandle(stop);
+        return result == WAIT_OBJECT_0 && pet_state_valid(word) &&
+            final == ((3u << 4) | PET_STATE_TESTING) ? 0 : 3;
     }
     int rc = 1;
     pet_supervisor owner = {0}, other = {0};
@@ -37,8 +56,14 @@ int main(void) {
     CHECK(pet_child_start(&owner, path, &options) == PET_CHILD_BUSY);
     CHECK(pet_child_start(&other, path, &options) == PET_CHILD_BUSY);
     CHECK(pet_child_status(&owner, &running, &code) == PET_CHILD_OK && running);
+    CHECK(pet_child_publish(&owner, 99) == PET_CHILD_INVALID);
+    CHECK(pet_child_publish(&owner, PET_STATE_THINKING) == PET_CHILD_OK);
+    CHECK(pet_child_publish(&owner, PET_STATE_THINKING) == PET_CHILD_OK);
+    CHECK(pet_child_publish(&owner, PET_STATE_TESTING) == PET_CHILD_OK);
+    CHECK(owner.generation == 3);
     CHECK(pet_child_stop(&owner, 5000, &forced, &code) == PET_CHILD_OK && !forced && code == 0);
-    CHECK(!owner.job && !owner.process && !owner.stop);
+    CHECK(!owner.job && !owner.process && !owner.stop && !owner.state_mapping &&
+        !owner.state_event && !owner.state_slot);
     options.smoke = TRUE;
     CHECK(pet_child_start(&owner, path, &options) == PET_CHILD_OK);
     CHECK(pet_child_stop(&owner, 0, &forced, &code) == PET_CHILD_OK && forced && code == 1);
@@ -52,6 +77,9 @@ int main(void) {
     /* Also launch the actual demo, if supplied, without showing a window. */
     if (argc == 2) {
         CHECK(pet_child_start(&owner, argv[1], &options) == PET_CHILD_OK);
+        CHECK(pet_child_publish(&owner, PET_STATE_TESTING) == PET_CHILD_OK);
+        CHECK(WaitForSingleObject(owner.process, 10000) == WAIT_OBJECT_0);
+        CHECK(pet_child_status(&owner, &running, &code) == PET_CHILD_OK && !running && code == 0);
         CHECK(pet_child_stop(&owner, 5000, &forced, &code) == PET_CHILD_OK && !forced && code == 0);
     }
     rc = 0;

@@ -1,6 +1,6 @@
 #ifndef PULSE_PET_SUPERVISOR_WIN32_H
 #define PULSE_PET_SUPERVISOR_WIN32_H
-#include "pet_surface_win32.h"
+#include "pet_state_win32.h"
 
 /* Worker-owned, zero-initialized, noncopyable. One child per supervisor.
  * The host must verify its independently approved executable digest/root
@@ -10,6 +10,11 @@ typedef struct {
     HANDLE job;
     HANDLE process;
     HANDLE stop;
+    HANDLE state_mapping;
+    HANDLE state_event;
+    volatile LONG *state_slot;
+    DWORD generation;
+    unsigned reaction;
 } pet_supervisor;
 
 typedef enum {
@@ -27,6 +32,10 @@ typedef struct {
 
 pet_child_result pet_child_start(pet_supervisor *owner, const wchar_t *approved_exe,
     const pet_child_options *options);
+/* Publish a state to the private child channel. Identical states are
+ * coalesced. A successful publish means local admission, NOT rendered
+ * acknowledgment. Must be serialized with start/status/stop on worker. */
+pet_child_result pet_child_publish(pet_supervisor *owner, unsigned reaction);
 /* Nonblocking query. A completed child retains ownership until stop/reap. */
 pet_child_result pet_child_status(const pet_supervisor *owner, BOOL *running, DWORD *exit_code);
 /* Graceful stop, then terminate owned job only. Both waits bounded.

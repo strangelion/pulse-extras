@@ -1,5 +1,6 @@
 #include "pet_demo_win32.h"
 #include "pet_config_win32.h"
+#include "pet_state_win32.h"
 #include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -79,7 +80,7 @@ static int constrain(const pet_surface *surface, POINT anchor, LONG *x, LONG *y)
 
 /* Only use explicitly inherited wait handles from a trusted launcher.
  * The caller must not supply mutexes, auto-reset events or arbitrary handles. */
-static HANDLE parse_stop_handle(const wchar_t *text) {
+static HANDLE parse_inherited_handle(const wchar_t *text) {
     uintptr_t n = 0;
     if (!text || !*text) return NULL;
     for (; *text; ++text) {
@@ -102,11 +103,15 @@ static void usage(void) {
 }
 
 int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
-    int rc = 1, argc = 0, reduced = 0, smoke = 0, waving = 0;
+    int rc = 1, argc = 0, reduced = 0, smoke = 0;
+    unsigned reaction = PET_STATE_IDLE;
     unsigned version = 2, scale = 100;
     int topmost = 0, scale_set = 0, topmost_set = 0, reduced_set = 0;
     int remember = 0, reset_position = 0, stopped = 0;
-    HANDLE stop = NULL;
+    HANDLE stop = NULL, state_map = NULL, state_event = NULL;
+    const volatile LONG *state_slot = NULL;
+    DWORD last_word = 0;
+    int received_testing = 0;
     HKEY settings = NULL;
     pet_config saved = {0, 0, 100, 0};
     int can_save = 0;
@@ -129,7 +134,11 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
         } else if (wcscmp(argv[i], L"--remember") == 0 && !remember) remember = 1;
         else if (wcscmp(argv[i], L"--reset-position") == 0 && !reset_position) reset_position = 1;
         else if (wcscmp(argv[i], L"--stop-handle") == 0 && !stop && i + 1 < argc &&
-            (stop = parse_stop_handle(argv[i + 1])) != NULL) ++i;
+            (stop = parse_inherited_handle(argv[i + 1])) != NULL) ++i;
+        else if (wcscmp(argv[i], L"--state-map") == 0 && !state_map && i + 1 < argc &&
+            (state_map = parse_inherited_handle(argv[i + 1])) != NULL) ++i;
+        else if (wcscmp(argv[i], L"--state-event") == 0 && !state_event && i + 1 < argc &&
+            (state_event = parse_inherited_handle(argv[i + 1])) != NULL) ++i;
         else if (wcscmp(argv[i], L"--scale") == 0 && !scale_set && i + 1 < argc &&
             parse_scale(argv[i + 1], &scale)) {
             scale_set = 1;
@@ -144,7 +153,8 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
         }
     }
     if ((smoke && (path || reduced_set || topmost_set || remember || reset_position)) ||
-        (reset_position && !remember)) {
+        (reset_position && !remember) || (!!state_map != !!state_event) ||
+        (state_map && (!stop || state_map == stop || state_event == stop || state_map == state_event))) {
         usage();
         goto cleanup;
     }
@@ -152,6 +162,14 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
         DWORD state = WaitForSingleObject(stop, 0);
         if (state == WAIT_OBJECT_0) { rc = 0; goto cleanup; }
         if (state != WAIT_TIMEOUT) goto cleanup;
+    }
+    if (state_map) {
+        state_slot = MapViewOfFile(state_map, FILE_MAP_READ, 0, 0, sizeof(LONG));
+        if (!state_slot) goto cleanup;
+        last_word = pet_state_read(state_slot);
+        if (!pet_state_valid(last_word)) goto cleanup;
+        reaction = last_word & 15u;
+        received_testing = reaction == PET_STATE_TESTING;
     }
     if (remember) {
         LSTATUS status = RegOpenKeyExW(HKEY_CURRENT_USER, PET_CONFIG_KEY, 0,
@@ -196,7 +214,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
     uint64_t started = GetTickCount64(), smoke_end = started + 500;
     unsigned last_row = UINT32_MAX, last_column = UINT32_MAX, frames = 0;
     int shown = 0, done = 0;
-    if (smoke) waving = 1;
+    if (smoke && !state_slot) reaction = PET_STATE_WAVING;
     while (!done) {
         if (stop) {
             DWORD state = WaitForSingleObject(stop, 0);
@@ -238,8 +256,10 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
                     if (GetCapture() == surface.window) {
                         ReleaseCapture();
                         if (!dragged) {
-                            waving = 1;
-                            started = GetTickCount64();
+                            if (!state_slot) {
+                                reaction = PET_STATE_WAVING;
+                                started = GetTickCount64();
+                            }
                         }
                     }
                     pressed = 0;
@@ -263,9 +283,20 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
             }
         }
         uint64_t now = GetTickCount64();
+        if (state_slot) {
+            DWORD word = pet_state_read(state_slot);
+            if (!pet_state_valid(word) || (word >> 4) < (last_word >> 4)) goto cleanup;
+            if (word != last_word) {
+                if ((word >> 4) == (last_word >> 4)) goto cleanup;
+                reaction = word & 15u;
+                started = now;
+                last_word = word;
+                if (reaction == PET_STATE_TESTING) received_testing = 1;
+            }
+        }
         if (smoke && now >= smoke_end) break;
         pet_demo_sample point = {0};
-        if (sample(version, (uint32_t)waving, now - started, reduced, &point)) goto cleanup;
+        if (sample(version, reaction, now - started, reduced, &point)) goto cleanup;
         if (point.row != last_row || point.column != last_column) {
             if (pet_surface_present(&surface, atlas, bytes, version, point.row,
                 point.column, x, y, 255) != PET_SURFACE_OK) goto cleanup;
@@ -279,12 +310,14 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
         }
         DWORD wait = point.wait_ms ? point.wait_ms : INFINITE;
         if (smoke && (uint64_t)wait > smoke_end - now) wait = (DWORD)(smoke_end - now);
-        DWORD result = MsgWaitForMultipleObjectsEx(stop ? 1 : 0,
-            stop ? &stop : NULL, wait, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        HANDLE waits[2] = {stop, state_event};
+        DWORD count = state_event ? 2 : (stop ? 1 : 0);
+        DWORD result = MsgWaitForMultipleObjectsEx(count,
+            count ? waits : NULL, wait, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         if (stop && result == WAIT_OBJECT_0) { stopped = 1; break; }
-        if (result == WAIT_FAILED || (stop && result == WAIT_ABANDONED_0)) goto cleanup;
+        if (result == WAIT_FAILED || (count && result >= WAIT_ABANDONED_0 && result < WAIT_ABANDONED_0 + count)) goto cleanup;
     }
-    if (smoke && !stopped && frames < 2) {
+    if (smoke && !stopped && (frames < 2 || (state_slot && !received_testing))) {
         fputs("Hidden smoke test did not advance the animation.\n", stderr);
         goto cleanup;
     }
@@ -300,6 +333,9 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
     }
 cleanup:
     if (settings) RegCloseKey(settings);
+    if (state_slot) UnmapViewOfFile((const void *)state_slot);
+    if (state_event && state_event != stop) CloseHandle(state_event);
+    if (state_map && state_map != stop && state_map != state_event) CloseHandle(state_map);
     if (stop) CloseHandle(stop);
     if (surface.window && GetCapture() == surface.window) ReleaseCapture();
     if (pet_surface_close(&surface) != PET_SURFACE_OK) rc = 1;

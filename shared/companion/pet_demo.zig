@@ -21,9 +21,20 @@ fn layoutFor(version: u32) ?assets.Layout {
     };
 }
 
-fn sampleFrame(version: u32, waving: u32, elapsed: u64, reduced: c_int, output: *Sample) callconv(.c) c_int {
+fn sampleFrame(version: u32, reaction: u32, elapsed: u64, reduced: c_int, output: *Sample) callconv(.c) c_int {
     const layout = layoutFor(version) orelse return 1;
-    const point = animation.sample(layout, if (waving != 0) .waving else .idle, elapsed, reduced != 0);
+    // Explicit C wire codes; never depend on Zig enum ordinal layout.
+    const state: animation.State = switch (reaction) {
+        0 => .idle,
+        1 => .review,
+        2, 3, 4 => .running,
+        5, 6 => .waiting,
+        7 => .waving,
+        8, 10 => .jumping,
+        9 => .failed,
+        else => return 1,
+    };
+    const point = animation.sample(layout, state, elapsed, reduced != 0);
     output.* = .{
         .row = point.row,
         .column = point.column,

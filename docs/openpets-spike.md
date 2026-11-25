@@ -460,3 +460,29 @@ not machine-wide single-instance enforcement; standalone external demo
 instances are not managed. CI exercises normal stop, force stop, duplicate
 ownership, job-close cleanup and the actual hidden demo. No host callback,
 production startup, real asset launch or user-facing settings is wired yet.
+
+## Private native reaction channel
+
+The supervisor creates an unnamed page-backed mapping and an auto-reset
+event per child; both are inherited only via the explicit handle list.
+The child gets SECTION_MAP_READ and SYNCHRONIZE rights respectively,
+not mapping write access or event modification access. A single aligned
+32-bit word contains a nonzero monotonic generation and an explicitly
+numbered reaction (idle through celebrating). The serialized worker
+publishes with InterlockedExchange and signals the event. Identical
+states are coalesced; rapid updates may intentionally skip intermediate
+states. Generation wrap is rejected, no queue or strings are sent.
+The child validates the word, rejects regressions, maps the explicit
+codes to the pinned Zig animation states and waits for state changes
+alongside shutdown, window input and frame deadlines. No additional
+fixed-rate polling. Managed pets follow the host state rather than
+locally overriding it with click-to-wave. Standalone behavior is unchanged.
+The producer must still use behavior.zig to select/coalesce task events.
+A publish success means local admission, not proof of actual display;
+signaling errors are ambiguous and must close the channel. No public
+named endpoint, network, arbitrary commands, or OpenPets mutation.
+The child must be launched with the matching binary/protocol version.
+CI extends the owned child fixture to verify read-only mapping rights,
+event signaling rights, coalescing, state delivery and actual hidden
+demo animation. The Pulse callback adapter, approval binding, backend
+selection and production packaging are still pending.
