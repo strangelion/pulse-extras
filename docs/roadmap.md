@@ -88,6 +88,14 @@ Release follows milestone R and [release.md](release.md). Keep secrets out of Gi
 - [ ] C1: optional connector or small character prototype with data-only skins, actual authorized task states, visibility/pause and bounded assets.
 - [ ] C2: actual user/host acceptance and resource measurements before considering independent renderer or richer offline interaction. See [product scope](product-scope.md#5-companion-feasibility-candidate-no-implementation).
 
+### Companion stage D — packaging and real-host acceptance (planned)
+
+- [ ] D0–D1: official native v2 test package with existing development ID, verified exact artifact, isolated Windows test account/VM and host store/profile; green full code CI first.
+- [ ] D2–D4: real-host functional, lifecycle and resource acceptance; repair and repeat affected tests with exact-artifact evidence.
+- [ ] D5: independently verified formal candidate, official manifest and signing/release eligibility; separate publication approval. No shared-binary runtime implementation in this stage.
+
+See [Companion stage D](companion-manager.md#stage-d-official-testformal-packaging-and-real-host-acceptance). No claim of actual installed acceptance or publication.
+
 ## F — Forge authoring tooling (conditional, after real components/package foundations)
 
 - [ ] F0: reusable author templates and shared components from real products, constrained declarative recipes where supported, deterministic SDK/package validation and migration. Reuse official author tools and existing Pi/DSH/Codex transports; no duplicated general Agent infrastructure.

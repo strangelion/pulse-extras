@@ -1,5 +1,7 @@
 # Companion isolated real-host smoke test
 
+**Current safety gate:** see [Stage D](companion-manager.md#stage-d-official-testformal-packaging-and-real-host-acceptance). The following sections preserve historical smoke scenarios; their older read-only/feature-status statements are not a current acceptance report. The bundled development package now has writable paths. A fresh host store/profile does not isolate native LocalAppData roots. Use a dedicated disposable Windows test user/VM without production Companion data before any writable test or bundled launch. No production publication or signing is implied.
+
 Status: experimental read-only library and host settings acceptance. This is
 not a production package or a test of actual desktop-pet launch, import, or
 editing. The native preference transaction passed its separate Windows test,

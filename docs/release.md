@@ -40,6 +40,17 @@ rebuild/test/accept and independently release their new versions; older installe
 the old implementation until updated. Verify mixed-version coexistence; no raw allocator or
 mutable object sharing across DLLs. Do not create empty descriptors now.
 
+### Local test package versus formal package
+
+The Companion development identity (strangelion.companion-dev) uses the
+same official native v2 .pulse-ext format, author tool and hash checks
+as the future formal identity. See [Stage D](companion-manager.md#stage-d-official-testformal-packaging-and-real-host-acceptance).
+Local test packaging reuses the existing smoke tool; it is not a GitHub
+preview release or an implementation of the shared R milestone. Test
+and formal packages require separated writable data, verified artifact
+identity and distinct acceptance. No production key or tag for test
+packages. Formal preview/stable publication channels remain separate.
+
 ## 3. One manually dispatched workflow
 
 Proposed `.github/workflows/release.yml`, manually triggered with workflow_dispatch.

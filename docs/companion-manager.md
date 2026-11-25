@@ -1964,3 +1964,157 @@ numeric watcher phase/Win32 error instead of losing the cause during
 handle cleanup. The short-path mismatch is a concrete likely cause;
 managed launch, rotation and subsequent Windows tests require rerun.
 The cross-add-on shared binary is deferred to the shared runtime plan.
+
+
+## Stage D: official test/formal packaging and real-host acceptance
+
+Status: PLANNED. First obtain green full Stage C code CI, including the
+Windows managed crash tests. Then prepare a verified test package and
+perform real Windows/Pulse acceptance before a formal candidate. No
+production publication or shared-binary dependency work (deferred RT2+)
+is authorized by this plan.
+
+### D0: official package contract and two profiles
+
+Authoritative references (recheck against the actual host/SDK at build):
+[Native packages](https://github.com/jimmgreen/pulse/blob/b32436831a066e18448b2810bef4bf989024fc68/docs/native-packages.md),
+[SDK quickstart](https://github.com/jimmgreen/pulse/blob/b32436831a066e18448b2810bef4bf989024fc68/docs/extensions-sdk-quickstart.md)
+and [registry contribution guide](https://github.com/jimmgreen/pulse-extensions/blob/main/CONTRIBUTING.md).
+
+Both profiles MUST use the official pulse_ext.py native-manifest, pack
+and verify flow and native v2 .pulse-ext archive, not a custom ZIP format.
+Use the pinned x64 MSVC entry ABI (PulsePluginEntryV1), GNU x64 helper
+and runtime, and ReleaseSafe for representative testing. The manifest
+template is restricted to official fields; no custom channel/version
+fields in the closed native schema. Version/channel/source SHA live in
+the release descriptor, archive name and evidence as appropriate.
+The author tool generates manifest.json/package.json and binds exact
+file bytes with SHA-256. Declare every private DLL, helper and notice
+via repeated --file, flat ASCII filenames, no aliases or extra entries.
+The pinned contract limits the manifest to 64 KiB, package metadata to
+16 KiB, 64 MiB per payload file, 256 MiB total payload, 2–66 members,
+and rejects ZIP64, encryption, traversal, links and duplicate names.
+Recheck limits, official verify and native consent policy at packaging.
+Signing covers exact manifest bytes; no regeneration after signing.
+
+| Item | Test / local acceptance | Formal / production candidate |
+| --- | --- | --- |
+| Extension ID | Existing strangelion.companion-dev | Proposed strangelion.companion, validate with official tooling/registry |
+| Display name | Pulse Companion (Development) | Pulse Companion |
+| Build | ReleaseSafe, same feature and safety checks | ReleaseSafe; matching approved source/backend |
+| Members | Entry DLL, matching runtime DLL and helper EXE, required notices | Same verified member set, no test fixture or probe logs |
+| Version | Candidate/source SHA in evidence and archive filename | Independent committed SemVer, immutable published versions |
+| Defaults | Auto-start/history/crash capture off, explicitly enable for tests | Same safe defaults |
+| Signatures | Unsigned only with explicit isolated native consent; optional test key | Protected publisher signature, official verification and consent |
+| Distribution | Local verified artifact or bounded CI artifact; no registry entry | Verified .pulse-ext + .sig.json + notices/source access per release.md |
+| Installation | Dedicated test user/VM and isolated host store/profile | Normal user installation after acceptance and explicit authorization |
+
+Do not rename a dev archive into a formal package, install one over the
+other, or assume simultaneous same-process operation. The current
+runtime owner/loader has process-local singleton and module-name
+constraints. Use separate host processes and test accounts until
+coexistence is proven. No production key, tag, registry submission,
+or public release in the test path. Formal preview/stable channels
+remain separate from local test identity.
+
+### D1: reproducible test artifact and data isolation
+
+Reuse scripts/companion_host_smoke.py, not a new packer. Build helper and
+runtime first, record hashes, embed the two exact hashes into the entry
+DLL, stage only fixed allowlisted files (including pinned libwebp
+COPYING/PATENTS if selected), generate manifest, pack, verify, record
+package and manifest/member hashes, exact source revision, toolchain,
+SDK/host fingerprint and backend. Keep package-only as default, no
+install/launch without explicit authorization. Preserve safety bounds.
+Use clean source for acceptance; identify dirty builds as ineligible.
+Do not package test fault executables, dumps, private keys, or user data.
+The current script rebuilds each run; add exact-artifact verified reuse
+as a D1 implementation task, not a currently supported flag.
+
+IMPORTANT: isolated Pulse --store/--profile alone does NOT isolate
+native data. The entry/runtime use real Windows LocalAppData
+PulseExtras-Companion and the watcher uses PulseExtras-Diagnostics;
+market storage is under the companion private root. First test in a
+disposable Windows VM or dedicated Windows test user with no production
+Companion data, plus a fresh isolated store/profile. Do not run writable
+tests against ordinary existing inventory/dumps. No automatic root
+deletion or migration. If same-user testing is needed later, implement
+and test a distinct fixed trusted namespace throughout the entry DLL,
+native bridge, helper, market/history/dump stores; no arbitrary path
+from environment or UI. This isolation is not implemented by the
+current dev manifest alone.
+
+Existing package-only command, in the dedicated test environment:
+
+~~~powershell
+python scripts/companion_host_smoke.py --pulse "C:\Path\To\pulse.exe" --sdk-root "C:\Path\To\PulseSdk" --out ".local\companion-d-test-01" --prepare-helper wic --bundle-runtime
+~~~
+
+It generates companion-dev.pulse-ext and build-evidence.json. For the
+pinned libwebp backend run scripts/install_pet_webp.py first and select
+libwebp instead of wic; use the intended formal backend for acceptance.
+The existing --launch explicitly builds/installs/enables/runs a new
+isolated host; use only in the dedicated test environment. Successful
+host launch or package verification alone does not prove acceptance.
+
+### D2: real-host functional acceptance matrix
+
+Record PASS/FAIL/NOT RUN/UNSUPPORTED with expected/observed behavior,
+actual host and package hash, screenshots and redacted logs where useful.
+Start with one built-in pet and then a small mixed asset session.
+
+| Area | Required cases |
+| --- | --- |
+| Install and lifecycle | Official verify, clean install/enable, activate, settings navigation, disable/re-enable/reload, normal host exit; invalid/missing helper/runtime digest rejects startup. |
+| Library | Empty test inventory, permitted synthetic/licensed assets, import/fingerprint, search, tags/favorites, profiles, cancel, duplicate, malformed asset, quarantine/restore and explicit cleanup confined to test fixtures. |
+| Market | Explicit live HTTPS search/filter/detail, base/full install, queue, cancel, offline/timeout/invalid ZIP; actual image diagnostic and supported text fallback. No automatic installation. |
+| Runtime | First-frame ACK, targeted stop, hide/show, manual vs policy hide, startup batches/cancel, persisted policy, actual pet windows. |
+| Host/system | Minimize/restore, tray/multi-window, Pulse-owned login startup, native menu keyboard/high contrast/theme/DPI/multiple monitors. Exact Fluent remains unsupported by pinned public SDK; no private renderer. |
+| Diagnostics | Numeric report without paths/tokens; opt-in history; complete dump/rotation with separately controlled synthetic fault fixtures only; disabled capture, forced stop, bounded storage and no orphan watchers. No deliberate crash injection into real Pulse/production helper. |
+| Persistence | Save/reopen, exit/relaunch, disable during async work, stop when hidden/menu open, no stale callbacks, handles or jobs after confirmed unload. |
+| Upgrade/rollback | Two test versions, supported official update and rollback flow with consent, verify settings/data compatibility and preserve failed evidence. |
+
+### D3: real resource and stability measurements
+
+Record Windows/Pulse versions, hardware, build/backend, baseline host
+CPU/private bytes/working set/handles, renderer and watcher metrics
+separately, visible/hidden CPU, first-frame and shutdown latency, disk
+use and repeated lifecycle. Initial proposed checks: 10 start/stop
+cycles, 30-minute visible/hidden soak, 1/2/4/8 normal pets only where
+headroom allows; crash-monitor pairs remain capped at four. Stop
+escalation for sustained unresponsiveness, resource failure, leak trend
+or unconfirmed cleanup. Do not launch 1024 real pets merely because
+storage supports that many. Agree measured release ceilings from
+evidence; do not invent universal performance thresholds.
+
+### D4: repair and evidence
+
+Full code CI/stress on exact candidate revision, real-host case report
+tied to archive SHA, member/manifest hashes, SDK/host/toolchain,
+fixture provenance and explicit gaps. After a code fix, rebuild and
+reverify, rerun full CI and affected acceptance cases. Do not reuse an
+earlier green run for changed code or silently treat a rebuilt archive
+as the tested artifact. Keep private full memory dumps local; share
+reviewed redacted evidence only. No skipped failures or deletion of
+user-owned exports. Mark host acceptance NOT VERIFIED until exercised.
+
+### D5: formal candidate, then separately authorized publication
+
+After test acceptance, generate the formal ID manifest with official
+tooling, independent version descriptor and exact file hashes. Verify
+the exact formal artifact in an isolated environment, including
+install/activation, update/rollback and uninstall. Recheck permissions,
+source availability, notices and licenses, SDK/registry compatibility,
+signature and artifact identity. Test-key signature verification precedes
+protected production signing. Official registry requires verified
+publisher fingerprint/public key, release asset URLs, package/signature
+metadata and maintainer review; do not claim store availability from
+a local install. No production signing, release tag, draft or public
+publication without separate approval under release.md. Do not introduce
+a parallel general release workflow before the shared R milestone.
+
+Stage D exit: verified test artifact, green required CI, actual
+functional/lifecycle acceptance, measured resource baseline, documented
+nonblocking compatibility gaps, no unresolved blocking safety defects,
+and separately verified formal candidate. Public publication is not
+implied.
