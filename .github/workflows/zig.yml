@@ -87,26 +87,26 @@ jobs:
             if ($status -ne 0) { exit $status }
           }
       - name: Install pinned Jujutsu CLI
-        if: needs.scope.outputs.level != 'companion'
+        if: needs.scope.outputs.level == 'vcs' || needs.scope.outputs.level == 'full'
         run: python scripts/ci_vcs.py jj
       - name: Check Git and JJ tools
-        if: needs.scope.outputs.level != 'companion'
+        if: needs.scope.outputs.level == 'vcs' || needs.scope.outputs.level == 'full'
         run: |
           git --version
           jj --version
       - name: Install Subversion and prepare local fixture
-        if: runner.os == 'Linux' && needs.scope.outputs.level != 'companion'
+        if: runner.os == 'Linux' && (needs.scope.outputs.level == 'vcs' || needs.scope.outputs.level == 'full')
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends subversion
           svn --version --quiet
           python scripts/ci_vcs.py svn-fixture
-      - name: Unit and real repository integration tests
+      - name: Scope-selected unit and integration tests
         timeout-minutes: 15
         shell: bash
         run: |
           case "$CI_LEVEL" in
-            companion) zig build test-companion --summary all ;;
+            companion|companion-host) zig build test-companion --summary all ;;
             vcs) zig build test-vcs --summary all ;;
             full) zig build test --summary all ;;
             *) exit 1 ;;
@@ -119,7 +119,7 @@ jobs:
         if: needs.scope.outputs.level != 'companion'
         run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
       - name: Fetch pinned native SDK headers
-        if: runner.os == 'Windows' && needs.scope.outputs.level == 'full'
+        if: runner.os == 'Windows' && (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'companion-host')
         run: python scripts/fetch_sdk.py
       - name: Verify generated bindings match the pinned SDK
         if: runner.os == 'Windows' && needs.scope.outputs.level == 'full'
@@ -136,7 +136,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Exercise actual Companion DLL settings lifecycle against pinned C ABI
-        if: runner.os == 'Windows' && needs.scope.outputs.level == 'full'
+        if: runner.os == 'Windows' && (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'companion-host')
         shell: pwsh
         run: |
           zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu -I.sdk-cache/include tests/abi/companion_loader.c -o zig-out/companion-loader.exe
@@ -149,7 +149,7 @@ jobs:
   companion_native:
     name: Windows companion (${{ matrix.lane }})
     needs: scope
-    if: needs.scope.outputs.level == 'companion' || needs.scope.outputs.level == 'full'
+    if: needs.scope.outputs.level == 'companion' || needs.scope.outputs.level == 'companion-host' || needs.scope.outputs.level == 'full'
     runs-on: windows-latest
     timeout-minutes: 20
     strategy:
@@ -360,7 +360,7 @@ jobs:
             docs:skipped:skipped)
               echo "Documentation-only change; code checks not run."
               ;;
-            vcs:success:skipped|companion:success:success|full:success:success)
+            vcs:success:skipped|companion:success:success|companion-host:success:success|full:success:success)
               echo "Required $LEVEL regression checks passed."
               ;;
             *)

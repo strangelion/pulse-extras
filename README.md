@@ -41,7 +41,9 @@ regenerates bindings with `zig translate-c` (`python scripts/generate_bindings.p
 and exercises the Windows DLL through a C loader harness. Documentation-only changes
 use a lightweight scope check; isolated VCS code changes run both-platform regression
 and DLL builds. Isolated companion changes run companion tests and native Windows lanes;
-manual runs and mixed/shared changes run full CI. See [testing](docs/testing.md).
+allowlisted Companion host changes also retain production DLL builds and Windows
+Companion C ABI tests without installing JJ or preparing SVN fixtures. Manual runs
+and mixed/shared changes run full CI. See [testing](docs/testing.md).
 Python 3 is used only by CI and SDK verification tools.
 
 - [Architecture](docs/architecture.md)

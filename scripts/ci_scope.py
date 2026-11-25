@@ -12,6 +12,27 @@ def is_doc(path: str) -> bool:
     return path == "README.md" or (path.startswith("docs/") and path.endswith(".md"))
 
 
+# Exact allowlist for Companion-specific native host code. Shared SDK,
+# build, process and other extensions remain full-scope.
+COMPANION_HOST_PATHS = frozenset({
+    "extensions/companion/main.zig",
+    "shared/companion_extension.zig",
+    "shared/companion_runtime_owner.zig",
+    "shared/companion_runtime_store.zig",
+    "shared/companion_bridge_probe.zig",
+    "shared/companion_local_import.zig",
+    "shared/companion_group_test.zig",
+    "tests/abi/companion_loader.c",
+})
+
+
+def is_companion(path: str) -> bool:
+    return path.startswith(("shared/companion/", "tests/companion/")) or path in (
+        "shared/companion_host.zig", "shared/companion_group.zig",
+        "shared/companion_catalog_store.zig", "shared/companion_import_integration.zig",
+    )
+
+
 def classify(paths: list[str]) -> str:
     # An empty/unavailable diff must not silently skip required checks.
     if not paths:
@@ -21,9 +42,10 @@ def classify(paths: list[str]) -> str:
     if all(is_doc(path) or (path.startswith("shared/vcs/") and path.endswith(".zig"))
            for path in paths):
         return "vcs"
-    if all(is_doc(path) or path.startswith(("shared/companion/", "tests/companion/")) or
-           path in ("shared/companion_host.zig", "shared/companion_group.zig",
-                    "shared/companion_catalog_store.zig", "shared/companion_import_integration.zig") for path in paths):
+    if all(is_doc(path) or is_companion(path) or path in COMPANION_HOST_PATHS
+           for path in paths):
+        if any(path in COMPANION_HOST_PATHS for path in paths):
+            return "companion-host"
         return "companion"
     return "full"
 
@@ -75,6 +97,8 @@ def main() -> None:
                 out.write("VCS regression and DLL builds; companion and SDK checks omitted.\n")
             elif scope == "companion":
                 out.write("Companion unit/native regression; unrelated VCS, production DLL and SDK checks omitted.\n")
+            elif scope == "companion-host":
+                out.write("Companion unit/native regression, production DLL builds and Windows Companion C ABI; unrelated VCS integration and unchanged SDK binding regeneration omitted.\n")
             else:
                 out.write("Full regression, SDK regeneration and Windows C ABI loader.\n")
 

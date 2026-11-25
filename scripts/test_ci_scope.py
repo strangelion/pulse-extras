@@ -20,6 +20,29 @@ class ScopeTests(unittest.TestCase):
                      "shared/companion_catalog_store.zig", "shared/companion_import_integration.zig"):
             self.assertEqual(classify([path, "docs/openpets-spike.md"]), "companion")
 
+    def test_companion_host_only(self):
+        for path in (
+            "extensions/companion/main.zig", "shared/companion_extension.zig",
+            "shared/companion_runtime_owner.zig", "shared/companion_runtime_store.zig",
+            "shared/companion_bridge_probe.zig", "shared/companion_local_import.zig",
+            "shared/companion_group_test.zig", "tests/abi/companion_loader.c",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(classify([path]), "companion-host")
+                self.assertEqual(classify([path, "shared/companion/pet_demo.zig",
+                                           "docs/companion-manager.md"]), "companion-host")
+
+    def test_companion_host_mixed_is_full(self):
+        for path in (
+            "shared/pulse/dialogs_v2_compat.zig", "shared/process/run.zig",
+            "shared/runtime/budget.zig", "shared/vcs/providers/git.zig",
+            "extensions/companion/future.zig", "extensions/hello-panel/main.zig",
+            "tests/abi/loader.c", "build.zig", "scripts/fetch_sdk.py",
+            "shared/companion_unknown.zig", ".github/workflows/zig.yml", "AGENTS.md",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(classify(["extensions/companion/main.zig", path]), "full")
+
     def test_mixed_or_shared_is_full(self):
         for path in ("shared/runtime/group.zig", "shared/process/trust.zig",
                      "shared/vcs/providers/git.zig", "extensions/hello-panel/main.zig",

@@ -38,8 +38,11 @@
 
 ## Required checks
 
-Use the repository's pinned Zig version and the applicable CI scope. At
-minimum, run:
+Use the repository's pinned Zig version and the applicable CI scope. For
+Companion-only changes, use `zig build test-companion --summary all` instead
+of unrelated real VCS integration tests; retain the applicable native ABI and
+Windows lanes. For shared changes and release candidates, run the full suite.
+Always check formatting before pushing. Full baseline commands:
 
 ```powershell
 zig fmt --check build.zig shared extensions
