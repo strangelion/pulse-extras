@@ -55,6 +55,10 @@ pet_surface_result pet_clamp_position(const RECT *work, unsigned width,
 pet_surface_result pet_surface_present(pet_surface *surface, const uint8_t *atlas,
     size_t atlas_bytes, unsigned version, unsigned row, unsigned column,
     LONG x, LONG y, BYTE opacity);
+/* Activity strip: one row of 4..32 classic-sized cells. */
+pet_surface_result pet_surface_present_activity(pet_surface *surface,
+    const uint8_t *strip, size_t strip_bytes, unsigned frames, unsigned column,
+    LONG x, LONG y, BYTE opacity);
 /* Transactional live resize: create a replacement DIB and present the
  * selected cell before releasing the previous surface. Failure keeps the
  * old bitmap, size and position. UI thread only. */

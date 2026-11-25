@@ -6,7 +6,7 @@
 
 #define MAX_COMPRESSED (16u * 1024u * 1024u)
 
-static uint8_t *read_local(const wchar_t *path, DWORD *length) {
+static uint8_t *read_local(const wchar_t *path, DWORD limit, DWORD *length) {
     *length = 0;
     HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL,
         OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
@@ -16,7 +16,7 @@ static uint8_t *read_local(const wchar_t *path, DWORD *length) {
     if (GetFileType(file) != FILE_TYPE_DISK ||
         !GetFileInformationByHandle(file, &info) ||
         (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ||
-        info.nFileSizeHigh || !info.nFileSizeLow || info.nFileSizeLow > MAX_COMPRESSED)
+        info.nFileSizeHigh || !info.nFileSizeLow || info.nFileSizeLow > limit)
         goto cleanup;
     /* Reject remote/network/removable paths using the opened handle. This
      * is asset preflight, not a credential-directory trust policy. */
@@ -49,15 +49,15 @@ cleanup:
     return data;
 }
 
-uint8_t *pet_demo_load_webp(const wchar_t *path, unsigned version,
-    pet_demo_validate_fn validate, size_t *decoded_bytes) {
+static uint8_t *decode_static(const wchar_t *path, unsigned kind,
+    UINT width, UINT height, DWORD limit, pet_demo_validate_fn validate,
+    size_t *decoded_bytes) {
     if (!decoded_bytes) return NULL;
     *decoded_bytes = 0;
-    if (!path || !validate || (version != 1 && version != 2)) return NULL;
-    const UINT width = 1536, height = version == 1 ? 1872 : 2288;
+    if (!path || !validate) return NULL;
     const UINT stride = width * 4, bytes = stride * height;
     DWORD length = 0;
-    uint8_t *input = read_local(path, &length);
+    uint8_t *input = read_local(path, limit, &length);
     uint8_t *pixels = NULL;
     IWICImagingFactory *factory = NULL;
     IWICStream *stream = NULL;
@@ -67,7 +67,7 @@ uint8_t *pet_demo_load_webp(const wchar_t *path, unsigned version,
     int com = 0;
     HRESULT hr = E_FAIL;
     UINT count = 0, actual_width = 0, actual_height = 0;
-    if (!input || validate(version, input, length)) goto cleanup;
+    if (!input || validate(kind, input, length)) goto cleanup;
     hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hr)) goto cleanup;
     com = 1;
@@ -113,4 +113,20 @@ cleanup:
             (unsigned long)(uint32_t)hr);
     }
     return pixels;
+}
+
+uint8_t *pet_demo_load_webp(const wchar_t *path, unsigned version,
+    pet_demo_validate_fn validate, size_t *decoded_bytes) {
+    if (decoded_bytes) *decoded_bytes = 0;
+    if (version != 1 && version != 2) return NULL;
+    return decode_static(path, version, 1536, version == 1 ? 1872 : 2288,
+        MAX_COMPRESSED, validate, decoded_bytes);
+}
+
+uint8_t *pet_demo_load_activity(const wchar_t *path, unsigned frames,
+    pet_demo_validate_fn validate, size_t *decoded_bytes) {
+    if (decoded_bytes) *decoded_bytes = 0;
+    if (frames < 4 || frames > 32) return NULL;
+    return decode_static(path, frames, PET_FRAME_WIDTH * frames, PET_FRAME_HEIGHT,
+        2u * 1024u * 1024u, validate, decoded_bytes);
 }

@@ -109,6 +109,20 @@ int main(void) {
     CHECK(pet_surface_resize(&surface, 200, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OK);
     CHECK(surface.width == 384 && surface.height == 416);
     CHECK(!IsWindowVisible(surface.window));
+    /* Use the existing large allocation as a synthetic four-cell strip.
+     * First pixel of the last cell must use strip, not atlas row stride. */
+    size_t strip_bytes = (size_t)4 * PET_FRAME_BYTES;
+    size_t strip_offset = (size_t)3 * PET_FRAME_WIDTH * 4;
+    atlas[strip_offset] = 80; atlas[strip_offset + 1] = 60;
+    atlas[strip_offset + 2] = 40; atlas[strip_offset + 3] = 128;
+    CHECK(pet_surface_present_activity(&surface, atlas, strip_bytes, 4, 3, 20, 20, 255) == PET_SURFACE_OK);
+    CHECK(surface.pixels[0] == 20 && surface.pixels[1] == 30 &&
+        surface.pixels[2] == 40 && surface.pixels[3] == 128);
+    CHECK(pet_surface_present_activity(&surface, atlas, strip_bytes, 4, 4, 20, 20, 255) == PET_SURFACE_INVALID);
+    CHECK(pet_surface_present_activity(&surface, atlas, strip_bytes - 1, 4, 3, 20, 20, 255) == PET_SURFACE_INVALID);
+    CHECK(pet_surface_present_activity(&surface, atlas, strip_bytes, 33, 0, 20, 20, 255) == PET_SURFACE_INVALID);
+    CHECK(pet_surface_present(&surface, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OK);
+    CHECK(surface.pixels[0] == 25 && surface.pixels[3] == 128);
     CHECK(pet_surface_move(&surface, 30, 40) == PET_SURFACE_OK);
     RECT actual;
     CHECK(GetWindowRect(surface.window, &actual) && actual.left == 30 && actual.top == 40);

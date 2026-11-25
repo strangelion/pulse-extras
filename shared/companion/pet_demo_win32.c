@@ -64,6 +64,18 @@ static int parse_scale(const wchar_t *text, unsigned *value) {
     return 1;
 }
 
+static int parse_activity_number(const wchar_t *text, unsigned limit, unsigned *value) {
+    unsigned n = 0;
+    if (!text || !*text) return 0;
+    for (; *text; ++text) {
+        if (*text < L'0' || *text > L'9' || n > limit) return 0;
+        n = n * 10 + (unsigned)(*text - L'0');
+    }
+    if (!n || n > limit) return 0;
+    *value = n;
+    return 1;
+}
+
 static int work_area(POINT point, RECT *work) {
     HMONITOR monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
     MONITORINFO info = {0};
@@ -145,11 +157,12 @@ static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
 }
 
 static void usage(void) {
-    fputs("pulse-pet-demo [--reduced-motion] [--language system|zh-CN|zh-TW|en-US] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE]\n"
+    fputs("pulse-pet-demo [--reduced-motion] [--language system|zh-CN|zh-TW|en-US] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE] [--activity FILE FRAMES FPS]\n"
         "Left click: interact. Left drag: move. Right click: menu. --smoke: hidden synthetic test.\n", stderr);
 }
 
-int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
+int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
+    pet_activity_sample_fn sample_activity, pet_demo_validate_fn validate_activity) {
     int rc = 1, argc = 0, reduced = 0, smoke = 0;
     unsigned reaction = PET_STATE_IDLE;
     unsigned version = 2, scale = 100;
@@ -165,11 +178,15 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
     pet_config saved = {0, 0, 100, 0};
     int can_save = 0;
     const wchar_t *path = NULL;
-    uint8_t *atlas = NULL;
-    size_t bytes = 0;
+    uint8_t *atlas = NULL, *activity = NULL;
+    const wchar_t *activity_path = NULL;
+    unsigned activity_frames = 0, activity_fps = 0;
+    size_t bytes = 0, activity_bytes = 0;
+    uint64_t activity_started = 0;
+    int activity_displayed = 0;
     pet_surface surface = {0};
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (!argv || !sample || !validate) goto cleanup;
+    if (!argv || !sample || !validate || !sample_activity || !validate_activity) goto cleanup;
     for (int i = 1; i < argc; ++i) {
         if (wcscmp(argv[i], L"--smoke") == 0 && !smoke) smoke = 1;
         else if (!reduced_set && (wcscmp(argv[i], L"--reduced-motion") == 0 ||
@@ -196,6 +213,12 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
             parse_scale(argv[i + 1], &scale)) {
             scale_set = 1;
             ++i;
+        } else if (!activity_path && i + 3 < argc &&
+            wcscmp(argv[i], L"--activity") == 0 &&
+            parse_activity_number(argv[i + 2], 32, &activity_frames) &&
+            parse_activity_number(argv[i + 3], 12, &activity_fps)) {
+            activity_path = argv[i + 1];
+            i += 3;
         } else if (!path && i + 1 < argc &&
             (wcscmp(argv[i], L"--webp-v1") == 0 || wcscmp(argv[i], L"--webp-v2") == 0)) {
             version = wcscmp(argv[i], L"--webp-v1") == 0 ? 1u : 2u;
@@ -205,7 +228,10 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
             goto cleanup;
         }
     }
-    if ((smoke && (path || reduced_set || topmost_set || remember || reset_position)) ||
+    pet_demo_sample activity_check = {0};
+    if ((activity_path && (smoke || state_map ||
+            sample_activity(activity_frames, activity_fps, 0, &activity_check) != 0)) ||
+        (smoke && (path || reduced_set || topmost_set || remember || reset_position)) ||
         (reset_position && !remember) || (!!state_map != !!state_event) ||
         (state_map && (!stop || state_map == stop || state_event == stop || state_map == state_event))) {
         usage();
@@ -288,6 +314,20 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
                 if (message.message == WM_RBUTTONUP && !smoke && shown && GetCursorPos(&cursor)) {
                     if (GetCapture() == surface.window) ReleaseCapture();
                     pressed = 0;
+                    /* Opening the menu interrupts optional artwork; restore
+                     * the base pose before any live resize. */
+                    if (activity || activity_displayed) {
+                        free(activity); activity = NULL; activity_bytes = 0;
+                        activity_displayed = 0;
+                        reaction = PET_STATE_IDLE;
+                        started = GetTickCount64();
+                        pet_demo_sample base = {0};
+                        if (sample(version, reaction, 0, reduced, &base) ||
+                            pet_surface_present(&surface, atlas, bytes, version,
+                                base.row, base.column, x, y, 255) != PET_SURFACE_OK)
+                            goto cleanup;
+                        last_row = base.row; last_column = base.column;
+                    }
                     unsigned command = pet_menu(surface.window, cursor, scale, topmost,
                         reduced, state_slot != NULL, language);
                     /* Check the owner signal immediately after the modal menu. */
@@ -304,8 +344,15 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
                         started = GetTickCount64();
                         if (!state_slot) reaction = PET_STATE_IDLE;
                     } else if (command == MENU_INTERACT && !state_slot && !reduced) {
-                        reaction = (++interaction & 1u) ? PET_STATE_WAVING : PET_STATE_SUCCESS;
-                        started = GetTickCount64();
+                        if (activity_path) {
+                            activity = pet_demo_load_activity(activity_path, activity_frames,
+                                validate_activity, &activity_bytes);
+                            if (activity) activity_started = GetTickCount64();
+                        }
+                        if (!activity) {
+                            reaction = (++interaction & 1u) ? PET_STATE_WAVING : PET_STATE_SUCCESS;
+                            started = GetTickCount64();
+                        }
                     } else if (command == MENU_RESET) {
                         RECT area;
                         if (work_area(cursor, &area)) {
@@ -334,6 +381,11 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
                         }
                     }
                 } else if (message.message == WM_LBUTTONDOWN && GetCursorPos(&press)) {
+                    if (activity) {
+                        free(activity); activity = NULL; activity_bytes = 0;
+                        reaction = PET_STATE_IDLE;
+                        started = GetTickCount64();
+                    }
                     press_x = x;
                     press_y = y;
                     dragged = 0;
@@ -397,13 +449,35 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
         }
         if (smoke && now >= smoke_end) break;
         pet_demo_sample point = {0};
-        if (sample(version, reaction, now - started, reduced, &point)) goto cleanup;
-        if (point.row != last_row || point.column != last_column) {
-            if (pet_surface_present(&surface, atlas, bytes, version, point.row,
-                point.column, x, y, 255) != PET_SURFACE_OK) goto cleanup;
-            last_row = point.row;
-            last_column = point.column;
-            ++frames;
+        if (activity) {
+            int result = sample_activity(activity_frames, activity_fps,
+                now - activity_started, &point);
+            if (result != 0) {
+                free(activity); activity = NULL; activity_bytes = 0;
+                reaction = PET_STATE_IDLE;
+                started = now;
+                if (result < 0) fputs("Invalid activity timeline.\n", stderr);
+            }
+        }
+        if (activity) {
+            if (!activity_displayed || point.column != last_column) {
+                if (pet_surface_present_activity(&surface, activity, activity_bytes,
+                    activity_frames, point.column, x, y, 255) != PET_SURFACE_OK)
+                    goto cleanup;
+                activity_displayed = 1;
+                last_column = point.column;
+                ++frames;
+            }
+        } else {
+            if (sample(version, reaction, now - started, reduced, &point)) goto cleanup;
+            if (activity_displayed || point.row != last_row || point.column != last_column) {
+                if (pet_surface_present(&surface, atlas, bytes, version, point.row,
+                    point.column, x, y, 255) != PET_SURFACE_OK) goto cleanup;
+                activity_displayed = 0;
+                last_row = point.row;
+                last_column = point.column;
+                ++frames;
+            }
         }
         if (!smoke && !shown) {
             if (pet_surface_show(&surface, TRUE) != PET_SURFACE_OK) goto cleanup;
@@ -440,6 +514,7 @@ cleanup:
     if (stop) CloseHandle(stop);
     if (surface.window && GetCapture() == surface.window) ReleaseCapture();
     if (pet_surface_close(&surface) != PET_SURFACE_OK) rc = 1;
+    free(activity);
     free(atlas);
     if (argv) LocalFree(argv);
     return rc;

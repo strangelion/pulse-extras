@@ -13,5 +13,12 @@ typedef int (*pet_demo_validate_fn)(uint32_t, const uint8_t *, size_t);
  * COM initialization and cleanup are internal, UI thread only. */
 uint8_t *pet_demo_load_webp(const wchar_t *path, unsigned version,
     pet_demo_validate_fn validate, size_t *decoded_bytes);
-int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate);
+/* The same callback shape takes an activity frame count instead of a
+ * Classic version. The activity timeline returns 0 for a frame, 1 for
+ * completion, and -1 for invalid metadata. */
+typedef int (*pet_activity_sample_fn)(uint32_t, uint32_t, uint64_t, pet_demo_sample *);
+uint8_t *pet_demo_load_activity(const wchar_t *path, unsigned frames,
+    pet_demo_validate_fn validate, size_t *decoded_bytes);
+int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
+    pet_activity_sample_fn sample_activity, pet_demo_validate_fn validate_activity);
 #endif

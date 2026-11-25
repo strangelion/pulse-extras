@@ -633,3 +633,30 @@ two parameter-shadowing errors caused by the module-scope test fixture
 named primary. Rename only that fixture to fixture_primary and update
 its references. No change to the activity format, playback or inventory
 policy. The new revision still needs full regression verification.
+
+## Classic activity strip playback — explicit standalone test seam
+
+The standalone demo accepts --activity FILE FRAMES FPS. FRAMES and FPS
+must satisfy the pinned Activities limits; the existing Play animation
+menu command decodes one explicitly selected static WebP strip on demand.
+The shared Zig preflight verifies exact dimensions and the strict static
+RIFF subset, and WIC checks the single decoded image again. The renderer
+uses a separate one-row grid with 4..32 cells and the existing scaled
+premultiplied DIB. The Zig one-shot timeline drives the deadline.
+On expiry, left press, opening the menu or exit, the strip allocation is
+released; the base atlas is retained. Menu opening restores the base
+pose before resize. No decoded activity cache or background polling.
+A failed activity decode logs the failure and plays the existing
+standalone interaction instead. Reduced-motion and managed-mode rules
+remain effective; the explicit activity flag is rejected for managed
+or hidden smoke launches.
+
+The explicit strip input is a development seam, not a pet.json importer.
+It does not enumerate package directories or authorize arbitrary files
+from metadata. Local WIC decoding remains synchronous, and codec-internal
+time and memory are not bounded by the app's output allocation. The
+additional decoded strip is at most 5,111,808 bytes (32 frames), and
+compressed input at most 2 MiB. Actual artwork decode and interruption
+still require real Windows verification. CI synthetic surface tests
+check strip stride, alpha, bounds and return to the base atlas.
+No third-party scripts or Motion clip playback are enabled.

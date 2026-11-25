@@ -1,17 +1,17 @@
 #include "pet_surface_win32.h"
 
-#define ATLAS_WIDTH (PET_FRAME_WIDTH * 8u)
-
 static unsigned premultiply(unsigned value, unsigned alpha) {
     return (value * alpha + 127u) / 255u;
 }
 
 static pet_surface_result frame_scaled(const uint8_t *atlas, size_t atlas_bytes,
-    unsigned version, unsigned row, unsigned column, uint8_t *out, size_t out_bytes,
-    unsigned width, unsigned height) {
-    unsigned rows = version == 1 ? 9u : (version == 2 ? 11u : 0u);
-    if (!atlas || !out || !rows || row >= rows || column >= 8u ||
-        atlas_bytes != (size_t)ATLAS_WIDTH * PET_FRAME_HEIGHT * rows * 4u ||
+    unsigned columns, unsigned rows, unsigned row, unsigned column, uint8_t *out,
+    size_t out_bytes, unsigned width, unsigned height) {
+    if (!atlas || !out ||
+        !((columns == 8 && (rows == 9 || rows == 11)) ||
+          (rows == 1 && columns >= 4 && columns <= 32)) ||
+        row >= rows || column >= columns ||
+        atlas_bytes != (size_t)columns * PET_FRAME_WIDTH * PET_FRAME_HEIGHT * rows * 4u ||
         width < PET_FRAME_WIDTH / 2 || width > PET_FRAME_WIDTH * 2 ||
         height < PET_FRAME_HEIGHT / 2 || height > PET_FRAME_HEIGHT * 2 ||
         out_bytes != (size_t)width * height * 4u) return PET_SURFACE_INVALID;
@@ -22,7 +22,7 @@ static pet_surface_result frame_scaled(const uint8_t *atlas, size_t atlas_bytes,
         (b < a && a - b < out_bytes)) return PET_SURFACE_INVALID;
     for (unsigned y = 0; y < height; ++y) {
         unsigned sy = y * PET_FRAME_HEIGHT / height;
-        size_t offset = ((size_t)(row * PET_FRAME_HEIGHT + sy) * ATLAS_WIDTH +
+        size_t offset = ((size_t)(row * PET_FRAME_HEIGHT + sy) * (columns * PET_FRAME_WIDTH) +
             column * PET_FRAME_WIDTH) * 4u;
         uint8_t *dst = out + (size_t)y * width * 4u;
         for (unsigned x = 0; x < width; ++x, dst += 4) {
@@ -39,7 +39,8 @@ static pet_surface_result frame_scaled(const uint8_t *atlas, size_t atlas_bytes,
 
 pet_surface_result pet_frame_bgra(const uint8_t *atlas, size_t atlas_bytes,
     unsigned version, unsigned row, unsigned column, uint8_t *out, size_t out_bytes) {
-    return frame_scaled(atlas, atlas_bytes, version, row, column, out, out_bytes,
+    return frame_scaled(atlas, atlas_bytes, 8, version == 1 ? 9u : (version == 2 ? 11u : 0u),
+        row, column, out, out_bytes,
         PET_FRAME_WIDTH, PET_FRAME_HEIGHT);
 }
 
@@ -172,12 +173,12 @@ fail:
     return PET_SURFACE_OS_ERROR;
 }
 
-pet_surface_result pet_surface_present(pet_surface *surface, const uint8_t *atlas,
-    size_t atlas_bytes, unsigned version, unsigned row, unsigned column,
-    LONG x, LONG y, BYTE opacity) {
+static pet_surface_result present_grid(pet_surface *surface, const uint8_t *atlas,
+    size_t atlas_bytes, unsigned columns, unsigned rows, unsigned row,
+    unsigned column, LONG x, LONG y, BYTE opacity) {
     pet_surface_result result = check(surface);
     if (result != PET_SURFACE_OK) return result;
-    result = frame_scaled(atlas, atlas_bytes, version, row, column,
+    result = frame_scaled(atlas, atlas_bytes, columns, rows, row, column,
         surface->pixels, (size_t)surface->width * surface->height * 4u,
         surface->width, surface->height);
     if (result != PET_SURFACE_OK) return result;
@@ -193,6 +194,19 @@ pet_surface_result pet_surface_present(pet_surface *surface, const uint8_t *atla
     if (!ok) return PET_SURFACE_OS_ERROR;
     surface->primed = TRUE;
     return PET_SURFACE_OK;
+}
+
+pet_surface_result pet_surface_present(pet_surface *surface, const uint8_t *atlas,
+    size_t atlas_bytes, unsigned version, unsigned row, unsigned column,
+    LONG x, LONG y, BYTE opacity) {
+    return present_grid(surface, atlas, atlas_bytes, 8,
+        version == 1 ? 9u : (version == 2 ? 11u : 0u), row, column, x, y, opacity);
+}
+
+pet_surface_result pet_surface_present_activity(pet_surface *surface,
+    const uint8_t *strip, size_t strip_bytes, unsigned frames, unsigned column,
+    LONG x, LONG y, BYTE opacity) {
+    return present_grid(surface, strip, strip_bytes, frames, 1, 0, column, x, y, opacity);
 }
 
 pet_surface_result pet_surface_move(pet_surface *surface, LONG x, LONG y) {
@@ -233,7 +247,8 @@ pet_surface_result pet_surface_resize(pet_surface *surface, unsigned percent,
     if (!bitmap || !pixels) goto cleanup;
     previous = SelectObject(dc, bitmap);
     if (!previous || previous == HGDI_ERROR) { previous = NULL; goto cleanup; }
-    result = frame_scaled(atlas, atlas_bytes, version, row, column, pixels,
+    result = frame_scaled(atlas, atlas_bytes, 8,
+        version == 1 ? 9u : (version == 2 ? 11u : 0u), row, column, pixels,
         (size_t)width * height * 4u, width, height);
     if (result != PET_SURFACE_OK) goto cleanup;
     POINT position = {x, y}, origin = {0, 0};
