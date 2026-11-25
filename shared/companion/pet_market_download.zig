@@ -142,7 +142,10 @@ pub fn fetch(store: *Store, transport: anytype, kind: Kind, url: []const u8, con
     const id = try store.create();
     var sink: Sink = .{ .store = store, .control = control, .id = id, .cap = limit(kind) };
     transport.get(kind, url, &sink) catch |err| {
-        store.remove(id) catch return error.CleanupFailed;
+        store.remove(id) catch {
+            if (err == error.TransportCleanupFailed) return err;
+            return error.CleanupFailed;
+        };
         return err;
     };
     return sink.finish() catch |err| {

@@ -501,3 +501,25 @@ Tests exercise fake streaming body, cleanup, cancellation, quota, stale
 leases and native URL parity/pre-cancel without internet. Windows integration
 build links real WinHTTP; actual external TLS/download validation is pending.
 New code awaits CI; do not claim live market works yet.
+
+## Parallel market download workers
+
+Use a stable-address dispatcher owner with up to 17 slots (8 ZIP, 8 raster,
+1 catalog), shared Group running quota and existing per-kind Pool leases.
+Each request copies its URL, runs via std.Io.concurrent and owns its own
+transport, atomic progress/cancel flags and temporary Store. Monotonic
+lease IDs name exclusive files in the approved scratch root; no worker
+shares a mutable Store. Backpressure returns to the caller instead of
+launching unbounded jobs or running inline. Join returns the real result;
+release is separate and requires all file readers to have stopped. Stop
+rejects new tasks, cancels active ones, joins every future and attempts
+cleanup. Retain leases on cleanup failure; distinguish native transport
+cleanup failure from recoverable file cleanup. The WinHTTP specialization
+is available as Downloads. Tests use real concurrent futures and isolated
+files with fake network bodies; no live external transfer or throughput
+claim. This is a bounded active-task dispatcher, not yet a persistent FIFO
+queue, bandwidth limiter or user-facing task manager. The external UI must
+never block on join/shutdown. Production root approval and end-to-end market
+installation remain pending. Prior Ubuntu regression passed and prior
+Windows native adapter/codec preflight passed; latest Windows CI was still
+running when work started. New code awaits pinned formatting and CI.

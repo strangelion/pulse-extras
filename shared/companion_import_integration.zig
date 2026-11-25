@@ -11,6 +11,7 @@ const http = @import("companion/pet_market_http_win32.zig");
 
 test {
     _ = http;
+    _ = http.Downloads;
 }
 
 extern "c" fn pet_catalog_store_fixture_open([*]u16, u32) c_int;

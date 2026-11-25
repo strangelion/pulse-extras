@@ -3,6 +3,8 @@
 const std = @import("std");
 const download = @import("pet_market_download.zig");
 
+pub const Downloads = @import("pet_market_tasks.zig").Tasks(Transport);
+
 const HeaderFn = *const fn (*anyopaque, u64) callconv(.c) c_int;
 const ChunkFn = *const fn (*anyopaque, [*]const u8, usize) callconv(.c) c_int;
 const CancelFn = *const fn (*anyopaque) callconv(.c) c_int;
@@ -49,7 +51,7 @@ pub const Transport = struct {
         if (!download.validUrl(kind, url)) return error.InvalidUrl;
         var context: Context = .{ .sink = sink };
         const code = pet_market_http_get(@backingInt(kind), url.ptr, url.len, sink.cap, &context, Context.header, Context.chunk, Context.canceled, &self.last_os_error);
-        if (code == 6) return error.CleanupFailed;
+        if (code == 6) return error.TransportCleanupFailed;
         if (context.failure) |err| return err;
         return switch (code) {
             0 => {},
@@ -86,4 +88,14 @@ test "native policy matches Zig and canceled transport never connects" {
     try store.checkDrained();
     var sink: download.Sink = .{ .store = &store, .control = &control, .id = 0, .cap = 1024 };
     try std.testing.expectError(error.Canceled, transport.get(.index, cases[0].url, &sink));
+}
+
+test "native dispatcher instantiates worker and lifecycle without network" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var group = @import("runtime_group").Group.init(std.testing.allocator, 0, 0, 2);
+    var tasks = Downloads.init(std.testing.io, tmp.dir, &group);
+    try std.testing.expectError(error.InvalidUrl, tasks.start(.zip, "https://invalid.test/pet.zip", .{}));
+    try tasks.shutdown();
+    try group.checkDrained();
 }
