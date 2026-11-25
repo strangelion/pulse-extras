@@ -40,6 +40,14 @@ def main() -> None:
 
         check(True)
         check(True, folder=root.resolve(strict=True))
+        task = subprocess.run([str(exe), "--check-package-task", str(root), "cat"],
+                              timeout=20, capture_output=True)
+        # Header-only synthetic base cannot be fully decoded. The actual
+        # worker must nevertheless run, notify, join and drain.
+        assert task.returncode != 0, task.stderr
+        assert b"Companion tasks: queued=0 running=0 peaks=1/1" in task.stderr, task.stderr
+        assert b"Companion heap: live=0 allocations=0" in task.stderr, task.stderr
+        assert b"Companion resources: files=0 codec=0 dib=0 cleanup_failures=0" in task.stderr, task.stderr
         # 8.3 aliases may be disabled on this volume. Exercise them if present.
         short_name = ctypes.create_unicode_buffer(1024)
         n = ctypes.windll.kernel32.GetShortPathNameW(str(root), short_name, len(short_name))

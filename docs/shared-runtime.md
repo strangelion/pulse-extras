@@ -411,3 +411,11 @@ No owning pointer is returned through the future; stale results are
 freed only after actual join. External resource accounting callbacks
 are synchronized for subsequent worker integration. Native WIC and the
 Windows wait loop are not yet connected to that adapter.
+
+Companion phase 4 connects the shared latest-only handoff to the Win32
+message loop for live Classic package outfit and activity decodes.
+The process entry supplies std.Io; a stable native context notifies
+the UI through an event, joins before mailbox access and stops before
+closing pinned resources. Startup and the explicit diagnostic strip
+path remain synchronous. Foreign WIC execution is not hard-cancellable;
+successful artwork and UI responsiveness require native acceptance.

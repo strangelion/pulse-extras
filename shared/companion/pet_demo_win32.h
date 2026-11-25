@@ -28,7 +28,7 @@ typedef int (*pet_demo_validate_fn)(uint32_t, const uint8_t *, size_t);
 
 /* Explicit local file only. No automatic codec installation or discovery.
  * Returns a memory-domain-owned tightly packed RGBA8 atlas, or NULL on failure.
- * COM initialization and cleanup are internal, UI thread only. */
+ * COM initialization and cleanup are internal to the calling thread. */
 uint8_t *pet_demo_load_webp(const pet_memory *memory, const wchar_t *path, unsigned version,
     pet_demo_validate_fn validate, size_t *decoded_bytes);
 /* The same callback shape takes an activity frame count instead of a
@@ -74,7 +74,27 @@ uint8_t *pet_package_load_atlas(const pet_memory *memory, const pet_package *pac
     pet_demo_validate_fn validate, size_t *decoded_bytes);
 uint8_t *pet_package_load_activity(const pet_memory *memory, const pet_package *package, unsigned index, unsigned outfit,
     pet_demo_validate_fn validate, size_t *decoded_bytes);
-int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_validate_fn validate,
+/* All control callbacks are UI-owner only. Decode/notify run on the
+ * shared worker. Native context and its borrowed handles outlive stop. */
+enum { PET_DECODE_OUTFIT = 0, PET_DECODE_ACTIVITY = 1 };
+typedef struct {
+    uint32_t kind, outfit, activity;
+    uint8_t *pixels;
+    size_t bytes;
+} pet_decode_result;
+typedef uint8_t *(*pet_decode_fn)(void *, uint32_t, uint32_t, uint32_t, size_t *);
+typedef void (*pet_decode_notify_fn)(void *);
+typedef struct {
+    void *owner;
+    int (*bind)(void *, void *, pet_decode_fn, pet_decode_notify_fn);
+    int (*submit)(void *, uint32_t, uint32_t, uint32_t);
+    int (*start)(void *);
+    int (*take)(void *, pet_decode_result *);
+    void (*invalidate)(void *);
+    int (*busy)(void *);
+    void (*stop)(void *);
+} pet_async;
+int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_sample_fn sample, pet_demo_validate_fn validate,
     pet_activity_sample_fn sample_activity, pet_demo_validate_fn validate_activity,
     pet_package_parse_fn parse_package);
 #endif

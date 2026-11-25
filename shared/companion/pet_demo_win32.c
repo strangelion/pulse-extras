@@ -239,14 +239,61 @@ static uint32_t activity_random(uint32_t *state) {
 }
 
 static void usage(void) {
-    fputs("pulse-pet-demo [--reduced-motion] [--language system|zh-CN|zh-TW|en-US] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE] [--activity FILE FRAMES FPS] [--package DIR ID | --check-package DIR ID]\n"
+    fputs("pulse-pet-demo [--reduced-motion] [--language system|zh-CN|zh-TW|en-US] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE] [--activity FILE FRAMES FPS] [--package DIR ID | --check-package DIR ID | --check-package-task DIR ID]\n"
         "Left click: interact. Left drag: move. Right click: menu. --smoke: hidden synthetic test.\n", stderr);
 }
 
-int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_validate_fn validate,
+typedef struct {
+    const pet_memory *memory;
+    const pet_package *package;
+    pet_demo_validate_fn validate, validate_activity;
+    HANDLE event;
+    volatile LONG ready;
+} native_decode;
+
+static uint8_t *decode_package(void *userdata, uint32_t kind, uint32_t outfit,
+    uint32_t index, size_t *bytes) {
+    const native_decode *ctx = userdata;
+    if (kind == PET_DECODE_OUTFIT)
+        return pet_package_load_atlas(ctx->memory, ctx->package, outfit, ctx->validate, bytes);
+    if (kind == PET_DECODE_ACTIVITY)
+        return pet_package_load_activity(ctx->memory, ctx->package, index, outfit, ctx->validate_activity, bytes);
+    *bytes = 0;
+    return NULL;
+}
+
+static void decode_notify(void *userdata) {
+    native_decode *ctx = userdata;
+    InterlockedExchange(&ctx->ready, 1);
+    if (!SetEvent(ctx->event))
+        pet_cleanup_failed(ctx->memory->resource_bridge, PET_RESOURCE_CODEC);
+}
+
+static int request_decode(const pet_async *async, unsigned kind, unsigned outfit, unsigned index) {
+    return async->submit(async->owner, kind, outfit, index) && async->start(async->owner) >= 0;
+}
+
+/* Worker has signaled or set its atomic ready flag. Join before reading
+ * pixels, reset the event after join, then allow another task to start. */
+static int take_decode(const pet_async *async, native_decode *ctx, pet_decode_result *out) {
+    if (!InterlockedCompareExchange(&ctx->ready, 0, 0)) return -2;
+    int result = async->take(async->owner, out);
+    InterlockedExchange(&ctx->ready, 0);
+    if (!ResetEvent(ctx->event)) {
+        pet_cleanup_failed(ctx->memory->resource_bridge, PET_RESOURCE_CODEC);
+        pet_free(ctx->memory, out->pixels, out->bytes);
+        *out = (pet_decode_result){0};
+        return -1;
+    }
+    return result;
+}
+
+int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_sample_fn sample, pet_demo_validate_fn validate,
     pet_activity_sample_fn sample_activity, pet_demo_validate_fn validate_activity,
     pet_package_parse_fn parse_package) {
-    if (!memory || !memory->context || !memory->allocate || !memory->release || !memory->resource_bridge) return 1;
+    if (!memory || !memory->context || !memory->allocate || !memory->release || !memory->resource_bridge ||
+        !async || !async->owner || !async->bind || !async->submit || !async->start || !async->take ||
+        !async->invalidate || !async->busy || !async->stop) return 1;
     int rc = 1, argc = 0, reduced = 0, smoke = 0;
     unsigned reaction = PET_STATE_IDLE;
     unsigned version = 2, scale = 100;
@@ -262,8 +309,9 @@ int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_v
     pet_config saved = {0, 0, 100, 0};
     int can_save = 0;
     const wchar_t *path = NULL, *package_dir = NULL, *package_id = NULL;
-    int check_package = 0;
+    int check_package = 0, check_task = 0, async_bound = 0;
     pet_package package = {0};
+    native_decode decode_ctx = {memory, &package, validate, validate_activity, NULL, 0};
     uint8_t *atlas = NULL, *activity = NULL;
     const wchar_t *activity_path = NULL;
     unsigned activity_frames = 0, activity_fps = 0;
@@ -306,8 +354,10 @@ int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_v
             scale_set = 1;
             ++i;
         } else if (!package_dir && i + 2 < argc &&
-            (wcscmp(argv[i], L"--package") == 0 || wcscmp(argv[i], L"--check-package") == 0)) {
+            (wcscmp(argv[i], L"--package") == 0 || wcscmp(argv[i], L"--check-package") == 0 ||
+             wcscmp(argv[i], L"--check-package-task") == 0)) {
             check_package = wcscmp(argv[i], L"--check-package") == 0;
+            check_task = wcscmp(argv[i], L"--check-package-task") == 0;
             package_dir = argv[++i];
             package_id = argv[++i];
         } else if (!activity_path && i + 3 < argc &&
@@ -327,7 +377,7 @@ int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_v
     }
     pet_demo_sample activity_check = {0};
     if ((package_dir && (path || activity_path || smoke || state_map)) ||
-        (check_package && (stop || remember || reset_position)) ||
+        ((check_package || check_task) && (stop || remember || reset_position)) ||
         (activity_path && (smoke || state_map ||
             sample_activity(activity_frames, activity_fps, 0, &activity_check) != 0)) ||
         (smoke && (path || reduced_set || topmost_set || remember || reset_position)) ||
@@ -357,6 +407,18 @@ int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_v
         version = package.meta.version;
         idle.unavailable = unavailable_activities(&package, outfit);
         if (check_package) { rc = 0; goto cleanup; }
+        decode_ctx.event = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (!decode_ctx.event || !async->bind(async->owner, &decode_ctx, decode_package, decode_notify)) goto cleanup;
+        async_bound = 1;
+        if (check_task) {
+            if (!request_decode(async, PET_DECODE_OUTFIT, 0, 0)) goto cleanup;
+            if (WaitForSingleObject(decode_ctx.event, 10000) != WAIT_OBJECT_0) goto cleanup;
+            pet_decode_result result = {0};
+            int status = take_decode(async, &decode_ctx, &result);
+            pet_free(memory, result.pixels, result.bytes);
+            rc = status == 1 ? 0 : 1;
+            goto cleanup;
+        }
     }
     if (remember) {
         LSTATUS status = RegOpenKeyExW(HKEY_CURRENT_USER, PET_CONFIG_KEY, 0,
@@ -424,6 +486,7 @@ int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_v
                     if (GetCapture() == surface.window) ReleaseCapture();
                     pressed = 0;
                     pet_idle_interrupt(&idle);
+                    if (async_bound) async->invalidate(async->owner);
                     active_index = PET_IDLE_NONE;
                     /* Opening the menu interrupts optional artwork; restore
                      * the base pose before any live resize. */
@@ -457,28 +520,8 @@ int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_v
                     } else if (command >= MENU_OUTFIT_FIRST &&
                         command - MENU_OUTFIT_FIRST <= package.meta.outfit_count && package.meta.outfit_count) {
                         unsigned next = command - MENU_OUTFIT_FIRST;
-                        if (next != outfit) {
-                            size_t next_bytes = 0;
-                            uint8_t *replacement = pet_package_load_atlas(memory, &package, next, validate, &next_bytes);
-                            pet_demo_sample base = {0};
-                            if (replacement && !sample(version, PET_STATE_IDLE, 0, reduced, &base) &&
-                                pet_surface_resize(&surface, scale, replacement, next_bytes, version,
-                                    base.row, base.column, x, y, 255) == PET_SURFACE_OK) {
-                                pet_free(memory, atlas, bytes);
-                                atlas = replacement; bytes = next_bytes;
-                                outfit_failures[outfit] = idle.failed;
-                                outfit = next;
-                                idle.failed = outfit_failures[outfit];
-                                idle.unavailable = unavailable_activities(&package, outfit);
-                                pet_idle_interrupt(&idle);
-                                reaction = PET_STATE_IDLE;
-                                started = GetTickCount64();
-                                last_row = base.row; last_column = base.column;
-                            } else {
-                                pet_free(memory, replacement, next_bytes);
-                                fputs("Outfit switch failed; previous appearance retained.\n", stderr);
-                            }
-                        }
+                        if (next != outfit && !request_decode(async, PET_DECODE_OUTFIT, next, 0))
+                            fputs("Outfit decode admission failed; previous appearance retained.\n", stderr);
                     } else if (command >= MENU_AUTO_FIRST &&
                         command - MENU_AUTO_FIRST < package.meta.count && !state_slot) {
                         unsigned index = command - MENU_AUTO_FIRST;
@@ -487,16 +530,8 @@ int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_v
                         command - MENU_ACTIVITY_FIRST < package.meta.count && !state_slot && !reduced &&
                         !((idle.failed | idle.unavailable) & pet_idle_bit(command - MENU_ACTIVITY_FIRST))) {
                         unsigned index = command - MENU_ACTIVITY_FIRST;
-                        activity_frames = package.meta.items[index].reps[outfit].frames;
-                        activity_fps = package.meta.items[index].reps[outfit].fps;
-                        activity = pet_package_load_activity(memory, &package, index, outfit, validate_activity, &activity_bytes);
-                        if (activity) {
-                            active_index = index;
-                            activity_started = GetTickCount64();
-                        } else {
-                            pet_idle_failed(&idle, index);
-                            fputs("Package activity decode failed; unavailable for this session.\n", stderr);
-                        }
+                        if (!request_decode(async, PET_DECODE_ACTIVITY, outfit, index))
+                            fputs("Activity decode admission failed.\n", stderr);
                     } else if (command == MENU_INTERACT && !state_slot && !reduced) {
                         if (activity_path) {
                             activity = pet_demo_load_activity(memory, activity_path, activity_frames,
@@ -536,6 +571,7 @@ int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_v
                     }
                 } else if (message.message == WM_LBUTTONDOWN && GetCursorPos(&press)) {
                     pet_idle_interrupt(&idle);
+                    if (async_bound) async->invalidate(async->owner);
                     active_index = PET_IDLE_NONE;
                     if (activity) {
                         pet_free(memory, activity, activity_bytes); activity = NULL; activity_bytes = 0;
@@ -604,6 +640,49 @@ int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_v
             }
         }
         if (smoke && now >= smoke_end) break;
+        if (async_bound && InterlockedCompareExchange(&decode_ctx.ready, 0, 0)) {
+            pet_decode_result result = {0};
+            int status = take_decode(async, &decode_ctx, &result);
+            if (status < 0) goto cleanup;
+            if (status == 1 && result.kind == PET_DECODE_OUTFIT) {
+                pet_demo_sample base = {0};
+                if (result.outfit <= package.meta.outfit_count && result.pixels &&
+                    !sample(version, PET_STATE_IDLE, 0, reduced, &base) &&
+                    pet_surface_resize(&surface, scale, result.pixels, result.bytes, version,
+                        base.row, base.column, x, y, 255) == PET_SURFACE_OK) {
+                    pet_free(memory, atlas, bytes);
+                    atlas = result.pixels; bytes = result.bytes;
+                    result.pixels = NULL;
+                    outfit_failures[outfit] = idle.failed;
+                    outfit = result.outfit;
+                    idle.failed = outfit_failures[outfit];
+                    idle.unavailable = unavailable_activities(&package, outfit);
+                    pet_idle_interrupt(&idle);
+                    reaction = PET_STATE_IDLE;
+                    started = GetTickCount64();
+                    last_row = base.row; last_column = base.column;
+                } else fputs("Outfit switch failed; previous appearance retained.\n", stderr);
+            } else if (status == 1 && result.kind == PET_DECODE_ACTIVITY &&
+                result.outfit == outfit && result.activity < package.meta.count &&
+                !reduced && !pressed && !activity) {
+                const pet_package_rep *rep = &package.meta.items[result.activity].reps[outfit];
+                if (rep->frames && result.pixels) {
+                    activity = result.pixels; activity_bytes = result.bytes;
+                    result.pixels = NULL;
+                    activity_frames = rep->frames; activity_fps = rep->fps;
+                    active_index = result.activity;
+                    activity_started = GetTickCount64();
+                }
+            } else if (status == 2) {
+                if (result.kind == PET_DECODE_ACTIVITY && result.outfit == outfit)
+                    pet_idle_failed(&idle, result.activity);
+                fputs("Package decode failed; previous appearance retained.\n", stderr);
+            }
+            pet_free(memory, result.pixels, result.bytes);
+            if (async->start(async->owner) < 0)
+                fputs("Queued decode admission failed.\n", stderr);
+            now = GetTickCount64();
+        }
         pet_demo_sample point = {0};
         /* Admission follows the actual Classic presentation, not a stale
          * finite reaction code. No new opportunity during capture, reduced
@@ -611,23 +690,14 @@ int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_v
         pet_demo_sample base_point = {0};
         if (sample(version, reaction, now - started, reduced, &base_point)) goto cleanup;
         int available = shown && !state_slot && !smoke && !reduced && !pressed &&
-            !activity && base_point.row == 0;
+            !activity && (!async_bound || !async->busy(async->owner)) && base_point.row == 0;
         uint32_t delay_random = activity_random(&rng);
         uint32_t choice_random = activity_random(&rng);
         unsigned choice = pet_idle_choose(&idle, package.meta.count, available,
             now, delay_random, choice_random);
         if (choice != PET_IDLE_NONE) {
-            activity_frames = package.meta.items[choice].reps[outfit].frames;
-            activity_fps = package.meta.items[choice].reps[outfit].fps;
-            activity = pet_package_load_activity(memory, &package, choice, outfit, validate_activity, &activity_bytes);
-            now = GetTickCount64();
-            if (activity) {
-                active_index = choice;
-                activity_started = now;
-            } else {
-                pet_idle_failed(&idle, choice);
-                fputs("Automatic activity decode failed; unavailable for this session.\n", stderr);
-            }
+            if (!request_decode(async, PET_DECODE_ACTIVITY, outfit, choice))
+                fputs("Automatic decode admission failed.\n", stderr);
         }
         if (activity) {
             int result = sample_activity(activity_frames, activity_fps,
@@ -673,8 +743,16 @@ int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_v
             if (delay < wait) wait = (DWORD)delay;
         }
         if (smoke && (uint64_t)wait > smoke_end - now) wait = (DWORD)(smoke_end - now);
-        HANDLE waits[2] = {stop, state_event};
-        DWORD count = state_event ? 2 : (stop ? 1 : 0);
+        HANDLE waits[3];
+        DWORD count = 0;
+        if (stop) waits[count++] = stop;
+        if (state_event) waits[count++] = state_event;
+        if (async_bound && async->busy(async->owner)) {
+            waits[count++] = decode_ctx.event;
+            /* Event is the ordinary wake path. A bounded watchdog only
+             * while a task exists recovers a failed SetEvent notification. */
+            if (wait > 1000) wait = 1000;
+        }
         DWORD result = MsgWaitForMultipleObjectsEx(count,
             count ? waits : NULL, wait, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         if (stop && result == WAIT_OBJECT_0) { stopped = 1; break; }
@@ -695,6 +773,13 @@ int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_v
             fputs("Companion settings not saved; existing incompatible data preserved.\n", stderr);
     }
 cleanup:
+    /* Joining precedes closing every borrowed file/event and freeing
+     * the native context. No worker touches UI or survives this run. */
+    if (async_bound) async->stop(async->owner);
+    if (decode_ctx.event && !CloseHandle(decode_ctx.event)) {
+        pet_cleanup_failed(memory->resource_bridge, PET_RESOURCE_CODEC);
+        rc = 1;
+    }
     if (settings) RegCloseKey(settings);
     if (state_slot) UnmapViewOfFile((const void *)state_slot);
     if (state_event && state_event != stop) CloseHandle(state_event);

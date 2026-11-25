@@ -2,6 +2,7 @@
 const std = @import("std");
 const memory = @import("pet_memory.zig");
 const Group = @import("runtime_group").Group;
+const async_decode = @import("pet_async_bridge.zig");
 const resources = @import("pet_resources.zig");
 const animation = @import("animation.zig");
 const assets = @import("pet_assets.zig");
@@ -21,7 +22,7 @@ const ActivitySampleFn = *const fn (u32, u32, u64, *Sample) callconv(.c) c_int;
 
 const PackageParseFn = *const fn (*const memory.Bridge, [*]const u8, usize, [*]const u8, usize, *package.Package) callconv(.c) c_int;
 
-extern "c" fn pet_demo_run(*const memory.Bridge, SampleFn, ValidateFn, ActivitySampleFn, ValidateFn, PackageParseFn) c_int;
+extern "c" fn pet_demo_run(*const memory.Bridge, *const async_decode.Bridge, SampleFn, ValidateFn, ActivitySampleFn, ValidateFn, PackageParseFn) c_int;
 
 fn layoutFor(version: u32) ?assets.Layout {
     return switch (version) {
@@ -82,12 +83,17 @@ fn parsePackage(bridge: *const memory.Bridge, input: [*]const u8, len: usize, id
     return package.parse(bridge.allocator(), input, len, id, id_len, out);
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var group = Group.init(std.heap.page_allocator, memory.limit, 1, 1);
     var resource_owner: resources.Owner = .{};
     const resource_bridge = resources.Bridge.init(&resource_owner);
     const bridge = memory.Bridge.init(&group.pool, &resource_bridge);
-    const result = pet_demo_run(&bridge, sampleFrame, validateWebp, sampleActivity, validateActivity, parsePackage);
+    var async_owner = async_decode.Owner.init(init.io, &group);
+    const async_bridge = async_decode.Bridge.init(&async_owner);
+    const result = pet_demo_run(&bridge, &async_bridge, sampleFrame, validateWebp, sampleActivity, validateActivity, parsePackage);
+    // C must stop before releasing its pinned package and notification.
+    // Idempotent stop is a defensive final drain, not a replacement.
+    async_owner.stop();
     const group_stats = group.diagnostics();
     const stats = group_stats.memory;
     // A single bounded shutdown diagnostic; no per-frame logging.

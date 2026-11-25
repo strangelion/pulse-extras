@@ -326,7 +326,7 @@ changed; the sample pixels are not distributable pet artwork.
 Build on Windows from repository root with the pinned Zig:
 
 ```powershell
-zig build-exe -target x86_64-windows-gnu -O ReleaseSafe shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 --dep runtime_allocator --dep runtime_budget --dep runtime_event_log --dep runtime_group '-Mroot=shared/companion/pet_demo.zig' -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_budget '-Mruntime_allocator=shared/runtime/allocator.zig' -target x86_64-windows-gnu -O ReleaseSafe '-Mruntime_budget=shared/runtime/budget.zig' -target x86_64-windows-gnu -O ReleaseSafe '-Mruntime_event_log=shared/runtime/event_log.zig' -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_allocator '-Mruntime_group=shared/runtime/group.zig' '-femit-bin=pulse-pet-demo.exe'
+zig build-exe -target x86_64-windows-gnu -O ReleaseSafe shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 --dep runtime_allocator --dep runtime_budget --dep runtime_event_log --dep runtime_group --dep runtime_latest_task '-Mroot=shared/companion/pet_demo.zig' -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_budget '-Mruntime_allocator=shared/runtime/allocator.zig' -target x86_64-windows-gnu -O ReleaseSafe '-Mruntime_budget=shared/runtime/budget.zig' -target x86_64-windows-gnu -O ReleaseSafe '-Mruntime_event_log=shared/runtime/event_log.zig' -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_allocator '-Mruntime_group=shared/runtime/group.zig' -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_group '-Mruntime_latest_task=shared/runtime/latest_task.zig' '-femit-bin=pulse-pet-demo.exe'
 .\pulse-pet-demo.exe
 .\pulse-pet-demo.exe --reduced-motion
 .\pulse-pet-demo.exe --webp-v2 C:\path\to\spritesheet.webp
@@ -866,3 +866,36 @@ unchanged. This is a command-line correction, not confirmation that the
 new native runtime has compiled or passed Windows tests. The failure
 became visible after the phase 3 commit, so record a separate correction
 rather than rewriting published branch history.
+
+## Shared latest-task native integration — phase 4
+
+Run 45547685121 passed the full Windows/Ubuntu regression gate after
+quoting the module arguments. For unpacked Classic WebP packages, live
+outfit and named/manual/automatic activity requests now enter the shared
+LatestTask adapter from the native UI. The Zig process entry borrows
+its std.Io and the same Group pool. C supplies a stable borrowed package
+context and a worker-local WIC call; the worker returns only a mailbox
+status through the Future, not ownership of COM objects. One running and
+one latest queued request are admitted. A manual-reset completion event
+wakes the existing Win32 wait set, with a one-second watchdog only
+while work is outstanding if notification fails. Join before consuming
+pixels, reset the event before starting the next task. UI alone presents
+and commits outfit changes; opening a menu or pressing the pet
+invalidates previous intent. A cancelled result is freed after join.
+No fallback synchronous package decode on failed task admission.
+On exit stop/join before closing the event and pinned package handles.
+No OS thread is force-killed by the adapter.
+
+The first atlas and directory admission remain synchronous before the
+window is shown; the explicit --activity development seam stays
+synchronous and is mutually exclusive with a package. WIC cancellation
+cannot interrupt every foreign native call; joining at exit can block,
+so the parent job supervisor remains the external containment boundary.
+The std.Io implementation's internal allocations and notification event
+are not covered by the decoded-buffer quota. --check-package-task DIR ID
+uses the real asynchronous package base decode without a window; CI's
+deliberately incomplete WebP header expects decode failure but checks
+that an actual task ran and all accounted resources drained. It does
+not verify successful WIC decoding, desktop responsiveness, or actual
+host unload. New revision requires Windows CI and later real artwork
+stress tests.
