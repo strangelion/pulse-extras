@@ -250,6 +250,7 @@ static pet_store_result usage_directory(const wchar_t *path, unsigned depth,
     int n = swprintf(pattern, PET_PRIVATE_PATH_CAP, L"%ls\\*", path);
     HANDLE find = INVALID_HANDLE_VALUE;
     WIN32_FIND_DATAW data;
+    BOOL metadata = FALSE, atlas = FALSE;
     if (n <= 0 || n >= (int)PET_PRIVATE_PATH_CAP) result = PET_STORE_INVALID;
     else {
         find = FindFirstFileW(pattern, &data);
@@ -271,6 +272,14 @@ static pet_store_result usage_directory(const wchar_t *path, unsigned depth,
                 }
                 result = usage_directory(child, depth + 1u, count);
             } else {
+                /* The package helper hashes the declared root files but does
+                 * not enumerate other root files. A matching fingerprint
+                 * must never make an unrelated root file eligible for cleanup. */
+                if (!depth) {
+                    if (!wcscmp(name, L"pet.json") && !metadata) metadata = TRUE;
+                    else if (!wcscmp(name, L"spritesheet.webp") && !atlas) atlas = TRUE;
+                    else { result = PET_STORE_INVALID; break; }
+                }
                 HANDLE file;
                 result = usage_open(child, FALSE, &file, &info);
                 if (result == PET_STORE_OK) {
@@ -287,6 +296,8 @@ static pet_store_result usage_directory(const wchar_t *path, unsigned depth,
             result = PET_STORE_IO;
         if (!FindClose(find)) result = PET_STORE_CLEANUP_FAILED;
     }
+    if (result == PET_STORE_OK && !depth && (!metadata || !atlas))
+        result = PET_STORE_INVALID;
     if (!CloseHandle(pinned)) result = PET_STORE_CLEANUP_FAILED;
     return result;
 }

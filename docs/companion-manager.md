@@ -1275,3 +1275,18 @@ same-user modification races. A destructive transaction must revalidate
 while pinning the exact files it will remove and provide interruption
 handling. The optional error comparison in the UI was also corrected
 following CI #231's compile error. New CI and real host remain unverified.
+
+### Reject undeclared root files before cleanup
+
+The fingerprint helper hashes the declared root files but does not enumerate
+all root files. The native quarantine accounting/preflight now requires
+exactly the ordinary root files pet.json and spritesheet.webp and rejects
+other root files, even if their logical length is zero. Only the existing
+outfits and activities subdirectories are allowed; the approved helper
+separately checks their exact declared file inventories. A rejected scan
+has no byte total and is reported as unmeasured, not as zero bytes. The
+isolated bridge fixture adds one extra root file after a valid receipt,
+expects content preflight to refuse it without modification, and checks
+that preflight succeeds again after removing only the fixture-created file.
+This does not enumerate alternate data streams or pin all files across a
+future delete; no destructive production API has been added.

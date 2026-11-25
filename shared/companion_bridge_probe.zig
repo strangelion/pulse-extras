@@ -17,6 +17,10 @@ extern "kernel32" fn GetEnvironmentVariableW([*:0]const u16, [*]u16, u32) callco
 
 extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
+extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, ?*anyopaque) callconv(.winapi) usize;
+extern "kernel32" fn CloseHandle(usize) callconv(.winapi) c_int;
+extern "kernel32" fn GetFileAttributesW([*:0]const u16) callconv(.winapi) u32;
+extern "kernel32" fn DeleteFileW([*:0]const u16) callconv(.winapi) c_int;
 
 const Query = *const fn (u32, u32, *runtime.NativeApi) callconv(.c) c_int;
 
@@ -258,6 +262,32 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     const removed = try store.scanRecovery(owner);
     if (removed.quarantined_removed != 1 or removed.quarantined_registered != 0 or removed.registered != 3 or removed.missing != 1) return error.UnexpectedRecoveryScan;
     if (removed.quarantine_removed_bytes != measured or removed.quarantine_registered_bytes != 0 or removed.quarantine_unmeasured != 0) return error.UnexpectedQuarantineUsage;
+    try local_import.verifyQuarantine(io, owner, helper[0..len :0], digest, record.id);
+    // Fixture-only extra root file: the declared package digest still
+    // matches, but the entire directory is no longer safe to clean.
+    var extra_leaf: [80]u8 = undefined;
+    const leaf = try std.fmt.bufPrint(&extra_leaf, "\\pet-{x:0>16}.removed\\foreign.txt", .{record.id});
+    var extra_path: [1024]u16 = undefined;
+    if (private.len + leaf.len >= extra_path.len) return error.BadFixturePath;
+    @memcpy(extra_path[0..private.len], private);
+    for (leaf, 0..) |ch, n_leaf| extra_path[private.len + n_leaf] = ch;
+    const extra_len = private.len + leaf.len;
+    extra_path[extra_len] = 0;
+    const extra = extra_path[0..extra_len :0];
+    // CREATE_NEW, never replace a pre-existing file even in the fixture.
+    const foreign = CreateFileW(extra, 0x40000000, 0, null, 1, 0x80, null);
+    if (foreign == std.math.maxInt(usize)) return error.BadFixturePath;
+    if (CloseHandle(foreign) == 0) return error.CleanupFailed;
+    if (local_import.verifyQuarantine(io, owner, helper[0..len :0], digest, record.id)) |_| {
+        return error.AcceptedForeignRootFile;
+    } else |err| {
+        if (err != error.InvalidRecord) return err;
+    }
+    const blocked = try store.scanRecoveryDetailed(owner);
+    if (blocked.summary.quarantine_unmeasured != 1 or blocked.quarantine[0].logical_bytes != null) return error.UnexpectedQuarantineUsage;
+    if (GetFileAttributesW(extra) == 0xffffffff) return error.PreflightModifiedFixture;
+    // Remove only the extra file created by this isolated test.
+    if (DeleteFileW(extra) == 0) return error.CleanupFailed;
     try local_import.verifyQuarantine(io, owner, helper[0..len :0], digest, record.id);
     const retained = try store.scanRecoveryDetailed(owner);
     if (retained.stateFor(record.id) != null) return error.UnexpectedRecoveryScan;
