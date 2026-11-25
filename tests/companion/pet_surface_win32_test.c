@@ -182,7 +182,7 @@ int main(void) {
     CHECK(pet_language_resolve(lang, 0x0c04) == PET_LANGUAGE_ZH_TW);
     CHECK(pet_language_resolve(lang, 0x1004) == PET_LANGUAGE_ZH_CN);
     CHECK(pet_language_resolve(lang, 0x0409) == PET_LANGUAGE_EN_US);
-    CHECK(wcscmp(pet_menu_labels(PET_LANGUAGE_ZH_CN, 0x0409).exit, L"退出宠物") == 0);
+    CHECK(wcscmp(pet_menu_labels(PET_LANGUAGE_ZH_CN, 0x0409).exit, L"退出桌宠") == 0);
     CHECK(wcscmp(pet_menu_labels(PET_LANGUAGE_ZH_TW, 0x0804).topmost, L"視窗置頂") == 0);
     CHECK(wcscmp(pet_menu_labels(PET_LANGUAGE_EN_US, 0x0804).size, L"Size") == 0);
     size_t first = pixel_offset(10, 7, 0, 0);

@@ -1190,16 +1190,16 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
             }
             if (!running) continue;
             if (source.visibility == .unknown) source.visibility = .visible;
-            const requested = source.auto_visibility.desired(host_window_state, source.visibility, if (manual) show else null) orelse continue;
-            if (source.visibility == (if (requested) Visibility.visible else Visibility.hidden)) continue;
-            owner.group.requestVisibility(source.id, requested) catch {
+            const requested_visibility = source.auto_visibility.desired(host_window_state, source.visibility, if (manual) show else null) orelse continue;
+            if (source.visibility == (if (requested_visibility) Visibility.visible else Visibility.hidden)) continue;
+            owner.group.requestVisibility(source.id, requested_visibility) catch {
                 source.visibility = .unknown;
                 source.visibility_failed = true;
                 session.reject(.unknown_instance);
                 continue;
             };
-            source.auto_visibility.accepted(requested, manual);
-            source.visibility = if (requested) .pending_show else .pending_hide;
+            source.auto_visibility.accepted(requested_visibility, manual);
+            source.visibility = if (requested_visibility) .pending_show else .pending_hide;
             source.visibility_since = GetTickCount64();
             visibility_pending = true;
         }
