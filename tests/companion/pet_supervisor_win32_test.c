@@ -121,6 +121,11 @@ int main(void) {
     CHECK(pet_group_start(&group, path, &options, &a) == PET_CHILD_OK && a);
     CHECK(pet_group_start(&group, path, &options, &b) == PET_CHILD_OK && b > a);
     CHECK(group.count == 2);
+    pet_group_metrics ma = {0}, mb = {0};
+    CHECK(pet_group_storage_size() == sizeof(group));
+    CHECK(pet_group_sample(&group, a, &ma) == PET_CHILD_OK && ma.pid && ma.private_bytes && ma.handles);
+    CHECK(pet_group_sample(&group, b, &mb) == PET_CHILD_OK && mb.pid && mb.private_bytes && mb.handles);
+    CHECK(ma.pid != mb.pid);
     CHECK(pet_group_start(&group, path, &options, &rejected) == PET_CHILD_BUDGET_LIMIT && !rejected);
     CHECK(pet_group_close(&group) == PET_CHILD_BUSY);
     CHECK(pet_group_publish(&group, a, PET_STATE_THINKING) == PET_CHILD_OK);
@@ -134,6 +139,7 @@ int main(void) {
     CHECK(WaitForSingleObject(group.slots[0].child.process, 5000) == WAIT_OBJECT_0);
     CHECK(pet_group_reap(&group, a, &code) == PET_CHILD_OK && code == 1 && group.count == 1);
     CHECK(pet_group_publish(&group, a, PET_STATE_IDLE) == PET_CHILD_INVALID);
+    CHECK(pet_group_sample(&group, a, &ma) == PET_CHILD_INVALID);
     CHECK(pet_group_status(&group, b, &running, &code) == PET_CHILD_OK && running);
     CHECK(pet_group_force_stop(&group, b) == PET_CHILD_OK);
     CHECK(WaitForSingleObject(group.slots[1].child.process, 5000) == WAIT_OBJECT_0);

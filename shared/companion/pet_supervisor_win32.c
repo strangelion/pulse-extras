@@ -2,6 +2,7 @@
 #include <wchar.h>
 #include <stdlib.h>
 #include <string.h>
+#include <psapi.h>
 
 #define PATH_CAP 1024u
 #define CMD_CAP 1400u
@@ -335,6 +336,32 @@ pet_child_result pet_group_status(pet_supervisor_group *group, uint64_t id, BOOL
     pet_group_slot *slot = group_find(group, id);
     if (!slot) return PET_CHILD_INVALID;
     return pet_child_status(&slot->child, running, exit_code);
+}
+
+SIZE_T pet_group_storage_size(void) { return sizeof(pet_supervisor_group); }
+
+static uint64_t filetime_ticks(FILETIME value) {
+    return ((uint64_t)value.dwHighDateTime << 32) | value.dwLowDateTime;
+}
+
+pet_child_result pet_group_sample(pet_supervisor_group *group, uint64_t id, pet_group_metrics *out) {
+    pet_group_slot *slot = group_find(group, id);
+    if (!slot || !out) return PET_CHILD_INVALID;
+    *out = (pet_group_metrics){0};
+    HANDLE process = slot->child.process;
+    if (WaitForSingleObject(process, 0) != WAIT_TIMEOUT) return PET_CHILD_BUSY;
+    PROCESS_MEMORY_COUNTERS_EX memory = {0};
+    memory.cb = sizeof(memory);
+    DWORD handles = 0, pid = GetProcessId(process);
+    FILETIME created, exited, kernel, user;
+    if (!pid || !GetProcessMemoryInfo(process, (PROCESS_MEMORY_COUNTERS *)&memory, sizeof(memory)) ||
+        !GetProcessHandleCount(process, &handles) ||
+        !GetProcessTimes(process, &created, &exited, &kernel, &user))
+        return PET_CHILD_OS_ERROR;
+    if (WaitForSingleObject(process, 0) != WAIT_TIMEOUT) return PET_CHILD_BUSY;
+    *out = (pet_group_metrics){memory.PrivateUsage, memory.WorkingSetSize,
+        filetime_ticks(kernel) + filetime_ticks(user), GetTickCount64(), handles, pid};
+    return PET_CHILD_OK;
 }
 
 pet_child_result pet_group_request_stop(pet_supervisor_group *group, uint64_t id) {

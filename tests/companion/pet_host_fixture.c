@@ -17,3 +17,5 @@ uint32_t pet_host_fixture_path(uint8_t *out, uint32_t capacity) {
 int pet_host_fixture_wait(HANDLE process, uint32_t timeout_ms) {
     return process && WaitForSingleObject(process, timeout_ms) == WAIT_OBJECT_0;
 }
+
+void pet_host_fixture_sleep(uint32_t ms) { Sleep(ms); }

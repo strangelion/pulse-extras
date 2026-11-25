@@ -82,6 +82,13 @@ pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *app
     const pet_child_options *options, uint64_t *id);
 pet_child_result pet_group_publish(pet_supervisor_group *group, uint64_t id, unsigned reaction);
 pet_child_result pet_group_status(pet_supervisor_group *group, uint64_t id, BOOL *running, DWORD *exit_code);
+typedef struct {
+    uint64_t private_bytes, working_set, cpu_100ns, sampled_ms;
+    uint32_t handles, pid;
+} pet_group_metrics;
+SIZE_T pet_group_storage_size(void);
+/* Owned process handle only; output valid solely on success. */
+pet_child_result pet_group_sample(pet_supervisor_group *group, uint64_t id, pet_group_metrics *out);
 /* Nonblocking cooperative stop and forced termination requests. Neither
  * releases the slot. Reap only after the process handle signals. */
 pet_child_result pet_group_request_stop(pet_supervisor_group *group, uint64_t id);

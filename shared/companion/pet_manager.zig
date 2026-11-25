@@ -14,10 +14,15 @@ pub const Metrics = struct {
     private_bytes: usize,
     working_set: usize,
     handles: u32,
+    pid: u32 = 0,
+    cpu_100ns: u64 = 0,
+    sampled_ms: u64 = 0,
+    cpu_core_percent: ?f64 = null,
 };
 pub const Instance = struct {
     id: u64,
     asset_id: u64,
+    native_id: ?u64 = null,
     state: State = .starting,
     metrics: ?Metrics = null,
 };
@@ -84,6 +89,24 @@ pub const Manager = struct {
         return error.Capacity;
     }
 
+    // Bind the separately generated native ID once; a failed native start
+    // with a retained process still requires a binding and confirmed reap.
+    pub fn bindNative(self: *Manager, id: u64, native_id: u64) Error!void {
+        const item = try self.find(id);
+        if (native_id == 0 or item.native_id != null) return error.InvalidTransition;
+        for (self.slots[0..@min(self.limit, max_instances)]) |slot| {
+            if (slot) |other| {
+                if (other.native_id == native_id) return error.InvalidTransition;
+            }
+        }
+        item.native_id = native_id;
+    }
+
+    pub fn nativeId(self: *Manager, id: u64) Error!u64 {
+        const item = try self.find(id);
+        return item.native_id orelse error.InvalidTransition;
+    }
+
     // Called only after verified creation and readiness. A stop request that
     // raced startup remains stopping; a late readiness must not revive it.
     pub fn markReady(self: *Manager, id: u64) Error!void {
@@ -103,8 +126,23 @@ pub const Manager = struct {
     // a failed sample explicitly clears stale counters.
     pub fn sample(self: *Manager, id: u64, metrics: ?Metrics) Error!void {
         const item = try self.find(id);
-        if (item.state == .starting) return error.InvalidTransition;
-        item.metrics = metrics;
+        if (item.state == .starting and item.native_id == null) return error.InvalidTransition;
+        if (metrics) |raw| {
+            var measured = raw;
+            measured.cpu_core_percent = null;
+            if (item.metrics) |previous| {
+                if (raw.sampled_ms > previous.sampled_ms and raw.cpu_100ns >= previous.cpu_100ns and
+                    raw.pid != 0 and raw.pid == previous.pid)
+                {
+                    const elapsed: f64 = @floatFromInt(raw.sampled_ms - previous.sampled_ms);
+                    const ticks: f64 = @floatFromInt(raw.cpu_100ns - previous.cpu_100ns);
+                    measured.cpu_core_percent = ticks / elapsed / 100.0;
+                }
+            }
+            item.metrics = measured;
+        } else {
+            item.metrics = null;
+        }
     }
 
     // Caller must have positive evidence that creation never happened OR
@@ -261,4 +299,23 @@ test "INT_MAX configuration reports actual backend capacity separately" {
     try std.testing.expectError(error.StorageCapacity, m.reserveStart(1));
     for (1..max_instances + 1) |id| try m.confirmGone(@intCast(id));
     try std.testing.expectEqual(@as(usize, 0), m.count());
+}
+
+test "native binding and CPU samples distinguish missing and measured data" {
+    var m = try Manager.init(2, child_commit_ceiling * 2);
+    const a = try m.reserveStart(1);
+    const b = try m.reserveStart(2);
+    try m.bindNative(a, 17);
+    try std.testing.expectError(error.InvalidTransition, m.bindNative(b, 17));
+    try m.bindNative(b, 18);
+    try std.testing.expectEqual(@as(u64, 17), try m.nativeId(a));
+    try m.sample(a, .{ .private_bytes = 42, .working_set = 64, .handles = 5, .pid = 123, .cpu_100ns = 100, .sampled_ms = 1000 });
+    try std.testing.expect((try m.find(a)).metrics.?.cpu_core_percent == null);
+    try m.sample(a, .{ .private_bytes = 42, .working_set = 64, .handles = 5, .pid = 123, .cpu_100ns = 1000100, .sampled_ms = 2000 });
+    try std.testing.expectEqual(@as(f64, 10), (try m.find(a)).metrics.?.cpu_core_percent.?);
+    try std.testing.expectEqual(State.starting, (try m.find(a)).state);
+    try m.sample(a, null);
+    try std.testing.expect((try m.find(a)).metrics == null);
+    try m.confirmGone(a);
+    try m.confirmGone(b);
 }

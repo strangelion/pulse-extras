@@ -143,3 +143,20 @@ UI wiring remain future work; 1024 live processes have not been tested.
 The normal CI stress count remains 100. Native tests exercise INT_MAX
 configuration, overrange rejection, synthetic low-memory readings and
 actual budget denial; Zig tests exercise INT_MAX without oversized tables.
+
+## Worker adapter and resource samples
+
+companion_group.zig connects the logical manager to the native supervisor
+with independently generated IDs and retained ambiguous-start ownership.
+Open validates native storage size; caller owns a stable-address group.
+Native creation failure without a retained ID releases the reservation;
+ambiguous failure returns a live logical ID plus error for stop/reap.
+Reap releases only after confirmed native exit. Native samples use owned
+handles, not reopened PIDs: private bytes, working set, handle count,
+diagnostic PID, cumulative CPU ticks and monotonic time. First/failed
+samples have unknown CPU; subsequent same-PID monotonic samples derive
+percent of one logical core (can exceed 100%). No readiness acknowledgment
+yet, so creation/sample does not claim running/rendered. No asset-path
+launch, settings page, resource polling timer or dynamic capacity here.
+Added model CPU/binding tests, native two-process sampling assertions
+and actual demo Zig group test. Windows CI remains required.
