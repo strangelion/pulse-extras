@@ -96,7 +96,8 @@ static int constrain(const pet_surface *surface, POINT anchor, LONG *x, LONG *y)
 
 /* Only use explicitly inherited wait handles from a trusted launcher.
  * The caller must not supply mutexes, auto-reset events or arbitrary handles. */
-static HANDLE parse_inherited_handle(const wchar_t *text) {
+static HANDLE parse_inherited_handle(const pet_resources *resources, const wchar_t *text,
+    HANDLE other_a, HANDLE other_b) {
     uintptr_t n = 0;
     if (!text || !*text) return NULL;
     for (; *text; ++text) {
@@ -110,7 +111,47 @@ static HANDLE parse_inherited_handle(const wchar_t *text) {
     DWORD flags = 0;
     if (!GetHandleInformation(handle, &flags) || !(flags & HANDLE_FLAG_INHERIT))
         return NULL;
+    if (handle != other_a && handle != other_b && !pet_reserve(resources, PET_RESOURCE_IPC, 1)) {
+        if (!CloseHandle(handle)) pet_cleanup_failed(resources, PET_RESOURCE_IPC);
+        return NULL;
+    }
     return handle;
+}
+
+static void close_ipc(const pet_resources *resources, HANDLE handle) {
+    if (!handle) return;
+    if (CloseHandle(handle)) pet_release(resources, PET_RESOURCE_IPC, 1);
+    else pet_cleanup_failed(resources, PET_RESOURCE_IPC);
+}
+
+static LSTATUS open_settings(const pet_resources *resources, HKEY *key) {
+    *key = NULL;
+    if (!pet_reserve(resources, PET_RESOURCE_REGISTRY, 1)) return ERROR_NOT_ENOUGH_MEMORY;
+    LSTATUS status = RegOpenKeyExW(HKEY_CURRENT_USER, PET_CONFIG_KEY, 0,
+        KEY_QUERY_VALUE | KEY_SET_VALUE, key);
+    if (status != ERROR_SUCCESS) {
+        *key = NULL;
+        pet_release(resources, PET_RESOURCE_REGISTRY, 1);
+    }
+    return status;
+}
+
+static LSTATUS create_settings(const pet_resources *resources, HKEY *key) {
+    *key = NULL;
+    if (!pet_reserve(resources, PET_RESOURCE_REGISTRY, 1)) return ERROR_NOT_ENOUGH_MEMORY;
+    LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, PET_CONFIG_KEY, 0, NULL,
+        REG_OPTION_NON_VOLATILE, KEY_QUERY_VALUE | KEY_SET_VALUE, NULL, key, NULL);
+    if (status != ERROR_SUCCESS) {
+        *key = NULL;
+        pet_release(resources, PET_RESOURCE_REGISTRY, 1);
+    }
+    return status;
+}
+
+static void close_settings(const pet_resources *resources, HKEY key) {
+    if (!key) return;
+    if (RegCloseKey(key) == ERROR_SUCCESS) pet_release(resources, PET_RESOURCE_REGISTRY, 1);
+    else pet_cleanup_failed(resources, PET_RESOURCE_REGISTRY);
 }
 
 enum {
@@ -121,42 +162,62 @@ enum {
 
 static const unsigned menu_scales[] = {50, 75, 100, 125, 150, 200};
 
+static HMENU tracked_menu(const pet_resources *resources) {
+    if (!pet_reserve(resources, PET_RESOURCE_MENU, 1)) return NULL;
+    HMENU menu = CreatePopupMenu();
+    if (!menu) pet_release(resources, PET_RESOURCE_MENU, 1);
+    return menu;
+}
+
+static BOOL destroy_menu(const pet_resources *resources, HMENU menu, unsigned count) {
+    if (!menu) return TRUE;
+    if (!DestroyMenu(menu)) {
+        pet_cleanup_failed(resources, PET_RESOURCE_MENU);
+        return FALSE;
+    }
+    pet_release(resources, PET_RESOURCE_MENU, count);
+    return TRUE;
+}
+
 /* Menu belongs to the pet, not the host. No external commands or hooks.
  * A modal menu can delay cooperative stop until dismissal; the parent
  * still owns the bounded job termination fallback. */
-static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
+static unsigned pet_menu(const pet_resources *resources, HWND window, POINT at, unsigned scale, int topmost,
     int reduced, int managed, pet_language language, const pet_package *package,
-    const pet_idle_policy *idle, unsigned outfit) {
+    const pet_idle_policy *idle, unsigned outfit, int display, int *built) {
+    if (built) *built = 0;
+    unsigned attached = 1;
     pet_menu_strings strings = pet_menu_labels(language, GetUserDefaultUILanguage());
-    HMENU menu = CreatePopupMenu();
-    HMENU sizes = CreatePopupMenu();
+    HMENU menu = tracked_menu(resources);
+    HMENU sizes = tracked_menu(resources);
     if (!menu || !sizes) {
-        if (menu) DestroyMenu(menu);
-        if (sizes) DestroyMenu(sizes);
+        if (menu) destroy_menu(resources, menu, attached);
+        if (sizes) destroy_menu(resources, sizes, 1);
         return 0;
     }
     const wchar_t *labels[] = {L"50%", L"75%", L"100%", L"125%", L"150%", L"200%"};
     for (unsigned i = 0; i < sizeof(menu_scales) / sizeof(menu_scales[0]); ++i) {
         if (!AppendMenuW(sizes, MF_STRING | (scale == menu_scales[i] ? MF_CHECKED : 0),
             MENU_SCALE_50 + i, labels[i])) {
-            DestroyMenu(sizes); DestroyMenu(menu); return 0;
+            destroy_menu(resources, sizes, 1); destroy_menu(resources, menu, attached); return 0;
         }
     }
     if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)sizes, strings.size)) {
-        DestroyMenu(sizes); DestroyMenu(menu); return 0;
+        destroy_menu(resources, sizes, 1); destroy_menu(resources, menu, attached); return 0;
     }
+    ++attached;
     if (package && package->meta.outfit_count) {
-        HMENU outfits = CreatePopupMenu();
-        if (!outfits) { DestroyMenu(menu); return 0; }
+        HMENU outfits = tracked_menu(resources);
+        if (!outfits) { destroy_menu(resources, menu, attached); return 0; }
         if (!AppendMenuW(outfits, MF_STRING | (!outfit ? MF_CHECKED : 0),
             MENU_OUTFIT_FIRST, strings.default_outfit)) {
-            DestroyMenu(outfits); DestroyMenu(menu); return 0;
+            destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0;
         }
         for (unsigned i = 0; i < package->meta.outfit_count; ++i) {
             wchar_t name[161], escaped[321];
             int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
                 (const char *)package->meta.outfits[i].name, -1, name, 161);
-            if (!n) { DestroyMenu(outfits); DestroyMenu(menu); return 0; }
+            if (!n) { destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0; }
             size_t j = 0;
             for (int k = 0; k < n - 1; ++k) {
                 if (name[k] == L'&') escaped[j++] = L'&';
@@ -165,23 +226,24 @@ static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
             escaped[j] = 0;
             if (!AppendMenuW(outfits, MF_STRING | (outfit == i + 1 ? MF_CHECKED : 0),
                 MENU_OUTFIT_FIRST + i + 1, escaped)) {
-                DestroyMenu(outfits); DestroyMenu(menu); return 0;
+                destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0;
             }
         }
         if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)outfits, strings.outfit)) {
-            DestroyMenu(outfits); DestroyMenu(menu); return 0;
+            destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0;
         }
+        ++attached;
     }
     if (package && package->meta.count) {
-        HMENU actions = CreatePopupMenu();
-        if (!actions) { DestroyMenu(menu); return 0; }
-        HMENU automatic = CreatePopupMenu();
-        if (!automatic) { DestroyMenu(actions); DestroyMenu(menu); return 0; }
+        HMENU actions = tracked_menu(resources);
+        if (!actions) { destroy_menu(resources, menu, attached); return 0; }
+        HMENU automatic = tracked_menu(resources);
+        if (!automatic) { destroy_menu(resources, actions, 1); destroy_menu(resources, menu, attached); return 0; }
         for (unsigned i = 0; i < package->meta.count; ++i) {
             wchar_t name[161], escaped[321];
             int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
                 (const char *)package->meta.items[i].name, -1, name, 161);
-            if (!n) { DestroyMenu(automatic); DestroyMenu(actions); DestroyMenu(menu); return 0; }
+            if (!n) { destroy_menu(resources, automatic, 1); destroy_menu(resources, actions, 1); destroy_menu(resources, menu, attached); return 0; }
             size_t j = 0;
             for (int k = 0; k < n - 1; ++k) {
                 if (name[k] == L'&') escaped[j++] = L'&';
@@ -196,15 +258,17 @@ static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
                     (idle->enabled & bit ? MF_CHECKED : 0) |
                     (managed ? MF_GRAYED : 0),
                     MENU_AUTO_FIRST + i, escaped)) {
-                DestroyMenu(automatic); DestroyMenu(actions); DestroyMenu(menu); return 0;
+                destroy_menu(resources, automatic, 1); destroy_menu(resources, actions, 1); destroy_menu(resources, menu, attached); return 0;
             }
         }
         if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)actions, strings.activities)) {
-            DestroyMenu(automatic); DestroyMenu(actions); DestroyMenu(menu); return 0;
+            destroy_menu(resources, automatic, 1); destroy_menu(resources, actions, 1); destroy_menu(resources, menu, attached); return 0;
         }
+        ++attached;
         if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)automatic, strings.automatic)) {
-            DestroyMenu(automatic); DestroyMenu(menu); return 0;
+            destroy_menu(resources, automatic, 1); destroy_menu(resources, menu, attached); return 0;
         }
+        ++attached;
     }
     if (!AppendMenuW(menu, MF_STRING | (topmost ? MF_CHECKED : 0), MENU_TOPMOST, strings.topmost) ||
         !AppendMenuW(menu, MF_STRING | (reduced ? MF_CHECKED : 0), MENU_REDUCED, strings.reduced) ||
@@ -212,12 +276,14 @@ static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
         !AppendMenuW(menu, MF_STRING | (managed || reduced ? MF_GRAYED : 0), MENU_INTERACT, strings.interact) ||
         !AppendMenuW(menu, MF_SEPARATOR, 0, NULL) ||
         !AppendMenuW(menu, MF_STRING, MENU_EXIT, strings.exit)) {
-        DestroyMenu(menu); return 0;
+        destroy_menu(resources, menu, attached); return 0;
     }
-    unsigned command = (unsigned)TrackPopupMenuEx(menu,
+    unsigned command = display ? (unsigned)TrackPopupMenuEx(menu,
         TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-        at.x, at.y, window, NULL);
-    DestroyMenu(menu); /* also destroys attached submenu */
+        at.x, at.y, window, NULL) : 0;
+    if (destroy_menu(resources, menu, attached)) {
+        if (built) *built = 1;
+    }
     return command;
 }
 
@@ -325,7 +391,10 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     uint32_t rng = (uint32_t)GetTickCount64() ^ GetCurrentProcessId();
     pet_surface surface = {0};
     surface.resources = memory->resource_bridge;
-    LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    LPWSTR *argv = NULL;
+    if (!pet_reserve(memory->resource_bridge, PET_RESOURCE_ARGV, 1)) goto cleanup;
+    argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) pet_release(memory->resource_bridge, PET_RESOURCE_ARGV, 1);
     if (!argv || !sample || !validate || !sample_activity || !validate_activity || !parse_package) goto cleanup;
     for (int i = 1; i < argc; ++i) {
         if (wcscmp(argv[i], L"--smoke") == 0 && !smoke) smoke = 1;
@@ -340,11 +409,11 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         } else if (wcscmp(argv[i], L"--remember") == 0 && !remember) remember = 1;
         else if (wcscmp(argv[i], L"--reset-position") == 0 && !reset_position) reset_position = 1;
         else if (wcscmp(argv[i], L"--stop-handle") == 0 && !stop && i + 1 < argc &&
-            (stop = parse_inherited_handle(argv[i + 1])) != NULL) ++i;
+            (stop = parse_inherited_handle(memory->resource_bridge, argv[i + 1], state_map, state_event)) != NULL) ++i;
         else if (wcscmp(argv[i], L"--state-map") == 0 && !state_map && i + 1 < argc &&
-            (state_map = parse_inherited_handle(argv[i + 1])) != NULL) ++i;
+            (state_map = parse_inherited_handle(memory->resource_bridge, argv[i + 1], stop, state_event)) != NULL) ++i;
         else if (wcscmp(argv[i], L"--state-event") == 0 && !state_event && i + 1 < argc &&
-            (state_event = parse_inherited_handle(argv[i + 1])) != NULL) ++i;
+            (state_event = parse_inherited_handle(memory->resource_bridge, argv[i + 1], stop, state_map)) != NULL) ++i;
         else if (wcscmp(argv[i], L"--language") == 0 && !language_set && i + 1 < argc &&
             pet_language_parse(argv[i + 1], &language)) {
             language_set = 1;
@@ -392,8 +461,12 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         if (state != WAIT_TIMEOUT) goto cleanup;
     }
     if (state_map) {
+        if (!pet_reserve(memory->resource_bridge, PET_RESOURCE_IPC, 1)) goto cleanup;
         state_slot = MapViewOfFile(state_map, FILE_MAP_READ, 0, 0, sizeof(LONG));
-        if (!state_slot) goto cleanup;
+        if (!state_slot) {
+            pet_release(memory->resource_bridge, PET_RESOURCE_IPC, 1);
+            goto cleanup;
+        }
         last_word = pet_state_read(state_slot);
         if (!pet_state_valid(last_word)) goto cleanup;
         reaction = last_word & 15u;
@@ -426,8 +499,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         }
     }
     if (remember) {
-        LSTATUS status = RegOpenKeyExW(HKEY_CURRENT_USER, PET_CONFIG_KEY, 0,
-            KEY_QUERY_VALUE | KEY_SET_VALUE, &settings);
+        LSTATUS status = open_settings(memory->resource_bridge, &settings);
         if (status == ERROR_FILE_NOT_FOUND) {
             /* Defer creation until a clean, visible exit. */
             can_save = 1;
@@ -451,6 +523,19 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         (path ? pet_demo_load_webp(memory, path, version, validate, &bytes) : synthetic_atlas(memory, &bytes));
     if (!atlas) goto cleanup;
     if (pet_surface_open_scaled(&surface, topmost, FALSE, scale) != PET_SURFACE_OK) goto cleanup;
+    if (smoke) {
+        /* Synthetic metadata only; do not display a modal menu or save settings. */
+        package.meta.outfit_count = 1;
+        package.meta.count = 1;
+        memcpy(package.meta.outfits[0].name, "Test outfit", sizeof("Test outfit"));
+        memcpy(package.meta.items[0].name, "Test activity", sizeof("Test activity"));
+        package.meta.items[0].reps[0].frames = 4;
+        int built = 0;
+        (void)pet_menu(memory->resource_bridge, surface.window, (POINT){0, 0},
+            scale, topmost, reduced, state_slot != NULL, language, &package, &idle, 0, 0, &built);
+        ZeroMemory(&package.meta, sizeof(package.meta));
+        if (!built) goto cleanup;
+    }
     RECT work = {0};
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) goto cleanup;
     LONG x = clamp_long((int64_t)work.right - surface.width - 24);
@@ -507,8 +592,8 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                             goto cleanup;
                         last_row = base.row; last_column = base.column;
                     }
-                    unsigned command = pet_menu(surface.window, cursor, scale, topmost,
-                        reduced, state_slot != NULL, language, &package, &idle, outfit);
+                    unsigned command = pet_menu(memory->resource_bridge, surface.window, cursor, scale, topmost,
+                        reduced, state_slot != NULL, language, &package, &idle, outfit, 1, NULL);
                     /* Check the owner signal immediately after the modal menu. */
                     if (stop && WaitForSingleObject(stop, 0) == WAIT_OBJECT_0) {
                         stopped = 1; done = 1; break;
@@ -769,9 +854,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     }
     rc = 0;
     if (remember && can_save && shown) {
-        if (!settings && RegCreateKeyExW(HKEY_CURRENT_USER, PET_CONFIG_KEY, 0, NULL,
-            REG_OPTION_NON_VOLATILE, KEY_QUERY_VALUE | KEY_SET_VALUE, NULL, &settings,
-            NULL) != ERROR_SUCCESS) settings = NULL;
+        if (!settings) (void)create_settings(memory->resource_bridge, &settings);
         pet_config next = {x, y, scale, PET_CONFIG_POSITION |
             (topmost ? PET_CONFIG_TOPMOST : 0) | (reduced ? PET_CONFIG_REDUCED : 0)};
         if (!settings || pet_config_save(settings, &next) != PET_CONFIG_OK)
@@ -789,16 +872,22 @@ cleanup:
             rc = 1;
         }
     }
-    if (settings) RegCloseKey(settings);
-    if (state_slot) UnmapViewOfFile((const void *)state_slot);
-    if (state_event && state_event != stop) CloseHandle(state_event);
-    if (state_map && state_map != stop && state_map != state_event) CloseHandle(state_map);
-    if (stop) CloseHandle(stop);
+    close_settings(memory->resource_bridge, settings);
+    if (state_slot) {
+        if (UnmapViewOfFile((const void *)state_slot)) pet_release(memory->resource_bridge, PET_RESOURCE_IPC, 1);
+        else pet_cleanup_failed(memory->resource_bridge, PET_RESOURCE_IPC);
+    }
+    if (state_event && state_event != stop) close_ipc(memory->resource_bridge, state_event);
+    if (state_map && state_map != stop && state_map != state_event) close_ipc(memory->resource_bridge, state_map);
+    close_ipc(memory->resource_bridge, stop);
     if (surface.window && GetCapture() == surface.window) ReleaseCapture();
     if (pet_surface_close(&surface) != PET_SURFACE_OK) rc = 1;
     pet_free(memory, activity, activity_bytes);
     pet_free(memory, atlas, bytes);
     pet_package_close(memory, &package);
-    if (argv) LocalFree(argv);
+    if (argv) {
+        if (!LocalFree(argv)) pet_release(memory->resource_bridge, PET_RESOURCE_ARGV, 1);
+        else pet_cleanup_failed(memory->resource_bridge, PET_RESOURCE_ARGV);
+    }
     return rc;
 }

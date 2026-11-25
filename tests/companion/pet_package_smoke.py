@@ -35,6 +35,7 @@ def main() -> None:
             # Expected rejection must not hide a failed cleanup.
             assert b"Companion heap: live=0 allocations=0" in result.stderr, result.stderr
             assert b"Companion resources: files=0 codec=0 dib=0 cleanup_failures=0" in result.stderr, result.stderr
+            assert b"Companion native: ipc=0 registry=0 menus=0 argv=0" in result.stderr, result.stderr
             if stage is not None:
                 assert stage in result.stderr, result.stderr
 

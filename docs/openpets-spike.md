@@ -920,3 +920,26 @@ reset failures use the notification resource category, not the codec
 category. The native task smoke checks zero live and one peak event
 reservation. Unit tests cover quota rejection and drain enforcement.
 Other IPC, menu and registry resources remain outside this quota.
+
+## Shared native ownership profile — phase 5
+
+Runs 45549627810 and 45549771219 passed both platforms and the regression
+gate, including the real worker failure/drain smoke. Extend companion
+resource accounting to unique explicitly inherited IPC handles (three)
+and the read-only mapped view (one), one registry key, five native
+popup menus and one CommandLineToArgvW allocation scope. These are
+object counts, not estimates of their native memory consumption.
+A duplicate inherited handle is charged and closed once even on invalid
+arguments. Map/open/create failure returns its reservation; unsuccessful
+native cleanup records failure and does not claim a drained resource.
+Registry policy is unchanged: only explicit --remember, no overwrite
+of incompatible settings, no creation until a clean visible exit.
+A popup tree owns its attached submenus; unattached menus are released
+separately on failure, while successful DestroyMenu(root) returns the
+entire attached count. Hidden smoke builds and destroys the full
+five-menu tree without displaying it or modifying the registry.
+The inherited-stop test checks pre-signaled and duplicate rejection
+drain, and package admission tests check the added zero-live line.
+No change to the shared runtime API or general extension behavior.
+Window/DC object counts, WIC internal objects, OS allocation bytes,
+actual visual interaction and host unload acceptance remain separate.

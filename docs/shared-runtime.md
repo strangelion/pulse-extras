@@ -419,3 +419,10 @@ the UI through an event, joins before mailbox access and stops before
 closing pinned resources. Startup and the explicit diagnostic strip
 path remain synchronous. Foreign WIC execution is not hard-cancellable;
 successful artwork and UI responsiveness require native acceptance.
+
+Companion phase 5 adds object-count budgets for inherited IPC handles
+and mapped view, registry key, native menu tree and argument allocation
+scope. Attached menu ownership follows DestroyMenu recursion. Failed
+native release retains its reservation and produces bounded diagnostics.
+Hidden smoke exercises all five menu objects without a modal popup.
+These counts do not represent Windows-internal memory use.

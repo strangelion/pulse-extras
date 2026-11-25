@@ -3,12 +3,16 @@ const std = @import("std");
 const Budget = @import("runtime_budget").Budget;
 const Log = @import("runtime_event_log").Log;
 
-pub const Kind = enum(u32) { file = 0, codec = 1, dib = 2, notify = 3 };
+pub const Kind = enum(u32) { file = 0, codec = 1, dib = 2, notify = 3, ipc = 4, registry = 5, menu = 6, argv = 7 };
 pub const Owner = struct {
     files: Budget = Budget.init(320),
     codecs: Budget = Budget.init(1),
     dib: Budget = Budget.init(2 * 384 * 416 * 4),
     notifications: Budget = Budget.init(1),
+    ipc: Budget = Budget.init(4),
+    registry: Budget = Budget.init(1),
+    menus: Budget = Budget.init(5),
+    argv: Budget = Budget.init(1),
     log: Log = .{},
     cleanup_failures: usize = 0,
     lock: std.atomic.Mutex = .unlocked,
@@ -28,13 +32,18 @@ pub const Owner = struct {
             1 => &self.codecs,
             2 => &self.dib,
             3 => &self.notifications,
+            4 => &self.ipc,
+            5 => &self.registry,
+            6 => &self.menus,
+            7 => &self.argv,
             else => null,
         };
     }
 
     /// Only after all resource users have joined; this is not a join.
     pub fn checkDrained(self: *const Owner) error{OutstandingResources}!void {
-        if (self.files.used != 0 or self.codecs.used != 0 or self.dib.used != 0 or self.notifications.used != 0 or self.cleanup_failures != 0) return error.OutstandingResources;
+        if (self.files.used != 0 or self.codecs.used != 0 or self.dib.used != 0 or self.notifications.used != 0 or self.ipc.used != 0 or self.registry.used != 0 or
+            self.menus.used != 0 or self.argv.used != 0 or self.cleanup_failures != 0) return error.OutstandingResources;
     }
 };
 
@@ -115,5 +124,19 @@ test "notification event has its own bounded reservation and drain gate" {
     try std.testing.expectEqual(@as(c_int, 0), bridge.reserve(bridge.context, 3, 1));
     try std.testing.expectError(error.OutstandingResources, owner.checkDrained());
     bridge.release(bridge.context, 3, 1);
+    try owner.checkDrained();
+}
+
+test "native IPC registry menu and argument quotas drain independently" {
+    var owner: Owner = .{};
+    const bridge = Bridge.init(&owner);
+    const limits = [_]usize{ 4, 1, 5, 1 };
+    for (limits, 4..) |limit, kind| {
+        const code: u32 = @intCast(kind);
+        try std.testing.expectEqual(@as(c_int, 1), bridge.reserve(bridge.context, code, limit));
+        try std.testing.expectEqual(@as(c_int, 0), bridge.reserve(bridge.context, code, 1));
+        try std.testing.expectError(error.OutstandingResources, owner.checkDrained());
+        bridge.release(bridge.context, code, limit);
+    }
     try owner.checkDrained();
 }

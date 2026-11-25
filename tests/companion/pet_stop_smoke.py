@@ -24,13 +24,25 @@ def main():
             raise ctypes.WinError(ctypes.get_last_error())
         startup = subprocess.STARTUPINFO(lpAttributeList={"handle_list": [handle]})
         # Pre-signaled: the child must exit successfully before creating a window.
-        subprocess.run(
+        result = subprocess.run(
             [sys.argv[1], "--smoke", "--stop-handle", str(handle)],
             startupinfo=startup,
             close_fds=True,
             check=True,
             timeout=10,
+            capture_output=True,
         )
+        assert b"Companion native: ipc=0 registry=0 menus=0 argv=0 peaks=1/0/0/1" in result.stderr, result.stderr
+        # Duplicate inherited handle arguments are invalid but close only once.
+        duplicate = subprocess.run(
+            [sys.argv[1], "--smoke", "--stop-handle", str(handle),
+             "--state-map", str(handle), "--state-event", str(handle)],
+            startupinfo=startup, close_fds=True, timeout=10, capture_output=True,
+        )
+        assert duplicate.returncode != 0, duplicate.stderr
+        assert b"Companion native: ipc=0 registry=0 menus=0 argv=0 peaks=1/0/0/1" in duplicate.stderr, duplicate.stderr
+        assert b"cleanup_failures=0" in duplicate.stderr, duplicate.stderr
+    
     finally:
         kernel.CloseHandle(handle)
 
