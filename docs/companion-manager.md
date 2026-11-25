@@ -314,3 +314,21 @@ package files, not arbitrary root extras. Test uses independent Python
 hashlib framing, successful expected digest and modified metadata rejection.
 No import copy/transaction, root ACL provisioning or legacy migration UI yet.
 Latest Windows regression and mixed preflight pending.
+
+## Exclusive staged package copy
+
+The approved helper now accepts --fingerprint-package SOURCE ID
+--expected-sha256 DIGEST --stage-root PRIVATE_ROOT ID_HEX. It verifies the
+source digest, keeps metadata and declared assets pinned, copies only those
+files through a 16 KiB buffer to an exclusive pet-<id>.pending directory,
+flushes each file, releases source pins, opens the copy with the normal
+validator and verifies the digest again. Only then close copy handles and
+rename to pet-<id> without replacement. Source files are never written.
+A failed or interrupted copy may retain a pending directory; no recursive
+blind deletion or overwrite. Root ACL approval remains required. Header
+validation is not a full image decode. The catalog transaction must reserve
+and persist the high-water mark before invoking this helper, validate its
+exit/output, then publish/save the inventory; not wired in this commit.
+Windows package smoke now exercises real staging, byte equality and
+existing target rejection. Previous SHA inventory regression passed; new
+native staging tests and prior fingerprint integration await CI.

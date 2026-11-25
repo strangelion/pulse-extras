@@ -147,6 +147,7 @@ void pet_package_close(const pet_memory *memory, pet_package *package) {
     if (package->wardrobe) tracked_close(memory, package->wardrobe);
     if (package->atlas) tracked_close(memory, package->atlas);
     if (package->activities) tracked_close(memory, package->activities);
+    if (package->metadata) tracked_close(memory, package->metadata);
     if (package->root) tracked_close(memory, package->root);
     ZeroMemory(package, sizeof(*package));
 }
@@ -317,6 +318,7 @@ BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wcha
     if (digest && fingerprint(hashes, hash_count, digest)) goto cleanup;
     ok = TRUE;
 cleanup:
+    if (ok) { package->metadata = metadata; metadata = NULL; }
     if (metadata) tracked_close(memory, metadata);
     pet_free(memory, data, length);
     if (!ok) {
@@ -324,6 +326,98 @@ cleanup:
         pet_package_close(memory, package);
     }
     return ok;
+}
+
+/* Copy only already-pinned declared files. Fixed streaming buffer, exclusive
+ * destination, no recursive enumeration of user files, no source mutation. */
+static BOOL stage_copy(const pet_memory *memory, HANDLE source, const wchar_t *dest, DWORD limit) {
+    BY_HANDLE_FILE_INFORMATION info;
+    LARGE_INTEGER zero = {0};
+    if (!source || !GetFileInformationByHandle(source, &info) ||
+        info.nFileSizeHigh || !info.nFileSizeLow || info.nFileSizeLow > limit ||
+        !SetFilePointerEx(source, zero, NULL, FILE_BEGIN)) return FALSE;
+    if (!pet_reserve(memory->resource_bridge, PET_RESOURCE_FILE, 1)) return FALSE;
+    HANDLE out = CreateFileW(dest, GENERIC_WRITE, 0, NULL, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
+    if (out == INVALID_HANDLE_VALUE) {
+        pet_release(memory->resource_bridge, PET_RESOURCE_FILE, 1);
+        return FALSE;
+    }
+    BYTE buffer[16384];
+    DWORD remaining = info.nFileSizeLow;
+    BOOL ok = TRUE;
+    while (remaining) {
+        DWORD got = 0, written = 0;
+        DWORD want = remaining < sizeof(buffer) ? remaining : (DWORD)sizeof(buffer);
+        if (!ReadFile(source, buffer, want, &got, NULL) || !got || got > want ||
+            !WriteFile(out, buffer, got, &written, NULL) || written != got) {
+            ok = FALSE;
+            break;
+        }
+        remaining -= got;
+    }
+    DWORD extra = 0;
+    if (ok && (!ReadFile(source, buffer, 1, &extra, NULL) || extra || !FlushFileBuffers(out))) ok = FALSE;
+    if (!CloseHandle(out)) {
+        pet_cleanup_failed(memory->resource_bridge, PET_RESOURCE_FILE);
+        ok = FALSE;
+    } else pet_release(memory->resource_bridge, PET_RESOURCE_FILE, 1);
+    /* A failed stage is quarantined by its distinct pending name. No blind
+     * deletion of paths when the outcome or ownership is ambiguous. */
+    return ok;
+}
+
+BOOL pet_package_stage(const pet_memory *memory, const pet_package *package,
+    const wchar_t *asset_root, const wchar_t *id_hex, wchar_t *stage, wchar_t *final, HANDLE *root_pin) {
+    if (!package || !package->metadata || !asset_root || !id_hex || !stage || !final || !root_pin || *root_pin)
+        return FALSE;
+    if (wcslen(id_hex) != 16 || wcscmp(id_hex, L"0000000000000000") == 0) return FALSE;
+    for (unsigned i = 0; i < 16; ++i) {
+        wchar_t ch = id_hex[i];
+        if (!((ch >= L'0' && ch <= L'9') || (ch >= L'a' && ch <= L'f'))) return FALSE;
+    }
+    wchar_t full[1020], root[1024] = L"\\\\?\\";
+    DWORD n = GetFullPathNameW(asset_root, 1020, full, NULL);
+    if (n < 4 || n >= 960 || full[1] != L':' || full[2] != L'\\') return FALSE;
+    n = GetLongPathNameW(full, root + 4, 1020);
+    if (n < 4 || n >= 900 || root[n + 3] == L'\\') return FALSE;
+    *root_pin = package_handle(memory, root, TRUE);
+    if (!*root_pin) return FALSE;
+    int a = swprintf(stage, 1024, L"%ls\\pet-%ls.pending", root + 4, id_hex);
+    int b = swprintf(final, 1024, L"%ls\\pet-%ls", root + 4, id_hex);
+    if (a <= 0 || a >= 1024 || b <= 0 || b >= 1024) return FALSE;
+    if (GetFileAttributesW(final) != INVALID_FILE_ATTRIBUTES || GetLastError() != ERROR_FILE_NOT_FOUND)
+        return FALSE;
+    if (!CreateDirectoryW(stage, NULL)) return FALSE;
+    wchar_t dest[1024], folder[1024], leaf[80];
+    if (!join_path(dest, 1024, stage, L"pet.json") ||
+        !stage_copy(memory, package->metadata, dest, 128u * 1024u) ||
+        !join_path(dest, 1024, stage, L"spritesheet.webp") ||
+        !stage_copy(memory, package->atlas, dest, MAX_COMPRESSED)) return FALSE;
+    if (package->meta.outfit_count) {
+        if (!join_path(folder, 1024, stage, L"outfits") || !CreateDirectoryW(folder, NULL)) return FALSE;
+        for (unsigned i = 0; i < package->meta.outfit_count; ++i) {
+            if (!leaf_wide(package->meta.outfits[i].leaf, leaf, 80) ||
+                !join_path(dest, 1024, folder, leaf) ||
+                !stage_copy(memory, package->outfit_files[i], dest, MAX_COMPRESSED)) return FALSE;
+        }
+    }
+    if (package->meta.count) {
+        if (!join_path(folder, 1024, stage, L"activities") || !CreateDirectoryW(folder, NULL)) return FALSE;
+        for (unsigned i = 0; i < package->meta.count; ++i)
+            for (unsigned j = 0; j <= package->meta.outfit_count; ++j) {
+                const pet_package_rep *rep = &package->meta.items[i].reps[j];
+                if (!rep->frames) continue;
+                if (!leaf_wide(rep->leaf, leaf, 80) ||
+                    !join_path(dest, 1024, folder, leaf) ||
+                    !stage_copy(memory, package->files[i][j], dest, 2u * 1024u * 1024u)) return FALSE;
+            }
+    }
+    return TRUE;
+}
+
+void pet_package_stage_close(const pet_memory *memory, HANDLE root_pin) {
+    if (root_pin) tracked_close(memory, root_pin);
 }
 
 static uint8_t *decode_static(const pet_memory *memory, const wchar_t *path, HANDLE pinned, unsigned kind,

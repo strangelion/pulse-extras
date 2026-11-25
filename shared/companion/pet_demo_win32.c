@@ -410,7 +410,8 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     pet_preferences restored_prefs = {0};
     const wchar_t *path = NULL, *package_dir = NULL, *package_id = NULL;
     int check_package = 0, check_task = 0, fingerprint_package = 0, async_bound = 0;
-    const wchar_t *expected_sha = NULL;
+    const wchar_t *expected_sha = NULL, *stage_root = NULL, *stage_id = NULL;
+    HANDLE stage_pin = NULL;
     pet_package package = {0};
     native_decode decode_ctx = {memory, &package, validate, validate_activity, NULL, 0};
     uint8_t *atlas = NULL, *activity = NULL;
@@ -473,6 +474,9 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             ++i;
         } else if (!expected_sha && wcscmp(argv[i], L"--expected-sha256") == 0 && i + 1 < argc) {
             expected_sha = argv[++i];
+        } else if (!stage_root && wcscmp(argv[i], L"--stage-root") == 0 && i + 2 < argc) {
+            stage_root = argv[++i];
+            stage_id = argv[++i];
         } else if (!package_dir && i + 2 < argc &&
             (wcscmp(argv[i], L"--package") == 0 || wcscmp(argv[i], L"--check-package") == 0 ||
              wcscmp(argv[i], L"--check-package-task") == 0 ||
@@ -498,7 +502,8 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         }
     }
     pet_demo_sample activity_check = {0};
-    if ((expected_sha && (!package_dir || wcslen(expected_sha) != 64)) ||
+    if ((stage_root && (!fingerprint_package || !expected_sha)) ||
+        (expected_sha && (!package_dir || wcslen(expected_sha) != 64)) ||
         (package_dir && (path || activity_path || smoke || (state_map && (!ready_event || remember)))) ||
         ((check_package || check_task) && (stop || remember || reset_position || gaze_set)) ||
         (activity_path && (smoke || state_map ||
@@ -552,6 +557,30 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                         goto cleanup;
                     }
                 }
+            }
+            if (stage_root) {
+                wchar_t staged[1024], final[1024];
+                uint8_t copied_digest[32];
+                if (!pet_package_stage(memory, &package, stage_root, stage_id, staged, final, &stage_pin)) {
+                    fputs("Package import failed at stage-copy (pending directory may remain).\n", stderr);
+                    goto cleanup;
+                }
+                pet_package_close(memory, &package);
+                if (!pet_package_open(memory, &package, staged, package_id, parse_package, validate, validate_activity,
+                    hash, fingerprint, copied_digest) || memcmp(digest, copied_digest, 32)) {
+                    fputs("Package import failed at stage-verification (pending directory retained).\n", stderr);
+                    goto cleanup;
+                }
+                /* All file and directory handles must be released before the
+                 * same-volume rename. Caller-owned root remains pinned. */
+                pet_package_close(memory, &package);
+                if (!MoveFileExW(staged, final, MOVEFILE_WRITE_THROUGH)) {
+                    fputs("Package import failed at stage-publish (pending directory retained).\n", stderr);
+                    goto cleanup;
+                }
+                printf("PULSE_PACKAGE_STAGED_V1 %s\n", hex);
+                rc = 0;
+                goto cleanup;
             }
             if (fingerprint_package) printf("PULSE_PACKAGE_SHA256_V1 %s\n", hex);
         }
@@ -1132,6 +1161,7 @@ cleanup:
     pet_free(memory, activity, activity_bytes);
     pet_free(memory, atlas, bytes);
     pet_package_close(memory, &package);
+    pet_package_stage_close(memory, stage_pin);
     if (argv) {
         if (!LocalFree(argv)) pet_release(memory->resource_bridge, PET_RESOURCE_ARGV, 1);
         else pet_cleanup_failed(memory->resource_bridge, PET_RESOURCE_ARGV);

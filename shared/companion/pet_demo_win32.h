@@ -71,7 +71,7 @@ typedef int (*pet_package_parse_fn)(const pet_memory *, const uint8_t *, size_t,
     const uint8_t *, size_t, pet_package_meta *);
 typedef struct {
     pet_package_meta meta;
-    HANDLE root, activities, wardrobe, atlas;
+    HANDLE root, activities, wardrobe, atlas, metadata;
     HANDLE outfit_files[PET_PACKAGE_MAX];
     HANDLE files[PET_PACKAGE_MAX][PET_OUTFIT_SLOTS];
 } pet_package;
@@ -88,6 +88,11 @@ BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wcha
     pet_demo_validate_fn validate, pet_demo_validate_fn validate_activity,
     pet_hash_fn hash, pet_fingerprint_fn fingerprint, uint8_t *digest);
 void pet_package_close(const pet_memory *memory, pet_package *package);
+/* Caller owns an ACL-protected asset root. Stage exclusively, never overwrite.
+ * Keep the root pinned until verification/rename or failure. */
+BOOL pet_package_stage(const pet_memory *memory, const pet_package *package,
+    const wchar_t *asset_root, const wchar_t *id_hex, wchar_t *stage, wchar_t *final, HANDLE *root_pin);
+void pet_package_stage_close(const pet_memory *memory, HANDLE root_pin);
 uint8_t *pet_package_load_atlas(const pet_memory *memory, const pet_package *package, unsigned outfit,
     pet_demo_validate_fn validate, size_t *decoded_bytes);
 uint8_t *pet_package_load_activity(const pet_memory *memory, const pet_package *package, unsigned index, unsigned outfit,

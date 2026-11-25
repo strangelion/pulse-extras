@@ -64,6 +64,25 @@ def main() -> None:
         result = subprocess.run([str(exe), "--check-package", str(root), "cat",
                                  "--expected-sha256", expected_sha], timeout=15, capture_output=True)
         assert result.returncode == 0, result.stderr
+        # Real staged copy. The independent source hash and bytes must survive.
+        managed = pathlib.Path(tmp) / "managed assets"
+        managed.mkdir()
+        args = [str(exe), "--fingerprint-package", str(root), "cat",
+                "--expected-sha256", expected_sha, "--stage-root", str(managed),
+                "0000000000000001"]
+        result = subprocess.run(args, timeout=20, capture_output=True)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == f"PULSE_PACKAGE_STAGED_V1 {expected_sha}".encode()
+        copied = managed / "pet-0000000000000001"
+        assert copied.is_dir() and not (managed / "pet-0000000000000001.pending").exists()
+        for file in root.rglob("*"):
+            if file.is_file():
+                assert (copied / file.relative_to(root)).read_bytes() == file.read_bytes()
+        assert reference() == expected_sha
+        result = subprocess.run(args, timeout=20, capture_output=True)
+        assert result.returncode != 0, result.stderr
+        assert reference() == expected_sha and copied.is_dir()
+        assert b"Companion resources: files=0 codec=0 dib=0 cleanup_failures=0" in result.stderr
         manifest["gazeAnchor"] = {"x": 0.5, "y": 0.25}
         (root / "pet.json").write_text(json.dumps(manifest), encoding="utf-8")
         check(True)  # valid metadata on V1 is inert
