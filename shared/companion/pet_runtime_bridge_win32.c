@@ -2,6 +2,7 @@
 #include "pet_supervisor_win32.h"
 #include "pet_private_root_win32.h"
 #include "pet_catalog_store_win32.h"
+#include <wchar.h>
 
 typedef struct {
     uint32_t version, size;
@@ -66,4 +67,68 @@ __declspec(dllexport) pet_store_result pulse_companion_store_write_v1(
     if (!live_lease(lease, size)) return PET_STORE_INVALID;
     return id ? pet_store_write(lease->path, id, data, length) :
         pet_inventory_write(lease->path, data, length);
+}
+
+
+/* Read-only top-level scan. Names are reduced to fixed namespace kinds and
+ * IDs; never return paths, traverse reparse points or adopt unknown entries.
+ * Exact lower-case names only, independently of volume case sensitivity. */
+typedef struct {
+    uint64_t id;
+    uint32_t kind, attributes;
+} pet_scan_row;
+enum { SCAN_UNKNOWN, SCAN_PACKAGE, SCAN_PENDING, SCAN_PREFERENCE,
+    SCAN_INVENTORY, SCAN_INVENTORY_PENDING, SCAN_LOCK };
+#define PET_SCAN_MAX 4096u
+
+static pet_scan_row scan_row(const WIN32_FIND_DATAW *data) {
+    const wchar_t *name = data->cFileName;
+    pet_scan_row row = {0, SCAN_UNKNOWN, data->dwFileAttributes};
+    if (!wcscmp(name, L"inventory.pci")) row.kind = SCAN_INVENTORY;
+    else if (!wcscmp(name, L"inventory.pending")) row.kind = SCAN_INVENTORY_PENDING;
+    else if (!wcscmp(name, L"owner.lock")) row.kind = SCAN_LOCK;
+    else if (wcslen(name) >= 20 && !wcsncmp(name, L"pet-", 4)) {
+        uint64_t id = 0;
+        for (size_t i = 4; i < 20; ++i) {
+            wchar_t ch = name[i];
+            unsigned digit;
+            if (ch >= L'0' && ch <= L'9') digit = (unsigned)(ch - L'0');
+            else if (ch >= L'a' && ch <= L'f') digit = (unsigned)(ch - L'a' + 10);
+            else return row;
+            id = (id << 4) | digit;
+        }
+        if (!id) return row;
+        if (!name[20]) row.kind = SCAN_PACKAGE;
+        else if (!wcscmp(name + 20, L".pending")) row.kind = SCAN_PENDING;
+        else if (!wcscmp(name + 20, L".pct")) row.kind = SCAN_PREFERENCE;
+        if (row.kind != SCAN_UNKNOWN) row.id = id;
+    }
+    return row;
+}
+
+__declspec(dllexport) pet_store_result pulse_companion_scan_v1(
+    const pet_private_root *lease, SIZE_T size, pet_scan_row *out,
+    SIZE_T capacity, SIZE_T *written) {
+    if (!written) return PET_STORE_INVALID;
+    *written = 0;
+    if (!live_lease(lease, size) || !out || !capacity || capacity > PET_SCAN_MAX)
+        return PET_STORE_INVALID;
+    wchar_t pattern[PET_PRIVATE_PATH_CAP];
+    int n = swprintf(pattern, PET_PRIVATE_PATH_CAP, L"%ls\\*", lease->path);
+    if (n <= 0 || n >= (int)PET_PRIVATE_PATH_CAP) return PET_STORE_INVALID;
+    WIN32_FIND_DATAW data;
+    HANDLE find = FindFirstFileW(pattern, &data);
+    if (find == INVALID_HANDLE_VALUE) return PET_STORE_IO;
+    SIZE_T count = 0;
+    pet_store_result result = PET_STORE_OK;
+    do {
+        if (!wcscmp(data.cFileName, L".") || !wcscmp(data.cFileName, L"..")) continue;
+        if (count == capacity) { result = PET_STORE_BUSY; break; }
+        out[count++] = scan_row(&data);
+    } while (FindNextFileW(find, &data));
+    if (result == PET_STORE_OK && GetLastError() != ERROR_NO_MORE_FILES)
+        result = PET_STORE_IO;
+    if (!FindClose(find)) result = PET_STORE_CLEANUP_FAILED;
+    if (result == PET_STORE_OK) *written = count;
+    return result;
 }

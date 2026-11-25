@@ -77,6 +77,14 @@ def main() -> None:
         data.extend(source_id + b"\x02" + pair)
     with (root / "inventory.pci").open("xb") as stream:
         stream.write(data)
+    # No paths overlap the normal launch/import IDs. These artifacts must
+    # survive read-only recovery enumeration unchanged.
+    (root / "pet-0000000000000009").mkdir()
+    (root / "pet-000000000000000a.pending").mkdir()
+    (root / "pet-000000000000000b").write_bytes(b"wrong type")
+    (root / "pet-000000000000000c.pending").write_bytes(b"pending record")
+    (root / "pet-000000000000000d.pct").write_bytes(b"orphan preference")
+    (root / "unknown.txt").write_bytes(b"never delete")
 
 
 if __name__ == "__main__":

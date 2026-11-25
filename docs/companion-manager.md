@@ -1040,3 +1040,17 @@ late cancellation never claims that a committed write was rolled back.
 The real bridge fixture cancels after a successful probe and verifies the
 next import still receives the original next ID. This does not interrupt
 an in-flight synchronous helper; its existing deadline still applies.
+
+## Read-only recovery scan
+
+The lease-bound runtime exports a bounded top-level enumeration (4096
+entries maximum, no partial result). Exact fixed namespace names are
+reduced to typed IDs and attributes, then compared with the durable
+inventory. The report distinguishes registered and missing packages,
+orphan packages/preferences, pending directories/records, invalid types
+or reparse points, unknown names and IDs outside the reserved range.
+It does not recurse, validate file contents, repair, delete, or authorize
+launch. The isolated integration fixture verifies an incomplete enumeration
+fails and repeated full scans classify the same anomalies. This is the
+foundation for an explicit repair/deletion journal; no destructive action
+or UI recovery button is exposed yet.

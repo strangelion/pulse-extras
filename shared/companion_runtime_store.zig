@@ -6,6 +6,7 @@ const inventory = @import("companion/pet_inventory.zig");
 const catalog = @import("companion/pet_catalog.zig");
 const importing = @import("companion/pet_import.zig");
 const fingerprint = @import("companion/pet_fingerprint.zig");
+const recovery = @import("companion/pet_recovery_scan.zig");
 
 pub fn loadInventory(owner: *runtime.Owner, out: *inventory.Inventory) !bool {
     var bytes: [inventory.max_bytes]u8 = undefined;
@@ -23,6 +24,19 @@ pub fn saveInventory(owner: *runtime.Owner, value: *const inventory.Inventory) !
     }
     var bytes: [inventory.max_bytes]u8 = undefined;
     try owner.writeStore(0, try inventory.encode(value, &bytes));
+}
+
+// A complete bounded scan under the private lease. No mutation or automatic
+// adoption; a malformed inventory or incomplete enumeration is an error.
+pub fn scanRecovery(owner: *runtime.Owner) !recovery.Report {
+    const index = try std.heap.page_allocator.create(inventory.Inventory);
+    defer std.heap.page_allocator.destroy(index);
+    index.* = .{};
+    _ = try loadInventory(owner, index);
+    const rows = try std.heap.page_allocator.alloc(recovery.Row, recovery.max_rows);
+    defer std.heap.page_allocator.free(rows);
+    const count = try owner.scanStore(rows);
+    return recovery.classify(index, rows[0..count]);
 }
 
 pub fn loadPreferences(owner: *runtime.Owner, entry: *catalog.Entry) !bool {

@@ -3,6 +3,7 @@
 //! originate outside this loader. Never use asset paths or UI-entered paths.
 const std = @import("std");
 const runtime = @import("companion_group.zig");
+const scan = @import("companion/pet_recovery_scan.zig");
 
 const invalid = @as(usize, @bitCast(@as(isize, -1)));
 const name = std.unicode.wtf8ToWtf16LeStringLiteral("pulse_companion_runtime.dll");
@@ -30,6 +31,7 @@ const LeaseOpen = *const fn (*Lease, usize, [*:0]const u16) callconv(.c) c_int;
 const LeaseClose = *const fn (*Lease, usize) callconv(.c) c_int;
 const StoreRead = *const fn (*const Lease, usize, u64, [*]u8, usize, *usize) callconv(.c) c_int;
 const StoreWrite = *const fn (*const Lease, usize, u64, [*]const u8, usize) callconv(.c) c_int;
+const StoreScan = *const fn (*const Lease, usize, [*]scan.Row, usize, *usize) callconv(.c) c_int;
 
 extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, ?*anyopaque) callconv(.winapi) usize;
 extern "kernel32" fn CloseHandle(usize) callconv(.winapi) c_int;
@@ -183,6 +185,19 @@ pub const Owner = struct {
             self.store_faulted = true;
             return err;
         };
+    }
+
+    pub fn scanStore(self: *Owner, rows: []scan.Row) !usize {
+        if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
+        if (rows.len == 0 or rows.len > scan.max_rows) return error.InvalidScan;
+        const enumerate: StoreScan = @ptrCast(GetProcAddress(self.module, "pulse_companion_scan_v1") orelse return error.MissingStoreApi);
+        var count: usize = 0;
+        checkStore(enumerate(&self.lease, @sizeOf(Lease), rows.ptr, rows.len, &count)) catch |err| {
+            if (err == error.CleanupFailed) self.store_faulted = true;
+            return err;
+        };
+        if (count > rows.len) return error.InvalidScan;
+        return count;
     }
 
     // Last-resort terminal shutdown. Caller must report unconfirmed exit.

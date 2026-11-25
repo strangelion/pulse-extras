@@ -208,6 +208,22 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     const record = try index.get(4);
     if (!std.mem.eql(u8, record.sourceId(), "fresh") or record.digest == null or record.secondary == null) return error.UnexpectedImport;
     std.debug.print("Local import and duplicate detection verified through durable bridge\n", .{});
+    const missing_id = try index.reserve();
+    try index.publish(missing_id, "missing-fixture");
+    try store.saveInventory(owner, index);
+    var tiny: [1]@import("companion/pet_recovery_scan.zig").Row = undefined;
+    if (owner.scanStore(&tiny)) |_| {
+        return error.AcceptedTruncatedScan;
+    } else |err| {
+        if (err != error.StoreBusy) return err;
+    }
+    const report = try store.scanRecovery(owner);
+    if (report.registered != 4 or report.missing != 1 or report.orphan_packages != 1 or
+        report.pending_directories != 1 or report.pending_records != 1 or report.orphan_preferences != 1 or
+        report.invalid != 1 or report.unknown != 1 or report.unreserved != 5) return error.UnexpectedRecoveryScan;
+    const repeated = try store.scanRecovery(owner);
+    if (!std.meta.eql(report, repeated)) return error.ScanChangedStore;
+    std.debug.print("Read-only recovery classification and bounded enumeration verified\n", .{});
 }
 
 pub fn main(init: std.process.Init) !void {
