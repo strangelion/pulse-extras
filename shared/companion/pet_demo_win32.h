@@ -75,9 +75,18 @@ typedef struct {
     HANDLE outfit_files[PET_PACKAGE_MAX];
     HANDLE files[PET_PACKAGE_MAX][PET_OUTFIT_SLOTS];
 } pet_package;
+#define PET_FINGERPRINT_MAX_FILES 290u
+typedef struct {
+    uint8_t path[96];
+    uint64_t size;
+    uint8_t digest[32];
+} pet_fingerprint_file;
+typedef void (*pet_hash_fn)(const uint8_t *, size_t, uint8_t *);
+typedef int (*pet_fingerprint_fn)(const pet_fingerprint_file *, size_t, uint8_t *);
 BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wchar_t *folder,
     const wchar_t *id, pet_package_parse_fn parse,
-    pet_demo_validate_fn validate, pet_demo_validate_fn validate_activity);
+    pet_demo_validate_fn validate, pet_demo_validate_fn validate_activity,
+    pet_hash_fn hash, pet_fingerprint_fn fingerprint, uint8_t *digest);
 void pet_package_close(const pet_memory *memory, pet_package *package);
 uint8_t *pet_package_load_atlas(const pet_memory *memory, const pet_package *package, unsigned outfit,
     pet_demo_validate_fn validate, size_t *decoded_bytes);
@@ -105,5 +114,6 @@ typedef struct {
 } pet_async;
 int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_sample_fn sample, pet_demo_validate_fn validate,
     pet_activity_sample_fn sample_activity, pet_demo_validate_fn validate_activity,
-    pet_package_parse_fn parse_package, pet_schedule_fn schedule);
+    pet_package_parse_fn parse_package, pet_schedule_fn schedule,
+    pet_hash_fn hash, pet_fingerprint_fn fingerprint);
 #endif

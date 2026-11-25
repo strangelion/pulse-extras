@@ -1,5 +1,7 @@
 """Header-only package admission fixture; no WIC codec or visible windows."""
 import ctypes
+import hashlib
+import struct
 import json
 import pathlib
 import subprocess
@@ -40,9 +42,35 @@ def main() -> None:
                 assert stage in result.stderr, result.stderr
 
         check(True)
+        # Independent canonical fingerprint reference, using actual file bytes.
+        def reference():
+            files = sorted((p.relative_to(root).as_posix(), p.read_bytes())
+                           for p in root.rglob("*") if p.is_file())
+            digest = hashlib.sha256(b"pulse-classic-package-sha256-v1\\x00")
+            digest.update(struct.pack("<Q", len(files)))
+            for path, data in files:
+                name = path.encode("ascii")
+                digest.update(struct.pack("<Q", len(name)))
+                digest.update(name)
+                digest.update(struct.pack("<Q", len(data)))
+                digest.update(hashlib.sha256(data).digest())
+            return digest.hexdigest()
+
+        expected_sha = reference()
+        result = subprocess.run([str(exe), "--fingerprint-package", str(root), "cat"],
+                                timeout=15, capture_output=True)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == f"PULSE_PACKAGE_SHA256_V1 {expected_sha}".encode(), result.stdout
+        result = subprocess.run([str(exe), "--check-package", str(root), "cat",
+                                 "--expected-sha256", expected_sha], timeout=15, capture_output=True)
+        assert result.returncode == 0, result.stderr
         manifest["gazeAnchor"] = {"x": 0.5, "y": 0.25}
         (root / "pet.json").write_text(json.dumps(manifest), encoding="utf-8")
         check(True)  # valid metadata on V1 is inert
+        result = subprocess.run([str(exe), "--check-package", str(root), "cat",
+                                 "--expected-sha256", expected_sha], timeout=15, capture_output=True)
+        assert result.returncode != 0 and b"fingerprint-mismatch" in result.stderr, result.stderr
+        assert b"Companion heap: live=0 allocations=0" in result.stderr, result.stderr
         manifest["gazeAnchor"]["x"] = -0.1
         (root / "pet.json").write_text(json.dumps(manifest), encoding="utf-8")
         check(False, stage=b"metadata-parse")

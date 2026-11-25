@@ -85,6 +85,9 @@ pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *app
  * child revalidates contents. No arbitrary command-line arguments. */
 pet_child_result pet_group_start_package(pet_supervisor_group *group, const wchar_t *approved_exe,
     const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, uint64_t *id);
+pet_child_result pet_group_start_verified_package(pet_supervisor_group *group, const wchar_t *approved_exe,
+    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id,
+    const wchar_t *expected_sha, uint64_t *id);
 pet_child_result pet_group_publish(pet_supervisor_group *group, uint64_t id, unsigned reaction);
 pet_child_result pet_group_status(pet_supervisor_group *group, uint64_t id, BOOL *running, DWORD *exit_code);
 typedef struct {

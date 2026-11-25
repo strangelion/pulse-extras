@@ -382,7 +382,8 @@ static int take_decode(const pet_async *async, native_decode *ctx, pet_decode_re
 
 int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_sample_fn sample, pet_demo_validate_fn validate,
     pet_activity_sample_fn sample_activity, pet_demo_validate_fn validate_activity,
-    pet_package_parse_fn parse_package, pet_schedule_fn schedule) {
+    pet_package_parse_fn parse_package, pet_schedule_fn schedule,
+    pet_hash_fn hash, pet_fingerprint_fn fingerprint) {
     if (!memory || !memory->context || !memory->allocate || !memory->release || !memory->resource_bridge ||
         !async || !async->owner || !async->bind || !async->submit || !async->start || !async->take ||
         !async->invalidate || !async->busy || !async->stop) return 1;
@@ -408,7 +409,8 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     unsigned prefs_dirty = 0;
     pet_preferences restored_prefs = {0};
     const wchar_t *path = NULL, *package_dir = NULL, *package_id = NULL;
-    int check_package = 0, check_task = 0, async_bound = 0;
+    int check_package = 0, check_task = 0, fingerprint_package = 0, async_bound = 0;
+    const wchar_t *expected_sha = NULL;
     pet_package package = {0};
     native_decode decode_ctx = {memory, &package, validate, validate_activity, NULL, 0};
     uint8_t *atlas = NULL, *activity = NULL;
@@ -469,10 +471,14 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             parse_scale(argv[i + 1], &scale)) {
             scale_set = 1;
             ++i;
+        } else if (!expected_sha && wcscmp(argv[i], L"--expected-sha256") == 0 && i + 1 < argc) {
+            expected_sha = argv[++i];
         } else if (!package_dir && i + 2 < argc &&
             (wcscmp(argv[i], L"--package") == 0 || wcscmp(argv[i], L"--check-package") == 0 ||
-             wcscmp(argv[i], L"--check-package-task") == 0)) {
-            check_package = wcscmp(argv[i], L"--check-package") == 0;
+             wcscmp(argv[i], L"--check-package-task") == 0 ||
+             wcscmp(argv[i], L"--fingerprint-package") == 0)) {
+            fingerprint_package = wcscmp(argv[i], L"--fingerprint-package") == 0;
+            check_package = fingerprint_package || wcscmp(argv[i], L"--check-package") == 0;
             check_task = wcscmp(argv[i], L"--check-package-task") == 0;
             package_dir = argv[++i];
             package_id = argv[++i];
@@ -492,7 +498,8 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         }
     }
     pet_demo_sample activity_check = {0};
-    if ((package_dir && (path || activity_path || smoke || (state_map && (!ready_event || remember)))) ||
+    if ((expected_sha && (!package_dir || wcslen(expected_sha) != 64)) ||
+        (package_dir && (path || activity_path || smoke || (state_map && (!ready_event || remember)))) ||
         ((check_package || check_task) && (stop || remember || reset_position || gaze_set)) ||
         (activity_path && (smoke || state_map ||
             sample_activity(activity_frames, activity_fps, 0, &activity_check) != 0)) ||
@@ -524,9 +531,29 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         received_testing = reaction == PET_STATE_TESTING;
     }
     if (package_dir) {
-        if (!pet_package_open(memory, &package, package_dir, package_id, parse_package, validate, validate_activity)) {
+        uint8_t digest[32];
+        if (!pet_package_open(memory, &package, package_dir, package_id, parse_package, validate, validate_activity,
+            hash, fingerprint, (fingerprint_package || expected_sha) ? digest : NULL)) {
             fputs("Classic package rejected: metadata, path, inventory or WebP header.\n", stderr);
             goto cleanup;
+        }
+        if (fingerprint_package || expected_sha) {
+            static const char alphabet[] = "0123456789abcdef";
+            char hex[65];
+            for (unsigned i = 0; i < 32; ++i) {
+                hex[2 * i] = alphabet[digest[i] >> 4];
+                hex[2 * i + 1] = alphabet[digest[i] & 15];
+            }
+            hex[64] = 0;
+            if (expected_sha) {
+                for (unsigned i = 0; i < 64; ++i) {
+                    if (expected_sha[i] != (wchar_t)hex[i]) {
+                        fputs("Package admission failed at fingerprint-mismatch.\n", stderr);
+                        goto cleanup;
+                    }
+                }
+            }
+            if (fingerprint_package) printf("PULSE_PACKAGE_SHA256_V1 %s\n", hex);
         }
         version = package.meta.version;
         gaze_x = package.meta.gaze_x;

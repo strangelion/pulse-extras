@@ -298,3 +298,19 @@ alone is not publisher authentication. The native inventory size cap 65536
 still accommodates 512 PCI2 records (54,288 bytes maximum).
 Added canonical digest, streaming SHA vector, duplicates, migration and
 reservation tests. Latest CI pending.
+
+## Real package fingerprint and managed launch verification
+
+The package validator now hashes its already-read, pinned, validated bytes
+on demand, using the same canonical SHA-256 algorithm as the inventory.
+--fingerprint-package DIR ID emits a single machine-readable digest after
+successful metadata/inventory/header validation; no full image decode is
+claimed. --expected-sha256 checks the digest before renderer startup.
+Group.startManaged requires a stored digest and passes it via typed native
+launch; mismatch exits without readiness. Legacy explicit package launch
+remains available for experimental tests. No extra image buffer or reread
+for hashing, bounded file descriptors on stack. The digest covers runtime
+package files, not arbitrary root extras. Test uses independent Python
+hashlib framing, successful expected digest and modified metadata rejection.
+No import copy/transaction, root ACL provisioning or legacy migration UI yet.
+Latest Windows regression and mixed preflight pending.

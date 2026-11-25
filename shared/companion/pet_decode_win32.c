@@ -196,11 +196,30 @@ cleanup:
     return ok;
 }
 
+/* Hash the validated bytes already read from the pinned handle, without
+ * another file read or allocating another compressed image buffer. */
+static BOOL hash_file(pet_fingerprint_file *files, size_t *count, pet_hash_fn hash,
+    const char *prefix, const char *leaf, const uint8_t *data, DWORD length) {
+    if (!hash) return TRUE;
+    if (*count >= PET_FINGERPRINT_MAX_FILES) return FALSE;
+    pet_fingerprint_file *file = &files[*count];
+    int n = snprintf((char *)file->path, sizeof(file->path), "%s%s", prefix, leaf);
+    if (n <= 0 || (size_t)n >= sizeof(file->path)) return FALSE;
+    file->size = length;
+    hash(data, length, file->digest);
+    ++*count;
+    return TRUE;
+}
+
 BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wchar_t *folder,
     const wchar_t *id, pet_package_parse_fn parse,
-    pet_demo_validate_fn validate, pet_demo_validate_fn validate_activity) {
-    if (!package || package->root || !folder || !id || !parse || !validate || !validate_activity)
-        return FALSE;
+    pet_demo_validate_fn validate, pet_demo_validate_fn validate_activity,
+    pet_hash_fn hash, pet_fingerprint_fn fingerprint, uint8_t *digest) {
+    if (!package || package->root || !folder || !id || !parse || !validate || !validate_activity ||
+        (digest && (!hash || !fingerprint))) return FALSE;
+    if (!digest) hash = NULL;
+    pet_fingerprint_file hashes[PET_FINGERPRINT_MAX_FILES];
+    size_t hash_count = 0;
     wchar_t root[1024] = L"\\\\?\\";
     wchar_t path[1024], full[1020];
     DWORD n = GetFullPathNameW(folder, 1020, full, NULL);
@@ -242,6 +261,7 @@ BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wcha
     if (parse(memory, data, length, id8, id_len, &package->meta) ||
         package->meta.count > PET_PACKAGE_MAX || package->meta.outfit_count > PET_PACKAGE_MAX || package->meta.rule_count > 32 ||
         (package->meta.version != 1 && package->meta.version != 2)) goto cleanup;
+    if (!hash_file(hashes, &hash_count, hash, "", "pet.json", data, length)) goto cleanup;
     pet_free(memory, data, length); data = NULL;
     stage = "base-open";
     if (!join_path(path, 1024, root, L"spritesheet.webp") ||
@@ -251,6 +271,7 @@ BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wcha
     if (!data) goto cleanup;
     stage = "base-header";
     if (validate(package->meta.version, data, length)) goto cleanup;
+    if (!hash_file(hashes, &hash_count, hash, "", "spritesheet.webp", data, length)) goto cleanup;
     pet_free(memory, data, length); data = NULL;
     inventory_file files[PET_PACKAGE_MAX * PET_OUTFIT_SLOTS];
     unsigned count = 0;
@@ -264,6 +285,7 @@ BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wcha
         if (!data) goto cleanup;
         stage = "outfit-header";
         if (validate(package->meta.version, data, length)) goto cleanup;
+        if (!hash_file(hashes, &hash_count, hash, "outfits/", (const char *)package->meta.outfits[i].leaf, data, length)) goto cleanup;
         pet_free(memory, data, length); data = NULL;
     }
     count = 0;
@@ -288,8 +310,11 @@ BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wcha
             stage = "activity-header";
             if (validate_activity(rep->frames, data, length)) goto cleanup;
             total += length;
+            if (!hash_file(hashes, &hash_count, hash, "activities/", (const char *)rep->leaf, data, length)) goto cleanup;
             pet_free(memory, data, length); data = NULL;
         }
+    stage = "fingerprint";
+    if (digest && fingerprint(hashes, hash_count, digest)) goto cleanup;
     ok = TRUE;
 cleanup:
     if (metadata) tracked_close(memory, metadata);

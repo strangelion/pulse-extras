@@ -104,7 +104,7 @@ static BOOL package_args(const wchar_t *directory, const wchar_t *id) {
 }
 
 static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approved_exe,
-    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id) {
+    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, const wchar_t *expected_sha) {
     if (!owner || !options || options->scale < PET_MIN_SCALE ||
         options->scale > PET_MAX_SCALE ||
         (options->smoke && (options->remember || options->reduced || options->topmost)))
@@ -113,6 +113,13 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
         owner->state_event || owner->state_slot || owner->ready_event) return PET_CHILD_BUSY;
     if ((directory || package_id) && (options->smoke || options->remember ||
         !package_args(directory, package_id))) return PET_CHILD_INVALID;
+    if (expected_sha) {
+        if (!directory || wcslen(expected_sha) != 64) return PET_CHILD_INVALID;
+        for (unsigned i = 0; i < 64; ++i) {
+            wchar_t ch = expected_sha[i];
+            if (!((ch >= L'0' && ch <= L'9') || (ch >= L'a' && ch <= L'f'))) return PET_CHILD_INVALID;
+        }
+    }
     pet_child_result result = PET_CHILD_OS_ERROR;
     HANDLE image = INVALID_HANDLE_VALUE, job = NULL, stop = NULL;
     HANDLE mapping = NULL, event = NULL, ready = NULL;
@@ -180,6 +187,12 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
         size_t remaining = CMD_CAP - (unsigned)written;
         int appended = swprintf(command + written, remaining, L" --package \"%ls\" %ls", directory, package_id);
         if (appended < 0 || (size_t)appended >= remaining) { result = PET_CHILD_INVALID; goto cleanup; }
+        written += appended;
+    }
+    if (expected_sha) {
+        size_t remaining = CMD_CAP - (unsigned)written;
+        int appended = swprintf(command + written, remaining, L" --expected-sha256 %ls", expected_sha);
+        if (appended < 0 || (size_t)appended >= remaining) { result = PET_CHILD_INVALID; goto cleanup; }
     }
     /* No inherited PATH, credentials or loader variables. Use system cwd;
      * the approved installation directory still must be trusted by caller. */
@@ -246,7 +259,7 @@ pet_child_result pet_child_start(pet_supervisor *owner, const wchar_t *approved_
     if (owner->job || owner->process || owner->stop || owner->state_mapping ||
         owner->state_event || owner->state_slot || owner->ready_event) return PET_CHILD_BUSY;
     if (InterlockedCompareExchange(&live_owner, 1, 0) != 0) return PET_CHILD_BUSY;
-    pet_child_result result = start_child(owner, approved_exe, options, NULL, NULL);
+    pet_child_result result = start_child(owner, approved_exe, options, NULL, NULL, NULL);
     if (result != PET_CHILD_OK) {
         /* Preserve legacy last-resort cleanup semantics. Group callers use
          * start_child directly and retain ambiguous termination ownership. */
@@ -340,7 +353,7 @@ pet_child_result pet_group_admission(const pet_supervisor_group *group,
 }
 
 static pet_child_result group_start(pet_supervisor_group *group, const wchar_t *approved_exe,
-    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, uint64_t *id) {
+    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, const wchar_t *expected_sha, uint64_t *id) {
     if (!id) return PET_CHILD_INVALID;
     *id = 0;
     if (!group || group != active_group || !options || options->remember)
@@ -359,7 +372,7 @@ static pet_child_result group_start(pet_supervisor_group *group, const wchar_t *
         if (slot->id) continue;
         slot->id = group->next_id++;
         ++group->count;
-        pet_child_result result = start_child(&slot->child, approved_exe, options, directory, package_id);
+        pet_child_result result = start_child(&slot->child, approved_exe, options, directory, package_id, expected_sha);
         if (result != PET_CHILD_OK && !slot->child.process) {
             *slot = (pet_group_slot){0};
             --group->count;
@@ -374,7 +387,7 @@ static pet_child_result group_start(pet_supervisor_group *group, const wchar_t *
 
 pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *approved_exe,
     const pet_child_options *options, uint64_t *id) {
-    return group_start(group, approved_exe, options, NULL, NULL, id);
+    return group_start(group, approved_exe, options, NULL, NULL, NULL, id);
 }
 
 pet_child_result pet_group_start_package(pet_supervisor_group *group, const wchar_t *approved_exe,
@@ -383,7 +396,17 @@ pet_child_result pet_group_start_package(pet_supervisor_group *group, const wcha
     *id = 0;
     if (!package_args(directory, package_id) || !options || options->smoke || options->remember)
         return PET_CHILD_INVALID;
-    return group_start(group, approved_exe, options, directory, package_id, id);
+    return group_start(group, approved_exe, options, directory, package_id, NULL, id);
+}
+
+pet_child_result pet_group_start_verified_package(pet_supervisor_group *group, const wchar_t *approved_exe,
+    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id,
+    const wchar_t *expected_sha, uint64_t *id) {
+    if (!id) return PET_CHILD_INVALID;
+    *id = 0;
+    if (!expected_sha || !package_args(directory, package_id) || !options || options->smoke || options->remember)
+        return PET_CHILD_INVALID;
+    return group_start(group, approved_exe, options, directory, package_id, expected_sha, id);
 }
 
 pet_child_result pet_group_publish(pet_supervisor_group *group, uint64_t id, unsigned reaction) {

@@ -8,6 +8,7 @@ const animation = @import("animation.zig");
 const assets = @import("pet_assets.zig");
 const activities = @import("pet_activities.zig");
 const package = @import("pet_package.zig");
+const fingerprint = @import("pet_fingerprint.zig");
 
 const Sample = extern struct {
     row: u32,
@@ -24,7 +25,31 @@ const PackageParseFn = *const fn (*const memory.Bridge, [*]const u8, usize, [*]c
 
 const ScheduleFn = *const fn (*const package.Package, u32, u32, u32, u32) callconv(.c) u32;
 
-extern "c" fn pet_demo_run(*const memory.Bridge, *const async_decode.Bridge, SampleFn, ValidateFn, ActivitySampleFn, ValidateFn, PackageParseFn, ScheduleFn) c_int;
+const FingerprintFile = extern struct {
+    path: [96]u8,
+    size: u64,
+    digest: fingerprint.Digest,
+};
+const HashFn = *const fn ([*]const u8, usize, *fingerprint.Digest) callconv(.c) void;
+const FingerprintFn = *const fn ([*]const FingerprintFile, usize, *fingerprint.Digest) callconv(.c) c_int;
+
+fn hashBytes(input: [*]const u8, len: usize, out: *fingerprint.Digest) callconv(.c) void {
+    std.crypto.hash.sha2.Sha256.hash(input[0..len], out, .{});
+}
+
+fn hashInventory(input: [*]const FingerprintFile, count: usize, out: *fingerprint.Digest) callconv(.c) c_int {
+    if (count > fingerprint.max_files) return 1;
+    var files: [fingerprint.max_files]fingerprint.FileDigest = undefined;
+    for (input[0..count], 0..) |*file, i| {
+        const path = std.mem.sliceTo(&file.path, 0);
+        if (path.len == file.path.len) return 1;
+        files[i] = .{ .path = path, .size = file.size, .digest = file.digest };
+    }
+    out.* = fingerprint.digest(files[0..count]) catch return 1;
+    return 0;
+}
+
+extern "c" fn pet_demo_run(*const memory.Bridge, *const async_decode.Bridge, SampleFn, ValidateFn, ActivitySampleFn, ValidateFn, PackageParseFn, ScheduleFn, HashFn, FingerprintFn) c_int;
 
 fn layoutFor(version: u32) ?assets.Layout {
     return switch (version) {
@@ -92,7 +117,7 @@ pub fn main(init: std.process.Init) !void {
     const bridge = memory.Bridge.init(&group.pool, &resource_bridge);
     var async_owner = async_decode.Owner.init(init.io, &group);
     const async_bridge = async_decode.Bridge.init(&async_owner);
-    const result = pet_demo_run(&bridge, &async_bridge, sampleFrame, validateWebp, sampleActivity, validateActivity, parsePackage, package.resolveSchedule);
+    const result = pet_demo_run(&bridge, &async_bridge, sampleFrame, validateWebp, sampleActivity, validateActivity, parsePackage, package.resolveSchedule, hashBytes, hashInventory);
     // C must stop before releasing its pinned package and notification.
     // Idempotent stop is a defensive final drain, not a replacement.
     async_owner.stop();
