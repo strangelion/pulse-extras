@@ -421,12 +421,26 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(hello_panel);
 
+    // Experimental fail-closed candidate; no distributable package yet.
+    const vcs_panel_dll = b.addLibrary(.{
+        .name = "pulse_vcs_panel",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("extensions/vcs-panel/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = dll_modules.imports(),
+        }),
+    });
+    b.installArtifact(vcs_panel_dll);
+
     // Every module also runs its own tests on the host target, so the wrappers
     // are checked even when the probe does not use them yet.
     var host_modules = Modules.add(b, b.graph.host, .Debug, vcs_test_config);
     const test_sources = [_][]const u8{
         "extensions/abi-probe/main.zig",
         "extensions/hello-panel/main.zig",
+        "extensions/vcs-panel/main.zig",
         "shared/diagnostics/probe_log.zig",
         "shared/process/run.zig",
         "shared/runtime/budget.zig",

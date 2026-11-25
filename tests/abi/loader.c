@@ -21,8 +21,14 @@ _Static_assert(offsetof(PulsePluginV1, destroy) == 32, "destroy");
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); return 1; } } while (0)
 
+static PulseStatus unavailable(void *context, PulseStringView name, uint32_t version, void *out, uint32_t size) {
+    (void)context; (void)name; (void)version; (void)out; (void)size;
+    return PULSE_ERROR_UNAVAILABLE;
+}
+
 int main(int argc, char **argv) {
-    CHECK(argc == 2);
+    CHECK(argc == 2 || argc == 3);
+    int locked_candidate = argc == 3;
     for (int cycle = 0; cycle < 16; ++cycle) {
         HMODULE lib = LoadLibraryExA(argv[1], NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
         CHECK(lib);
@@ -36,11 +42,15 @@ int main(int argc, char **argv) {
         out.version = 99;
         CHECK(entry(&host, &out) == PULSE_ERROR_ABI && !out.instance);
         out.version = PULSE_ABI_VERSION_1;
+        if (locked_candidate) {
+            CHECK(entry(&host, &out) == PULSE_ERROR_UNAVAILABLE && !out.instance);
+            host.query_interface = unavailable;
+        }
         CHECK(entry(&host, &out) == PULSE_OK);
         CHECK(out.instance && out.activate && out.deactivate && out.destroy);
-        CHECK(out.activate(out.instance) == PULSE_OK);
+        CHECK(out.activate(out.instance) == (locked_candidate ? PULSE_ERROR_UNAVAILABLE : PULSE_OK));
         out.deactivate(out.instance);
-        CHECK(out.activate(out.instance) == PULSE_OK);
+        CHECK(out.activate(out.instance) == (locked_candidate ? PULSE_ERROR_UNAVAILABLE : PULSE_OK));
         out.deactivate(out.instance);
         out.destroy(out.instance);
         CHECK(FreeLibrary(lib));

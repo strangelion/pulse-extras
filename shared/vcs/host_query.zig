@@ -420,12 +420,20 @@ pub const Binding = struct {
     navigation_generation: ?u64 = null,
     model: ?ui.Panel = null,
     language: panel.Language,
+    approval_locked: bool = false,
     accepting: bool = false,
     poisoned: bool = false,
     last_error: ?host_mod.Error = null,
 
     pub fn init(table: async_host.TaskTable, language: panel.Language) host_mod.Error!Binding {
         return .{ .controller = try Controller.init(table), .resolution = try Resolution.init(table), .language = language };
+    }
+
+    /// Permanent lock for a lifecycle-only attachment. No resolver or
+    /// provider can be configured through this Binding after locking.
+    pub fn lockExecution(self: *Binding) host_mod.Error!void {
+        if (self.model != null or self.resolver != null or self.controller.selection != null or self.controller.query.task.occupied() or self.resolution.task.occupied() or self.navigation.table != null or self.controller.stopped) return error.State;
+        self.approval_locked = true;
     }
 
     pub fn open(self: *Binding, host: host_mod.Host) host_mod.Error!void {
@@ -441,7 +449,8 @@ pub const Binding = struct {
         self.last_error = null;
         var content: panel.Content = undefined;
         var tree: ui.Tree = undefined;
-        const current = self.controller.view();
+        var current = self.controller.view();
+        current.approval_required = self.approval_locked;
         content.buildInteractive(self.language, &current, &tree);
         var id: u64 = 0;
         try host_mod.mapStatus(create(table.context, abi.view("VCS"), &tree, &id));
@@ -511,6 +520,7 @@ pub const Binding = struct {
     /// contexts must remain alive until successful stop/drain. Without one,
     /// manual takeNavigation/selectResolved retains its existing semantics.
     pub fn configureResolver(self: *Binding, resolver: Resolver) host_mod.Error!void {
+        if (self.approval_locked) return error.Permission;
         if (self.controller.stopped or self.resolver != null or self.navigation.table != null or self.controller.selection != null or self.controller.query.task.occupied()) return error.State;
         self.resolver = resolver;
     }
@@ -564,6 +574,7 @@ pub const Binding = struct {
     /// Only apply a still-current, independently authorized resolution.
     /// A navigation ticket is not itself proof of trust or root identity.
     pub fn selectResolved(self: *Binding, ticket: *const Navigation.Ticket, provider: contract.Provider, workspace: *const identity.Workspace) host_mod.Error!void {
+        if (self.approval_locked) return error.Permission;
         if (!self.accepting or self.resolver != null) return error.State;
         try self.invalidateNavigation();
         if (ticket.directory() == null or !self.navigation.isCurrent(ticket)) {
@@ -582,6 +593,10 @@ pub const Binding = struct {
         if (model.id != id) return;
         const name = abi.slice(command) orelse return;
         self.last_error = null;
+        if (self.approval_locked and !std.mem.eql(u8, name, panel.command_check)) {
+            self.last_error = error.Permission;
+            return;
+        }
         self.invalidateNavigation() catch |err| {
             self.last_error = err;
             self.render() catch {};
@@ -628,6 +643,7 @@ pub const Binding = struct {
     /// Resolved, independently authorized selection only. Never resolve a
     /// repository or spawn a CLI from this UI-thread method.
     pub fn select(self: *Binding, provider: contract.Provider, workspace: *const identity.Workspace) host_mod.Error!void {
+        if (self.approval_locked) return error.Permission;
         if (!self.accepting or self.resolver != null or self.navigation.table != null or self.navigation.accepting) return error.State;
         try self.selectAuthorized(provider, workspace);
     }
@@ -768,6 +784,7 @@ pub const Binding = struct {
         var content: panel.Content = undefined;
         var tree: ui.Tree = undefined;
         var current = self.controller.view();
+        current.approval_required = self.approval_locked;
         if (self.resolver != null and self.navigation.accepting) {
             if (self.navigation.latest) |*latest| current.discovery_available = latest.directory() != null;
         }
@@ -1583,4 +1600,33 @@ test "dispatch rejection preserves manual result delivery and failed cancel reta
     dispatch.deliver();
     try binding.requestStop();
     try binding.checkDrained();
+}
+
+test "locked lifecycle binding rejects every execution entry and retains failed close" {
+    var mock: Mock = .{};
+    var model: MockUi = .{};
+    var navigation: MockNavigation = .{};
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.lockExecution();
+    try binding.openWithTable(model.table());
+    try binding.openNavigationWithTable(navigation.table());
+    const workspace = try identity.Workspace.init(.git, "one", "one");
+    try std.testing.expectError(error.Permission, binding.select(mock.provider(), &workspace));
+    const ticket = (try binding.takeNavigation()).?;
+    try std.testing.expectError(error.Permission, binding.selectResolved(&ticket, mock.provider(), &workspace));
+    model.click(7, panel.command_refresh);
+    try std.testing.expectEqual(error.Permission, binding.last_error.?);
+    navigation.navigate("two");
+    model.click(7, panel.command_check);
+    try std.testing.expectEqual(@as(usize, 0), mock.calls);
+    try std.testing.expect(!binding.resolution.task.occupied());
+    try std.testing.expect(!binding.controller.query.task.occupied());
+    model.fail_close = true;
+    try std.testing.expectError(error.Permission, binding.requestStop());
+    try std.testing.expectError(error.Busy, binding.checkDrained());
+    model.fail_close = false;
+    try binding.requestStop();
+    try binding.checkDrained();
+    try std.testing.expect(navigation.callback == null);
+    try std.testing.expect(model.callback == null);
 }

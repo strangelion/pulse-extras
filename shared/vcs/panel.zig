@@ -36,6 +36,7 @@ pub const View = struct {
     stale: bool = false,
     failure: ?contract.Error = null,
     discovery_available: bool = false,
+    approval_required: bool = false,
 };
 
 const Selection = struct {
@@ -235,6 +236,7 @@ pub const Content = struct {
             else => phaseLabel(lang, view.phase),
         } else phaseLabel(lang, view.phase);
         self.add("vcs.phase", "", status);
+        if (view.approval_required) self.add("vcs.approval", "", loc(lang, "Execution locked: production approval unavailable", "执行已锁定：尚未提供生产授权"));
         if (view.failure) |err| self.add("vcs.error", "", failureLabel(lang, err));
         if (view.workspace) |workspace| {
             self.add("vcs.provider", loc(lang, "Provider: ", "类型："), workspace.kind.displayName());
@@ -280,7 +282,7 @@ pub const Content = struct {
         tree.commands = &self.commands;
         tree.command_count = self.commands.len;
         if (view.phase != .stopped) {
-            if (view.workspace != null or view.discovery_available) {
+            if (!view.approval_required and (view.workspace != null or view.discovery_available)) {
                 if (view.phase == .queued or view.phase == .refreshing) {
                     self.addButton("vcs.action.cancel", loc(lang, "Cancel", "取消"), command_cancel);
                 } else {
