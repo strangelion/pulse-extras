@@ -338,6 +338,20 @@ pub fn Navigation(comptime capacity: usize) type {
             }
         }
 
+        /// FINAL host destroy only: context.h guarantees host stop suppresses
+        /// future callbacks. No ordinary unsubscribe failure proves this.
+        pub fn retireAtHostDestroy(self: *Self) error{Busy}!void {
+            if (self.notifying) return error.Busy;
+            self.accepting = false;
+            self.pending = false;
+            self.id = 0;
+            self.table = null;
+            self.poisoned = false;
+            self.latest = null;
+            self.notify = null;
+            self.notify_user = null;
+        }
+
         pub fn checkDrained(self: *const Self) error{Busy}!void {
             if (self.table != null or self.poisoned or self.notifying) return error.Busy;
         }

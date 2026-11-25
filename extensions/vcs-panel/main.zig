@@ -82,10 +82,18 @@ fn deactivate(raw: ?*anyopaque) callconv(.c) void {
 fn destroy(raw: ?*anyopaque) callconv(.c) void {
     const self: *Instance = @ptrCast(@alignCast(raw orelse return));
     self.stop() catch |err| {
-        // ABI is void; do not free live userdata or claim a safe unload.
-        // This retained instance is a release blocker, not a recovery policy.
-        diag.status("vcs-destroy-drain-failed", @intFromError(err));
-        return;
+        diag.status("vcs-destroy-stop-failed", @intFromError(err));
+        // The locked candidate owns no tasks, dispatch or plugin threads.
+        // At final destroy the SDK stop boundary suppresses host callbacks.
+        // Never use this retirement path for ordinary deactivate.
+        if (self.binding) |*binding| {
+            binding.retireAtHostDestroy() catch |retire_err| {
+                diag.status("vcs-destroy-drain-failed", @intFromError(retire_err));
+                return;
+            };
+            binding.checkDrained() catch return;
+            self.binding = null;
+        }
     };
     allocator.destroy(self);
 }

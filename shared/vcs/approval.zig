@@ -100,6 +100,59 @@ pub const Verifier = struct {
     inspect: *const fn (*anyopaque, *const Grant, *const std.process.Environ.Map) contract.Error!Evidence,
 };
 
+fn completeEvidence(evidence: Evidence) bool {
+    return evidence.local_identity_verified and evidence.installation_verified and evidence.repository_configuration_verified and evidence.neutral_environment_verified and evidence.ordinary_metadata_verified;
+}
+
+/// Immutable, in-memory review candidate, not automatic approval. The
+/// verifier must independently inspect selected paths; never echo the input
+/// grant's fingerprints as proof. Caller shows exact paths and fingerprints
+/// to the trusted approver, then explicitly confirms this same candidate.
+/// No filesystem writes, process spawn, persistent grant or UI callback here.
+pub const Review = struct {
+    grant: Grant,
+    environment_digest: Digest,
+
+    pub fn inspect(executable: []const u8, executable_digest: Digest, root: []const u8, neutral_cwd: []const u8, verifier: Verifier, environment: *const std.process.Environ.Map) contract.Error!Review {
+        var candidate = Grant.init(executable, executable_digest, root, neutral_cwd, @splat(0), @splat(0)) catch return error.Permission;
+        const environment_digest = try environmentDigest(environment, neutral_cwd);
+        const evidence = try verifier.inspect(verifier.ctx, &candidate, environment);
+        if (!completeEvidence(evidence)) return error.Permission;
+        candidate.installation_digest = evidence.installation_digest;
+        candidate.repository_digest = evidence.repository_digest;
+        return .{ .grant = candidate, .environment_digest = environment_digest };
+    }
+
+    /// Confirmation is not a second discovery pass that silently approves
+    /// changes. Reinspect, compare the reviewed evidence, and reject drift.
+    pub fn confirm(self: *const Review, verifier: Verifier, environment: *const std.process.Environ.Map) contract.Error!Grant {
+        const actual_environment = try environmentDigest(environment, self.grant.neutral_cwd.slice());
+        if (!equal(&actual_environment, &self.environment_digest)) return error.Permission;
+        const evidence = try verifier.inspect(verifier.ctx, &self.grant, environment);
+        if (!completeEvidence(evidence) or !equal(&evidence.installation_digest, &self.grant.installation_digest) or !equal(&evidence.repository_digest, &self.grant.repository_digest)) return error.Permission;
+        return self.grant;
+    }
+
+    fn environmentDigest(environment: *const std.process.Environ.Map, cwd: []const u8) contract.Error!Digest {
+        run.validateGitEnvironment(environment, cwd) catch return error.Permission;
+        var hash = std.crypto.hash.sha2.Sha256.init(.{});
+        hash.update("pulse-git-review-environment-v1");
+        // The exact admitted vocabulary is finite; hash in stable order.
+        for ([_][]const u8{ "SystemRoot", "WINDIR", "TEMP", "TMP", "LANG", "LC_ALL", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL" }) |key| {
+            hash.update(key);
+            if (environment.get(key)) |value| {
+                if (value.len > 32768 or std.mem.indexOfScalar(u8, value, 0) != null) return error.ResourceLimit;
+                hash.update(&.{1});
+                var length: [4]u8 = undefined;
+                std.mem.writeInt(u32, &length, @intCast(value.len), .little);
+                hash.update(&length);
+                hash.update(value);
+            } else hash.update(&.{0});
+        }
+        return hash.finalResult();
+    }
+};
+
 /// Stable address; worker owns runner/provider, caller owns verifier and
 /// immutable environment. Replace grants only after drain. Revocation blocks
 /// future admissions, not a process that has already started.
@@ -127,7 +180,7 @@ pub const Policy = struct {
     fn verify(self: *Policy) contract.Error!void {
         if (self.revoked.load(.acquire)) return error.Permission;
         const evidence = try self.verifier.inspect(self.verifier.ctx, &self.grant, self.environment);
-        if (!evidence.local_identity_verified or !evidence.installation_verified or !evidence.repository_configuration_verified or !evidence.neutral_environment_verified or !evidence.ordinary_metadata_verified) return error.Permission;
+        if (!completeEvidence(evidence)) return error.Permission;
         if (!equal(&evidence.installation_digest, &self.grant.installation_digest) or !equal(&evidence.repository_digest, &self.grant.repository_digest)) return error.Permission;
         if (self.revoked.load(.acquire)) return error.Permission;
     }
@@ -451,4 +504,43 @@ test "real approved Git command chain rejects altered empty config and revoked g
     try runner.checkDrained();
     runner.requestStop();
     try runner.finishStop();
+}
+
+const ReviewFixture = struct {
+    changed: bool = false,
+    complete: bool = true,
+
+    fn inspect(user: *anyopaque, _: *const Grant, _: *const std.process.Environ.Map) contract.Error!Evidence {
+        const self: *ReviewFixture = @ptrCast(@alignCast(user));
+        return .{
+            .installation_digest = @splat(42),
+            .repository_digest = if (self.changed) @splat(99) else @splat(43),
+            .local_identity_verified = true,
+            .installation_verified = self.complete,
+            .repository_configuration_verified = true,
+            .neutral_environment_verified = true,
+            .ordinary_metadata_verified = true,
+        };
+    }
+};
+
+test "review captures independent evidence and explicit confirmation rejects drift" {
+    const candidate = try Fixture.makeGrant();
+    var fixture: ReviewFixture = .{};
+    const verifier: Verifier = .{ .ctx = &fixture, .inspect = &ReviewFixture.inspect };
+    var environment = std.process.Environ.Map.init(std.testing.allocator);
+    defer environment.deinit();
+    try configureFixtureEnvironment(&environment, candidate.neutral_cwd.slice());
+    const review = try Review.inspect(candidate.executable.slice(), candidate.executable_digest, candidate.root.slice(), candidate.neutral_cwd.slice(), verifier, &environment);
+    try std.testing.expectEqualSlices(u8, &(@as(Digest, @splat(42))), &review.grant.installation_digest);
+    try std.testing.expectEqualSlices(u8, &(@as(Digest, @splat(43))), &review.grant.repository_digest);
+    const confirmed = try review.confirm(verifier, &environment);
+    try std.testing.expect(confirmed.root.eql(candidate.root.slice()));
+    fixture.changed = true;
+    try std.testing.expectError(error.Permission, review.confirm(verifier, &environment));
+    fixture.changed = false;
+    try environment.put("LANG", "changed");
+    try std.testing.expectError(error.Permission, review.confirm(verifier, &environment));
+    fixture.complete = false;
+    try std.testing.expectError(error.Permission, Review.inspect(candidate.executable.slice(), candidate.executable_digest, candidate.root.slice(), candidate.neutral_cwd.slice(), verifier, &environment));
 }

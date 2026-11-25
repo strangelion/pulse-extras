@@ -69,6 +69,7 @@ pub const Task = struct {
     poisoned: bool = false,
     observed: ?TaskState = null,
     cancellation_requested: bool = false,
+    destroyed: bool = false,
 
     pub fn init(table: TaskTable) host_mod.Error!Task {
         try validateTaskTable(&table);
@@ -80,7 +81,7 @@ pub const Task = struct {
     }
 
     pub fn start(self: *Task, descriptor: *const Descriptor) host_mod.Error!void {
-        if (self.occupied()) return error.State;
+        if (self.destroyed or self.occupied()) return error.State;
         if (descriptor.size < @sizeOf(Descriptor) or descriptor.work == null) return error.Argument;
         const title = abi.slice(descriptor.title) orelse return error.Argument;
         const kind = abi.slice(descriptor.type) orelse return error.Argument;
@@ -121,6 +122,18 @@ pub const Task = struct {
         if (self.cancellation_requested) return;
         try host_mod.mapStatus(self.table.cancel.?(self.table.context, self.id));
         self.cancellation_requested = true;
+    }
+
+    /// FINAL host destroy boundary only. Public tasks.h retains userdata
+    /// through destroy and promises host-owned work/cancel callbacks returned.
+    /// Never call this from deactivate, ordinary cancel or a failed get/release.
+    /// The caller must also have stopped any plugin-owned producers.
+    pub fn retireAtHostDestroy(self: *Task) void {
+        self.destroyed = true;
+        self.id = 0;
+        self.poisoned = false;
+        self.observed = null;
+        self.cancellation_requested = false;
     }
 
     /// Require observed terminal state and successful release. STATE alone
@@ -256,6 +269,16 @@ pub const Wake = struct {
             },
             else => return error.State,
         }
+    }
+
+    /// FINAL host destroy only, after host stop suppressed pending callbacks
+    /// and all task/plugin producers returned. No cancel token is required.
+    /// A live/inline producer is a contract violation, not ordinary drain.
+    pub fn retireAtHostDestroy(self: *Wake) error{Busy}!void {
+        if (self.delivering or self.state.load(.acquire) == .posting or self.state.load(.acquire) == .early) return error.Busy;
+        self.disable();
+        self.token = 0;
+        self.state.store(.idle, .release);
     }
 
     pub fn checkDrained(self: *const Wake) error{Busy}!void {

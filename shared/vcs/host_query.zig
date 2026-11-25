@@ -421,6 +421,7 @@ pub const Binding = struct {
     model: ?ui.Panel = null,
     language: panel.Language,
     approval_locked: bool = false,
+    destroyed: bool = false,
     accepting: bool = false,
     poisoned: bool = false,
     last_error: ?host_mod.Error = null,
@@ -746,7 +747,7 @@ pub const Binding = struct {
     /// An explicit owner event can advance a task and repaint. No wait or
     /// recursive dispatch. After closing, the owner may still pump to drain.
     pub fn pump(self: *Binding) host_mod.Error!void {
-        if (self.pumping) return error.State;
+        if (self.destroyed or self.pumping) return error.State;
         self.pumping = true;
         defer self.pumping = false;
         if (self.wake) |*wake| wake.reap();
@@ -815,6 +816,7 @@ pub const Binding = struct {
     /// This does not wait for the host worker. Keep self and all provider
     /// userdata alive until checkDrained or the documented host destroy gate.
     pub fn requestStop(self: *Binding) host_mod.Error!void {
+        if (self.destroyed) return;
         self.accepting = false;
         if (self.wake) |*wake| wake.disable();
         var failure: ?host_mod.Error = null;
@@ -835,6 +837,41 @@ pub const Binding = struct {
         };
         self.last_error = failure;
         if (failure) |err| return err;
+    }
+
+    /// Final host destroy, NOT deactivate. The caller attests the documented
+    /// SDK boundary: host stop suppressed model/context/dispatch callbacks,
+    /// host-owned task work and cancellation callbacks have returned, and
+    /// all plugin-owned workers are joined. No SDK calls on closed tables.
+    /// Do not infer this boundary from STATE or reuse the retired Binding.
+    pub fn retireAtHostDestroy(self: *Binding) error{Busy}!void {
+        if (self.pumping or self.navigation.notifying or self.controller.query.admitting or self.resolution.admitting) return error.Busy;
+        if (self.wake) |*wake| try wake.retireAtHostDestroy();
+        try self.navigation.retireAtHostDestroy();
+        self.accepting = false;
+        self.destroyed = true;
+        self.approval_locked = true;
+        self.model = null;
+        self.poisoned = false;
+        self.resolver = null;
+        self.navigation_generation = null;
+        self.resolution.stopped = true;
+        self.resolution.discard = true;
+        self.resolution.task.retireAtHostDestroy();
+        self.resolution.result = error.Cancelled;
+        self.resolution.published.store(false, .monotonic);
+        self.resolution.wake = null;
+        self.controller.stopped = true;
+        self.controller.selection = null;
+        self.controller.queued = null;
+        self.controller.current = .{ .phase = .stopped };
+        self.controller.query.stopped = true;
+        self.controller.query.discard = true;
+        self.controller.query.task.retireAtHostDestroy();
+        self.controller.query.result = error.Cancelled;
+        self.controller.query.published.store(false, .monotonic);
+        self.controller.query.wake = null;
+        self.last_error = null;
     }
 
     pub fn checkDrained(self: *const Binding) error{Busy}!void {
@@ -1629,4 +1666,58 @@ test "locked lifecycle binding rejects every execution entry and retains failed 
     try binding.checkDrained();
     try std.testing.expect(navigation.callback == null);
     try std.testing.expect(model.callback == null);
+}
+
+test "host destroy retires unreleased task and suppressed dispatch only at final boundary" {
+    var mock: Mock = .{};
+    var host_ui: MockUi = .{};
+    var host_context: MockNavigation = .{};
+    var dispatch: MockDispatch = .{};
+    var resolver: MockResolver = .{ .host_task = &mock };
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.configureResolver(resolver.resolver());
+    try binding.configureDispatch(dispatch.dispatch());
+    try binding.openWithTable(host_ui.table());
+    try binding.openNavigationWithTable(host_context.table());
+    dispatch.deliver();
+    try std.testing.expect(binding.resolution.task.occupied());
+    mock.runWork();
+    try std.testing.expect(dispatch.callback != null);
+    // A refused ordinary cancellation cannot be considered drain.
+    mock.fail_cancel = true;
+    try std.testing.expectError(error.Permission, binding.requestStop());
+    try std.testing.expectError(error.Busy, binding.checkDrained());
+    // Simulate the documented host stop boundary: the work already returned,
+    // adapters suppress pending callbacks, no further host API is usable.
+    dispatch.callback = null;
+    dispatch.data = null;
+    mock.fail_release = true;
+    try binding.retireAtHostDestroy();
+    try binding.checkDrained();
+    try std.testing.expectEqual(panel.Phase.stopped, binding.controller.view().phase);
+    try std.testing.expectEqual(@as(usize, 0), mock.calls);
+    try std.testing.expectError(error.State, binding.pump());
+    try std.testing.expectError(error.State, binding.openWithTable(host_ui.table()));
+    try std.testing.expectError(error.Permission, binding.configureResolver(resolver.resolver()));
+    try binding.requestStop();
+}
+
+test "destroy boundary discards completed summary that could not be released" {
+    var mock: Mock = .{};
+    var model: MockUi = .{};
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.openWithTable(model.table());
+    const workspace = try identity.Workspace.init(.git, "repo", "repo");
+    try binding.select(mock.provider(), &workspace);
+    mock.runWork();
+    mock.fail_release = true;
+    try std.testing.expectError(error.State, binding.pump());
+    try std.testing.expectError(error.Busy, binding.checkDrained());
+    // Mock host stop invalidates its own registrations before destroy.
+    model.callback = null;
+    model.callback_user = null;
+    try binding.retireAtHostDestroy();
+    try binding.checkDrained();
+    try std.testing.expect(binding.controller.view().snapshot == null);
+    try std.testing.expectEqual(@as(usize, 1), mock.calls);
 }
