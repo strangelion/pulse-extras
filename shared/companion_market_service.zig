@@ -295,6 +295,7 @@ pub fn ServiceFor(comptime Transport: type, comptime CacheType: type, comptime i
             if (!std.mem.eql(u8, pet.displayName, hit.displayName())) return error.StaleSelection;
             if (strict and full and pet.wardrobeZip == null) return error.UnsupportedPackage;
             const url = pet.download(full) orelse return error.UnsupportedPackage;
+            try self.cancel.check();
             const id = try self.tasks.start(.zip, url, self.transport);
             var pending: Pending = .{ .id = id, .source_len = pet.id.len };
             @memcpy(pending.source[0..pending.source_len], pet.id);

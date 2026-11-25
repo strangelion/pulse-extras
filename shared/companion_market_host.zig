@@ -17,7 +17,39 @@ const Budget = @import("runtime_budget").Budget;
 extern "kernel32" fn GetSystemTimeAsFileTime(*[2]u32) callconv(.winapi) void;
 
 pub const page_size = 12;
-pub const Progress = http.Progress;
+pub const queue_capacity = 8;
+pub const JobState = enum(u32) { waiting, downloading, installing, imported, existing, failed, canceled, cleanup_required };
+pub const JobProgress = struct {
+    state: std.atomic.Value(u32) = .init(@intFromEnum(JobState.waiting)),
+    received: std.atomic.Value(usize) = .init(0),
+    expected: std.atomic.Value(usize) = .init(0),
+    canceled: std.atomic.Value(bool) = .init(false),
+
+    pub fn set(self: *JobProgress, state: JobState) void {
+        self.state.store(@intFromEnum(state), .release);
+    }
+
+    pub fn get(self: *const JobProgress) JobState {
+        return @enumFromInt(self.state.load(.acquire));
+    }
+};
+
+pub const Progress = struct {
+    http_progress: http.Progress = .{},
+    jobs: [queue_capacity]JobProgress = @splat(.{}),
+
+    pub fn reset(self: *Progress) void {
+        self.http_progress.reset();
+        for (&self.jobs) |*job| {
+            job.set(.waiting);
+            job.received.store(0, .release);
+            job.expected.store(0, .release);
+            job.canceled.store(false, .release);
+        }
+    }
+};
+
+extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
 
 pub const FilterMode = enum { curated, all, original, featured, exact_id };
 pub const Filters = struct {
@@ -61,6 +93,29 @@ pub const Selection = struct {
     full: bool,
 };
 
+pub const Batch = struct {
+    count: usize = 0,
+    concurrency: usize = 4,
+    selections: [queue_capacity]Selection = undefined,
+
+    pub fn append(self: *Batch, selection: Selection) !void {
+        if (self.count >= self.selections.len or self.concurrency == 0 or self.concurrency > queue_capacity) return error.ResourceLimit;
+        if (selection.result.stale or !selection.result.contains(&selection.hit)) return error.StaleSelection;
+        for (self.selections[0..self.count]) |*item| {
+            if (std.mem.eql(u8, item.hit.sourceId(), selection.hit.sourceId())) return error.AlreadyQueued;
+        }
+        self.selections[self.count] = selection;
+        self.count += 1;
+    }
+
+    pub fn remove(self: *Batch, index: usize) void {
+        if (index >= self.count) return;
+        var n = index;
+        while (n + 1 < self.count) : (n += 1) self.selections[n] = self.selections[n + 1];
+        self.count -= 1;
+    }
+};
+
 pub const DetailRequest = struct {
     result: service_mod.Search,
     hit: market.Hit,
@@ -71,6 +126,7 @@ pub const Request = union(enum) {
     search: SearchRequest,
     detail: DetailRequest,
     install: Selection,
+    batch: Batch,
 };
 
 pub const Snapshot = struct {
@@ -108,6 +164,10 @@ pub const Outcome = struct {
     snapshot: Snapshot = .{},
     installed: ?importing.Result = null,
     detail: ?Detail = null,
+    batch_committed: usize = 0,
+    batch_existing: usize = 0,
+    batch_failed: usize = 0,
+    batch_canceled: usize = 0,
 };
 
 const Access = struct {
@@ -175,6 +235,7 @@ fn execute(service: *Service, consumer: *Consumer, request: *const Request, out:
         .detail => |selected| {
             out.detail = try service.detail(&root, &selected.result, &selected.hit);
         },
+        .batch => unreachable,
         .install => |selected| {
             // A new operation obtains current UTC and reopens the root;
             // stale revisions, copied-row mismatches and expiry are refused.
@@ -197,12 +258,149 @@ fn execute(service: *Service, consumer: *Consumer, request: *const Request, out:
     }
 }
 
+const BatchService = service_mod.ServiceFor(http.BoundTransport, Cache, false);
+const BatchTasks = tasks_mod.TasksMode(http.BoundTransport, false);
+
+const JobCancel = struct {
+    host: importing.Cancel,
+    job: *JobProgress,
+
+    fn check(context: ?*anyopaque) callconv(.c) u32 {
+        const self: *JobCancel = @ptrCast(@alignCast(context orelse return 1));
+        self.host.check() catch return 1;
+        return @intFromBool(self.job.canceled.load(.acquire));
+    }
+};
+
+fn failJob(job: *JobProgress, out: *Outcome, err: anyerror) void {
+    if (err == error.Canceled) {
+        job.set(.canceled);
+        out.batch_canceled += 1;
+    } else {
+        job.set(.failed);
+        out.batch_failed += 1;
+    }
+}
+
+fn executeBatch(service: *BatchService, consumer: *Consumer, batch: *const Batch, out: *Outcome, progress: *Progress, host_cancel: importing.Cancel, safe: *bool) !void {
+    if (batch.count == 0 or batch.count > queue_capacity or batch.concurrency == 0 or batch.concurrency > queue_capacity) return error.InvalidLimit;
+    var root = try service.openRoot();
+    defer root.deinit();
+    var ids: [queue_capacity]?u64 = @splat(null);
+    var next: usize = 0;
+    var active: usize = 0;
+    while (next < batch.count or active != 0) {
+        const stopping = blk: {
+            host_cancel.check() catch break :blk true;
+            break :blk false;
+        };
+        while (next < batch.count and active < batch.concurrency) : (next += 1) {
+            const job = &progress.jobs[next];
+            if (stopping or job.canceled.load(.acquire)) {
+                failJob(job, out, error.Canceled);
+                continue;
+            }
+            const selected = &batch.selections[next];
+            service.now = try now();
+            const id = service.startPackageStrict(&root, &selected.result, &selected.hit, selected.full) catch |err| {
+                failJob(job, out, err);
+                if (err == error.CleanupFailed or err == error.TransportCleanupFailed) {
+                    safe.* = false;
+                    return error.MarketCleanupFailed;
+                }
+                continue;
+            };
+            ids[next] = id;
+            active += 1;
+            job.set(.downloading);
+        }
+        var progressed = false;
+        for (ids[0..batch.count], 0..) |entry, n| {
+            const id = entry orelse continue;
+            const job = &progress.jobs[n];
+            if (stopping or job.canceled.load(.acquire)) try service.cancelPackage(id);
+            const status = try service.packageProgress(id);
+            job.received.store(status.received, .release);
+            job.expected.store(status.expected, .release);
+            if (!status.finished) continue;
+            job.set(.installing);
+            var job_cancel: JobCancel = .{ .host = host_cancel, .job = job };
+            consumer.cancel = .{ .callback = JobCancel.check, .context = &job_cancel };
+            const finish = try service.finishPackageUsing(id, consumer);
+            consumer.cancel = host_cancel;
+            ids[n] = null;
+            active -= 1;
+            progressed = true;
+            if (finish.result) |installed| {
+                switch (installed) {
+                    .imported => {
+                        out.batch_committed += 1;
+                        job.set(.imported);
+                    },
+                    .existing => {
+                        out.batch_existing += 1;
+                        job.set(.existing);
+                    },
+                }
+            } else |err| failJob(job, out, err);
+            if (finish.stage_cleanup != null or finish.transfer_cleanup != null) {
+                // Keep a committed outcome visible even if cleanup failed.
+                if (finish.result) |_| {} else |_| job.set(.cleanup_required);
+                safe.* = false;
+                return error.MarketCleanupFailed;
+            }
+        }
+        if (!progressed and active != 0) Sleep(25);
+    }
+    try host_cancel.check();
+}
+
+fn runBatchWork(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, root: [:0]const u16, scratch: std.Io.Dir, work_path: []const u8, batch: *const Batch, out: *Outcome, progress: *Progress, cancel: importing.Cancel, drained: *bool) !void {
+    if (batch.count == 0 or batch.count > queue_capacity or batch.concurrency == 0 or batch.concurrency > queue_capacity) return error.InvalidLimit;
+    // One extra metadata slot, with a distinct aggregate archive reservation.
+    // Extraction has its own 640 MiB reservation and is strictly serialized.
+    var group = Group.init(std.heap.page_allocator, 64 * 1024 * 1024, 0, batch.concurrency + 1);
+    const tasks = try std.heap.page_allocator.create(BatchTasks);
+    defer std.heap.page_allocator.destroy(tasks);
+    tasks.* = BatchTasks.init(io, scratch, &group);
+    tasks.pool.downloads = batch.concurrency;
+    tasks.pool.disk = Budget.init(queue_capacity * download.limit(.zip) + download.limit(.catalog));
+    const stage = try std.heap.page_allocator.create(installer.Install);
+    defer std.heap.page_allocator.destroy(stage);
+    stage.* = .{};
+    var consumer: Consumer = .{ .io = io, .owner = owner, .private = private, .exe = exe, .digest = digest, .scratch = scratch, .scratch_path = work_path, .cancel = cancel, .stage = stage };
+    var service: BatchService = .{
+        .allocator = group.allocator(),
+        .tasks = tasks,
+        .cache = .{ .root = root.ptr, .access = .{ .owner = owner } },
+        // No host callback or shared progress pointer crosses to transfer threads.
+        .transport = .{ .call = @ptrCast(try owner.marketSymbol("pet_market_http_get")) },
+        .policy = .online,
+        .cancel = cancel,
+        .now = try now(),
+    };
+    var safe = true;
+    const result = executeBatch(&service, &consumer, batch, out, progress, cancel, &safe);
+    const shutdown = service.shutdown();
+    for (progress.jobs[0..batch.count]) |*job| {
+        switch (job.get()) {
+            .waiting, .downloading, .installing => failJob(job, out, error.Canceled),
+            else => {},
+        }
+    }
+    try shutdown;
+    try group.checkDrained();
+    drained.* = safe;
+    return result;
+}
+
 fn runWork(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, root: [:0]const u16, work: [:0]const u16, request: *const Request, out: *Outcome, progress: *Progress, cancel: importing.Cancel, drained: *bool) !void {
     var utf8: [4096]u8 = undefined;
     const len = try std.unicode.utf16LeToUtf8(&utf8, work);
     const work_path = utf8[0..len];
     const scratch = try std.Io.Dir.cwd().openDir(io, work_path, .{ .follow_symlinks = false });
     defer scratch.close(io);
+    if (request.* == .batch) return runBatchWork(io, owner, private, exe, digest, root, scratch, work_path, &request.batch, out, progress, cancel, drained);
     var group = Group.init(std.heap.page_allocator, 64 * 1024 * 1024, 0, 1);
     const tasks = try std.heap.page_allocator.create(Tasks);
     defer std.heap.page_allocator.destroy(tasks);
@@ -215,11 +413,11 @@ fn runWork(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]c
         .allocator = group.allocator(),
         .tasks = tasks,
         .cache = .{ .root = root.ptr, .access = .{ .owner = owner } },
-        .transport = .{ .call = @ptrCast(try owner.marketSymbol("pet_market_http_get")), .cancel = cancel, .progress = progress },
+        .transport = .{ .call = @ptrCast(try owner.marketSymbol("pet_market_http_get")), .cancel = cancel, .progress = &progress.http_progress },
         .policy = switch (request.*) {
             .search => |search| if (search.offline) .offline_only else .stale_on_network_failure,
             .detail => |selected| if (selected.offline) .offline_only else .stale_on_network_failure,
-            .install => .online,
+            .install, .batch => .online,
         },
         .cancel = cancel,
         .now = try now(),
@@ -270,4 +468,22 @@ test "filter projection preserves explicit mode and bounded search" {
     try std.testing.expect(exact.exact_id and !exact.curated);
     const empty: Snapshot = .{};
     try std.testing.expectError(error.StaleSelection, empty.detailIndex(0));
+}
+
+test "batch rejects invalid capacity and stale rows without transfer admission" {
+    var batch: Batch = .{ .concurrency = 0 };
+    var selection: Selection = undefined;
+    try std.testing.expectError(error.ResourceLimit, batch.append(selection));
+    batch.concurrency = 4;
+    selection.result = .{ .summary = .{ .total = 0, .written = 0 }, .revision_len = 0, .stale = true, .created_at = 0, .expires_at = 0 };
+    selection.hit = .{ .id = @splat('a'), .id_len = 1, .name = @splat('b'), .name_len = 1, .catalog_page = 0 };
+    selection.full = false;
+    try std.testing.expectError(error.StaleSelection, batch.append(selection));
+    try std.testing.expectEqual(@as(usize, 0), batch.count);
+    var progress: Progress = .{};
+    progress.jobs[0].set(.imported);
+    progress.jobs[0].canceled.store(true, .release);
+    progress.reset();
+    try std.testing.expectEqual(JobState.waiting, progress.jobs[0].get());
+    try std.testing.expect(!progress.jobs[0].canceled.load(.acquire));
 }

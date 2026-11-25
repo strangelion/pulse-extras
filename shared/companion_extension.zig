@@ -183,6 +183,9 @@ pub const MarketProgress = market_host.Progress;
 pub const MarketSearch = market_host.SearchRequest;
 pub const MarketFilters = market_host.Filters;
 pub const MarketDetail = market_host.Detail;
+pub const MarketBatch = market_host.Batch;
+pub const MarketJobState = market_host.JobState;
+pub const MarketQueueCapacity = market_host.queue_capacity;
 
 pub fn marketDefault(runtime_hex: []const u8, helper_hex: []const u8, request: *const MarketRequest, out: *MarketOutcome, progress: *MarketProgress, cancel: ImportCancel) !void {
     if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;

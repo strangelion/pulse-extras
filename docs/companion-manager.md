@@ -1537,3 +1537,35 @@ compiler or installed host was available for this revision.
 CI #243's full-capacity rendering test was also corrected to construct an
 actual running session instead of a runtime-check task. The expected 12-row
 page and four-row final page assertions remain intact.
+
+## Market queue and download concurrency
+
+The host market supports a bounded eight-item in-memory queue of copied,
+validated selected rows. The user explicitly adds base or full packages,
+removes an item by clicking its queue row, and starts the queue. Duplicate
+source IDs are refused; saved download concurrency (1–8) is frozen at
+admission. The same owner and private scratch lease cover all concurrent
+WinHTTP transfer workers and one serialized extraction/import consumer.
+An additional group slot is reserved for catalog metadata. Aggregate
+archive disk admission is bounded to eight maximum archives plus one
+catalog response, with one independent 640 MiB extraction reservation.
+Only the owning host worker calls host cancellation and catalog/inventory
+APIs; child transfer threads use slot cancellation and do not borrow host
+callback userdata. Each job reports bytes and state independently. Clicking
+an active row requests cancellation, including during the serialized
+consumer; a successful commit remains successful even if later cleanup
+fails. Batch shutdown joins all workers before closing the native module
+and private lease, preserving a failed scratch directory for recovery.
+A batch retains its terminal display until explicitly cleared; retry
+requires a fresh search/detail and selection. Queue contents are not
+persisted across unload. This implements parallel transfers, not parallel
+inventory writes. Source ID remains persisted in the existing inventory;
+upstream author/license metadata is not independently verified.
+
+The initial queue regression includes stale and invalid admission, reset
+and no-selection native command checks, in addition to the existing
+parallel transfer and ZIP/inventory tests. Live multi-download throughput,
+per-item cancellation timing, actual installed-host rendering, thumbnail
+rendering through a verified image ABI, cache maintenance for interrupted
+scratch, and independent provenance/license metadata persistence remain
+acceptance or follow-up gaps. Do not describe these as completed.

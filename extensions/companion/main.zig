@@ -28,7 +28,7 @@ const running_page_size: usize = 12;
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version", "companion.market.queue-base", "companion.market.queue-full", "companion.market.queue-start", "companion.market.queue-clear", "companion.market.queue-item-1", "companion.market.queue-item-2", "companion.market.queue-item-3", "companion.market.queue-item-4", "companion.market.queue-item-5", "companion.market.queue-item-6", "companion.market.queue-item-7", "companion.market.queue-item-8" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -95,6 +95,9 @@ const Instance = struct {
     market_detail: ?library.MarketDetail = null,
     market_outcome: library.MarketOutcome = .{},
     market_progress: library.MarketProgress = .{},
+    market_queue: library.MarketBatch = .{},
+    market_queue_done: bool = false,
+    market_queue_cleanup: bool = false,
     market_status: []const u8 = "OpenPets 市场：主动搜索后才联网",
     market_cancel_requested: bool = false,
     work_snapshot: library.Snapshot = .{},
@@ -133,7 +136,13 @@ const Content = struct {
     states: [9]ui.State = undefined,
     market_actions: [4]ui.Node = undefined,
     market_paging: [2]ui.Node = undefined,
-    market_install: [2]ui.Node = undefined,
+    market_install: [4]ui.Node = undefined,
+    market_queue_nodes: [11]ui.Node = undefined,
+    market_queue_text: [8][768]u8 = undefined,
+    market_queue_ids: [8][64]u8 = undefined,
+    market_queue_toolbar: [2]ui.Node = undefined,
+    market_queue_summary: [128]u8 = undefined,
+    market_queue_summary_id: [64]u8 = undefined,
     market_filter_actions: [3]ui.Node = undefined,
     market_detail_text: [640]u8 = undefined,
     market_detail_id: [64]u8 = undefined,
@@ -341,6 +350,40 @@ fn marketIdle(instance: *const Instance) bool {
     return instance.active and instance.section == .market and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.tasks != null and instance.dispatch != null and instance.market_request == null and instance.import_dialog == 0 and instance.removal_dialog == 0 and instance.picker_request == 0 and instance.preference_edit == null and instance.import_request == null and instance.removal_request == null and !instance.recovery_scan and !instance.fallback_pick and config.runtime_sha256.len == 64 and config.helper_sha256.len == 64;
 }
 
+fn fillMarketQueue(instance: *const Instance, content: *Content) ui.Node {
+    const batch_busy = if (instance.market_request) |request| request == .batch else false;
+    const idle = marketIdle(instance);
+    const count = instance.market_queue.count;
+    const line = std.fmt.bufPrint(&content.market_queue_summary, "下载队列 {d}/8 · 并发 {d}{s}", .{ count, if (batch_busy or instance.market_queue_done) instance.market_queue.concurrency else instance.saved, if (instance.market_queue_cleanup) " · 清理未确认" else "" }) catch unreachable;
+    content.market_queue_nodes[0] = changingLabel(&content.market_queue_summary_id, "market.queue.summary", line);
+    for (instance.market_queue.selections[0..count], 0..) |*selected, n| {
+        const progress = &instance.market_progress.jobs[n];
+        const state: library.MarketJobState = if (batch_busy or instance.market_queue_done) progress.get() else .waiting;
+        const status: []const u8 = switch (state) {
+            .waiting => "等待",
+            .downloading => "下载中",
+            .installing => "校验并安装",
+            .imported => "已安装",
+            .existing => "已存在",
+            .failed => "失败",
+            .canceled => "已取消",
+            .cleanup_required => "需要恢复",
+        };
+        const body = std.fmt.bufPrint(&content.market_queue_text[n], "{s} · {s} · {s} · {d}/{d} B{s}", .{ selected.hit.displayName(), if (selected.full) "完整包" else "基础包", status, if (batch_busy or instance.market_queue_done) progress.received.load(.acquire) else 0, if (batch_busy or instance.market_queue_done) progress.expected.load(.acquire) else 0, if (batch_busy) "（点击取消）" else if (!instance.market_queue_done) "（点击移除）" else "" }) catch unreachable;
+        const id = std.fmt.bufPrint(&content.market_queue_ids[n], "queue-{d}-{x}", .{ n, std.hash.Wyhash.hash(0, body) }) catch unreachable;
+        const cancelable = state == .waiting or state == .downloading or state == .installing;
+        content.market_queue_nodes[n + 1] = action(id, body, commands[62 + n], (batch_busy and cancelable and !progress.canceled.load(.acquire)) or (idle and !instance.market_queue_done));
+    }
+    content.market_queue_toolbar[0] = action("market.queue-start", "开始队列", commands[60], idle and count != 0 and !instance.market_queue_done and instance.loaded);
+    content.market_queue_toolbar[1] = action("market.queue-clear", "清空队列", commands[61], idle and count != 0);
+    content.market_queue_nodes[count + 1] = horizontal("market.queue-actions", &content.market_queue_toolbar);
+    var node = ui.node(ui.NodeKind.stack);
+    node.id = abi.view("market.queue");
+    node.gap = .{ .present = 1, .value = 4 };
+    ui.withChildren(&node, content.market_queue_nodes[0 .. count + 2]);
+    return node;
+}
+
 fn fillMarket(instance: *const Instance, content: *Content) usize {
     const idle = marketIdle(instance);
     const busy = instance.market_request != null and instance.task_id != 0;
@@ -374,9 +417,13 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
     }, commands[57], idle and filters.mode != .exact_id);
     content.children[6] = horizontal("market.filters", &content.market_filter_actions);
     var count: usize = 7;
-    if (busy) {
-        const received = instance.market_progress.received.load(.acquire);
-        const expected = instance.market_progress.expected.load(.acquire);
+    if (instance.market_queue.count != 0) {
+        content.children[count] = fillMarketQueue(instance, content);
+        count += 1;
+    }
+    if (busy and instance.market_request.? != .batch) {
+        const received = instance.market_progress.http_progress.received.load(.acquire);
+        const expected = instance.market_progress.http_progress.expected.load(.acquire);
         const text = if (expected == 0) std.fmt.bufPrint(&content.market_transfer, "当前请求：{d} B（总量未知）", .{received}) catch unreachable else std.fmt.bufPrint(&content.market_transfer, "当前请求：{d} / {d} B", .{ received, expected }) catch unreachable;
         content.children[count] = changingLabel(&content.market_transfer_id, "market.transfer", text);
         count += 1;
@@ -429,6 +476,8 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
                     const can_install = idle and !snapshot.query.offline and !result.stale and detail.installable;
                     content.market_install[0] = action("market.install-base", "下载并安装基础包", commands[35], can_install);
                     content.market_install[1] = action("market.install-full", if (detail.wardrobe) "下载并安装完整包" else "没有独立完整包", commands[36], can_install and detail.wardrobe);
+                    content.market_install[2] = action("market.queue-base", "基础包加入队列", commands[58], can_install and !instance.market_queue_done and instance.market_queue.count < library.MarketQueueCapacity);
+                    content.market_install[3] = action("market.queue-full", "完整包加入队列", commands[59], can_install and detail.wardrobe and !instance.market_queue_done and instance.market_queue.count < library.MarketQueueCapacity);
                     content.children[count] = horizontal("market.install", &content.market_install);
                     count += 1;
                 } else {
@@ -747,7 +796,7 @@ fn completed(user: ?*anyopaque, reply: [*c]const raw.PulseResourcesReply) callco
         instance.runtime_limits = limits;
         instance.version = value.settings.version;
         instance.loaded = true;
-        instance.status = if (operation == raw.PULSE_RESOURCES_SETTINGS_SET) "偏好已确认保存；尚未连接实际下载运行时" else "已读取设置（未配置时采用默认值）；尚未连接实际下载运行时";
+        instance.status = if (operation == raw.PULSE_RESOURCES_SETTINGS_SET) "偏好已确认保存；下次下载队列和运行会话采用新设置" else "已读取设置（未配置时采用默认值）";
     } else |_| {
         instance.status = "宿主设置数据无效；未覆盖原有设置";
     }
@@ -1140,14 +1189,26 @@ fn pollLibrary(instance: *Instance) void {
     if (instance.market_request) |request| {
         instance.market_request = null;
         instance.market_cancel_requested = false;
-        if (request == .install) {
+        if (request == .install or request == .batch) {
             // Do not reuse the pre-install window after a terminal outcome.
             instance.market_snapshot = .{};
             instance.market_selected = null;
             instance.market_detail = null;
         }
         const done = instance.work_done.load(.acquire);
-        if (done and instance.market_outcome.installed != null) {
+        if (request == .batch) {
+            instance.market_queue_done = true;
+            instance.market_queue_cleanup = instance.work_error == error.MarketCleanupFailed or instance.work_error == error.CleanupFailed;
+            for (instance.market_progress.jobs[0..instance.market_queue.count]) |*job| {
+                switch (job.get()) {
+                    .waiting, .downloading, .installing => job.set(if (instance.task_state == raw.PULSE_TASK_CANCELLED) .canceled else .failed),
+                    else => {},
+                }
+            }
+            instance.library_loaded = false;
+            instance.recovery_report = null;
+            instance.market_status = if (instance.market_queue_cleanup) "队列清理未确认；已提交项仍有效，请检查恢复状态" else "队列已结束；逐项查看结果，重新搜索后可重试失败项";
+        } else if (done and instance.market_outcome.installed != null) {
             instance.library_loaded = false;
             instance.recovery_report = null;
             instance.market_status = if (instance.work_error != null or instance.task_state != raw.PULSE_TASK_COMPLETED) "安装已提交，但任务或临时目录清理未确认；请检查本地素材库，禁止直接重试" else switch (instance.market_outcome.installed.?) {
@@ -1916,7 +1977,7 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
     if (request == .detail) instance.market_detail = null;
     instance.market_request = request;
     instance.market_outcome = .{};
-    instance.market_progress.reset();
+    if (request == .batch) instance.market_progress.reset() else instance.market_progress.http_progress.reset();
     instance.market_cancel_requested = false;
     instance.work_done.store(false, .release);
     instance.work_error = null;
@@ -1926,6 +1987,7 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
             .search => "搜索 OpenPets 市场",
             .detail => "读取素材详情",
             .install => "下载并安装桌宠",
+            .batch => "并行下载市场队列",
         }),
         .type = abi.view("companion.market"),
         .work = readLibrary,
@@ -1938,6 +2000,7 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
             .search => "正在读取市场目录",
             .detail => "正在读取素材详情",
             .install => "正在下载、校验并安装素材",
+            .batch => "并行下载中；安装按序提交",
         };
         armTimer(instance);
     } else {
@@ -2025,6 +2088,48 @@ fn installMarket(instance: *Instance, full: bool) void {
         return;
     };
     startMarket(instance, request);
+}
+
+fn queueMarket(instance: *Instance, full: bool) void {
+    if (!marketIdle(instance) or instance.market_queue_done) return;
+    const selected = instance.market_selected orelse return;
+    const detail = instance.market_detail orelse return;
+    if (!detail.installable or (full and !detail.wardrobe)) return;
+    const request = instance.market_snapshot.selectIndex(selected, full) catch return;
+    instance.market_queue.append(request.install) catch |err| {
+        instance.market_status = @errorName(err);
+        refresh(instance);
+        return;
+    };
+    instance.market_status = "已加入下载队列；开始队列前不会下载";
+    refresh(instance);
+}
+
+fn startMarketQueue(instance: *Instance) void {
+    if (!marketIdle(instance) or instance.market_queue_done or instance.market_queue.count == 0 or !instance.loaded) return;
+    instance.market_queue.concurrency = instance.saved;
+    startMarket(instance, .{ .batch = instance.market_queue });
+}
+
+fn clearMarketQueue(instance: *Instance) void {
+    if (!marketIdle(instance)) return;
+    instance.market_queue = .{};
+    instance.market_queue_done = false;
+    instance.market_queue_cleanup = false;
+    instance.market_progress.reset();
+    refresh(instance);
+}
+
+fn marketQueueItem(instance: *Instance, index: usize) void {
+    if (index >= instance.market_queue.count) return;
+    if (instance.market_request) |request| {
+        if (request != .batch) return;
+        instance.market_progress.jobs[index].canceled.store(true, .release);
+    } else {
+        if (!marketIdle(instance) or instance.market_queue_done) return;
+        instance.market_queue.remove(index);
+    }
+    refresh(instance);
 }
 
 fn cancelMarket(instance: *Instance) void {
@@ -2154,6 +2259,11 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             40...51 => selectMarket(instance, n - 40),
             52 => saveLimits(instance),
             55...57 => changeMarketFilter(instance, n - 55),
+            58 => queueMarket(instance, false),
+            59 => queueMarket(instance, true),
+            60 => startMarketQueue(instance),
+            61 => clearMarketQueue(instance),
+            62...69 => marketQueueItem(instance, n - 62),
             53, 54 => {
                 const total = runningMatchCount(instance);
                 const offset = runningPageStart(instance.running_offset, total);
