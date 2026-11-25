@@ -1270,3 +1270,32 @@ all existing assertions for row 10, column 7. Regenerate both lossless
 solid-color streams from Pillow and use the exact matching digests.
 Retain all integrity and pixel comparisons. No production code changes;
 rerun both CI profiles before further runtime architecture changes.
+
+### WIC failure isolation and two-source preflight
+
+Run 45560501117 passed Windows, Ubuntu and the regression gate after
+isolating the dense pixel fixture. Run 45560501033 synthetic-hidden
+passed 100/100 readiness and graceful exits, with zero allocator denials.
+Peak machine CPU was 1.953125%, cumulative CPU 2.78125 s, peak private
+bytes 1,583,624,192 and heap peak per process 14,057,472. Private bytes
+median delta was -9,854,976 bytes; handles, GDI and USER counts were stable.
+These are descriptive results from one runner, not a controlled speedup
+claim or evidence of long-term leak freedom.
+
+Mixed-hidden on the same run started 100 children, none ready. All 100
+failure logs report HRESULT 0x88982f8b (WINCODEC_ERR_COMPONENTINITIALIZEFAILURE).
+Both checked-in lossless WebP fixtures were independently fully decoded
+with Pillow, and their sizes/digests matched the repository. The exact
+failing WIC call was not recorded previously; the HRESULT alone does not
+prove a missing codec or a particular runner configuration.
+
+Record a single bounded stage/HRESULT diagnostic for each decode failure,
+including actual preflight, COM, decoder creation, dimension validation,
+conversion, allocation and CopyPixels. Do not change ownership or error
+cleanup. Mixed workflows first run two hidden processes (one per source)
+for 5 seconds; only a successful probe permits the full stress run.
+Preserve both output directories in the artifact and fail the workflow
+on probe failure. No silent skip, forced success, unverified codec
+installation or replacement of WebP with synthetic rendering. The
+actual WIC initialization problem remains open; a portable decoder would
+require a separately reviewed, version-pinned dependency and tests.

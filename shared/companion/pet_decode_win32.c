@@ -312,35 +312,52 @@ static uint8_t *decode_static(const pet_memory *memory, const wchar_t *path, HAN
     IWICFormatConverter *converter = NULL;
     int com = 0;
     HRESULT hr = E_FAIL;
+    const char *stage = "read-input";
     UINT count = 0, actual_width = 0, actual_height = 0;
-    if (!input || validate(kind, input, length)) goto cleanup;
+    if (!input) goto cleanup;
+    stage = "preflight";
+    if (validate(kind, input, length)) { hr = E_INVALIDARG; goto cleanup; }
+    stage = "com-initialize";
     hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hr)) goto cleanup;
     com = 1;
+    stage = "wic-factory";
     hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
         &IID_IWICImagingFactory, (void **)&factory);
     if (FAILED(hr)) goto cleanup;
+    stage = "wic-stream";
     hr = IWICImagingFactory_CreateStream(factory, &stream);
     if (FAILED(hr)) goto cleanup;
+    stage = "wic-stream-input";
     hr = IWICStream_InitializeFromMemory(stream, input, length);
     if (FAILED(hr)) goto cleanup;
+    stage = "wic-decoder";
     hr = IWICImagingFactory_CreateDecoderFromStream(factory, (IStream *)stream,
         NULL, WICDecodeMetadataCacheOnDemand, &decoder);
     if (FAILED(hr)) goto cleanup;
+    stage = "wic-frame-count";
     hr = IWICBitmapDecoder_GetFrameCount(decoder, &count);
-    if (FAILED(hr) || count != 1) goto cleanup;
+    if (FAILED(hr)) goto cleanup;
+    if (count != 1) { hr = E_INVALIDARG; goto cleanup; }
+    stage = "wic-frame";
     hr = IWICBitmapDecoder_GetFrame(decoder, 0, &frame);
     if (FAILED(hr)) goto cleanup;
+    stage = "wic-size";
     hr = IWICBitmapFrameDecode_GetSize(frame, &actual_width, &actual_height);
-    if (FAILED(hr) || actual_width != width || actual_height != height) goto cleanup;
+    if (FAILED(hr)) goto cleanup;
+    if (actual_width != width || actual_height != height) { hr = E_INVALIDARG; goto cleanup; }
+    stage = "wic-converter";
     hr = IWICImagingFactory_CreateFormatConverter(factory, &converter);
     if (FAILED(hr)) goto cleanup;
+    stage = "wic-converter-init";
     hr = IWICFormatConverter_Initialize(converter, (IWICBitmapSource *)frame,
         &GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, NULL, 0,
         WICBitmapPaletteTypeCustom);
     if (FAILED(hr)) goto cleanup;
+    stage = "pixel-allocation";
     pixels = pet_alloc(memory, bytes);
-    if (!pixels) goto cleanup;
+    if (!pixels) { hr = E_OUTOFMEMORY; goto cleanup; }
+    stage = "wic-copy-pixels";
     hr = IWICFormatConverter_CopyPixels(converter, NULL, stride, bytes, pixels);
     if (FAILED(hr)) goto cleanup;
     *decoded_bytes = bytes;
@@ -356,8 +373,8 @@ cleanup:
     if (!*decoded_bytes) {
         pet_free(memory, pixels, bytes);
         pixels = NULL;
-        fprintf(stderr, "WebP asset rejected or local WIC codec unavailable (HRESULT 0x%08lx).\n",
-            (unsigned long)(uint32_t)hr);
+        fprintf(stderr, "WebP asset rejected or local WIC codec unavailable (stage=%s HRESULT 0x%08lx).\n",
+            stage, (unsigned long)(uint32_t)hr);
     }
     return pixels;
 }

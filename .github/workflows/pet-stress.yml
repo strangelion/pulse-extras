@@ -59,7 +59,15 @@ jobs:
           if ($env:PET_PROFILE -ne 'synthetic-hidden') {
             python tests/companion/pet_stress_fixtures.py zig-out/stress-fixtures
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $petArgs += @('--package', 'zig-out/stress-fixtures/fixture-v1', 'fixture-v1', '--webp', '2', 'zig-out/stress-fixtures/fixture-v2.webp')
+            $sourceArgs = @('--package', 'zig-out/stress-fixtures/fixture-v1', 'fixture-v1', '--webp', '2', 'zig-out/stress-fixtures/fixture-v2.webp')
+            # Exercise both real decode paths before starting up to 100 children.
+            # Failure remains a hard failure, with bounded per-child diagnostics.
+            python tests/companion/pet_stress.py --count 2 --seconds 5 --output zig-out/pet-codec-probe @sourceArgs
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::V1/V2 WebP runtime preflight failed; see companion-stress artifact for per-child decoder stages."
+              exit $LASTEXITCODE
+            }
+            $petArgs += $sourceArgs
           }
           if ($env:PET_PROFILE -eq 'mixed-visible') { $petArgs += @('--visible', '--scale', '50') }
           python tests/companion/pet_stress.py @petArgs
@@ -69,6 +77,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: companion-stress-${{ matrix.profile }}
-          path: zig-out/pet-stress/
+          path: |
+            zig-out/pet-stress/
+            zig-out/pet-codec-probe/
           if-no-files-found: warn
           retention-days: 14
