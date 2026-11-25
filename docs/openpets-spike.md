@@ -236,3 +236,30 @@ actual approved OpenPets hello/status, bind the lifecycle to a stable
 authenticated server instance (including restart handling), integrate
 cancellation/shutdown, and require explicit user consent. No default-pet
 mutation or automatic lease acquisition is enabled.
+
+## Bounded companion behavior scheduler
+
+The lease codec passed after the test-fixture naming correction in
+[45530953947](https://github.com/strangelion/pulse-extras/actions/runs/45530953947).
+behavior.zig is a pure, single-worker policy with 32 fixed task slots,
+no dynamic allocation, no threads and no I/O. Producers supply non-reused
+task IDs, begin/update/finish events and a common monotonic timestamp;
+long-running tasks must be refreshed within 60s. Unknown updates cannot
+revive tasks, capacity errors never evict existing work and stale clock
+samples are rejected. Priorities are testing, running, editing, working,
+thinking, waiting; a failure overrides activity for 1.8s, whereas success
+only displays when no tasks remain. Cancellation does not celebrate.
+
+One pending delivery ticket, 250ms minimum send spacing and identical-state
+coalescing bound emission. A shown=false acknowledgment does not trigger
+automatic retries; failed delivery disables output until availability is
+explicitly restored. Disconnect/reset discards terminal reactions and stale
+delivery tickets without reusing ticket numbers. nextWake reports the next
+useful deadline instead of requiring fixed-rate polling. Offline events can
+update current tasks but cannot replay completed animations on reconnect.
+
+The defaults are experimental tuning choices, not measured performance.
+The authenticated lease owner must supply availability, serialize writes,
+recheck authorization and report completion. This pure scheduler does not
+enable live writes, start a timer or integrate with Pulse host events yet.
+Host CI includes six behavior regression tests.
