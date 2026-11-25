@@ -26,7 +26,7 @@ const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -91,6 +91,15 @@ const Instance = struct {
     library_offset: usize = 0,
     query: [256]u8 = undefined,
     query_len: usize = 0,
+    // Editable state belongs to the UI thread. query is frozen while the
+    // existing library worker owns it.
+    search_draft: [256]u8 = undefined,
+    search_draft_len: usize = 0,
+    search_revision: u64 = 0,
+    search_pending: bool = false,
+    search_ticks: u8 = 0,
+    search_events: ?raw.PulseUiEventsV1 = null,
+    search_token: u64 = 0,
     favorites_only: bool = false,
     status: []const u8 = "设置尚未读取",
 };
@@ -259,15 +268,19 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     switch (instance.section) {
         .library => {
             content.children[2] = changingLabel(&content.dynamic_ids[0], "library.status", instance.library_status);
-            content.children[3] = label("library.search-label", "搜索素材来源 ID 或标签");
-            content.children[3].role = .{ .present = 1, .value = abi.view("caption") };
-            content.toolbar[0] = ui.node(ui.NodeKind.text_input);
-            content.toolbar[0].id = abi.view("library.query");
-            content.toolbar[0].text = .{ .present = 1, .value = abi.view("搜索素材来源 ID 或标签") };
-            content.toolbar[0].placeholder = .{ .present = 1, .value = abi.view("输入 ID 或标签") };
-            content.toolbar[0].state = .{ .present = 1, .value = abi.view("library.query") };
-            content.toolbar[1] = action("library.reload", "搜索 / 刷新", commands[7], instance.tasks != null and instance.task_id == 0);
-            content.toolbar[2] = action(if (instance.favorites_only) "library.favorites.on" else "library.favorites.off", if (instance.favorites_only) "仅收藏：开" else "仅收藏：关", commands[11], instance.tasks != null and instance.task_id == 0);
+            // Standalone full-width native input, not a label beside a
+            // narrow field. Host chooses theme, font and icon rendering.
+            content.children[3] = ui.node(ui.NodeKind.text_input);
+            content.children[3].id = abi.view("library.query");
+            content.children[3].placeholder = .{ .present = 1, .value = abi.view("搜索素材来源 ID、编号或标签") };
+            content.children[3].glyph = .{ .present = 1, .value = abi.view("search") };
+            content.children[3].state = .{ .present = 1, .value = abi.view("library.query") };
+            content.children[3].flex = .{ .present = 1, .value = 1 };
+            const idle = instance.tasks != null and instance.task_id == 0;
+            content.toolbar[0] = action("library.reload", if (instance.search_token != 0 and instance.dispatch != null) "刷新素材库" else "搜索", commands[7], idle);
+            content.toolbar[1] = action(if (instance.favorites_only) "library.favorites.on" else "library.favorites.off", if (instance.favorites_only) "仅收藏：开" else "仅收藏：关", commands[11], idle);
+            const can_clear = if (instance.panel) |panel| panel.table.set_states != null else false;
+            content.toolbar[2] = action("library.search-clear", "清空搜索", commands[28], idle and can_clear);
             const fallback = instance.task_id != 0 and instance.timer == null;
             content.toolbar[3] = action("library.poll", "手动检查", commands[8], fallback);
             content.children[4] = horizontal("library.toolbar", content.toolbar[0..if (fallback) @as(usize, 4) else 3]);
@@ -423,7 +436,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     tree.root = &content.root;
     tree.commands = &content.declared;
     tree.command_count = content.declared.len;
-    content.states[0] = .{ .key = abi.view("library.query"), .value = abi.view(instance.query[0..instance.query_len]) };
+    content.states[0] = .{ .key = abi.view("library.query"), .value = abi.view(instance.search_draft[0..instance.search_draft_len]) };
     content.states[1] = .{ .key = abi.view("running.stop-id"), .value = abi.view("") };
     content.states[2] = .{ .key = abi.view("library.asset-id"), .value = abi.view("") };
     content.states[3] = .{ .key = abi.view("library.tag"), .value = abi.view("") };
@@ -677,7 +690,89 @@ fn terminal(state: u32) bool {
 fn pollTasks(instance: *Instance) void {
     pollLibrary(instance);
     pollRuntime(instance);
-    if (instance.task_id == 0 and instance.runtime_task_id == 0) stopTimer(instance);
+    pollSearch(instance);
+    if (instance.task_id == 0 and instance.runtime_task_id == 0 and !(instance.section == .library and instance.search_pending)) stopTimer(instance);
+}
+
+fn validSearch(value: []const u8) bool {
+    return value.len <= 256 and std.mem.indexOfScalar(u8, value, 0) == null and std.unicode.utf8ValidateSlice(value);
+}
+
+fn rememberSearch(instance: *Instance, value: []const u8) void {
+    @memcpy(instance.search_draft[0..value.len], value);
+    instance.search_draft_len = value.len;
+}
+
+fn applySearch(instance: *Instance) void {
+    @memcpy(instance.query[0..instance.search_draft_len], instance.search_draft[0..instance.search_draft_len]);
+    instance.query_len = instance.search_draft_len;
+    instance.search_pending = false;
+    instance.search_ticks = 0;
+}
+
+fn onSearchChanged(user: ?*anyopaque, panel: u64, batch: [*c]const raw.PulseUiStateBatch) callconv(.c) void {
+    const instance: *Instance = @ptrCast(@alignCast(user orelse return));
+    if (!instance.active or panel != instance.page or instance.section != .library or instance.search_token == 0) return;
+    if (batch == null or batch[0].changes == null or batch[0].count > 128) return;
+    for (0..batch[0].count) |n| {
+        const change = batch[0].changes[n];
+        if (change.source_mask & @as(u32, raw.PULSE_UI_STATE_USER) == 0 or change.revision <= instance.search_revision) continue;
+        const key = abi.slice(change.key) orelse continue;
+        if (!std.mem.eql(u8, key, "library.query")) continue;
+        instance.search_revision = change.revision;
+        const value = abi.slice(change.value) orelse continue;
+        if (!validSearch(value)) continue;
+        if (std.mem.eql(u8, value, instance.search_draft[0..instance.search_draft_len])) continue;
+        rememberSearch(instance, value);
+        if (instance.dispatch != null and instance.tasks != null) {
+            instance.search_pending = true;
+            instance.search_ticks = 3;
+            armTimer(instance);
+            if (instance.timer == null) instance.search_pending = false;
+        }
+    }
+}
+
+fn pollSearch(instance: *Instance) void {
+    if (!instance.active or instance.section != .library or !instance.search_pending) return;
+    if (instance.search_ticks != 0) {
+        instance.search_ticks -= 1;
+        if (instance.search_ticks != 0) return;
+    }
+    if (instance.task_id != 0 or instance.import_dialog != 0 or instance.removal_dialog != 0 or instance.picker_request != 0) return;
+    applySearch(instance);
+    startLibrary(instance, false);
+}
+
+fn clearSearch(instance: *Instance) void {
+    if (instance.task_id != 0 or instance.import_dialog != 0 or instance.removal_dialog != 0 or instance.picker_request != 0) return;
+    const panel = if (instance.panel) |*value| value else return;
+    const states = [_]ui.State{.{ .key = abi.view("library.query"), .value = abi.view("") }};
+    panel.setStates(&states) catch |err| {
+        instance.library_status = @errorName(err);
+        refresh(instance);
+        return;
+    };
+    rememberSearch(instance, "");
+    applySearch(instance);
+    startLibrary(instance, false);
+}
+
+fn subscribeSearch(instance: *Instance) void {
+    var table = std.mem.zeroes(raw.PulseUiEventsV1);
+    if (instance.pages) |pages| {
+        const query = pages.query orelse return;
+        if (query(pages.context, instance.page, abi.view(raw.PULSE_UI_EVENTS_INTERFACE_NAME), raw.PULSE_UI_EVENTS_VERSION_1, &table, @sizeOf(raw.PulseUiEventsV1)) != abi.ok) return;
+    } else {
+        table = (instance.host.queryOptional(raw.PulseUiEventsV1, raw.PULSE_UI_EVENTS_INTERFACE_NAME, raw.PULSE_UI_EVENTS_VERSION_1) catch return) orelse return;
+    }
+    if (table.size < @sizeOf(raw.PulseUiEventsV1) or table.version < raw.PULSE_UI_EVENTS_VERSION_1) return;
+    const subscribe = table.subscribe_state orelse return;
+    _ = table.unsubscribe orelse return;
+    var token: u64 = 0;
+    if (subscribe(table.context, instance.page, abi.view("library.query"), @intCast(raw.PULSE_UI_STATE_USER), onSearchChanged, instance, &token) != abi.ok or token == 0) return;
+    instance.search_events = table;
+    instance.search_token = token;
 }
 
 fn pollLibrary(instance: *Instance) void {
@@ -1395,13 +1490,13 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
         };
         var buffer: [257]u8 = undefined;
         var needed: u32 = 0;
-        if (get_state(panel.table.context, panel.id, abi.view("library.query"), &buffer, buffer.len, &needed) != abi.ok or needed > instance.query.len or !std.unicode.utf8ValidateSlice(buffer[0..needed])) {
+        if (get_state(panel.table.context, panel.id, abi.view("library.query"), &buffer, buffer.len, &needed) != abi.ok or needed > instance.query.len or !validSearch(buffer[0..needed])) {
             instance.library_status = "搜索词无效或超过 256 字节";
             refresh(instance);
             return;
         }
-        @memcpy(instance.query[0..needed], buffer[0..needed]);
-        instance.query_len = needed;
+        rememberSearch(instance, buffer[0..needed]);
+        applySearch(instance);
     }
     instance.work_done.store(false, .release);
     instance.work_error = null;
@@ -1442,7 +1537,10 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
                 if ((instance.task_id != 0 or instance.runtime_task_id != 0) and instance.timer == null) pollTasks(instance);
-                if (instance.section == .library and !instance.library_loaded and instance.task_id == 0) startLibrary(instance, false);
+                if (instance.section == .library) {
+                    if (instance.search_pending) armTimer(instance);
+                    if (!instance.library_loaded and instance.task_id == 0 and !instance.search_pending) startLibrary(instance, false);
+                }
                 if (instance.section == .running) startRuntimeCheck(instance);
                 refresh(instance);
             },
@@ -1477,6 +1575,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             23 => showRemoval(instance, .quarantine),
             24 => showRemoval(instance, .restore_interrupted),
             27 => showRemoval(instance, .purge),
+            28 => clearSearch(instance),
             25 => if (instance.recovery_report != null and instance.quarantine_offset >= quarantine_page_size) {
                 instance.quarantine_offset -= quarantine_page_size;
                 refresh(instance);
@@ -1498,6 +1597,19 @@ fn close(instance: *Instance) host_mod.Error!void {
     instance.runtime_checked = false;
     instance.runtime_status = if (config.runtime_sha256.len == 0) "未打包运行时；无法启动桌宠" else "切换至运行管理时检查同包运行时";
     stopTimer(instance);
+    instance.search_pending = false;
+    instance.search_ticks = 0;
+    if (instance.search_token != 0) {
+        const events = instance.search_events orelse return error.State;
+        const unsubscribe = events.unsubscribe orelse return error.Unavailable;
+        host_mod.mapStatus(unsubscribe(events.context, instance.search_token)) catch |err| switch (err) {
+            error.State => {},
+            else => return err,
+        };
+        instance.search_token = 0;
+        instance.search_events = null;
+        instance.search_revision = 0;
+    }
     if (instance.picker_request != 0) {
         const picker = instance.picker orelse return error.State;
         const cancel = picker.cancel orelse return error.Unavailable;
@@ -1647,6 +1759,7 @@ fn open(instance: *Instance) host_mod.Error!void {
     if (instance.dispatch) |dispatch| {
         if (dispatch.post == null or dispatch.cancel == null) instance.dispatch = null;
     }
+    if (instance.dispatch != null and instance.tasks != null) subscribeSearch(instance);
     instance.active = true;
     const had_tasks = instance.task_id != 0 or instance.runtime_task_id != 0;
     if (had_tasks) {
@@ -1883,4 +1996,37 @@ test "quarantine rows distinguish unknown size from measured zero" {
     const zero = try quarantineText(measured, &buffer);
     try std.testing.expect(std.mem.indexOf(u8, zero, "0 B") != null);
     try std.testing.expect(std.mem.indexOf(u8, zero, "来源未证实") != null);
+}
+
+test "search field uses a native placeholder and separate controls" {
+    var instance: Instance = .{ .host = undefined };
+    var content: Content = undefined;
+    var tree: ui.Tree = undefined;
+    fill(&instance, &content, &tree);
+    try std.testing.expectEqual(ui.NodeKind.text_input, content.children[3].type);
+    try std.testing.expectEqualStrings("library.query", abi.slice(content.children[3].state.value).?);
+    try std.testing.expectEqualStrings("search", abi.slice(content.children[3].glyph.value).?);
+    try std.testing.expectEqual(@as(u32, 0), content.children[3].text.present);
+    try std.testing.expectEqualStrings(commands[7], abi.slice(content.toolbar[0].command.value).?);
+    try std.testing.expectEqualStrings(commands[28], abi.slice(content.toolbar[2].command.value).?);
+}
+
+test "typing copies latest user query without mutating the worker input" {
+    var instance: Instance = .{ .host = undefined, .active = true, .page = 9, .search_token = 1, .task_id = 12 };
+    rememberSearch(&instance, "old");
+    applySearch(&instance);
+    var change: raw.PulseUiStateChange = .{ .key = abi.view("library.query"), .value = abi.view("猫"), .revision = 2, .source_mask = @intCast(raw.PULSE_UI_STATE_USER) };
+    var batch: raw.PulseUiStateBatch = .{ .revision = 2, .changes = &change, .count = 1 };
+    onSearchChanged(&instance, 9, &batch);
+    try std.testing.expectEqualStrings("猫", instance.search_draft[0..instance.search_draft_len]);
+    try std.testing.expectEqualStrings("old", instance.query[0..instance.query_len]);
+    change.value = abi.view("wrong");
+    change.revision = 3;
+    change.source_mask = @intCast(raw.PULSE_UI_STATE_PROGRAMMATIC);
+    onSearchChanged(&instance, 9, &batch);
+    try std.testing.expectEqualStrings("猫", instance.search_draft[0..instance.search_draft_len]);
+    instance.task_id = 0;
+    applySearch(&instance);
+    try std.testing.expectEqualStrings("猫", instance.query[0..instance.query_len]);
+    try std.testing.expect(!validSearch("a\x00b"));
 }

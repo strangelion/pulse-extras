@@ -1383,3 +1383,23 @@ does not prove live HTTPS or a real-host market panel. The installation
 adapter still uses caller-approved roots and the serialized catalog owner;
 host-side lease-bound wiring, persistent provenance/license display and
 live concurrent UI integration remain outstanding. New CI pending.
+
+## Native search interaction
+
+The library uses a standalone native text input with the search glyph and
+one in-field prompt (source ID, numeric asset ID or tag). No duplicate
+label beside the field; refresh, favorites and clear are separate actions.
+When available, negotiate the public pinned pulse.ui.events V1 table through
+the settings page's scoped query (or the workspace host). Subscribe only to
+user state changes; IME preedit and programmatic state changes do not launch
+searches. Copy bounded UTF-8 into a separate UI draft. Coalesce rapid edits
+with the existing UI-dispatch timer (three 100 ms polls), then apply the
+latest query only when the library worker and relevant dialogs are idle.
+The active worker's input is never modified. Older hosts without events or
+dispatcher retain a manual search action. Clear uses the public set_states
+API and reloads all entries. Numeric IDs also match with an optional '#';
+names/publishers not present in the local inventory are not invented.
+Unsubscribe before page teardown; no permanent idle polling. The C ABI
+fixture checks native node shape and coalesced event-to-worker admission,
+and unit tests cover copied draft, user/programmatic separation and ID
+matching. Exact icon placement and IME interaction need real-host testing.

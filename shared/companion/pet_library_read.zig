@@ -231,6 +231,10 @@ fn matches(entry: *const catalog.Entry, options: Options) bool {
     var terms = std.mem.tokenizeAny(u8, options.query, " \t");
     while (terms.next()) |term| {
         if (containsFolded(entry.sourceId(), term)) continue;
+        const number = if (std.mem.startsWith(u8, term, "#")) term[1..] else term;
+        if (std.fmt.parseInt(u64, number, 10)) |id| {
+            if (entry.id == id) continue;
+        } else |_| {}
         var found = false;
         for (0..entry.tag_count) |n| {
             if (containsFolded(entry.tagAt(n).?, term)) {
@@ -299,6 +303,9 @@ test "library matching searches every tag and respects favorite filter" {
     _ = try entry.addTag("像素");
     _ = try entry.addTag("Work");
     try std.testing.expect(matches(&entry, .{ .query = "CAT work 像素" }));
+    try std.testing.expect(matches(&entry, .{ .query = "#1 work" }));
+    try std.testing.expect(matches(&entry, .{ .query = "1" }));
+    try std.testing.expect(!matches(&entry, .{ .query = "#2" }));
     try std.testing.expect(!matches(&entry, .{ .query = "cat", .favorites_only = true }));
     entry.favorite = true;
     try std.testing.expect(matches(&entry, .{ .query = "work", .favorites_only = true }));

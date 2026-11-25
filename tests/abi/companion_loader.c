@@ -7,6 +7,7 @@
 #include "pulse/resources.h"
 #include "pulse/tasks.h"
 #include "pulse/dispatch.h"
+#include "pulse/ui_events.h"
 #include "pulse/dialogs.h"
 #include "pulse/context.h"
 
@@ -16,7 +17,7 @@
 static const char *commands[] = {
     "companion.library", "companion.running", "companion.market", "companion.global",
     "companion.settings.refresh", "companion.download.less", "companion.download.more",
-    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge"
+    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear"
 };
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 /* Optional 1.0.61 picker ABI: independent C layout matching the supplied
@@ -88,6 +89,10 @@ typedef struct {
     void *dialog_command_user;
     uint64_t dialog_command_subscription;
     unsigned dialog_states_updated;
+    uint64_t search_token;
+    PulseUiStateChangedFn search_changed;
+    void *search_user;
+    char search_value[257];
     PulseDialogClosed dialog_closed;
     void *dialog_user;
     PulseResourcesCompletionFn completion;
@@ -153,10 +158,18 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
         const PulseUiModelNode *toolbar = root->children.data + 4;
         REQUIRE(toolbar->children.present && toolbar->children.data &&
                 (toolbar->children.count == 3 || toolbar->children.count == 4));
-        REQUIRE(toolbar->children.data[0].type == PULSE_UI_MODEL_TEXT_INPUT);
-        REQUIRE(toolbar->children.data[0].placeholder.present);
-        REQUIRE(same(toolbar->children.data[1].command.value, commands[7]));
-        REQUIRE(same(toolbar->children.data[2].command.value, commands[11]));
+        const PulseUiModelNode *search = root->children.data + 3;
+        REQUIRE(search->type == PULSE_UI_MODEL_TEXT_INPUT && search->placeholder.present);
+        REQUIRE(search->glyph.present && same(search->glyph.value, "search") && !search->text.present);
+        REQUIRE(same(search->state.value, "library.query"));
+        REQUIRE(same(toolbar->children.data[0].command.value, commands[7]));
+        REQUIRE(same(toolbar->children.data[1].command.value, commands[11]));
+        REQUIRE(same(toolbar->children.data[2].command.value, commands[28]));
+        REQUIRE(t->state_count && t->states && same(t->states[0].key, "library.query"));
+        REQUIRE(t->states[0].value.length < sizeof(f->search_value));
+        if (t->states[0].value.length)
+            memcpy(f->search_value, t->states[0].value.data, t->states[0].value.length);
+        f->search_value[t->states[0].value.length] = 0;
         if (toolbar->children.count == 4)
             REQUIRE(same(toolbar->children.data[3].command.value, commands[8]));
         unsigned recovery_buttons = 0;
@@ -227,10 +240,32 @@ static PulseStatus model(Fixture *f, void *out, uint32_t size) {
     memcpy(out, &t, sizeof(t));
     return PULSE_OK;
 }
+static PulseStatus PULSE_CALL subscribe_search(void *ctx, uint64_t page, PulseStringView key, uint32_t sources, PulseUiStateChangedFn cb, void *user, uint64_t *token) {
+    Fixture *f = ctx;
+    REQUIRE(page == f->page && !f->search_token && same(key, "library.query") && sources == PULSE_UI_STATE_USER && cb && token);
+    f->search_token = ++f->next; f->search_changed = cb; f->search_user = user;
+    *token = f->search_token;
+    return PULSE_OK;
+}
+static PulseStatus PULSE_CALL unsubscribe_search(void *ctx, uint64_t token) {
+    Fixture *f = ctx;
+    REQUIRE(token && token == f->search_token);
+    f->search_token = 0; f->search_changed = NULL; f->search_user = NULL;
+    return PULSE_OK;
+}
+static PulseStatus events(Fixture *f, void *out, uint32_t size) {
+    if (!f->auto_dispatch) return PULSE_ERROR_UNAVAILABLE;
+    REQUIRE(size >= sizeof(PulseUiEventsV1));
+    PulseUiEventsV1 t = {.size=sizeof(t), .version=1, .context=f, .subscribe_state=subscribe_search, .unsubscribe=unsubscribe_search};
+    memcpy(out, &t, sizeof(t));
+    return PULSE_OK;
+}
 static PulseStatus PULSE_CALL query_page(void *ctx, uint64_t page, PulseStringView name, uint32_t version, void *out, uint32_t size) {
     Fixture *f = ctx;
-    REQUIRE(page && page == f->page && version == 1 && same(name, PULSE_UI_MODEL_INTERFACE));
-    return model(f, out, size);
+    REQUIRE(page && page == f->page && version == 1);
+    if (same(name, PULSE_UI_EVENTS_INTERFACE_NAME)) return events(f, out, size);
+    if (same(name, PULSE_UI_MODEL_INTERFACE)) return model(f, out, size);
+    return PULSE_ERROR_UNAVAILABLE;
 }
 static PulseStatus request(Fixture *f, uint32_t operation, PulseResourcesCompletionFn callback, void *user, uint64_t *id) {
     REQUIRE(!f->pending && callback && user && id);
@@ -486,6 +521,7 @@ static PulseStatus PULSE_CALL query(void *ctx, PulseStringView name, uint32_t ve
         memcpy(out, &t, sizeof(t)); return PULSE_OK;
     }
     if (same(name, PULSE_UI_MODEL_INTERFACE) && f->fallback) return model(f, out, size);
+    if (same(name, PULSE_UI_EVENTS_INTERFACE_NAME) && f->fallback) return events(f, out, size);
     if (same(name, PULSE_DISPATCH_INTERFACE) && f->auto_dispatch) {
         REQUIRE(size >= sizeof(PulseDispatchV1));
         PulseDispatchV1 t = {.size=sizeof(t), .version=1, .context=f, .post=post, .cancel=cancel_dispatch};
@@ -602,11 +638,19 @@ static int automatic(PulsePluginEntryV1Fn entry) {
     CHECK(cancel_task(&f, f.task) == PULSE_OK);
     for (unsigned i = 0; i < 100 && f.task; ++i) { Sleep(20); pump(&f); }
     CHECK(!f.task && f.task_released == 1);
-    CHECK(click(&f, 7) == 0 && f.task);
+    CHECK(f.search_token && f.search_changed);
+    PulseUiStateChange change = {.key=view("library.query"), .value=view("c"), .revision=1, .source_mask=PULSE_UI_STATE_USER};
+    PulseUiStateBatch batch = {.revision=1, .changes=&change, .count=1};
+    f.search_changed(f.search_user, f.page, &batch);
+    change.value = view("cat"); change.revision = 2; batch.revision = 2;
+    f.search_changed(f.search_user, f.page, &batch);
+    CHECK(!f.task);
+    for (unsigned i = 0; i < 100 && !f.task; ++i) { Sleep(20); pump(&f); }
+    CHECK(f.task && strcmp(f.search_value, "cat") == 0);
     out.deactivate(out.instance);
     out.destroy(out.instance);
     pump(&f);
-    CHECK(!f.queued);
+    CHECK(!f.queued && !f.search_token);
     DeleteCriticalSection(&f.dispatch_lock);
     return 0;
 }
