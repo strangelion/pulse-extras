@@ -402,3 +402,16 @@ Windows CI passes. Existing source handles keep read-only sharing. Add
 real package smoke to automatic runtime preflight before sampling, and
 check an occupied pending directory's sentinel is preserved. No tests
 skipped and no heavy benchmark added. Latest regression awaits CI.
+
+## Confirmed green and real import integration
+
+Commit e3e02eb passed full Windows and Ubuntu regression (45580004636)
+and the updated lightweight Windows import/codec preflight (45580004653).
+No checks weakened. Add an explicit Windows test-companion-import build
+step, invoked after the normal standalone build in CI, using an original
+fully encoded fixture and the actual approved executable/Runner, native
+store, coordinator and dual digest. Verify import, persisted ID and digest,
+reloaded duplicate, actual final/source fingerprint, preference save/reload
+and runner drain. Isolated test cleanup is limited to known filenames.
+New integration is not yet verified by CI. The real Pulse page, recovery
+and online market transport are still separate pending work.

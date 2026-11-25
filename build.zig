@@ -401,6 +401,22 @@ pub fn build(b: *std.Build) void {
     // Every module also runs its own tests on the host target, so the wrappers
     // are checked even when the probe does not use them yet.
     var host_modules = Modules.add(b, b.graph.host, .Debug, vcs_test_config);
+    const import_integration = b.step("test-companion-import", "Run Windows real-helper and durable inventory integration");
+    if (b.graph.host.result.os.tag == .windows and b.graph.host.result.cpu.arch == .x86_64) {
+        const import_root = b.createModule(.{
+            .root_source_file = b.path("shared/companion_import_integration.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .link_libc = true,
+            .imports = host_modules.imports(),
+        });
+        import_root.addCSourceFiles(.{
+            .files = &.{ "shared/companion/pet_catalog_store_win32.c", "tests/companion/pet_catalog_store_fixture.c" },
+            .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
+        });
+        const import_tests = b.addTest(.{ .root_module = import_root });
+        import_integration.dependOn(&b.addRunArtifact(import_tests).step);
+    }
     const test_sources = [_][]const u8{
         "extensions/abi-probe/main.zig",
         "extensions/hello-panel/main.zig",
