@@ -1242,3 +1242,19 @@ threads and GDI/USER objects. These are descriptive comparisons, not
 leak proof. Individual heap peaks need not occur simultaneously.
 Regenerate the original solid-color V1/V2 fixture streams using a real
 WebP encoder; both were decoded locally, Windows WIC still needs CI.
+
+### Pixel conversion hot path and fixture integrity
+
+Precompute the exact nearest-neighbor x offsets once per rendered frame,
+using a bounded 768-byte stack array. Fully transparent and opaque pixels
+bypass alpha multiplication; intermediate alpha preserves the original
+integer rounding and BGRA channel order. No atlas layout, ABI, retained
+allocation, ownership or rendering cadence changes. The native fixture
+compares every output byte against a scalar reference at 50, 67, 100,
+133 and 200 percent scale, with all alpha values. No measured speedup
+claimed before comparable CI/desktop benchmarks.
+
+The two solid-color WebP streams were generated with Pillow lossless
+encoding and fully decoded and pixel-compared locally. Pin their SHA-256
+in the standard-library fixture writer to reject transcription errors.
+Windows WIC decoding and new native tests remain CI acceptance gates.

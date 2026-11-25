@@ -20,18 +20,34 @@ static pet_surface_result frame_scaled(const uint8_t *atlas, size_t atlas_bytes,
     uintptr_t a = (uintptr_t)atlas, b = (uintptr_t)out;
     if ((a <= b && b - a < atlas_bytes) ||
         (b < a && a - b < out_bytes)) return PET_SURFACE_INVALID;
+    /* Width is bounded above. Compute the exact nearest-neighbor source
+     * column once, instead of dividing for every pixel on every row.
+     * The 768-byte scratch is stack-local and never retained per instance. */
+    uint16_t x_offsets[PET_FRAME_WIDTH * 2];
+    for (unsigned x = 0; x < width; ++x)
+        x_offsets[x] = (uint16_t)((x * PET_FRAME_WIDTH / width) * 4u);
     for (unsigned y = 0; y < height; ++y) {
         unsigned sy = y * PET_FRAME_HEIGHT / height;
         size_t offset = ((size_t)(row * PET_FRAME_HEIGHT + sy) * (columns * PET_FRAME_WIDTH) +
             column * PET_FRAME_WIDTH) * 4u;
         uint8_t *dst = out + (size_t)y * width * 4u;
+        const uint8_t *line = atlas + offset;
         for (unsigned x = 0; x < width; ++x, dst += 4) {
-            const uint8_t *src = atlas + offset + (size_t)(x * PET_FRAME_WIDTH / width) * 4u;
+            const uint8_t *src = line + x_offsets[x];
             unsigned alpha = src[3];
-            dst[0] = (uint8_t)premultiply(src[2], alpha);
-            dst[1] = (uint8_t)premultiply(src[1], alpha);
-            dst[2] = (uint8_t)premultiply(src[0], alpha);
-            dst[3] = (uint8_t)alpha;
+            if (alpha == 0) {
+                dst[0] = dst[1] = dst[2] = dst[3] = 0;
+            } else if (alpha == 255) {
+                dst[0] = src[2];
+                dst[1] = src[1];
+                dst[2] = src[0];
+                dst[3] = 255;
+            } else {
+                dst[0] = (uint8_t)premultiply(src[2], alpha);
+                dst[1] = (uint8_t)premultiply(src[1], alpha);
+                dst[2] = (uint8_t)premultiply(src[0], alpha);
+                dst[3] = (uint8_t)alpha;
+            }
         }
     }
     return PET_SURFACE_OK;

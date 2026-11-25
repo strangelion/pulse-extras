@@ -18,6 +18,23 @@ static size_t pixel_offset(unsigned row, unsigned col, unsigned x, unsigned y) {
         col * PET_FRAME_WIDTH + x) * 4u;
 }
 
+/* Independent scalar reference using the original exact sampling rule. */
+static int matches_reference(const pet_surface *surface, const uint8_t *atlas,
+    unsigned row, unsigned col) {
+    for (unsigned y = 0; y < surface->height; ++y)
+        for (unsigned x = 0; x < surface->width; ++x) {
+            size_t off = pixel_offset(row, col, x * PET_FRAME_WIDTH / surface->width,
+                y * PET_FRAME_HEIGHT / surface->height);
+            const uint8_t *src = atlas + off;
+            const uint8_t *dst = surface->pixels + ((size_t)y * surface->width + x) * 4;
+            unsigned a = src[3];
+            if (dst[0] != (src[2] * a + 127u) / 255u ||
+                dst[1] != (src[1] * a + 127u) / 255u ||
+                dst[2] != (src[0] * a + 127u) / 255u || dst[3] != a) return 0;
+        }
+    return 1;
+}
+
 static DWORD WINAPI wrong_thread(LPVOID opaque) {
     return pet_surface_close(opaque) == PET_SURFACE_WRONG_THREAD ? 0 : 1;
 }
@@ -229,6 +246,21 @@ int main(void) {
     CHECK(surface.bitmap == old_bitmap && surface.pixels[0] == 25);
     CHECK(pet_surface_resize(&surface, 200, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OK);
     CHECK(surface.bitmap != old_bitmap && surface.pixels[0] == 25);
+    /* Dense varying pixels, including transparent nonzero RGB, opaque
+     * and every intermediate alpha. Compare every output byte at each scale. */
+    for (unsigned y = 0; y < PET_FRAME_HEIGHT; ++y)
+        for (unsigned x = 0; x < PET_FRAME_WIDTH; ++x) {
+            uint8_t *p = atlas + pixel_offset(10, 7, x, y);
+            p[0] = (uint8_t)(x + y);
+            p[1] = (uint8_t)(3 * x + y);
+            p[2] = (uint8_t)(x + 7 * y);
+            p[3] = (uint8_t)(x + 3 * y);
+        }
+    const unsigned scales[] = {50, 67, 100, 133, 200};
+    for (unsigned i = 0; i < sizeof(scales) / sizeof(scales[0]); ++i) {
+        CHECK(pet_surface_resize(&surface, scales[i], atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OK);
+        CHECK(matches_reference(&surface, atlas, 10, 7));
+    }
     CHECK(!IsWindowVisible(surface.window));
     /* Use the existing large allocation as a synthetic four-cell strip.
      * First pixel of the last cell must use strip, not atlas row stride. */
