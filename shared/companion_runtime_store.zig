@@ -72,6 +72,10 @@ pub fn applyPreference(owner: *runtime.Owner, id: u64, source: []const u8, expec
 }
 
 pub fn importPackage(owner: *runtime.Owner, coordinator: *importing.Coordinator, helper: anytype, source: []const u8, source_id: []const u8) !importing.Result {
+    return importPackageControlled(owner, coordinator, helper, source, source_id, .{});
+}
+
+pub fn importPackageControlled(owner: *runtime.Owner, coordinator: *importing.Coordinator, helper: anytype, source: []const u8, source_id: []const u8, cancel: importing.Cancel) !importing.Result {
     const Adapter = struct {
         owner: *runtime.Owner,
         validator: @TypeOf(helper),
@@ -89,5 +93,5 @@ pub fn importPackage(owner: *runtime.Owner, coordinator: *importing.Coordinator,
         }
     };
     var adapter: Adapter = .{ .owner = owner, .validator = helper };
-    return coordinator.importPackage(&adapter, source, source_id);
+    return coordinator.importPackageControlled(&adapter, source, source_id, cancel);
 }

@@ -12,8 +12,14 @@ const process = @import("pulse_process");
 extern "kernel32" fn GetWindowsDirectoryW([*]u16, u32) callconv(.winapi) u32;
 
 pub const Result = importing.Result;
+pub const Cancel = importing.Cancel;
 
 pub fn run(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, source: []const u8, source_id: []const u8) !Result {
+    return runControlled(io, owner, private, exe, digest, source, source_id, .{});
+}
+
+pub fn runControlled(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, source: []const u8, source_id: []const u8, cancel: Cancel) !Result {
+    try cancel.check();
     if (!owner.opened or !owner.lease_opened or !inventory.validSource(source_id)) return error.Invalid;
     if (source.len < 4 or source.len > 4096 or !std.ascii.isAlphabetic(source[0]) or source[1] != ':' or source[2] != '\\' or
         std.mem.indexOfScalar(u8, source, 0) != null or !std.unicode.utf8ValidateSlice(source)) return error.InvalidSource;
@@ -46,7 +52,7 @@ pub fn run(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]c
     defer std.heap.page_allocator.destroy(coordinator);
     coordinator.* = .{};
     _ = try store.loadInventory(owner, &coordinator.index);
-    const outcome = store.importPackage(owner, coordinator, &helper, source, source_id);
+    const outcome = store.importPackageControlled(owner, coordinator, &helper, source, source_id, cancel);
     try runner.checkDrained();
     if (coordinator.fault != null) return error.RecoveryRequired;
     return outcome;

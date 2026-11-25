@@ -391,7 +391,8 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
         };
     }
     if (instance.import_request) |*request| {
-        instance.import_result = library.importDefault(config.runtime_sha256, config.helper_sha256, request) catch |err| {
+        instance.import_result = library.importDefault(config.runtime_sha256, config.helper_sha256, request, .{ .callback = canceled, .context = context[0].context }) catch |err| {
+            if (err == error.Canceled) return raw.PULSE_TASK_CANCELLED;
             instance.work_error = err;
             return raw.PULSE_TASK_FAILED;
         };

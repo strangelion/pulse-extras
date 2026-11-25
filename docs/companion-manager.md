@@ -1029,3 +1029,14 @@ is cooperative at task boundaries; the bounded helper call may finish and
 an already committed import is never represented as rolled back. The ABI
 fixture verifies selection-prefill and cancel without touching user files;
 actual import backend remains covered by the isolated bridge regression.
+
+## Import cancellation boundary
+
+The host cancellation callback is checked before the read-only probe and
+again after the probe, before reserving a durable ID. A canceled probe does
+not consume an ID, create staging directories, or fault the coordinator.
+Once reservation begins, the transaction must finish or report recovery;
+late cancellation never claims that a committed write was rolled back.
+The real bridge fixture cancels after a successful probe and verifies the
+next import still receives the original next ID. This does not interrupt
+an in-flight synchronous helper; its existing deadline still applies.

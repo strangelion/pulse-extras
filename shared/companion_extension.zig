@@ -98,6 +98,7 @@ pub fn editPreferenceDefault(hex: []const u8, edit: *const PreferenceEdit) !void
 }
 
 pub const ImportResult = local_import.Result;
+pub const ImportCancel = local_import.Cancel;
 pub const ImportRequest = struct {
     source: [4096]u8 = undefined,
     source_len: usize = 0,
@@ -118,7 +119,7 @@ pub const ImportRequest = struct {
 
 pub const validSourceId = inventory.validSource;
 
-pub fn importDefault(runtime_hex: []const u8, helper_hex: []const u8, request: *const ImportRequest) !ImportResult {
+pub fn importDefault(runtime_hex: []const u8, helper_hex: []const u8, request: *const ImportRequest, cancel: ImportCancel) !ImportResult {
     if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
     const digest = try parseDigest(runtime_hex);
     const helper_digest = try parseDigest(helper_hex);
@@ -138,7 +139,7 @@ pub fn importDefault(runtime_hex: []const u8, helper_hex: []const u8, request: *
     const outcome = blk: {
         owner.open(root, digest, 1, 128 * 1024 * 1024) catch |err| break :blk @as(anyerror!ImportResult, err);
         const private = openPrivateDefault(owner) catch |err| break :blk @as(anyerror!ImportResult, err);
-        break :blk local_import.run(threaded.io(), owner, private, exe[0..len :0], helper_digest, request.source[0..request.source_len], request.source_id[0..request.id_len]);
+        break :blk local_import.runControlled(threaded.io(), owner, private, exe[0..len :0], helper_digest, request.source[0..request.source_len], request.source_id[0..request.id_len], cancel);
     };
     owner.close() catch return error.CleanupFailed;
     std.heap.page_allocator.destroy(owner);

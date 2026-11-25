@@ -183,6 +183,20 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     const len = GetFullPathNameW(std.unicode.wtf8ToWtf16LeStringLiteral("zig-out\\bin\\pulse-pet-demo.exe"), helper.len, &helper, null);
     if (len == 0 or len >= helper.len) return error.BadFixturePath;
     const digest = try readDigest(std.unicode.wtf8ToWtf16LeStringLiteral("PULSE_BRIDGE_FIXTURE_HELPER_SHA256"));
+    const CancelProbe = struct {
+        calls: usize = 0,
+        fn check(ctx: ?*anyopaque) callconv(.c) u32 {
+            const self: *@This() = @ptrCast(@alignCast(ctx orelse unreachable));
+            self.calls += 1;
+            return @intFromBool(self.calls >= 3);
+        }
+    };
+    var cancel: CancelProbe = .{};
+    if (local_import.runControlled(io, owner, private, helper[0..len :0], digest, fresh, "fresh", .{ .callback = CancelProbe.check, .context = &cancel })) |_| {
+        return error.AcceptedCanceledImport;
+    } else |err| {
+        if (err != error.Canceled) return err;
+    }
     const first = try local_import.run(io, owner, private, helper[0..len :0], digest, fresh, "fresh");
     if (first != .imported or first.imported != 4) return error.UnexpectedImport;
     const second = try local_import.run(io, owner, private, helper[0..len :0], digest, fresh, "fresh");

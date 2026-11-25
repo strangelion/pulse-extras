@@ -7,6 +7,17 @@ const fingerprint = @import("pet_fingerprint.zig");
 pub const Result = union(enum) { existing: u64, imported: u64 };
 pub const Fault = enum { reservation_save, stage, inventory_commit };
 
+pub const Cancel = struct {
+    callback: ?*const fn (?*anyopaque) callconv(.c) u32 = null,
+    context: ?*anyopaque = null,
+
+    pub fn check(self: Cancel) error{Canceled}!void {
+        if (self.callback) |callback| {
+            if (callback(self.context) != 0) return error.Canceled;
+        }
+    }
+};
+
 pub const Coordinator = struct {
     index: inventory.Inventory = .{},
     fault: ?Fault = null,
@@ -17,9 +28,17 @@ pub const Coordinator = struct {
     // verified final directory published and helper exit confirmed.
     // No UI calls. No automatic retry after an ambiguous filesystem change.
     pub fn importPackage(self: *Coordinator, backend: anytype, source: []const u8, source_id: []const u8) !Result {
+        return self.importPackageControlled(backend, source, source_id, .{});
+    }
+
+    pub fn importPackageControlled(self: *Coordinator, backend: anytype, source: []const u8, source_id: []const u8, cancel: Cancel) !Result {
         if (self.fault != null) return error.RecoveryRequired;
         if (!inventory.validSource(source_id)) return error.Invalid;
+        try cancel.check();
         const digest = try backend.probe(source, source_id);
+        // This is the final cancellation checkpoint before reservation.
+        // After it, finish the durable transaction or report recovery.
+        try cancel.check();
         if (try self.index.findPair(digest)) |id| return .{ .existing = id };
 
         var reserved = self.index;
@@ -108,4 +127,35 @@ test "failure boundaries stop writes and never expose partial imports" {
         try std.testing.expectEqual(@as(u64, if (case == 0) 1 else 2), backend.saved.next_id);
         try std.testing.expectError(error.RecoveryRequired, owner.importPackage(&backend, "source", "cat"));
     }
+}
+
+test "cancellation before reservation leaves index and filesystem untouched" {
+    const Probe = struct {
+        calls: usize = 0,
+        cancel_at: usize,
+        fn check(ctx: ?*anyopaque) callconv(.c) u32 {
+            const self: *@This() = @ptrCast(@alignCast(ctx orelse unreachable));
+            self.calls += 1;
+            return @intFromBool(self.calls >= self.cancel_at);
+        }
+    };
+    for (1..3) |cancel_at| {
+        var owner: Coordinator = .{};
+        var backend: Mock = .{};
+        var probe: Probe = .{ .cancel_at = cancel_at };
+        try std.testing.expectError(error.Canceled, owner.importPackageControlled(&backend, "source", "cat", .{ .callback = Probe.check, .context = &probe }));
+        try std.testing.expectEqual(@as(usize, 0), backend.writes);
+        try std.testing.expectEqual(@as(usize, 0), backend.stages);
+        try std.testing.expectEqual(@as(u64, 1), owner.index.next_id);
+        try std.testing.expectEqual(@as(usize, 0), owner.index.count);
+        try std.testing.expect(owner.fault == null);
+        try std.testing.expectEqual(@as(u64, 1), (try owner.importPackage(&backend, "source", "cat")).imported);
+    }
+    // Cancellation after the last checkpoint cannot interrupt publication.
+    var owner: Coordinator = .{};
+    var backend: Mock = .{};
+    var probe: Probe = .{ .cancel_at = 3 };
+    try std.testing.expectEqual(@as(u64, 1), (try owner.importPackageControlled(&backend, "source", "cat", .{ .callback = Probe.check, .context = &probe })).imported);
+    try std.testing.expectEqual(@as(usize, 2), probe.calls);
+    try std.testing.expectEqual(@as(usize, 2), backend.writes);
 }
