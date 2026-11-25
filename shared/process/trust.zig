@@ -87,7 +87,8 @@ pub fn validateEnvironment(map: *const std.process.Environ.Map) error{Unapproved
             std.mem.eql(u8, key, "LANG") or
             std.mem.eql(u8, key, "LC_ALL") or
             (std.mem.eql(u8, key, "GIT_TERMINAL_PROMPT") and std.mem.eql(u8, value, "0")) or
-            (std.mem.eql(u8, key, "GIT_OPTIONAL_LOCKS") and std.mem.eql(u8, value, "0"));
+            (std.mem.eql(u8, key, "GIT_OPTIONAL_LOCKS") and std.mem.eql(u8, value, "0")) or
+            (std.mem.eql(u8, key, "GIT_CONFIG_NOSYSTEM") and std.mem.eql(u8, value, "1"));
         if (!allowed) return error.UnapprovedEnvironment;
         if (std.mem.eql(u8, key, "SystemRoot") or std.mem.eql(u8, key, "WINDIR") or std.mem.eql(u8, key, "TEMP") or std.mem.eql(u8, key, "TMP")) {
             if (!localAbsolute(value)) return error.UnapprovedEnvironment;
@@ -124,4 +125,16 @@ test "owned approval copies caller path" {
     @memset(&input, 'x');
     try std.testing.expectEqualStrings(path, owned.slice());
     try std.testing.expectError(error.InvalidApproval, OwnedApproval.init(.{ .path = "relative", .digest = @splat(0) }));
+}
+
+test "system Git configuration can only be disabled with an exact value" {
+    var map = std.process.Environ.Map.init(std.testing.allocator);
+    defer map.deinit();
+    try map.put("GIT_CONFIG_NOSYSTEM", "1");
+    try validateEnvironment(&map);
+    try map.put("GIT_CONFIG_NOSYSTEM", "0");
+    try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
+    try map.put("GIT_CONFIG_NOSYSTEM", "1");
+    try map.put("GIT_CONFIG_GLOBAL", "unapproved");
+    try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
 }

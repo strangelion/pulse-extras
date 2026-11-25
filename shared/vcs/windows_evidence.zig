@@ -46,7 +46,179 @@ extern "kernel32" fn CreateHardLinkW(new_path: [*:0]const u16, existing: [*:0]co
 extern "kernel32" fn GetCurrentDirectoryW(capacity: u32, path: [*]u16) callconv(.winapi) u32;
 extern "kernel32" fn WideCharToMultiByte(codepage: u32, flags: u32, input: [*]const u16, input_len: i32, output: [*]u8, output_len: i32, default_char: ?*const u8, used_default: ?*i32) callconv(.winapi) i32;
 
+extern "advapi32" fn GetSecurityInfo(handle: Handle, object_type: u32, information: u32, owner: *?*anyopaque, group: ?*?*anyopaque, dacl: *?*anyopaque, sacl: ?*?*anyopaque, descriptor: *?*anyopaque) callconv(.winapi) u32;
+extern "advapi32" fn IsValidSecurityDescriptor(descriptor: *const anyopaque) callconv(.winapi) i32;
+extern "advapi32" fn GetSecurityDescriptorDacl(descriptor: *const anyopaque, present: *i32, dacl: *?*anyopaque, defaulted: *i32) callconv(.winapi) i32;
+extern "advapi32" fn GetSecurityDescriptorControl(descriptor: *const anyopaque, control: *u16, revision: *u32) callconv(.winapi) i32;
+extern "advapi32" fn IsValidAcl(acl: *const anyopaque) callconv(.winapi) i32;
+extern "advapi32" fn IsValidSid(sid: *const anyopaque) callconv(.winapi) i32;
+extern "advapi32" fn GetLengthSid(sid: *const anyopaque) callconv(.winapi) u32;
+extern "advapi32" fn OpenProcessToken(process: Handle, access: u32, token: *?Handle) callconv(.winapi) i32;
+extern "advapi32" fn GetTokenInformation(token: Handle, class: u32, info: *anyopaque, capacity: u32, actual: *u32) callconv(.winapi) i32;
+extern "kernel32" fn GetCurrentProcess() callconv(.winapi) Handle;
+extern "kernel32" fn LocalFree(memory: *anyopaque) callconv(.winapi) ?*anyopaque;
+
 const Error = contract.Error;
+
+pub const max_acl_bytes = 16 * 1024;
+pub const max_aces = 256;
+pub const max_principals = 8;
+
+pub const Sid = struct {
+    bytes: [68]u8 = undefined,
+    len: u8 = 0,
+
+    pub fn init(bytes: []const u8) Error!Sid {
+        if (bytes.len < 8 or bytes[0] != 1 or bytes[1] > 15 or bytes.len != 8 + @as(usize, bytes[1]) * 4) return error.Permission;
+        var result: Sid = .{ .len = @intCast(bytes.len) };
+        @memcpy(result.bytes[0..bytes.len], bytes);
+        return result;
+    }
+
+    pub fn slice(self: *const Sid) []const u8 {
+        return self.bytes[0..self.len];
+    }
+
+    fn fromNative(ptr: *const anyopaque) Error!Sid {
+        if (IsValidSid(ptr) == 0) return error.Permission;
+        const len = GetLengthSid(ptr);
+        if (len < 8 or len > 68) return error.Permission;
+        const bytes: [*]const u8 = @ptrCast(ptr);
+        return Sid.init(bytes[0..len]);
+    }
+};
+
+/// Immutable explicit principal set. Never implicitly trust the current
+/// user, BUILTIN Administrators, SYSTEM, or a principal found in a DACL.
+pub const Principals = struct {
+    entries: [max_principals]Sid = undefined,
+    len: usize = 0,
+
+    pub fn add(self: *Principals, sid: Sid) Error!void {
+        if (sid.len < 8 or sid.len > sid.bytes.len) return error.Permission;
+        _ = try Sid.init(sid.slice());
+        if (self.contains(sid.slice())) return;
+        if (self.len >= max_principals) return error.ResourceLimit;
+        self.entries[self.len] = sid;
+        self.len += 1;
+    }
+
+    fn contains(self: *const Principals, sid: []const u8) bool {
+        if (self.len > max_principals) return false;
+        for (self.entries[0..self.len]) |*entry| {
+            if (entry.len <= entry.bytes.len and std.mem.eql(u8, entry.slice(), sid)) return true;
+        }
+        return false;
+    }
+
+    fn hashInto(self: *const Principals, hash: *Sha256) Error!void {
+        if (self.len == 0 or self.len > max_principals) return error.Permission;
+        hash.update(&.{@intCast(self.len)});
+        for (self.entries[0..self.len]) |*entry| {
+            if (entry.len < 8 or entry.len > entry.bytes.len) return error.Permission;
+            _ = try Sid.init(entry.slice());
+            hash.update(&.{entry.len});
+            hash.update(entry.slice());
+        }
+    }
+};
+
+/// TokenUser is an identity observation, NOT group expansion, impersonation
+/// analysis, effective-access evaluation or authorization.
+pub fn currentProcessUser() Error!Sid {
+    if (comptime builtin.os.tag != .windows) return error.Unsupported;
+    var token: ?Handle = null;
+    if (OpenProcessToken(GetCurrentProcess(), 0x8, &token) == 0) return error.Permission;
+    const handle = token orelse return error.Permission;
+    defer _ = CloseHandle(handle);
+    const TokenUser = extern struct { sid: ?*anyopaque, attributes: u32 };
+    var buffer: [1024]u8 align(@alignOf(TokenUser)) = undefined;
+    var actual: u32 = 0;
+    if (GetTokenInformation(handle, 1, &buffer, buffer.len, &actual) == 0 or actual < @sizeOf(TokenUser) or actual > buffer.len) return error.Permission;
+    const info: *const TokenUser = @ptrCast(&buffer);
+    const sid = info.sid orelse return error.Permission;
+    const start = @intFromPtr(&buffer);
+    const address = @intFromPtr(sid);
+    if (address < start or address - start > actual - 8) return error.Permission;
+    const offset = address - start;
+    const len = 8 + @as(usize, buffer[offset + 1]) * 4;
+    if (len > actual - offset) return error.Permission;
+    return Sid.init(buffer[offset..][0..len]);
+}
+
+// Rights known not to modify a file/directory: GENERIC_READ/EXECUTE,
+// SYNCHRONIZE, READ_CONTROL, READ_DATA, READ_EA, EXECUTE, READ_ATTRIBUTES.
+// Unknown rights, generic write/all, delete, add-child and ownership changes
+// are conservatively treated as mutation. Inheritance flags do not relax this.
+const read_only_mask: u32 = 0xa01200a9;
+
+/// Parse the bounded simple ACL subset, even on non-Windows test targets.
+/// Unknown ACE types (object/callback/conditional/etc.) fail closed. Deny
+/// ACEs never relax an allow ACE, even if a full access check would deny it.
+/// A null DACL must be rejected by the caller, not treated as an empty one.
+fn inspectAcl(bytes: []const u8, owner: Sid, principals: *const Principals, hash: *Sha256) Error!void {
+    if (owner.len < 8 or owner.len > owner.bytes.len or !principals.contains(owner.slice())) return error.Permission;
+    if (bytes.len < 8 or bytes.len > max_acl_bytes or (bytes[0] != 2 and bytes[0] != 4)) return error.Permission;
+    if (std.mem.readInt(u16, bytes[2..4], .little) != bytes.len) return error.Permission;
+    const count = std.mem.readInt(u16, bytes[4..6], .little);
+    if (count > max_aces) return error.ResourceLimit;
+    hash.update(&.{owner.len});
+    hash.update(owner.slice());
+    hash.update(bytes[0..8]);
+    var offset: usize = 8;
+    for (0..count) |_| {
+        if (bytes.len - offset < 8) return error.Permission;
+        const ace = bytes[offset..];
+        const size = std.mem.readInt(u16, ace[2..4], .little);
+        if (size < 16 or size > ace.len or size % 4 != 0) return error.Permission;
+        // ACCESS_ALLOWED_ACE / ACCESS_DENIED_ACE only.
+        if (ace[0] != 0 and ace[0] != 1) return error.Permission;
+        // Only ordinary inheritance flags; reject unknown/audit flags.
+        if (ace[1] & 0xe0 != 0) return error.Permission;
+        const sid = try Sid.init(ace[8..size]);
+        const mask = std.mem.readInt(u32, ace[4..8], .little);
+        if (ace[0] == 0 and mask & ~read_only_mask != 0 and !principals.contains(sid.slice())) return error.Permission;
+        hash.update(ace[0..size]);
+        offset += size;
+    }
+    // ACLs may contain unused capacity. Do not hash uninitialized padding.
+}
+
+const AclWalk = struct {
+    principals: *const Principals,
+    hash: *Sha256,
+
+    fn inspect(self: *AclWalk, opened: Opened) Error!void {
+        var owner: ?*anyopaque = null;
+        var dacl: ?*anyopaque = null;
+        var descriptor: ?*anyopaque = null;
+        // SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION.
+        const status = GetSecurityInfo(opened.handle, 1, 5, &owner, null, &dacl, null, &descriptor);
+        defer if (descriptor) |memory| {
+            _ = LocalFree(memory);
+        };
+        if (status != 0) return error.Permission;
+        const sd = descriptor orelse return error.Permission;
+        if (IsValidSecurityDescriptor(sd) == 0) return error.Permission;
+        var present: i32 = 0;
+        var defaulted: i32 = 0;
+        var actual: ?*anyopaque = null;
+        if (GetSecurityDescriptorDacl(sd, &present, &actual, &defaulted) == 0 or present == 0 or actual == null or actual != dacl) return error.Permission;
+        const acl = actual.?;
+        if (IsValidAcl(acl) == 0) return error.Permission;
+        const bytes: [*]const u8 = @ptrCast(acl);
+        const size = std.mem.readInt(u16, bytes[2..4], .little);
+        if (size < 8 or size > max_acl_bytes) return error.Permission;
+        var control: u16 = 0;
+        var revision: u32 = 0;
+        if (GetSecurityDescriptorControl(sd, &control, &revision) == 0 or revision != 1) return error.Permission;
+        var flags: [2]u8 = undefined;
+        std.mem.writeInt(u16, &flags, control, .little);
+        FileIdentity.from(opened.info).hashInto(self.hash);
+        self.hash.update(&flags);
+        try inspectAcl(bytes[0..size], try Sid.fromNative(owner orelse return error.Permission), self.principals, self.hash);
+    }
+};
 
 pub const FileIdentity = struct {
     volume: u32,
@@ -100,8 +272,8 @@ fn canonicalName(handle: Handle, expected: *const Wide) bool {
     return std.mem.eql(u16, final[0..prefix.len], &prefix) and std.mem.eql(u16, final[prefix.len..len], expected.buffer[0..expected.len]);
 }
 
-fn openOne(path: *const Wide, is_directory: bool, read_contents: bool) Error!Opened {
-    const access: u32 = if (read_contents) 0x80000000 else 0x80;
+fn openOne(path: *const Wide, is_directory: bool, read_contents: bool, read_security: bool) Error!Opened {
+    const access: u32 = (if (read_contents) @as(u32, 0x80000000) else 0x80) | (if (read_security) @as(u32, 0x20000) else 0);
     // Read-only file content observation excludes concurrent writers during
     // this open; directory observation does not lock the filesystem tree.
     const share: u32 = if (read_contents) 1 else 7;
@@ -120,6 +292,10 @@ fn openOne(path: *const Wide, is_directory: bool, read_contents: bool) Error!Ope
 /// just the final object. Fixed local volume and exact normalized DOS name.
 /// There is still a race between component opens and eventual CLI launch.
 fn openChecked(path: []const u8, is_directory: bool, read_contents: bool) Error!Opened {
+    return walkChecked(path, is_directory, read_contents, null);
+}
+
+fn walkChecked(path: []const u8, is_directory: bool, read_contents: bool, audit: ?*AclWalk) Error!Opened {
     if (comptime builtin.os.tag != .windows) return error.Unsupported;
     if (!approval.strictPath(path) or path.len <= 3) return error.Permission;
     var wide = try Wide.init(path);
@@ -128,9 +304,12 @@ fn openChecked(path: []const u8, is_directory: bool, read_contents: bool) Error!
     var root_wide: Wide = .{ .len = 3 };
     @memcpy(root_wide.buffer[0..3], root[0..3]);
     root_wide.buffer[3] = 0;
-    const root_file = try openOne(&root_wide, true, false);
+    const root_file = try openOne(&root_wide, true, false, audit != null);
     const volume = root_file.info.volume;
-    root_file.close();
+    {
+        defer root_file.close();
+        if (audit) |walk| try walk.inspect(root_file);
+    }
     var components: usize = 1;
     for (3..wide.len) |i| {
         if (wide.buffer[i] != '\\') continue;
@@ -139,16 +318,20 @@ fn openChecked(path: []const u8, is_directory: bool, read_contents: bool) Error!
         const original_len = wide.len;
         wide.buffer[i] = 0;
         wide.len = i;
-        const parent = try openOne(&wide, true, false);
+        const parent = try openOne(&wide, true, false, audit != null);
         const same_volume = parent.info.volume == volume;
-        parent.close();
+        {
+            defer parent.close();
+            if (audit) |walk| try walk.inspect(parent);
+        }
         wide.buffer[i] = '\\';
         wide.len = original_len;
         if (!same_volume) return error.Permission;
     }
-    const opened = try openOne(&wide, is_directory, read_contents);
+    const opened = try openOne(&wide, is_directory, read_contents, audit != null);
     errdefer opened.close();
     if (opened.info.volume != volume) return error.Permission;
+    if (audit) |walk| try walk.inspect(opened);
     return opened;
 }
 
@@ -277,8 +460,63 @@ pub fn combine(local: Observation, audited: approval.Evidence) approval.Evidence
     return result;
 }
 
+/// Audit the exact selected paths and their ancestors. No directory scan,
+/// no effective-access guarantee, no claim about objects not listed here.
+/// In particular, installation DLLs/helpers and repository subtree still
+/// require the independent auditor. Windows root ACLs may be too permissive
+/// for this initial conservative policy, in which case it refuses admission.
+pub fn aclEvidence(grant: *const approval.Grant, principals: *const Principals, environment: *const std.process.Environ.Map) Error!Observation {
+    if (comptime builtin.os.tag != .windows) return error.Unsupported;
+    const user = try currentProcessUser();
+    if (!principals.contains(user.slice())) return error.Permission;
+    var install = Sha256.init(.{});
+    install.update("pulse-win-acl-install-v1");
+    try principals.hashInto(&install);
+    install.update(&.{user.len});
+    install.update(user.slice());
+    var install_walk: AclWalk = .{ .principals = principals, .hash = &install };
+    (try walkChecked(grant.executable.slice(), false, false, &install_walk)).close();
+    (try walkChecked(grant.neutral_cwd.slice(), true, false, &install_walk)).close();
+    // Hash presence and exact value as well as ACLs of controlled directories.
+    for ([_][]const u8{ "SystemRoot", "WINDIR", "TEMP", "TMP" }) |key| {
+        install.update(key);
+        if (environment.get(key)) |value| {
+            install.update(&.{1});
+            (try walkChecked(value, true, false, &install_walk)).close();
+            install.update(value);
+        } else {
+            install.update(&.{0});
+        }
+    }
+    var repo = Sha256.init(.{});
+    repo.update("pulse-win-acl-repo-v1");
+    try principals.hashInto(&repo);
+    var repo_walk: AclWalk = .{ .principals = principals, .hash = &repo };
+    (try walkChecked(grant.root.slice(), true, false, &repo_walk)).close();
+    (try walkChecked(grant.metadata.slice(), true, false, &repo_walk)).close();
+    var buffer: [identity.max_path_bytes]u8 = undefined;
+    for ([_][]const u8{ "objects", "objects\\info", "refs" }) |suffix| {
+        (try walkChecked(try join(grant.metadata.slice(), suffix, &buffer), true, false, &repo_walk)).close();
+    }
+    (try walkChecked(try join(grant.metadata.slice(), "config", &buffer), false, false, &repo_walk)).close();
+    return .{ .installation = install.finalResult(), .repository = repo.finalResult() };
+}
+
+fn mixObservations(local: Observation, acl: Observation) Observation {
+    var install = Sha256.init(.{});
+    install.update("pulse-win-observations-install-v1");
+    install.update(&local.installation);
+    install.update(&acl.installation);
+    var repo = Sha256.init(.{});
+    repo.update("pulse-win-observations-repo-v1");
+    repo.update(&local.repository);
+    repo.update(&acl.repository);
+    return .{ .installation = install.finalResult(), .repository = repo.finalResult() };
+}
+
 pub const Verifier = struct {
     auditor: approval.Verifier,
+    principals: *const Principals,
 
     pub fn adapter(self: *Verifier) approval.Verifier {
         return .{ .ctx = self, .inspect = &inspect };
@@ -288,7 +526,9 @@ pub const Verifier = struct {
         const self: *Verifier = @ptrCast(@alignCast(user));
         const audit = try self.auditor.inspect(self.auditor.ctx, grant, environment);
         if (!audit.local_identity_verified or !audit.installation_verified or !audit.repository_configuration_verified or !audit.neutral_environment_verified or !audit.ordinary_metadata_verified) return error.Permission;
-        return combine(try collect(grant), audit);
+        const local = try collect(grant);
+        const acl = try aclEvidence(grant, self.principals, environment);
+        return combine(mixObservations(local, acl), audit);
     }
 };
 
@@ -368,4 +608,73 @@ test "Windows config bytes are read by checked handle and hardlinks are denied" 
     if (CreateHardLinkW(alias_wide.z(), config_wide.z(), null) == 0) return error.TestUnexpectedResult;
     try std.testing.expectError(error.Permission, configDigest(path));
     try std.testing.expectError(error.Permission, observeIdentity(alias, false));
+}
+
+const system_sid = [_]u8{ 1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0 };
+const everyone_sid = [_]u8{ 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 };
+
+fn fixtureAcl(kind: u8, mask: u32, sid: [12]u8) [28]u8 {
+    var bytes: [28]u8 = @splat(0);
+    bytes[0] = 2;
+    std.mem.writeInt(u16, bytes[2..4], bytes.len, .little);
+    std.mem.writeInt(u16, bytes[4..6], 1, .little);
+    bytes[8] = kind;
+    std.mem.writeInt(u16, bytes[10..12], 20, .little);
+    std.mem.writeInt(u32, bytes[12..16], mask, .little);
+    @memcpy(bytes[16..28], &sid);
+    return bytes;
+}
+
+test "ACL rejects untrusted mutation and permits only known read rights" {
+    const owner = try Sid.init(&system_sid);
+    var principals: Principals = .{};
+    try principals.add(owner);
+    var hash = Sha256.init(.{});
+    try inspectAcl(&fixtureAcl(0, read_only_mask, everyone_sid), owner, &principals, &hash);
+    for ([_]u32{ 2, 4, 0x40, 0x10000, 0x40000, 0x80000, 0x40000000, 0x10000000, 0x02000000 }) |mask| {
+        try std.testing.expectError(error.Permission, inspectAcl(&fixtureAcl(0, mask, everyone_sid), owner, &principals, &hash));
+    }
+    try inspectAcl(&fixtureAcl(0, 0x10000000, system_sid), owner, &principals, &hash);
+    try inspectAcl(&fixtureAcl(1, 2, everyone_sid), owner, &principals, &hash);
+    try std.testing.expectError(error.Permission, inspectAcl(&fixtureAcl(0, 1, everyone_sid), try Sid.init(&everyone_sid), &principals, &hash));
+}
+
+test "ACL rejects unknown or malformed ACE and unapproved owner" {
+    const owner = try Sid.init(&system_sid);
+    var principals: Principals = .{};
+    var hash = Sha256.init(.{});
+    try std.testing.expectError(error.Permission, inspectAcl(&fixtureAcl(0, 1, system_sid), owner, &principals, &hash));
+    try principals.add(owner);
+    try std.testing.expectError(error.Permission, inspectAcl(&fixtureAcl(5, 1, system_sid), owner, &principals, &hash));
+    var bytes = fixtureAcl(0, 1, system_sid);
+    bytes[10] = 32;
+    try std.testing.expectError(error.Permission, inspectAcl(&bytes, owner, &principals, &hash));
+    bytes = fixtureAcl(0, 1, system_sid);
+    bytes[17] = 15;
+    try std.testing.expectError(error.Permission, inspectAcl(&bytes, owner, &principals, &hash));
+    try std.testing.expectError(error.Permission, Sid.init(&.{ 1, 1, 0 }));
+}
+
+test "ACL fingerprints reflect permission changes and principal sets" {
+    const owner = try Sid.init(&system_sid);
+    var principals: Principals = .{};
+    try principals.add(owner);
+    var a = Sha256.init(.{});
+    var b = Sha256.init(.{});
+    try inspectAcl(&fixtureAcl(0, 1, everyone_sid), owner, &principals, &a);
+    try inspectAcl(&fixtureAcl(0, 0x80, everyone_sid), owner, &principals, &b);
+    try std.testing.expect(!std.mem.eql(u8, &a.finalResult(), &b.finalResult()));
+    try principals.add(owner);
+    try std.testing.expectEqual(@as(usize, 1), principals.len);
+}
+
+test "Windows process token user is an owned SID, not implicit approval" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const user = try currentProcessUser();
+    const repeated = try currentProcessUser();
+    try std.testing.expectEqualSlices(u8, user.slice(), repeated.slice());
+    var principals: Principals = .{};
+    try std.testing.expect(!principals.contains(user.slice()));
+    try principals.add(user);
+    try std.testing.expect(principals.contains(user.slice()));
 }

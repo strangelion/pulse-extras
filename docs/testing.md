@@ -97,3 +97,5 @@ Additional tests cover Windows reported separator normalization (not case or oth
 Windows evidence tests cover the restricted config grammar, composition without upgrading flags, and actual Win32 identity observation on the current local directory (Windows only). The test does not certify reparse/ACL attack fixtures or real approved Git execution. Dispatch revision f040ea1 passed full CI 45523125690. This candidate requires independent platform CI.
 
 Additional Windows-only fixture checks actual config handle reads and changed content, distinguishes missing from existing marker, and rejects both names of a hard-linked regular file. Junction/reparse and ACL attack fixtures remain pending.
+
+ACL candidate tests cover pure basic ACL grammar, untrusted write/delete/ownership grants, unknown ACEs, invalid SID/ACE size, explicit owner and changed permission fingerprints, plus real Windows process-token SID ownership and exact system-config isolation variable. No real DACL fixture or effective-access proof yet. Latest previous platform CI must be independently confirmed before release.
