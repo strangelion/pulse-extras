@@ -63,12 +63,79 @@ pub const Features = struct {
     }
 };
 
+// The native child supports these options without shared registry writes.
+pub const Profile = struct {
+    scale: u8 = 100,
+    topmost: bool = false,
+    reduced: bool = false,
+
+    pub fn validate(self: Profile) Error!void {
+        if (self.scale < 50 or self.scale > 200) return error.Invalid;
+    }
+
+    pub fn flags(self: Profile) u8 {
+        return @as(u8, @intFromBool(self.topmost)) | (@as(u8, @intFromBool(self.reduced)) << 1);
+    }
+
+    pub fn fromBytes(scale: u8, bits: u8) Error!Profile {
+        if (bits > 3) return error.Invalid;
+        const value: Profile = .{ .scale = scale, .topmost = bits & 1 != 0, .reduced = bits & 2 != 0 };
+        try value.validate();
+        return value;
+    }
+
+    pub fn parse(text: []const u8) Error!Profile {
+        var fields = std.mem.splitScalar(u8, text, ':');
+        const scale = std.fmt.parseInt(u8, fields.next() orelse return error.Invalid, 10) catch return error.Invalid;
+        const top = fields.next() orelse return error.Invalid;
+        const reduced = fields.next() orelse return error.Invalid;
+        if (fields.next() != null or top.len != 1 or reduced.len != 1 or (top[0] != '0' and top[0] != '1') or (reduced[0] != '0' and reduced[0] != '1')) return error.Invalid;
+        return fromBytes(scale, (top[0] - '0') | ((reduced[0] - '0') << 1));
+    }
+};
+
+pub const LaunchProfile = union(enum) {
+    asset_default,
+    alternate,
+    custom: Profile,
+
+    pub fn pack(self: LaunchProfile) Error!u32 {
+        return switch (self) {
+            .asset_default => 0,
+            .alternate => 1,
+            .custom => |value| blk: {
+                try value.validate();
+                break :blk 0x10000 | @as(u32, value.scale) | (@as(u32, value.flags()) << 8);
+            },
+        };
+    }
+
+    pub fn unpack(value: u32) Error!LaunchProfile {
+        if (value == 0) return .asset_default;
+        if (value == 1) return .alternate;
+        if ((value & 0xffff0000) != 0x10000) return error.Invalid;
+        return .{ .custom = try Profile.fromBytes(@truncate(value), @truncate(value >> 8)) };
+    }
+
+    pub fn resolve(self: LaunchProfile, normal: Profile, alternate: ?Profile) Error!Profile {
+        const value = switch (self) {
+            .asset_default => normal,
+            .alternate => alternate orelse return error.Invalid,
+            .custom => |custom| custom,
+        };
+        try value.validate();
+        return value;
+    }
+};
+
 pub const Entry = struct {
     id: u64,
     source_id: Source,
     name: Name,
     layout: assets.Layout,
     favorite: bool = false,
+    default_profile: Profile = .{},
+    alternate_profile: ?Profile = null,
     features: Features = .{},
     tags: [max_tags]Tag = @splat(.{}),
     tag_count: usize = 0,
@@ -288,7 +355,7 @@ test "tag storage and search input are bounded" {
 // favorite[1], tag count[1], repeated length[1] + UTF-8 tag. Exact end required.
 // The durable catalog must authenticate the ID/source binding against its
 // validated inventory; this record is not authorization to launch a path.
-pub const max_preferences_bytes = 4 + 8 + 1 + 64 + 2 + max_tags * (1 + max_tag_bytes);
+pub const max_preferences_bytes = 4 + 8 + 1 + 64 + 2 + max_tags * (1 + max_tag_bytes) + 5;
 
 /// Content token shared by library snapshots and the private owner writer.
 /// Not monotonic: identical content may recur. Presence distinguishes defaults.
@@ -307,10 +374,13 @@ pub fn preferenceVersion(entry: *const Entry, present: bool) Error!PreferenceVer
 
 pub fn encodePreferences(entry: *const Entry, out: []u8) Error![]const u8 {
     const source = entry.source_id.slice();
-    var needed: usize = 15 + source.len;
+    try entry.default_profile.validate();
+    if (entry.alternate_profile) |alternate| try alternate.validate();
+    const extended = !std.meta.eql(entry.default_profile, Profile{}) or entry.alternate_profile != null;
+    var needed: usize = 15 + source.len + @as(usize, if (extended) 5 else 0);
     for (entry.tags[0..entry.tag_count]) |*tag| needed += 1 + tag.len;
     if (out.len < needed) return error.BufferTooSmall;
-    @memcpy(out[0..4], "PCT1");
+    @memcpy(out[0..4], if (extended) "PCT2" else "PCT1");
     for (0..8) |i| out[4 + i] = @truncate(entry.id >> @as(u6, @intCast(i * 8)));
     out[12] = @intCast(source.len);
     @memcpy(out[13 .. 13 + source.len], source);
@@ -324,11 +394,21 @@ pub fn encodePreferences(entry: *const Entry, out: []u8) Error![]const u8 {
         @memcpy(out[pos .. pos + tag.len], tag.slice());
         pos += tag.len;
     }
+    if (extended) {
+        out[pos] = entry.default_profile.scale;
+        out[pos + 1] = entry.default_profile.flags();
+        out[pos + 2] = @intFromBool(entry.alternate_profile != null);
+        out[pos + 3] = if (entry.alternate_profile) |alternate| alternate.scale else 0;
+        out[pos + 4] = if (entry.alternate_profile) |alternate| alternate.flags() else 0;
+        pos += 5;
+    }
     return out[0..pos];
 }
 
 pub fn decodePreferences(entry: *Entry, input: []const u8) Error!void {
-    if (input.len < 15 or input.len > max_preferences_bytes or !std.mem.eql(u8, input[0..4], "PCT1")) return error.InvalidRecord;
+    if (input.len < 15 or input.len > max_preferences_bytes) return error.InvalidRecord;
+    const extended = std.mem.eql(u8, input[0..4], "PCT2");
+    if (!extended and !std.mem.eql(u8, input[0..4], "PCT1")) return error.InvalidRecord;
     var id: u64 = 0;
     for (0..8) |i| id |= @as(u64, input[4 + i]) << @as(u6, @intCast(i * 8));
     if (id != entry.id) return error.InvalidRecord;
@@ -353,6 +433,18 @@ pub fn decodePreferences(entry: *Entry, input: []const u8) Error!void {
         const added = candidate.addTag(input[pos .. pos + len]) catch return error.InvalidRecord;
         if (!added) return error.InvalidRecord;
         pos += len;
+    }
+    candidate.default_profile = .{};
+    candidate.alternate_profile = null;
+    if (extended) {
+        if (input.len - pos != 5) return error.InvalidRecord;
+        candidate.default_profile = Profile.fromBytes(input[pos], input[pos + 1]) catch return error.InvalidRecord;
+        switch (input[pos + 2]) {
+            0 => if (input[pos + 3] != 0 or input[pos + 4] != 0 or std.meta.eql(candidate.default_profile, Profile{})) return error.InvalidRecord,
+            1 => candidate.alternate_profile = Profile.fromBytes(input[pos + 3], input[pos + 4]) catch return error.InvalidRecord,
+            else => return error.InvalidRecord,
+        }
+        pos += 5;
     }
     if (pos != input.len) return error.InvalidRecord;
     entry.* = candidate;
@@ -400,4 +492,38 @@ test "automatic features and confirmed instance exit protect catalog removal" {
     try std.testing.expectEqual(@as(usize, 1), catalog.len);
     try std.testing.expectError(error.UnknownAsset, catalog.get(1));
     try std.testing.expectEqualStrings("Dog", (try catalog.get(2)).displayName());
+}
+
+test "PCT2 profiles retain favorites and tags and PCT1 resets launch defaults" {
+    var entry = try Entry.init(1, "cat", "Cat", .v1);
+    entry.favorite = true;
+    _ = try entry.addTag("work");
+    var legacy: [max_preferences_bytes]u8 = undefined;
+    const old = try encodePreferences(&entry, &legacy);
+    try std.testing.expectEqualStrings("PCT1", old[0..4]);
+    entry.default_profile = try Profile.parse("125:1:0");
+    entry.alternate_profile = try Profile.parse("75:0:1");
+    var buffer: [max_preferences_bytes]u8 = undefined;
+    const bytes = try encodePreferences(&entry, &buffer);
+    try std.testing.expectEqualStrings("PCT2", bytes[0..4]);
+    var restored = try Entry.init(1, "cat", "Cat", .v2);
+    try decodePreferences(&restored, bytes);
+    try std.testing.expectEqualDeep(entry.default_profile, restored.default_profile);
+    try std.testing.expectEqualDeep(entry.alternate_profile, restored.alternate_profile);
+    try std.testing.expect(restored.favorite and restored.hasTag("work"));
+    for (0..bytes.len) |len| {
+        try std.testing.expectError(error.InvalidRecord, decodePreferences(&restored, bytes[0..len]));
+        try std.testing.expectEqualDeep(entry.alternate_profile, restored.alternate_profile);
+    }
+    buffer[bytes.len - 1] = 4;
+    try std.testing.expectError(error.InvalidRecord, decodePreferences(&restored, bytes));
+    try decodePreferences(&restored, old);
+    try std.testing.expectEqualDeep(Profile{}, restored.default_profile);
+    try std.testing.expect(restored.alternate_profile == null);
+    try std.testing.expectError(error.Invalid, Profile.parse("201:1:0"));
+    try std.testing.expectError(error.Invalid, Profile.parse("100:2:0"));
+    const custom: LaunchProfile = .{ .custom = try Profile.parse("150:1:1") };
+    try std.testing.expectEqualDeep(custom, try LaunchProfile.unpack(try custom.pack()));
+    try std.testing.expectError(error.Invalid, LaunchProfile.unpack(0xffffffff));
+    try std.testing.expectError(error.Invalid, (@as(LaunchProfile, .alternate)).resolve(.{}, null));
 }

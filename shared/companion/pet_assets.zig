@@ -38,6 +38,8 @@ pub const Metadata = struct {
     layout: Layout,
     display_name: [320]u8 = @splat(0),
     display_name_len: usize = 0,
+    description: [2000]u8 = @splat(0),
+    description_len: usize = 0,
     activities: activities.Catalog = .{},
     wardrobe: wardrobe.Wardrobe = .{},
     gaze_anchor: GazeAnchor = .{},
@@ -86,7 +88,7 @@ pub fn parseMetadata(allocator: std.mem.Allocator, input: []const u8, expected_i
     const id = object.get("id") orelse return error.InvalidMetadata;
     if (id != .string or !std.mem.eql(u8, id.string, expected_id)) return error.InvalidMetadata;
     const name = activities.checkedText(object.get("displayName") orelse return error.InvalidMetadata, 80) orelse return error.InvalidMetadata;
-    if (activities.checkedText(object.get("description") orelse return error.InvalidMetadata, 500) == null) return error.InvalidMetadata;
+    const description = activities.checkedText(object.get("description") orelse return error.InvalidMetadata, 500) orelse return error.InvalidMetadata;
     const path = object.get("spritesheetPath") orelse return error.UnsupportedFormat;
     if (path != .string or !std.mem.eql(u8, path.string, "spritesheet.webp")) return error.UnsupportedFormat;
     var layout: Layout = .v1;
@@ -111,6 +113,9 @@ pub fn parseMetadata(allocator: std.mem.Allocator, input: []const u8, expected_i
     if (name.len > result.display_name.len) return error.InvalidMetadata;
     @memcpy(result.display_name[0..name.len], name);
     result.display_name_len = name.len;
+    if (description.len > result.description.len) return error.InvalidMetadata;
+    @memcpy(result.description[0..description.len], description);
+    result.description_len = description.len;
     return result;
 }
 

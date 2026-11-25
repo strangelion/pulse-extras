@@ -208,6 +208,8 @@ pub const PreferenceChange = union(enum) {
     favorite: bool,
     add_tag: []const u8,
     remove_tag: []const u8,
+    default_profile: catalog.Profile,
+    alternate_profile: ?catalog.Profile,
 };
 
 // Revalidate the local ID, source and content version under the same
@@ -230,6 +232,18 @@ pub fn applyPreference(owner: *runtime.Owner, id: u64, source: []const u8, expec
         },
         .add_tag => |tag| try entry.addTag(tag),
         .remove_tag => |tag| entry.removeTag(tag),
+        .default_profile => |value| blk: {
+            try value.validate();
+            const different = !std.meta.eql(entry.default_profile, value);
+            entry.default_profile = value;
+            break :blk different;
+        },
+        .alternate_profile => |value| blk: {
+            if (value) |profile| try profile.validate();
+            const different = !std.meta.eql(entry.alternate_profile, value);
+            entry.alternate_profile = value;
+            break :blk different;
+        },
     };
     if (!changed) return false;
     try savePreferences(owner, &entry);

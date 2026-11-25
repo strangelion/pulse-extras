@@ -1522,11 +1522,11 @@ fixture and native command coverage remain independent of live HTTPS.
 | Module | Status / remaining work |
 | --- | --- |
 | Desktop runtime and multi-instance lifecycle | Wired; first-frame readiness, sampled CPU/working set/private bytes/handles, targeted stop, paged search, persisted limits. Visible high-count and long-session acceptance outstanding. |
-| Local library | Managed import, tags/favorites, search, start, quarantine/recovery and explicit cleanup wired. Rich metadata, safe external source reveal, archive import UI and stable asset profiles remain. |
+| Local library | Managed import, tags/favorites, search, verified selected detail, default/alternate/custom launch configuration, start, quarantine/recovery and explicit cleanup wired. Safe external source reveal, archive import UI and extended named profiles remain. |
 | Market | Search, filters, detail/compatibility, cache, base/full install, cancel and progress wired; actual live HTTPS and installed-host verification outstanding. |
-| Market queue | Transfer pool exists but host is serialized; implement owner-bound batch queue, concurrency setting, aggregate budget and per-job cancel/commit reporting as one module. |
+| Market queue | Eight-item host queue and saved parallel transfer limit wired; serialized inventory writes, per-item progress/cancellation and aggregate reservation. Live multi-download acceptance and interrupted scratch maintenance remain. |
 | Previews | Host image capability requires verified local Preview 3 ABI; no arbitrary WebView, SVG rendering or unverified SDK layout. Implement visible-page bounded decoding/cache only after contract confirmed. |
-| Settings and lifecycle | Count/commit limits persist. Independent asset/instance profiles, auto-start allowlist, visibility acknowledgments, reduced motion, startup batching and shutdown policy remain. |
+| Settings and lifecycle | Count/commit limits and asset default/alternate launch settings persist; custom launch values are instance-local. Live setting acknowledgments, named instance profiles, auto-start allowlist, visibility acknowledgments, startup batching and shutdown policy remain. |
 | Recovery/diagnostics | Read-only recovery, receipts and cleanup intent exist. Market interrupted scratch/cache management and diagnostic export need separate safe ownership protocol. |
 | Release | Run full regression and actual isolated Pulse host acceptance, real catalog/download checks, visible varied-art stress and release/package/license review. |
 
@@ -1600,3 +1600,52 @@ be committed. No preview source is supplied until the actual host contract
 and isolated runtime behavior are established. Catalog V3's validated
 Pet projection still has no author/license field: originality and source
 identity are not license evidence.
+
+## Asset presentation and launch profiles (stage B)
+
+The managed library displays each asset's default and optional alternate
+launch configuration. PCT2 adds five bounded bytes to PCT1: default scale
+and flags, alternate presence, scale and flags. Existing PCT1 records are
+read unchanged as 100%, non-topmost, normal motion. Records with default
+settings and no alternate retain PCT1 encoding. Favorite/tag edits and
+profiles share the same source-bound content version and atomic write;
+invalid or unknown records are never overwritten. Downgrading an older
+reader after writing PCT2 will fail closed on the extended record.
+
+For the selected local asset, save default, save alternate, reset default
+or clear alternate. A new instance can use either saved configuration or
+one temporary custom configuration (scale 50–200, topmost and reduced
+motion flags). The UI copies a bounded request; the worker resolves saved
+profiles under the managed inventory lease and passes the actual supported
+options to native launch. Per-instance rows show launch-time values, not
+a claim of current child state. This never enables shared registry writes,
+changes existing children, restarts a pet, or persists ephemeral PIDs.
+A saved alternate is reusable across sessions; automatically saving each
+child's live edits and stable named profiles beyond this alternate remain
+future work.
+
+An explicit local detail request verifies both fingerprints against the
+copied durable inventory identity through the approved job-contained
+helper, then returns a bounded ASCII/hex record with UTF-8 display name,
+description, V1/V2, activity/outfit/schedule counts. No arbitrary path,
+script, network, or image output. The native panel does not decode
+untrusted packages; it displays the bounded copied metadata and labels
+author/license as unverified. Details are point-in-time evidence and are
+discarded on library refresh or mutation. Only the selected asset is
+queried; no full-library decode. Tests cover legacy/extended records,
+invalid and truncated records, profile isolation, native option projection,
+persistent preference round trip, two child launch configurations, and
+real helper detail output in the isolated fixture.
+
+Image preview remains gated: Preview 3 IMAGE=44 and its field mapping are
+known, but accepted source URI/resource lifecycle and decoding containment
+are not established. No remote URL or local file path is passed to an
+unverified image node; no thumbnail/animation renderer is claimed. Use
+the installed-host isolated acceptance workflow to confirm those contracts
+before enabling bounded visible-page previews. Native child launch is
+not a substitute for thumbnail rendering.
+
+CI #246 failed in all applicable compile lanes at the same optional
+error comparison in market queue cleanup; this revision unwraps it before
+comparing. No test is removed or skipped. New pinned compiler, Windows
+native fixture and installed-host checks remain unverified locally.

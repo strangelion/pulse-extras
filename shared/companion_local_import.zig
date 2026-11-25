@@ -106,3 +106,50 @@ fn verifyPinnedQuarantine(io: std.Io, owner: *runtime.Owner, exe: [:0]const u16,
     if (!std.meta.eql(expected, current)) return error.StaleSelection;
     try owner.recheckQuarantine(id, .{ .volume = expected.volume, .file_index = expected.file_index });
 }
+
+pub const Detail = helper_mod.Detail;
+
+// Explicit local selection only. The helper checks both fingerprints and
+// parses package metadata outside the host process. No file or image output.
+pub fn describeManaged(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, expected: inventory.Record, cancel: Cancel) !Detail {
+    try cancel.check();
+    if (try owner.group.remaining() != 0) return error.ActiveInstances;
+    const index = try std.heap.page_allocator.create(inventory.Inventory);
+    defer std.heap.page_allocator.destroy(index);
+    index.* = .{};
+    if (!try store.loadInventory(owner, index)) return error.UnknownAsset;
+    if (!std.meta.eql(try index.get(expected.id), expected)) return error.StaleSelection;
+    const primary = expected.digest orelse return error.UnverifiedAsset;
+    const secondary = expected.secondary orelse return error.UnverifiedAsset;
+    var exe_buf: [4096]u8 = undefined;
+    const exe_len = try std.unicode.utf16LeToUtf8(&exe_buf, exe);
+    var root_buf: [4096]u8 = undefined;
+    const root_len = try std.unicode.utf16LeToUtf8(&root_buf, private);
+    const root = root_buf[0..root_len];
+    var system_wide: [1024]u16 = undefined;
+    const n = GetWindowsDirectoryW(&system_wide, system_wide.len);
+    if (n == 0 or n >= system_wide.len) return error.InvalidSystemDirectory;
+    var system_buf: [4096]u8 = undefined;
+    const system_len = try std.unicode.utf16LeToUtf8(&system_buf, system_wide[0..n]);
+    var environ = std.process.Environ.Map.init(std.heap.page_allocator);
+    defer environ.deinit();
+    try environ.put("SystemRoot", system_buf[0..system_len]);
+    try environ.put("TEMP", root);
+    try environ.put("TMP", root);
+    var runner = process.Runner.init(std.heap.page_allocator, io);
+    try runner.configureApproved(.{ .path = exe_buf[0..exe_len], .digest = digest }, 60 * std.time.ns_per_s);
+    try runner.configureTree(.windows_job);
+    var helper: helper_mod.Helper = .{
+        .runner = &runner,
+        .exe = exe_buf[0..exe_len],
+        .cwd = root,
+        .asset_root = root,
+        .environ = &environ,
+    };
+    var path: [4096]u8 = undefined;
+    const source = try std.fmt.bufPrint(&path, "{s}\\pet-{x:0>16}", .{ root, expected.id });
+    const outcome = helper.describe(source, expected.sourceId(), .{ .primary = primary, .secondary = secondary });
+    try runner.checkDrained();
+    try cancel.check();
+    return outcome;
+}

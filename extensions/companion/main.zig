@@ -28,7 +28,7 @@ const running_page_size: usize = 12;
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version", "companion.market.queue-base", "companion.market.queue-full", "companion.market.queue-start", "companion.market.queue-clear", "companion.market.queue-item-1", "companion.market.queue-item-2", "companion.market.queue-item-3", "companion.market.queue-item-4", "companion.market.queue-item-5", "companion.market.queue-item-6", "companion.market.queue-item-7", "companion.market.queue-item-8" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version", "companion.market.queue-base", "companion.market.queue-full", "companion.market.queue-start", "companion.market.queue-clear", "companion.market.queue-item-1", "companion.market.queue-item-2", "companion.market.queue-item-3", "companion.market.queue-item-4", "companion.market.queue-item-5", "companion.market.queue-item-6", "companion.market.queue-item-7", "companion.market.queue-item-8", "companion.library.profile-default", "companion.library.profile-alternate", "companion.library.profile-reset", "companion.library.profile-clear", "companion.library.start-alternate", "companion.library.start-custom", "companion.library.detail" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -66,6 +66,9 @@ const Instance = struct {
     work_done: std.atomic.Value(bool) = .init(false),
     work_error: ?anyerror = null,
     preference_edit: ?library.PreferenceEdit = null,
+    detail_request: ?library.AssetDetailRequest = null,
+    detail_work: ?library.AssetDetail = null,
+    library_detail: ?struct { id: u64, detail: library.AssetDetail } = null,
     import_request: ?library.ImportRequest = null,
     import_result: ?library.ImportResult = null,
     import_dialog: u64 = 0,
@@ -133,7 +136,15 @@ const Content = struct {
     import_toolbar: [3]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
-    states: [9]ui.State = undefined,
+    states: [10]ui.State = undefined,
+    profile_controls: [4]ui.Node = undefined,
+    profile_launch: [2]ui.Node = undefined,
+    profile_group: [5]ui.Node = undefined,
+    local_detail_nodes: [4]ui.Node = undefined,
+    local_detail_title: [448]u8 = undefined,
+    local_detail_info: [224]u8 = undefined,
+    local_detail_ids: [3][64]u8 = undefined,
+    profile_line: [16][96]u8 = undefined,
     market_actions: [4]ui.Node = undefined,
     market_paging: [2]ui.Node = undefined,
     market_install: [4]ui.Node = undefined,
@@ -157,7 +168,7 @@ const Content = struct {
     preference_toolbar: [4]ui.Node = undefined,
     asset_toolbar: [2]ui.Node = undefined,
     stop_toolbar: [2]ui.Node = undefined,
-    row_text: [16][384]u8 = undefined,
+    row_text: [16][640]u8 = undefined,
     row_ids: [16][64]u8 = undefined,
     dynamic_ids: [4][64]u8 = undefined,
     library_count: [160]u8 = undefined,
@@ -493,6 +504,44 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
     return count;
 }
 
+fn profileText(profile: library.Profile, buffer: []u8) []const u8 {
+    return std.fmt.bufPrint(buffer, "{d}% · 置顶{s} · 低动态{s}", .{ profile.scale, if (profile.topmost) "开" else "关", if (profile.reduced) "开" else "关" }) catch unreachable;
+}
+
+fn fillProfileControls(content: *Content, edit_enabled: bool, launch_enabled: bool) ui.Node {
+    content.profile_group[0] = label("library.profile.help", "选定素材 ID 后配置启动效果：缩放50–200:置顶0/1:低动态0/1。例如125:1:0。仅影响新启动的实例。");
+    content.profile_group[1] = ui.node(ui.NodeKind.text_input);
+    content.profile_group[1].id = abi.view("library.profile");
+    content.profile_group[1].state = .{ .present = 1, .value = abi.view("library.profile") };
+    content.profile_group[1].placeholder = .{ .present = 1, .value = abi.view("100:0:0") };
+    content.profile_controls[0] = action("library.profile-default", "保存默认配置", commands[70], edit_enabled);
+    content.profile_controls[1] = action("library.profile-alternate", "保存备用配置", commands[71], edit_enabled);
+    content.profile_controls[2] = action("library.profile-reset", "重置默认", commands[72], edit_enabled);
+    content.profile_controls[3] = action("library.profile-clear", "清除备用", commands[73], edit_enabled);
+    content.profile_group[2] = horizontal("library.profile.actions", &content.profile_controls);
+    content.profile_launch[0] = action("library.start-alternate", "按备用配置启动", commands[74], launch_enabled);
+    content.profile_launch[1] = action("library.start-custom", "按输入配置单次启动", commands[75], launch_enabled);
+    content.profile_group[3] = horizontal("library.profile.launch", &content.profile_launch);
+    content.profile_group[4] = action("library.detail", "验证并读取素材详情", commands[76], edit_enabled);
+    var result = ui.node(ui.NodeKind.stack);
+    result.id = abi.view("library.profile.group");
+    result.children = .{ .present = 1, .data = &content.profile_group, .count = content.profile_group.len };
+    return result;
+}
+
+fn fillLocalDetail(content: *Content, id: u64, detail: *const library.AssetDetail) ui.Node {
+    const title_text = std.fmt.bufPrint(&content.local_detail_title, "#{d} · {s}", .{ id, detail.name[0..detail.name_len] }) catch unreachable;
+    const info_text = std.fmt.bufPrint(&content.local_detail_info, "已核对双摘要 · V{d} · 动作 {d} · 换装 {d} · 定时规则 {d}", .{ detail.version, detail.activities, detail.outfits, detail.rules }) catch unreachable;
+    content.local_detail_nodes[0] = changingLabel(&content.local_detail_ids[0], "library.detail.title", title_text);
+    content.local_detail_nodes[1] = changingLabel(&content.local_detail_ids[1], "library.detail.info", info_text);
+    content.local_detail_nodes[2] = changingLabel(&content.local_detail_ids[2], "library.detail.description", detail.description[0..detail.description_len]);
+    content.local_detail_nodes[3] = label("library.detail.preview", "图像预览尚未通过宿主资源接口验证；作者及许可未由素材协议验证。");
+    var result = ui.node(ui.NodeKind.stack);
+    result.id = abi.view("library.detail.group");
+    result.children = .{ .present = 1, .data = &content.local_detail_nodes, .count = content.local_detail_nodes.len };
+    return result;
+}
+
 fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     for (commands, 0..) |command, n| content.declared[n] = abi.view(command);
     const selected: usize = @backingInt(instance.section);
@@ -558,10 +607,19 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     content.preference_toolbar[3] = action("library.tag-remove", "移除标签", commands[18], edit_enabled);
                     content.children[count] = horizontal("library.preferences", &content.preference_toolbar);
                     count += 1;
+                    content.children[count] = fillProfileControls(content, edit_enabled, instance.task_id == 0 and !instance.stop_requested and (instance.runtime_task_id == 0 or (live and instance.session.canStart())));
+                    count += 1;
+                    if (instance.library_detail) |*detail| {
+                        content.children[count] = fillLocalDetail(content, detail.id, &detail.detail);
+                        count += 1;
+                    }
                 }
                 for (snapshot.rows[instance.library_offset..end], 0..) |*row, n| {
                     const suffix = if (instance.recovery_report) |*report| recoverySuffix(report, row.id) else "";
-                    const body = std.fmt.bufPrint(&content.row_text[n], "#{d}  {s} · {s} · {s} · 标签 {d} {s}{s}", .{ row.id, row.sourceId(), if (row.paired) "双摘要记录" else "待重验", if (row.favorite) "已收藏" else "未收藏", row.tag_count, row.first_tag[0..row.first_tag_len], suffix }) catch unreachable;
+                    const normal = profileText(row.default_profile, &content.profile_line[n]);
+                    var alternate_buf: [96]u8 = undefined;
+                    const alternate = if (row.alternate_profile) |profile| profileText(profile, &alternate_buf) else "未设置";
+                    const body = std.fmt.bufPrint(&content.row_text[n], "#{d}  {s} · {s} · {s} · 标签 {d} {s}{s} · 默认 {s} · 备用 {s}", .{ row.id, row.sourceId(), if (row.paired) "双摘要记录" else "待重验", if (row.favorite) "已收藏" else "未收藏", row.tag_count, row.first_tag[0..row.first_tag_len], suffix, normal, alternate }) catch unreachable;
                     const id = std.fmt.bufPrint(&content.row_ids[n], "asset-{x}-{x}", .{ row.id, std.hash.Wyhash.hash(0, body) }) catch unreachable;
                     content.children[count] = label(id, body);
                     count += 1;
@@ -666,8 +724,14 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                             }
                             break :blk std.fmt.bufPrint(&content.row_text[slot], "ID {d} · {s} · 素材 {d} · {s} · PID {d} · CPU — · 工作集 {d} KiB · 私有 {d} KiB · 句柄 {d}", .{ item.id, name, item.asset_id, state, metrics.pid, metrics.working_set / 1024, metrics.private_bytes / 1024, metrics.handles }) catch unreachable;
                         } else std.fmt.bufPrint(&content.row_text[slot], "ID {d} · {s} · 素材 {d} · {s} · 暂无资源采样", .{ item.id, name, item.asset_id, state }) catch unreachable;
-                        const id = std.fmt.bufPrint(&content.row_ids[slot], "instance-{x}-{x}", .{ item.id, std.hash.Wyhash.hash(0, body) }) catch unreachable;
-                        content.children[count] = label(id, body);
+                        const profile = instance.running_rows.sources[n];
+                        const full_body = if (profile.id == item.id) blk: {
+                            const initial = profileText(profile.profile, &content.profile_line[slot]);
+                            const tail = std.fmt.bufPrint(content.row_text[slot][body.len..], " · 启动配置 {s}", .{initial}) catch unreachable;
+                            break :blk content.row_text[slot][0 .. body.len + tail.len];
+                        } else body;
+                        const id = std.fmt.bufPrint(&content.row_ids[slot], "instance-{x}-{x}", .{ item.id, std.hash.Wyhash.hash(0, full_body) }) catch unreachable;
+                        content.children[count] = label(id, full_body);
                         count += 1;
                     }
                     const line = std.fmt.bufPrint(&content.running_count, "匹配 {d} / {d} 个实例 · 显示 {d}–{d}", .{ total, instance.running_rows.count, if (total == 0) 0 else offset + 1, offset + rendered }) catch unreachable;
@@ -733,6 +797,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     const limit_memory = std.fmt.bufPrint(&content.limits_memory, "{d}", .{instance.runtime_limits.commit_mib}) catch unreachable;
     content.states[7] = .{ .key = abi.view("settings.instances"), .value = abi.view(limit_count) };
     content.states[8] = .{ .key = abi.view("settings.commit-mib"), .value = abi.view(limit_memory) };
+    content.states[9] = .{ .key = abi.view("library.profile"), .value = abi.view("100:0:0") };
     tree.states = &content.states;
     tree.state_count = content.states.len;
 }
@@ -882,6 +947,14 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
             return raw.PULSE_TASK_FAILED;
         };
         return raw.PULSE_TASK_COMPLETED;
+    }
+    if (instance.detail_request) |request| {
+        instance.detail_work = library.describeDefault(config.runtime_sha256, config.helper_sha256, request, .{ .callback = canceled, .context = context[0].context }) catch |err| {
+            if (err == error.Canceled) return raw.PULSE_TASK_CANCELLED;
+            instance.work_error = err;
+            return raw.PULSE_TASK_FAILED;
+        };
+        return if (canceled(context[0].context) != 0) raw.PULSE_TASK_CANCELLED else raw.PULSE_TASK_COMPLETED;
     }
     if (instance.fallback_pick) {
         instance.picked_folder = library.pickFolderDefault(config.helper_sha256) catch |err| {
@@ -1198,7 +1271,7 @@ fn pollLibrary(instance: *Instance) void {
         const done = instance.work_done.load(.acquire);
         if (request == .batch) {
             instance.market_queue_done = true;
-            instance.market_queue_cleanup = instance.work_error == error.MarketCleanupFailed or instance.work_error == error.CleanupFailed;
+            instance.market_queue_cleanup = if (instance.work_error) |err| err == error.MarketCleanupFailed or err == error.CleanupFailed else false;
             for (instance.market_progress.jobs[0..instance.market_queue.count]) |*job| {
                 switch (job.get()) {
                     .waiting, .downloading, .installing => job.set(if (instance.task_state == raw.PULSE_TASK_CANCELLED) .canceled else .failed),
@@ -1206,10 +1279,12 @@ fn pollLibrary(instance: *Instance) void {
                 }
             }
             instance.library_loaded = false;
+            instance.library_detail = null;
             instance.recovery_report = null;
             instance.market_status = if (instance.market_queue_cleanup) "队列清理未确认；已提交项仍有效，请检查恢复状态" else if (instance.task_state == raw.PULSE_TASK_CANCELLED) "队列已取消；已提交项仍有效" else if (instance.work_error) |err| @errorName(err) else if (!done or instance.task_state != raw.PULSE_TASK_COMPLETED) "队列未确认完成；请检查本地素材库" else "队列已结束；逐项查看结果，重新搜索后可重试失败项";
         } else if (done and instance.market_outcome.installed != null) {
             instance.library_loaded = false;
+            instance.library_detail = null;
             instance.recovery_report = null;
             instance.market_status = if (instance.work_error != null or instance.task_state != raw.PULSE_TASK_COMPLETED) "安装已提交，但任务或临时目录清理未确认；请检查本地素材库，禁止直接重试" else switch (instance.market_outcome.installed.?) {
                 .existing => "素材已存在；未重复安装",
@@ -1225,11 +1300,26 @@ fn pollLibrary(instance: *Instance) void {
             instance.market_status = if (instance.task_state == raw.PULSE_TASK_CANCELLED) (if (request == .install) "市场任务已取消；未确认写入请检查本地素材库" else "读取市场信息已取消") else if (done) if (instance.work_error) |err| @errorName(err) else "市场任务未返回有效结果" else "市场任务未完成";
             if (request == .install) {
                 instance.library_loaded = false;
+                instance.library_detail = null;
                 instance.recovery_report = null;
             }
         }
         instance.market_outcome = .{};
         if (instance.active and instance.section == .library and !instance.library_loaded and instance.task_id == 0) startLibrary(instance, false);
+        refresh(instance);
+        return;
+    }
+    if (instance.detail_request) |request| {
+        instance.detail_request = null;
+        const done = instance.work_done.load(.acquire);
+        if (done and instance.task_state == raw.PULSE_TASK_COMPLETED and instance.work_error == null and instance.detail_work != null) {
+            instance.library_detail = .{ .id = request.id, .detail = instance.detail_work.? };
+            instance.library_status = "素材详情已验证；读取时点有效";
+        } else {
+            instance.library_detail = null;
+            instance.library_status = if (instance.task_state == raw.PULSE_TASK_CANCELLED) "已取消素材详情读取" else if (done) if (instance.work_error) |err| @errorName(err) else "素材详情未返回" else "素材详情未完成";
+        }
+        instance.detail_work = null;
         refresh(instance);
         return;
     }
@@ -1330,7 +1420,7 @@ fn pollRuntime(instance: *Instance) void {
 }
 
 fn startRuntimeCheck(instance: *Instance) void {
-    if (instance.market_request != null or !instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0 or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0) return;
+    if (instance.detail_request != null or instance.market_request != null or !instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0 or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0) return;
     const tasks = instance.tasks orelse return;
     const create = tasks.create orelse return;
     // Existing dispatcher/timer is required: do not create an uncollectable task.
@@ -1366,10 +1456,15 @@ fn startBuiltin(instance: *Instance) void {
 }
 
 fn startAsset(instance: *Instance, asset_id: u64) void {
-    if (instance.market_request != null or !instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0 or asset_id == 0) return;
+    startAssetProfile(instance, asset_id, .asset_default);
+}
+
+fn startAssetProfile(instance: *Instance, asset_id: u64, choice: library.LaunchProfile) void {
+    const packed_profile = choice.pack() catch return;
+    if (instance.detail_request != null or instance.market_request != null or !instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0 or asset_id == 0) return;
     if (instance.runtime_task_id != 0) {
         if (instance.task_kind != .builtin_session) return;
-        instance.runtime_status = if (instance.session.requestAsset(asset_id)) "已提交新增实例请求" else "暂不可新增实例；请等待或停止";
+        instance.runtime_status = if (instance.session.requestAssetProfile(asset_id, choice)) "已提交新增实例请求" else "暂不可新增实例；请等待或停止";
         refresh(instance);
         return;
     }
@@ -1380,6 +1475,7 @@ fn startAsset(instance: *Instance, asset_id: u64) void {
     instance.session.reset();
     instance.session.limits = instance.runtime_limits;
     instance.running_offset = 0;
+    instance.session.start_profile.store(packed_profile, .release);
     instance.session.start_asset.store(asset_id, .release);
     instance.running_rows = .{};
     instance.stop_requested = false;
@@ -1439,6 +1535,10 @@ fn stopOne(instance: *Instance) void {
 }
 
 fn startLibraryAsset(instance: *Instance) void {
+    startLibraryProfile(instance, .asset_default);
+}
+
+fn startLibraryProfile(instance: *Instance, choice: library.LaunchProfile) void {
     if (!instance.library_loaded) return;
     const panel = instance.panel orelse return;
     const get_state = panel.table.get_state orelse return;
@@ -1453,7 +1553,12 @@ fn startLibraryAsset(instance: *Instance) void {
     if (id != 0 and id != library.builtin_asset_id) {
         for (instance.library_snapshot.rows[0..instance.library_snapshot.count]) |row| {
             if (row.id != id or !row.paired) continue;
-            startAsset(instance, id);
+            if (choice == .alternate and row.alternate_profile == null) {
+                instance.library_status = "该素材没有备用配置";
+                refresh(instance);
+                return;
+            }
+            startAssetProfile(instance, id, choice);
             instance.section = .running;
             refresh(instance);
             return;
@@ -1461,6 +1566,50 @@ fn startLibraryAsset(instance: *Instance) void {
     }
     instance.library_status = "素材不存在、未匹配或需要双摘要重验";
     refresh(instance);
+}
+
+fn startLocalDetail(instance: *Instance) void {
+    if (!instance.active or !instance.library_loaded or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.removal_dialog != 0 or instance.picker_request != 0 or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null) return;
+    const panel = instance.panel orelse return;
+    const get_state = panel.table.get_state orelse return;
+    var bytes: [32]u8 = undefined;
+    var needed: u32 = 0;
+    if (get_state(panel.table.context, panel.id, abi.view("library.asset-id"), &bytes, bytes.len, &needed) != abi.ok or needed == 0 or needed >= bytes.len) return;
+    const id = std.fmt.parseInt(u64, bytes[0..needed], 10) catch 0;
+    instance.library_detail = null;
+    for (instance.library_snapshot.rows[0..instance.library_snapshot.count]) |*row| {
+        if (row.id != id) continue;
+        instance.detail_request = row.removalRecord() catch |err| {
+            instance.library_status = @errorName(err);
+            refresh(instance);
+            return;
+        };
+        instance.detail_work = null;
+        startLibrary(instance, false);
+        if (instance.task_id == 0) instance.detail_request = null;
+        refresh(instance);
+        return;
+    }
+    instance.library_status = "请选择当前素材清单中的有效 ID";
+    refresh(instance);
+}
+
+fn readProfile(instance: *Instance) !library.Profile {
+    const panel = instance.panel orelse return error.Invalid;
+    const get_state = panel.table.get_state orelse return error.Invalid;
+    var bytes: [32]u8 = undefined;
+    var needed: u32 = 0;
+    if (get_state(panel.table.context, panel.id, abi.view("library.profile"), &bytes, bytes.len, &needed) != abi.ok or needed == 0 or needed >= bytes.len) return error.Invalid;
+    return library.Profile.parse(bytes[0..needed]);
+}
+
+fn startCustomProfile(instance: *Instance) void {
+    const profile = readProfile(instance) catch {
+        instance.library_status = "配置无效，请输入例如125:1:0";
+        refresh(instance);
+        return;
+    };
+    startLibraryProfile(instance, .{ .custom = profile });
 }
 
 fn startPreference(instance: *Instance, action_kind: library.PreferenceAction) void {
@@ -1478,8 +1627,20 @@ fn startPreference(instance: *Instance, action_kind: library.PreferenceAction) v
     const id = std.fmt.parseInt(u64, id_bytes[0..needed], 10) catch 0;
     for (instance.library_snapshot.rows[0..instance.library_snapshot.count]) |row| {
         if (row.id != id) continue;
+        if (action_kind != .toggle_favorite and action_kind != .add_tag and action_kind != .remove_tag and !row.paired) {
+            instance.library_status = "素材需要双摘要重验后才能保存启动配置";
+            refresh(instance);
+            return;
+        }
         var edit: library.PreferenceEdit = .{ .row = row, .action = action_kind };
-        if (action_kind != .toggle_favorite) {
+        if (action_kind == .save_default_profile or action_kind == .save_alternate_profile) {
+            edit.profile = readProfile(instance) catch {
+                instance.library_status = "配置无效，请输入例如125:1:0";
+                refresh(instance);
+                return;
+            };
+        }
+        if (action_kind == .add_tag or action_kind == .remove_tag) {
             var tag: [65]u8 = undefined;
             needed = 0;
             if (get_state(panel.table.context, panel.id, abi.view("library.tag"), &tag, tag.len, &needed) != abi.ok or needed == 0 or needed > edit.tag.len or !std.unicode.utf8ValidateSlice(tag[0..needed])) {
@@ -1944,10 +2105,13 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     if (instance.import_request != null or instance.preference_edit != null or instance.removal_request != null) instance.recovery_report = null;
     instance.removal_committed = false;
     instance.work_snapshot = .{};
-    if (!instance.fallback_pick and !instance.recovery_scan) instance.library_loaded = false;
+    if (instance.detail_request == null) {
+        instance.library_detail = null;
+        if (!instance.fallback_pick and !instance.recovery_scan) instance.library_loaded = false;
+    }
     const descriptor: raw.PulseTaskDescriptor = .{
         .size = @sizeOf(raw.PulseTaskDescriptor),
-        .title = abi.view(if (instance.fallback_pick) "选择素材文件夹" else if (instance.recovery_scan) "扫描桌宠恢复状态" else if (instance.removal_request != null) "维护桌宠素材" else if (instance.import_request != null) "导入桌宠素材" else if (instance.preference_edit != null) "保存桌宠偏好" else "读取桌宠素材清单"),
+        .title = abi.view(if (instance.detail_request != null) "验证素材详情" else if (instance.fallback_pick) "选择素材文件夹" else if (instance.recovery_scan) "扫描桌宠恢复状态" else if (instance.removal_request != null) "维护桌宠素材" else if (instance.import_request != null) "导入桌宠素材" else if (instance.preference_edit != null) "保存桌宠偏好" else "读取桌宠素材清单"),
         .type = abi.view("companion.library"),
         .work = readLibrary,
         .user = instance,
@@ -1955,7 +2119,7 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     var id: u64 = 0;
     if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
         instance.task_id = id;
-        instance.library_status = if (instance.fallback_pick) "正在使用 Windows 文件夹选择器（60 秒超时）" else if (instance.recovery_scan) "正在进行只读恢复扫描" else if (instance.removal_request != null) "正在维护桌宠素材" else if (instance.import_request != null) "正在导入本地素材" else if (instance.preference_edit != null) "正在保存素材偏好" else "正在自动读取素材清单";
+        instance.library_status = if (instance.detail_request != null) "正在核对素材双摘要及详情" else if (instance.fallback_pick) "正在使用 Windows 文件夹选择器（60 秒超时）" else if (instance.recovery_scan) "正在进行只读恢复扫描" else if (instance.removal_request != null) "正在维护桌宠素材" else if (instance.import_request != null) "正在导入本地素材" else if (instance.preference_edit != null) "正在保存素材偏好" else "正在自动读取素材清单";
         armTimer(instance);
         if (instance.timer == null) instance.library_status = "正在读取；宿主自动刷新不可用，可手动检查";
     } else {
@@ -2213,7 +2377,8 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         if (n >= 31 and n <= 51 and instance.section != .market) return;
         if (n == 52 and instance.section != .global) return;
         if (n >= 53 and n <= 54 and instance.section != .running) return;
-        if (n >= 55 and instance.section != .market) return;
+        if (n >= 55 and n <= 69 and instance.section != .market) return;
+        if (n >= 70 and instance.section != .library) return;
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
@@ -2270,6 +2435,13 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             39 => clearMarketSearch(instance),
             40...51 => selectMarket(instance, n - 40),
             52 => saveLimits(instance),
+            70 => startPreference(instance, .save_default_profile),
+            71 => startPreference(instance, .save_alternate_profile),
+            72 => startPreference(instance, .reset_default_profile),
+            73 => startPreference(instance, .clear_alternate_profile),
+            74 => startLibraryProfile(instance, .alternate),
+            75 => startCustomProfile(instance),
+            76 => startLocalDetail(instance),
             55...57 => changeMarketFilter(instance, n - 55),
             58 => queueMarket(instance, false),
             59 => queueMarket(instance, true),
@@ -2790,7 +2962,7 @@ test "market panel requires explicit admission and has no implicit install" {
     try std.testing.expectEqualStrings(commands[39], abi.slice(content.market_actions[3].command.value).?);
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[3].enabled.value);
     try std.testing.expectEqualStrings("search", abi.slice(content.children[3].glyph.value).?);
-    try std.testing.expectEqual(@as(u32, 9), tree.state_count);
+    try std.testing.expectEqual(@as(u32, 10), tree.state_count);
     try std.testing.expect(instance.market_selected == null);
 }
 
@@ -2825,4 +2997,23 @@ test "persisted runtime limits reject malformed and duplicate settings" {
     try std.testing.expectError(error.InvalidSettings, readRuntimeLimits(.{ .values = &values, .count = 2 }));
     values[0].value = abi.view("1025:256");
     try std.testing.expectError(error.InvalidLimits, readRuntimeLimits(.{ .values = &values, .count = 1 }));
+}
+
+test "profile controls preserve disabled admission and explicit launch actions" {
+    var content: Content = undefined;
+    const node = fillProfileControls(&content, false, true);
+    try std.testing.expectEqual(@as(u32, 5), node.children.count);
+    for (content.profile_controls) |control| try std.testing.expectEqual(@as(u32, 0), control.enabled.value);
+    try std.testing.expectEqualStrings(commands[75], abi.slice(content.profile_launch[1].command.value).?);
+    try std.testing.expectEqual(@as(u32, 1), content.profile_launch[1].enabled.value);
+}
+
+test "verified local detail is copied into bounded native text nodes" {
+    var detail: library.AssetDetail = .{ .version = 2, .activities = 3, .outfits = 4, .rules = 1, .name_len = 3, .description_len = 7 };
+    @memcpy(detail.name[0..3], "Cat");
+    @memcpy(detail.description[0..7], "Fixture");
+    var content: Content = undefined;
+    const node = fillLocalDetail(&content, 7, &detail);
+    try std.testing.expectEqual(@as(u32, 4), node.children.count);
+    try std.testing.expectEqualStrings("Fixture", abi.slice(content.local_detail_nodes[2].text.value).?);
 }

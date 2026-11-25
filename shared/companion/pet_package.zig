@@ -42,16 +42,20 @@ pub const Package = extern struct {
     activity_ids: [16][33]u8 = @splat(@splat(0)),
     gaze_x: f32 = 0.5,
     gaze_y: f32 = 1,
+    display_name: [321]u8 = @splat(0),
+    description: [2001]u8 = @splat(0),
 };
 
 comptime {
-    if (@sizeOf(Representation) != 88 or @sizeOf(Item) != 1660 or @sizeOf(Outfit) != 241 or @sizeOf(ScheduleRule) != 28 or @sizeOf(Package) != 32460) @compileError("Classic package ABI mismatch");
+    if (@sizeOf(Representation) != 88 or @sizeOf(Item) != 1660 or @sizeOf(Outfit) != 241 or @sizeOf(ScheduleRule) != 28 or @sizeOf(Package) != 34784) @compileError("Classic package ABI mismatch");
 }
 
 pub fn project(allocator: std.mem.Allocator, input: []const u8, id: []const u8) !Package {
     const meta = try assets.parseMetadata(allocator, input, id);
     var result: Package = .{ .version = if (meta.layout == .v1) 1 else 2 };
     @memcpy(result.pet_id[0..id.len], id);
+    @memcpy(result.display_name[0..meta.display_name_len], meta.display_name[0..meta.display_name_len]);
+    @memcpy(result.description[0..meta.description_len], meta.description[0..meta.description_len]);
     result.gaze_x = @floatCast(meta.gaze_anchor.x);
     result.gaze_y = @floatCast(meta.gaze_anchor.y);
     for (meta.wardrobe.outfits[0..meta.wardrobe.count], 0..) |*outfit, i| {

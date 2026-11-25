@@ -15,6 +15,8 @@ pub const Row = struct {
     digest: ?fingerprint.Digest = null,
     secondary: ?fingerprint.Secondary = null,
     favorite: bool = false,
+    default_profile: catalog.Profile = .{},
+    alternate_profile: ?catalog.Profile = null,
     preference_version: catalog.PreferenceVersion = .{},
     tag_count: usize = 0,
     first_tag: [64]u8 = undefined,
@@ -206,6 +208,8 @@ fn readPinned(dir: usize, root: [:0]const u16, out: *Snapshot, options: Options)
         if (!matches(&entry, options)) continue;
         row.preference_version = try catalog.preferenceVersion(&entry, present != null);
         row.favorite = entry.favorite;
+        row.default_profile = entry.default_profile;
+        row.alternate_profile = entry.alternate_profile;
         row.tag_count = entry.tag_count;
         if (entry.tagAt(0)) |tag| {
             @memcpy(row.first_tag[0..tag.len], tag);

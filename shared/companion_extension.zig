@@ -15,12 +15,16 @@ const market_host = @import("companion_market_host.zig");
 const process = @import("pulse_process");
 
 pub const Snapshot = library.Snapshot;
-pub const PreferenceAction = enum { toggle_favorite, add_tag, remove_tag };
+const catalog = @import("companion/pet_catalog.zig");
+pub const Profile = catalog.Profile;
+pub const LaunchProfile = catalog.LaunchProfile;
+pub const PreferenceAction = enum { toggle_favorite, add_tag, remove_tag, save_default_profile, save_alternate_profile, reset_default_profile, clear_alternate_profile };
 pub const PreferenceEdit = struct {
     row: library.Row,
     action: PreferenceAction,
     tag: [64]u8 = @splat(0),
     tag_len: usize = 0,
+    profile: Profile = .{},
 };
 pub const readFilteredDefault = library.readFilteredDefault;
 
@@ -81,6 +85,10 @@ fn applyEdit(owner: *runtime.Owner, edit: *const PreferenceEdit) !void {
         .toggle_favorite => .{ .favorite = !edit.row.favorite },
         .add_tag => .{ .add_tag = edit.tag[0..edit.tag_len] },
         .remove_tag => .{ .remove_tag = edit.tag[0..edit.tag_len] },
+        .save_default_profile => .{ .default_profile = edit.profile },
+        .save_alternate_profile => .{ .alternate_profile = edit.profile },
+        .reset_default_profile => .{ .default_profile = .{} },
+        .clear_alternate_profile => .{ .alternate_profile = null },
     });
 }
 
@@ -329,6 +337,36 @@ pub fn importDefault(runtime_hex: []const u8, helper_hex: []const u8, request: *
     return outcome;
 }
 
+pub const AssetDetailRequest = inventory.Record;
+pub const AssetDetail = local_import.Detail;
+
+pub fn describeDefault(runtime_hex: []const u8, helper_hex: []const u8, request: AssetDetailRequest, cancel: ImportCancel) !AssetDetail {
+    if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
+    const digest = try parseDigest(runtime_hex);
+    const helper_digest = try parseDigest(helper_hex);
+    var path: [1024]u16 = undefined;
+    const root = try packageRoot(&path);
+    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\pulse-pet-demo.exe");
+    var exe: [1024]u16 = undefined;
+    if (root.len + suffix.len >= exe.len) return error.ModulePathUnavailable;
+    @memcpy(exe[0..root.len], root);
+    @memcpy(exe[root.len..][0..suffix.len], suffix);
+    const len = root.len + suffix.len;
+    exe[len] = 0;
+    var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+    const owner = try std.heap.page_allocator.create(runtime.Owner);
+    owner.* = .{};
+    const outcome = blk: {
+        owner.open(root, digest, 1, 128 * 1024 * 1024) catch |err| break :blk @as(anyerror!AssetDetail, err);
+        const private = openPrivateDefault(owner) catch |err| break :blk @as(anyerror!AssetDetail, err);
+        break :blk local_import.describeManaged(threaded.io(), owner, private, exe[0..len :0], helper_digest, request, cancel);
+    };
+    owner.close() catch return error.CleanupFailed;
+    std.heap.page_allocator.destroy(owner);
+    return outcome;
+}
+
 test "import request copies bounded local path and valid metadata identity" {
     const request = try ImportRequest.init("C:\\素材\\cat", "cat");
     try std.testing.expectEqualStrings("C:\\素材\\cat", request.source[0..request.source_len]);
@@ -397,6 +435,7 @@ pub fn rejectionFor(err: anyerror) Rejection {
 pub const RunningRow = model.Instance;
 pub const RunningSource = struct {
     id: u64 = 0,
+    profile: Profile = .{},
     bytes: [64]u8 = @splat(0),
     len: usize = 0,
 
@@ -423,6 +462,7 @@ pub const Session = struct {
     last_rejection: std.atomic.Value(u32) = .init(@backingInt(Rejection.none)),
     pending_start: std.atomic.Value(bool) = .init(false),
     start_asset: std.atomic.Value(u64) = .init(builtin_asset_id),
+    start_profile: std.atomic.Value(u32) = .init(0),
     pending_stop: std.atomic.Value(u64) = .init(0),
     stopping_id: std.atomic.Value(u64) = .init(0),
     snapshot_lock: std.atomic.Value(bool) = .init(false),
@@ -446,7 +486,13 @@ pub const Session = struct {
 
     // Single UI producer, worker reads only after pending_start publishes.
     pub fn requestAsset(self: *Session, asset_id: u64) bool {
+        return self.requestAssetProfile(asset_id, .asset_default);
+    }
+
+    pub fn requestAssetProfile(self: *Session, asset_id: u64, choice: LaunchProfile) bool {
         if (asset_id == 0 or !self.canStart()) return false;
+        const packed_profile = choice.pack() catch return false;
+        self.start_profile.store(packed_profile, .monotonic);
         self.start_asset.store(asset_id, .monotonic);
         self.pending_start.store(true, .release);
         return true;
@@ -515,6 +561,7 @@ pub const Session = struct {
         self.publishRows(&.{});
         self.pending_start.store(false, .release);
         self.start_asset.store(builtin_asset_id, .release);
+        self.start_profile.store(0, .release);
         self.owned.store(0, .release);
         self.ready.store(0, .release);
         self.denied.store(0, .release);
@@ -558,7 +605,8 @@ pub fn runBuiltin(session: *Session, runtime_hex: []const u8, helper_hex: []cons
     return outcome;
 }
 
-fn launchAsset(owner: *runtime.Owner, helper: [:0]const u16, digest: *const [32]u8, asset_id: u64, sources: *[session_limit]RunningSource) !group.Start {
+fn launchAsset(owner: *runtime.Owner, helper: [:0]const u16, digest: *const [32]u8, asset_id: u64, packed_profile: u32, sources: *[session_limit]RunningSource) !group.Start {
+    const choice = try LaunchProfile.unpack(packed_profile);
     var free: ?*RunningSource = null;
     for (sources) |*source| {
         if (source.id == 0) {
@@ -572,7 +620,8 @@ fn launchAsset(owner: *runtime.Owner, helper: [:0]const u16, digest: *const [32]
         const builtin_name = "内置桌宠";
         @memcpy(name.bytes[0..builtin_name.len], builtin_name);
         name.len = builtin_name.len;
-        break :blk try owner.group.startBuiltin(helper, digest);
+        name.profile = try choice.resolve(.{}, null);
+        break :blk try owner.group.startBuiltinProfile(helper, digest, name.profile);
     } else blk: {
         const approved = try openPrivateDefault(owner);
         const index = try std.heap.page_allocator.create(inventory.Inventory);
@@ -582,7 +631,12 @@ fn launchAsset(owner: *runtime.Owner, helper: [:0]const u16, digest: *const [32]
         const record = try index.get(asset_id);
         @memcpy(name.bytes[0..record.len], record.sourceId());
         name.len = record.len;
-        break :blk try owner.group.startManagedWide(helper, digest, index, approved, asset_id);
+        // Resolve profiles against the current durable preferences under
+        // the same lease as the asset. Invalid records are not overwritten.
+        var preferences = try catalog.Entry.init(record.id, record.sourceId(), record.sourceId(), .v1);
+        _ = try store.loadPreferences(owner, &preferences);
+        name.profile = try choice.resolve(preferences.default_profile, preferences.alternate_profile);
+        break :blk try owner.group.startManagedProfile(helper, digest, index, approved, asset_id, name.profile);
     };
     name.id = started.id;
     slot.* = name;
@@ -604,7 +658,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
     defer std.heap.page_allocator.destroy(buffers);
     buffers.* = .{};
     const sources = &buffers.sources;
-    const started = try launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire), sources);
+    const started = try launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire), session.start_profile.load(.acquire), sources);
     var failure: ?anyerror = started.failure;
     var rows: [group.max_tick_slots]group.TickResult = undefined;
     var begin = GetTickCount64();
@@ -613,7 +667,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
         if (session.pending_start.load(.acquire)) {
             session.set(.starting);
             if (canceled(context) == 0) {
-                if (launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire), sources)) |next| {
+                if (launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire), session.start_profile.load(.acquire), sources)) |next| {
                     if (next.failure) |err| failure = err;
                     begin = GetTickCount64();
                 } else |err| {
@@ -861,4 +915,18 @@ test "runtime limit validation and actual session admission" {
     try std.testing.expect(session.canStart());
     session.owned.store(3, .release);
     try std.testing.expect(!session.canStart());
+}
+
+test "session copies per-launch overrides without changing the prior pending request" {
+    const session = try std.testing.allocator.create(Session);
+    defer std.testing.allocator.destroy(session);
+    session.* = .{};
+    session.set(.running);
+    const custom: LaunchProfile = .{ .custom = try Profile.parse("125:1:0") };
+    try std.testing.expect(session.requestAssetProfile(4, custom));
+    try std.testing.expect(!session.requestAssetProfile(5, .alternate));
+    try std.testing.expectEqual(@as(u64, 4), session.start_asset.load(.acquire));
+    try std.testing.expectEqualDeep(custom, try LaunchProfile.unpack(session.start_profile.load(.acquire)));
+    session.reset();
+    try std.testing.expectEqual(@as(u32, 0), session.start_profile.load(.acquire));
 }

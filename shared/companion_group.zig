@@ -37,6 +37,9 @@ const Options = extern struct {
     topmost: c_int = 0,
     scale: u32 = 100,
 };
+fn profileOptions(profile: catalog.Profile) Options {
+    return .{ .scale = profile.scale, .topmost = @intFromBool(profile.topmost), .reduced = @intFromBool(profile.reduced) };
+}
 const RawMetrics = extern struct {
     private_bytes: u64,
     working_set: u64,
@@ -234,6 +237,11 @@ pub const Group = struct {
     // Wide fixed-path adapter for the host-owned private lease. Resolve an
     // inventory ID anew; the child validates the exact dual fingerprint.
     pub fn startManagedWide(self: *Group, helper: [:0]const u16, helper_digest: *const [32]u8, index: *const inventory.Inventory, root: [:0]const u16, asset_id: u64) !Start {
+        return self.startManagedProfile(helper, helper_digest, index, root, asset_id, .{});
+    }
+
+    pub fn startManagedProfile(self: *Group, helper: [:0]const u16, helper_digest: *const [32]u8, index: *const inventory.Inventory, root: [:0]const u16, asset_id: u64, profile: catalog.Profile) !Start {
+        try profile.validate();
         const manager = try self.active();
         if (self.drain != .normal) return error.Draining;
         const record = try index.get(asset_id);
@@ -252,14 +260,19 @@ pub const Group = struct {
         dir[len] = 0;
         var source: [65]u16 = @splat(0);
         for (record.sourceId(), 0..) |ch, i| source[i] = ch;
-        return self.startNative(manager, helper, helper_digest, asset_id, .{}, .{ .directory = dir[0..len :0], .source_id = source[0..record.len :0], .expected_sha = expected[0..193 :0] });
+        return self.startNative(manager, helper, helper_digest, asset_id, profileOptions(profile), .{ .directory = dir[0..len :0], .source_id = source[0..record.len :0], .expected_sha = expected[0..193 :0] });
     }
 
     // Built-in development pet only; no asset ID or arbitrary command from UI.
     pub fn startBuiltin(self: *Group, path: [:0]const u16, digest: *const [32]u8) !Start {
+        return self.startBuiltinProfile(path, digest, .{});
+    }
+
+    pub fn startBuiltinProfile(self: *Group, path: [:0]const u16, digest: *const [32]u8, profile: catalog.Profile) !Start {
+        try profile.validate();
         const manager = try self.active();
         if (self.drain != .normal) return error.Draining;
-        return self.startNative(manager, path, digest, builtin_asset_id, .{}, null);
+        return self.startNative(manager, path, digest, builtin_asset_id, profileOptions(profile), null);
     }
 
     fn startNative(self: *Group, manager: *model.Manager, path: [:0]const u16, digest: *const [32]u8, asset_id: u64, options: Options, package: ?Package) !Start {
@@ -427,3 +440,12 @@ pub const Group = struct {
         self.drain = .normal;
     }
 };
+
+test "launch profiles never turn on shared registry persistence" {
+    const options = profileOptions(try catalog.Profile.parse("150:1:1"));
+    try std.testing.expectEqual(@as(u32, 150), options.scale);
+    try std.testing.expectEqual(@as(c_int, 1), options.topmost);
+    try std.testing.expectEqual(@as(c_int, 1), options.reduced);
+    try std.testing.expectEqual(@as(c_int, 0), options.remember);
+    try std.testing.expectEqual(@as(c_int, 0), options.smoke);
+}

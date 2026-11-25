@@ -410,7 +410,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     pet_preferences restored_prefs = {0};
     const wchar_t *path = NULL, *package_dir = NULL, *package_id = NULL;
     int check_package = 0, check_task = 0, fingerprint_package = 0, async_bound = 0;
-    int dual_fingerprint = 0, expected_dual = 0;
+    int dual_fingerprint = 0, expected_dual = 0, describe_package = 0;
     const wchar_t *expected_sha = NULL, *stage_root = NULL, *stage_id = NULL;
     HANDLE stage_pin = NULL;
     pet_package package = {0};
@@ -488,10 +488,12 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         } else if (!package_dir && i + 2 < argc &&
             (wcscmp(argv[i], L"--package") == 0 || wcscmp(argv[i], L"--check-package") == 0 ||
              wcscmp(argv[i], L"--check-package-task") == 0 ||
-             wcscmp(argv[i], L"--fingerprint-package") == 0 || wcscmp(argv[i], L"--fingerprint-package-v2") == 0)) {
+             wcscmp(argv[i], L"--fingerprint-package") == 0 || wcscmp(argv[i], L"--fingerprint-package-v2") == 0 ||
+             wcscmp(argv[i], L"--describe-package-v1") == 0)) {
+            describe_package = wcscmp(argv[i], L"--describe-package-v1") == 0;
             dual_fingerprint = wcscmp(argv[i], L"--fingerprint-package-v2") == 0;
             fingerprint_package = dual_fingerprint || wcscmp(argv[i], L"--fingerprint-package") == 0;
-            check_package = fingerprint_package || wcscmp(argv[i], L"--check-package") == 0;
+            check_package = describe_package || fingerprint_package || wcscmp(argv[i], L"--check-package") == 0;
             check_task = wcscmp(argv[i], L"--check-package-task") == 0;
             package_dir = argv[++i];
             package_id = argv[++i];
@@ -511,7 +513,8 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         }
     }
     pet_demo_sample activity_check = {0};
-    if ((stage_root && (!fingerprint_package || !expected_sha)) ||
+    if ((describe_package && (!expected_sha || !expected_dual || stage_root)) ||
+        (stage_root && (!fingerprint_package || !expected_sha)) ||
         (expected_sha && (!package_dir || wcslen(expected_sha) != (expected_dual ? 193u : 64u))) ||
         (package_dir && (path || activity_path || smoke || (state_map && (!ready_event || remember)))) ||
         ((check_package || check_task) && (stop || remember || reset_position || gaze_set)) ||
@@ -595,7 +598,19 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                 rc = 0;
                 goto cleanup;
             }
-            if (dual_fingerprint) printf("PULSE_PACKAGE_FINGERPRINT_V2 %s\n", hex);
+            if (describe_package) {
+                /* ASCII-only bounded projection; never write a thumbnail or
+                 * let the UI read arbitrary paths from package metadata. */
+                printf("PULSE_PACKAGE_DETAIL_V1 %u %u %u %u ",
+                    (unsigned)package.meta.version, (unsigned)package.meta.count,
+                    (unsigned)package.meta.outfit_count, (unsigned)package.meta.rule_count);
+                for (size_t i = 0; i < sizeof(package.meta.display_name) && package.meta.display_name[i]; ++i)
+                    printf("%02x", (unsigned)package.meta.display_name[i]);
+                putchar(' ');
+                for (size_t i = 0; i < sizeof(package.meta.description) && package.meta.description[i]; ++i)
+                    printf("%02x", (unsigned)package.meta.description[i]);
+                putchar('\n');
+            } else if (dual_fingerprint) printf("PULSE_PACKAGE_FINGERPRINT_V2 %s\n", hex);
             else if (fingerprint_package) printf("PULSE_PACKAGE_SHA256_V1 %.64s\n", hex);
         }
         version = package.meta.version;

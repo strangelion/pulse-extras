@@ -41,6 +41,8 @@ pub const Change = union(enum) {
     favorite: bool,
     add_tag: []const u8,
     remove_tag: []const u8,
+    default_profile: catalog.Profile,
+    alternate_profile: ?catalog.Profile,
 };
 
 pub const Result = struct {
@@ -108,6 +110,18 @@ pub const Owner = struct {
             },
             .add_tag => |tag| try current.entry.addTag(tag),
             .remove_tag => |tag| current.entry.removeTag(tag),
+            .default_profile => |value| blk: {
+                try value.validate();
+                const different = !std.meta.eql(current.entry.default_profile, value);
+                current.entry.default_profile = value;
+                break :blk different;
+            },
+            .alternate_profile => |value| blk: {
+                if (value) |profile| try profile.validate();
+                const different = !std.meta.eql(current.entry.alternate_profile, value);
+                current.entry.alternate_profile = value;
+                break :blk different;
+            },
         };
         if (!changed) return .{ .snapshot = current, .changed = false };
         const next = try catalog.preferenceVersion(&current.entry, true);

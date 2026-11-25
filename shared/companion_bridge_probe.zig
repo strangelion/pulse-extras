@@ -104,6 +104,12 @@ fn exerciseManaged(owner: *loader.Owner, private: [:0]const u16) !void {
     if (!try store.applyPreference(owner, 1, "fixture-v1", updated, .{ .add_tag = "bridge-test" })) return error.PreferenceNotPersisted;
     var reloaded = try catalog.Entry.init(1, "fixture-v1", "Fixture V1", .v1);
     if (!try store.loadPreferences(owner, &reloaded) or !reloaded.favorite or !reloaded.hasTag("bridge-test")) return error.PreferenceNotPersisted;
+    const normal = try catalog.Profile.parse("125:1:0");
+    const alternate = try catalog.Profile.parse("75:0:1");
+    if (!try store.applyPreference(owner, 1, "fixture-v1", try catalog.preferenceVersion(&reloaded, true), .{ .default_profile = normal })) return error.PreferenceNotPersisted;
+    if (!try store.loadPreferences(owner, &reloaded)) return error.PreferenceNotPersisted;
+    if (!try store.applyPreference(owner, 1, "fixture-v1", try catalog.preferenceVersion(&reloaded, true), .{ .alternate_profile = alternate })) return error.PreferenceNotPersisted;
+    if (!try store.loadPreferences(owner, &reloaded) or !std.meta.eql(reloaded.default_profile, normal) or !std.meta.eql(reloaded.alternate_profile, @as(?catalog.Profile, alternate)) or !reloaded.favorite or !reloaded.hasTag("bridge-test")) return error.PreferenceNotPersisted;
     if (!try store.loadInventory(owner, index) or index.count != 3) return error.UnexpectedInventory;
     const high_water = index.next_id;
     index.next_id -= 1;
@@ -127,9 +133,9 @@ fn exerciseManaged(owner: *loader.Owner, private: [:0]const u16) !void {
         if (err != error.UnknownAsset) return err;
     }
     if (try owner.group.remaining() != 0) return error.UnexpectedChildren;
-    const first = try owner.group.startManagedWide(path, &digest, index, private, 1);
+    const first = try owner.group.startManagedProfile(path, &digest, index, private, 1, normal);
     if (first.failure) |err| return err;
-    const second = try owner.group.startManagedWide(path, &digest, index, private, 2);
+    const second = try owner.group.startManagedProfile(path, &digest, index, private, 2, alternate);
     if (second.failure) |err| return err;
     const begin = GetTickCount64();
     var outcomes: [runtime.max_tick_slots]runtime.TickResult = undefined;
@@ -215,6 +221,8 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     index.* = .{};
     if (!try store.loadInventory(owner, index) or index.count != 4 or index.next_id != 5) return error.InventoryNotPersisted;
     const record = try index.get(4);
+    const detail = try local_import.describeManaged(io, owner, private, helper[0..len :0], digest, record, .{});
+    if (detail.version != 1 or detail.name_len == 0 or !std.mem.eql(u8, detail.description[0..detail.description_len], "Independent local import fixture")) return error.UnexpectedAssetDetail;
     if (!std.mem.eql(u8, record.sourceId(), "fresh") or record.digest == null or record.secondary == null) return error.UnexpectedImport;
     std.debug.print("Local import and duplicate detection verified through durable bridge\n", .{});
     const missing_id = try index.reserve();

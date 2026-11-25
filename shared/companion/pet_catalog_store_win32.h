@@ -6,8 +6,8 @@
 
 /* Caller owns a private, ACL-protected local directory and serializes calls.
  * No user-selected root, arbitrary filenames, scanning or recursive deletion.
- * Payload validation is the Zig PCT1 codec's responsibility. */
-#define PET_CATALOG_RECORD_MAX 1119u
+ * Payload validation is the Zig PCT1/PCT2 codec's responsibility. */
+#define PET_CATALOG_RECORD_MAX 1124u
 #define PET_INVENTORY_MAX 131072u
 #define PET_REMOVAL_RECEIPT_BYTES 221u
 #define PET_MARKET_CACHE_SLOTS 32u
