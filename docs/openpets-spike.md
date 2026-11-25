@@ -207,3 +207,32 @@ named pipe exercise the actual hello exchange, cancellation, invalid directory
 and rejected image path. It is a synthetic fixture, not actual OpenPets or
 Pulse host integration. The new CI result must be checked before expanding
 the API. The production DLLs remain unchanged.
+
+## Explicit lease codec and lifecycle experiment
+
+openpets_lease.zig implements only the pinned acquire, heartbeat and release
+wire shapes, including the upstream success results that do not have an
+inner ok field. Acquire requires an explicit pet ID, positive client PID
+and caller-supplied stable per-session nonce (the eventual integration must
+generate it with a secure random source). The bounded decoded lease ID is
+owned; arbitrary peer error text does not escape. An acquired lease may
+drive reactions only if the server confirms an active explicit target
+matching the requested pet and PID, without fallback. A fallback or late
+result is retained solely for release.
+
+The pure Session policy schedules heartbeat at 5s and uses a conservative
+10s local monotonic validity window (upstream TTL 15s), both anchored to
+request start, not the peer's wall-clock expiresAt. Reactions are suspended
+when renewal is due or in flight; unknown leases clear local ownership,
+ambiguous failures can be invalidated to release-only, and no reacquire is
+automatic. Callers must serialize requests, correlate responses, use fresh
+request IDs and discard stale results. A release response of false means
+the lease was already absent; ambiguous release retains release-only state
+and the remote TTL is the ultimate cleanup.
+
+This module is pure and included in host regression tests; the live
+Windows bridge remains read-only. Before enabling lease writes, verify the
+actual approved OpenPets hello/status, bind the lifecycle to a stable
+authenticated server instance (including restart handling), integrate
+cancellation/shutdown, and require explicit user consent. No default-pet
+mutation or automatic lease acquisition is enabled.
