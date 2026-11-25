@@ -618,3 +618,12 @@ with a stricter ASCII-control/whitespace subset. Tests cover metadata,
 inventory, variants, timing, dimensions and rejection. No activity
 files are loaded by the demo yet; no automatic scheduling, arbitrary
 scripts, new IPC commands or production package integration.
+
+### Activities regression correction
+
+Run 45541805679 failed on both platforms before compilation because the
+pinned Zig 0.17.1 parser rejects the old array repetition initializer.
+Use a typed @splat(false) inventory bitmap, without changing the limit
+or bypassing formatting. Add UTF-16 length, invalid UTF-8/control and
+aggregate inventory boundary regressions. The corrected build still
+requires CI confirmation; activity rendering remains pending.

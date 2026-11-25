@@ -106,7 +106,7 @@ pub const Catalog = struct {
         var expected: usize = 0;
         for (self.items[0..self.count]) |*item| expected += item.count;
         if (entries.len != expected) return error.InvalidInventory;
-        var seen = [_]bool{false} ** (max_activities * max_representations);
+        var seen: [max_activities * max_representations]bool = @splat(false);
         var total: usize = 0;
         for (entries) |entry| {
             if (entry.bytes == 0 or entry.bytes > max_file_bytes or entry.bytes > max_total_bytes - total) return error.InvalidInventory;
@@ -266,4 +266,39 @@ test "one-shot rational timing covers each frame and expires exactly" {
     try t.expect(sample(rep, 1715) == null);
     try t.expect(sample(rep, std.math.maxInt(u64)) == null);
     try t.expect(sample(.{}, 0) == null);
+}
+
+test "UTF-16 unit limits accept multilingual names without allowing oversized ASCII" {
+    try t.expectEqualStrings("睡觉", checkedText(.{ .string = " 睡觉 " }, 2).?);
+    try t.expect(checkedText(.{ .string = "睡觉" }, 1) == null);
+    try t.expectEqualStrings("🐱", checkedText(.{ .string = "🐱" }, 2).?);
+    try t.expect(checkedText(.{ .string = "🐱" }, 1) == null);
+    try t.expect(checkedText(.{ .string = "abc" }, 2) == null);
+    try t.expect(checkedText(.{ .string = "a\x00b" }, 40) == null);
+    try t.expect(checkedText(.{ .string = "\xff" }, 40) == null);
+}
+
+test "inventory aggregate limit admits exact boundary and rejects one extra byte" {
+    var c: Catalog = .{};
+    const ids = [_][]const u8{ "a", "b", "c", "d", "e", "f", "g", "h", "i" };
+    var paths: [ids.len][96]u8 = undefined;
+    var entries: [ids.len]InventoryEntry = undefined;
+    c.count = @intCast(ids.len);
+    for (ids, 0..) |id, i| {
+        const item = &c.items[i];
+        item.id = try Id.parse(id);
+        item.count = 1;
+        item.representations[0] = .{ .outfit = try Id.parse("default"), .frames = 4, .fps = 4 };
+        entries[i] = .{
+            .path = try item.representations[0].path(&item.id, true, &paths[i]),
+            .bytes = max_file_bytes,
+        };
+    }
+    entries[7].bytes = max_file_bytes - 1;
+    entries[8].bytes = 1;
+    try c.validateInventory(&entries);
+    entries[8].bytes = 2;
+    try t.expectError(error.InvalidInventory, c.validateInventory(&entries));
+    entries[8].bytes = 0;
+    try t.expectError(error.InvalidInventory, c.validateInventory(&entries));
 }
