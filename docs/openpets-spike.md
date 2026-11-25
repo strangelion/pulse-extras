@@ -564,3 +564,30 @@ conversion. Native popup focus/dismissal and interactive resizing require
 desktop retesting. TrackPopupMenuEx is modal and may delay cooperative
 stop until dismissed; the parent's bounded job termination remains the
 fallback. No official Pulse SDK events are claimed by this change.
+
+## Menu acceptance and localization
+
+The user reported passing the desktop context menu tests on 2026-11-25;
+the screenshot shows the native menu above the Juhuali pet. This is
+reported manual acceptance of the pre-localization menu, not a focus,
+accessibility or shutdown stress test.
+
+The pinned Pulse source implements its own FluentMenu in
+src/ui/fluent_menu.{h,cpp}, using its D2D compositor, Fluent painter and
+motion system. The published SDK commands interface registers commands
+for host selections, and ui_model exposes menu buttons/actions within
+host surfaces. Neither is a public popup renderer for an independent
+desktop process. Keep the current Win32 popup as the lightweight fallback.
+A future standalone Fluent-style implementation must be evaluated for
+resource cost, accessibility, theme and lifecycle; no upstream menu code
+has been copied.
+
+The standalone menu now uses explicit wide-string resources for simplified
+Chinese, traditional Chinese and English. By default GetUserDefaultUILanguage
+selects Chinese variants or falls back to English. Override using
+--language system|zh-CN|zh-TW|en-US. This is Windows UI language, not
+Pulse's private language preference; a future settings adapter must pass
+the selected language explicitly. The existing --remember binary record
+is unchanged and does not store the language. Regression tests verify
+language parsing, fallback and explicit override. Localized popup rendering
+still requires a real desktop retest.

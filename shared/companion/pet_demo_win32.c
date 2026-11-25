@@ -1,6 +1,7 @@
 #include "pet_demo_win32.h"
 #include "pet_config_win32.h"
 #include "pet_state_win32.h"
+#include "pet_menu_strings_win32.h"
 #include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -109,7 +110,8 @@ static const unsigned menu_scales[] = {50, 75, 100, 125, 150, 200};
  * A modal menu can delay cooperative stop until dismissal; the parent
  * still owns the bounded job termination fallback. */
 static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
-    int reduced, int managed) {
+    int reduced, int managed, pet_language language) {
+    pet_menu_strings strings = pet_menu_labels(language, GetUserDefaultUILanguage());
     HMENU menu = CreatePopupMenu();
     HMENU sizes = CreatePopupMenu();
     if (!menu || !sizes) {
@@ -124,15 +126,15 @@ static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
             DestroyMenu(sizes); DestroyMenu(menu); return 0;
         }
     }
-    if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)sizes, L"Size")) {
+    if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)sizes, strings.size)) {
         DestroyMenu(sizes); DestroyMenu(menu); return 0;
     }
-    if (!AppendMenuW(menu, MF_STRING | (topmost ? MF_CHECKED : 0), MENU_TOPMOST, L"Always on top") ||
-        !AppendMenuW(menu, MF_STRING | (reduced ? MF_CHECKED : 0), MENU_REDUCED, L"Reduce motion / pause") ||
-        !AppendMenuW(menu, MF_STRING, MENU_RESET, L"Reset position") ||
-        !AppendMenuW(menu, MF_STRING | (managed || reduced ? MF_GRAYED : 0), MENU_INTERACT, L"Play animation") ||
+    if (!AppendMenuW(menu, MF_STRING | (topmost ? MF_CHECKED : 0), MENU_TOPMOST, strings.topmost) ||
+        !AppendMenuW(menu, MF_STRING | (reduced ? MF_CHECKED : 0), MENU_REDUCED, strings.reduced) ||
+        !AppendMenuW(menu, MF_STRING, MENU_RESET, strings.reset) ||
+        !AppendMenuW(menu, MF_STRING | (managed || reduced ? MF_GRAYED : 0), MENU_INTERACT, strings.interact) ||
         !AppendMenuW(menu, MF_SEPARATOR, 0, NULL) ||
-        !AppendMenuW(menu, MF_STRING, MENU_EXIT, L"Exit pet")) {
+        !AppendMenuW(menu, MF_STRING, MENU_EXIT, strings.exit)) {
         DestroyMenu(menu); return 0;
     }
     unsigned command = (unsigned)TrackPopupMenuEx(menu,
@@ -143,7 +145,7 @@ static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
 }
 
 static void usage(void) {
-    fputs("pulse-pet-demo [--reduced-motion] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE]\n"
+    fputs("pulse-pet-demo [--reduced-motion] [--language system|zh-CN|zh-TW|en-US] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE]\n"
         "Left click: interact. Left drag: move. Right click: menu. --smoke: hidden synthetic test.\n", stderr);
 }
 
@@ -153,6 +155,8 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
     unsigned version = 2, scale = 100;
     int topmost = 0, scale_set = 0, topmost_set = 0, reduced_set = 0;
     int remember = 0, reset_position = 0, stopped = 0;
+    pet_language language = PET_LANGUAGE_SYSTEM;
+    int language_set = 0;
     HANDLE stop = NULL, state_map = NULL, state_event = NULL;
     const volatile LONG *state_slot = NULL;
     DWORD last_word = 0;
@@ -184,7 +188,11 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
             (state_map = parse_inherited_handle(argv[i + 1])) != NULL) ++i;
         else if (wcscmp(argv[i], L"--state-event") == 0 && !state_event && i + 1 < argc &&
             (state_event = parse_inherited_handle(argv[i + 1])) != NULL) ++i;
-        else if (wcscmp(argv[i], L"--scale") == 0 && !scale_set && i + 1 < argc &&
+        else if (wcscmp(argv[i], L"--language") == 0 && !language_set && i + 1 < argc &&
+            pet_language_parse(argv[i + 1], &language)) {
+            language_set = 1;
+            ++i;
+        } else if (wcscmp(argv[i], L"--scale") == 0 && !scale_set && i + 1 < argc &&
             parse_scale(argv[i + 1], &scale)) {
             scale_set = 1;
             ++i;
@@ -281,7 +289,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
                     if (GetCapture() == surface.window) ReleaseCapture();
                     pressed = 0;
                     unsigned command = pet_menu(surface.window, cursor, scale, topmost,
-                        reduced, state_slot != NULL);
+                        reduced, state_slot != NULL, language);
                     /* Check the owner signal immediately after the modal menu. */
                     if (stop && WaitForSingleObject(stop, 0) == WAIT_OBJECT_0) {
                         stopped = 1; done = 1; break;

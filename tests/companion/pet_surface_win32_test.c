@@ -1,5 +1,6 @@
 /* Synthetic pixels only; no OpenPets dependency or commercial assets. */
 #include "../../shared/companion/pet_surface_win32.h"
+#include "../../shared/companion/pet_menu_strings_win32.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,20 @@ int main(void) {
     pet_surface surface = {0};
     HANDLE thread = NULL;
     CHECK(atlas && out);
+    pet_language lang = PET_LANGUAGE_SYSTEM;
+    CHECK(pet_language_parse(L"zh-CN", &lang) && lang == PET_LANGUAGE_ZH_CN);
+    CHECK(!pet_language_parse(L"invalid", &lang) && lang == PET_LANGUAGE_ZH_CN);
+    CHECK(pet_language_parse(L"zh-TW", &lang) && lang == PET_LANGUAGE_ZH_TW);
+    CHECK(pet_language_parse(L"en-US", &lang) && lang == PET_LANGUAGE_EN_US);
+    CHECK(pet_language_parse(L"system", &lang) && lang == PET_LANGUAGE_SYSTEM);
+    CHECK(pet_language_resolve(lang, 0x0804) == PET_LANGUAGE_ZH_CN);
+    CHECK(pet_language_resolve(lang, 0x0404) == PET_LANGUAGE_ZH_TW);
+    CHECK(pet_language_resolve(lang, 0x0c04) == PET_LANGUAGE_ZH_TW);
+    CHECK(pet_language_resolve(lang, 0x1004) == PET_LANGUAGE_ZH_CN);
+    CHECK(pet_language_resolve(lang, 0x0409) == PET_LANGUAGE_EN_US);
+    CHECK(wcscmp(pet_menu_labels(PET_LANGUAGE_ZH_CN, 0x0409).exit, L"退出宠物") == 0);
+    CHECK(wcscmp(pet_menu_labels(PET_LANGUAGE_ZH_TW, 0x0804).topmost, L"視窗置頂") == 0);
+    CHECK(wcscmp(pet_menu_labels(PET_LANGUAGE_EN_US, 0x0804).size, L"Size") == 0);
     size_t first = pixel_offset(10, 7, 0, 0);
     size_t last = pixel_offset(10, 7, 191, 207);
     atlas[first] = 200; atlas[first + 1] = 100;
