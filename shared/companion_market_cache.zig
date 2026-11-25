@@ -71,33 +71,50 @@ fn check(code: c_int) !void {
     };
 }
 
-pub const Cache = struct {
-    root: [*:0]const u16,
-
-    /// Returned payload borrows the caller's buffer. Miss is explicit;
-    /// malformed, IO and cleanup failures must remain visible to the owner.
-    pub fn load(self: Cache, allocator: std.mem.Allocator, request: Request, buffer: []u8, now: u64, offline: bool) !?codec.Entry {
-        const key = try request.key();
-        if (buffer.len == 0 or buffer.len > codec.max_record) return error.BufferTooSmall;
+const NativeAccess = struct {
+    pub fn read(_: NativeAccess, root: [*:0]const u16, slot: u32, buffer: []u8) !?usize {
         var len: usize = 0;
-        const code = pet_market_cache_read(self.root, key.slot(), buffer.ptr, buffer.len, &len);
+        const code = pet_market_cache_read(root, slot, buffer.ptr, buffer.len, &len);
         if (code == 1) return null;
         try check(code);
-        if (len > buffer.len) return error.InvalidRecord;
-        const entry = (try codec.decode(buffer[0..len], key, now, offline)) orelse return null;
-        try request.validate(allocator, entry.payload);
-        return entry;
+        return len;
     }
 
-    pub fn save(self: Cache, allocator: std.mem.Allocator, request: Request, payload: []const u8, now: u64) !void {
-        const key = try request.key();
-        try request.validate(allocator, payload);
-        const buffer = try allocator.alloc(u8, codec.header_size + key.revision.len + key.url.len + payload.len);
-        defer allocator.free(buffer);
-        const data = try codec.encode(buffer, key, now, payload);
-        try check(pet_market_cache_write(self.root, key.slot(), data.ptr, data.len));
+    pub fn write(_: NativeAccess, root: [*:0]const u16, slot: u32, data: []const u8) !void {
+        try check(pet_market_cache_write(root, slot, data.ptr, data.len));
     }
 };
+
+pub const Cache = CacheFor(NativeAccess);
+
+pub fn CacheFor(comptime Access: type) type {
+    return struct {
+        const Self = @This();
+        root: [*:0]const u16,
+        access: Access = .{},
+
+        /// Returned payload borrows the caller's buffer. Miss is explicit;
+        /// malformed, IO and cleanup failures must remain visible to the owner.
+        pub fn load(self: Self, allocator: std.mem.Allocator, request: Request, buffer: []u8, now: u64, offline: bool) !?codec.Entry {
+            const key = try request.key();
+            if (buffer.len == 0 or buffer.len > codec.max_record) return error.BufferTooSmall;
+            const len = (try self.access.read(self.root, key.slot(), buffer)) orelse return null;
+            if (len > buffer.len) return error.InvalidRecord;
+            const entry = (try codec.decode(buffer[0..len], key, now, offline)) orelse return null;
+            try request.validate(allocator, entry.payload);
+            return entry;
+        }
+
+        pub fn save(self: Self, allocator: std.mem.Allocator, request: Request, payload: []const u8, now: u64) !void {
+            const key = try request.key();
+            try request.validate(allocator, payload);
+            const buffer = try allocator.alloc(u8, codec.header_size + key.revision.len + key.url.len + payload.len);
+            defer allocator.free(buffer);
+            const data = try codec.encode(buffer, key, now, payload);
+            try self.access.write(self.root, key.slot(), data);
+        }
+    };
+}
 
 test "native cache survives reopen, replaces root atomically and validates JSON" {
     const allocator = std.testing.allocator;

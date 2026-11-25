@@ -8,6 +8,12 @@ const Store = @import("runtime_temp_store").Store;
 const Group = @import("runtime_group").Group;
 
 pub fn Tasks(comptime Transport: type) type {
+    return TasksMode(Transport, false);
+}
+
+// The host already supplies a dedicated worker. Inline mode keeps all host
+// cancellation callbacks on that worker; it is never used on the UI thread.
+pub fn TasksMode(comptime Transport: type, comptime inline_work: bool) type {
     return struct {
         const Self = @This();
         const Outcome = anyerror!download.Result;
@@ -82,7 +88,13 @@ pub fn Tasks(comptime Transport: type) type {
                 slot.store.next_id = id;
                 @memcpy(slot.url[0..url.len], url);
                 errdefer slot.* = .{};
-                slot.future = try self.io.concurrent(Slot.run, .{slot});
+                if (inline_work) {
+                    slot.outcome = Slot.run(slot);
+                    slot.state = .joined;
+                    self.group.releaseRunning();
+                } else {
+                    slot.future = try self.io.concurrent(Slot.run, .{slot});
+                }
                 return id;
             }
             return error.ResourceLimit;
@@ -222,5 +234,18 @@ test "stop cancels active work without releasing leases before join" {
     try std.testing.expectEqual(@as(usize, 1), group.running);
     try tasks.shutdown();
     try tasks.checkDrained();
+    try group.checkDrained();
+}
+
+test "inline transfer uses the same ownership and release rules" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var group = Group.init(std.testing.allocator, 0, 0, 1);
+    var tasks = TasksMode(Mock, true).init(std.testing.io, tmp.dir, &group);
+    const id = try tasks.start(.zip, test_url, .{});
+    try std.testing.expect((try tasks.progress(id)).finished);
+    try std.testing.expectEqual(@as(usize, 2), (try tasks.join(id)).bytes);
+    try tasks.release(id);
+    try tasks.shutdown();
     try group.checkDrained();
 }

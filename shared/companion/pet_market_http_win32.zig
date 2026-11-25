@@ -2,6 +2,7 @@
 //! All C callbacks return before get returns. No cross-thread close.
 const std = @import("std");
 const download = @import("pet_market_download.zig");
+const Cancel = @import("pet_import.zig").Cancel;
 
 pub const Downloads = @import("pet_market_tasks.zig").Tasks(Transport);
 
@@ -9,12 +10,26 @@ const HeaderFn = *const fn (*anyopaque, u64) callconv(.c) c_int;
 const ChunkFn = *const fn (*anyopaque, [*]const u8, usize) callconv(.c) c_int;
 const CancelFn = *const fn (*anyopaque) callconv(.c) c_int;
 
+pub const GetFn = *const fn (c_uint, [*]const u8, usize, usize, *anyopaque, HeaderFn, ChunkFn, CancelFn, *u32) callconv(.c) c_int;
+
+pub const Progress = struct {
+    received: std.atomic.Value(usize) = .init(0),
+    expected: std.atomic.Value(usize) = .init(0),
+
+    pub fn reset(self: *Progress) void {
+        self.received.store(0, .release);
+        self.expected.store(0, .release);
+    }
+};
+
 extern "c" fn pet_market_http_get(kind: c_uint, url: [*]const u8, length: usize, cap: usize, ctx: *anyopaque, headers: HeaderFn, chunk: ChunkFn, canceled: CancelFn, os_error: *u32) c_int;
 extern "c" fn pet_market_http_valid(kind: c_uint, url: [*]const u8, length: usize) c_int;
 
 const Context = struct {
     sink: *download.Sink,
     failure: ?anyerror = null,
+    cancel: Cancel = .{},
+    progress: ?*Progress = null,
 
     fn header(ctx: *anyopaque, length: u64) callconv(.c) c_int {
         const self: *Context = @ptrCast(@alignCast(ctx));
@@ -26,6 +41,7 @@ const Context = struct {
             self.failure = err;
             return 0;
         };
+        if (self.progress) |progress| progress.expected.store(expected orelse 0, .release);
         return 1;
     }
 
@@ -35,11 +51,13 @@ const Context = struct {
             self.failure = err;
             return 0;
         };
+        if (self.progress) |progress| progress.received.store(self.sink.bytes, .release);
         return 1;
     }
 
     fn canceled(ctx: *anyopaque) callconv(.c) c_int {
         const self: *Context = @ptrCast(@alignCast(ctx));
+        self.cancel.check() catch return 1;
         return @intFromBool(self.sink.control.canceled.load(.acquire));
     }
 };
@@ -48,22 +66,42 @@ pub const Transport = struct {
     last_os_error: u32 = 0,
 
     pub fn get(self: *Transport, kind: download.Kind, url: []const u8, sink: *download.Sink) !void {
-        if (!download.validUrl(kind, url)) return error.InvalidUrl;
-        var context: Context = .{ .sink = sink };
-        const code = pet_market_http_get(@backingInt(kind), url.ptr, url.len, sink.cap, &context, Context.header, Context.chunk, Context.canceled, &self.last_os_error);
-        if (code == 6) return error.TransportCleanupFailed;
-        if (context.failure) |err| return err;
-        return switch (code) {
-            0 => {},
-            1 => error.InvalidUrl,
-            2 => error.NetworkFailed,
-            3 => error.InvalidResponse,
-            4 => error.Canceled,
-            5 => error.ResourceLimit,
-            else => error.NetworkFailed,
-        };
+        return getWith(&pet_market_http_get, kind, url, sink, .{}, null, &self.last_os_error);
     }
 };
+
+// Resolved only from the digest-pinned native runtime, never from an
+// arbitrary DLL or static import in the host extension.
+pub const BoundTransport = struct {
+    call: GetFn,
+    cancel: Cancel = .{},
+    progress: ?*Progress = null,
+    last_os_error: u32 = 0,
+
+    pub fn get(self: *BoundTransport, kind: download.Kind, url: []const u8, sink: *download.Sink) !void {
+        return getWith(self.call, kind, url, sink, self.cancel, self.progress, &self.last_os_error);
+    }
+};
+
+fn getWith(call: GetFn, kind: download.Kind, url: []const u8, sink: *download.Sink, cancel: Cancel, progress: ?*Progress, last_os_error: *u32) !void {
+    if (!download.validUrl(kind, url)) return error.InvalidUrl;
+    try cancel.check();
+    if (progress) |value| value.reset();
+    var context: Context = .{ .sink = sink, .cancel = cancel, .progress = progress };
+    const code = call(@backingInt(kind), url.ptr, url.len, sink.cap, &context, Context.header, Context.chunk, Context.canceled, last_os_error);
+    if (code == 6) return error.TransportCleanupFailed;
+    if (context.failure) |err| return err;
+    try cancel.check();
+    return switch (code) {
+        0 => {},
+        1 => error.InvalidUrl,
+        2 => error.NetworkFailed,
+        3 => error.InvalidResponse,
+        4 => error.Canceled,
+        5 => error.ResourceLimit,
+        else => error.NetworkFailed,
+    };
+}
 
 test "native policy matches Zig and canceled transport never connects" {
     const cases = [_]struct { kind: download.Kind, url: []const u8 }{

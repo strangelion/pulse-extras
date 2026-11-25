@@ -1422,3 +1422,35 @@ search button. Clear is an explicit native state update. Unit tests cover
 identity and source association after reorder, and the real DLL fixture
 filters two running pets, restores both rows and exercises targeted stop.
 The installed-host rendering and keyboard behavior remain unverified.
+
+## Host market search and install (experimental)
+
+The native market panel now admits explicit online/only-cache searches,
+12-result windows, selected-ID base/full package installation, cancellation,
+and current HTTP request byte progress. No network request happens just by
+opening the panel. Offline or stale windows cannot start downloads. A new
+worker reopens the validated root and checks the copied search row, revision,
+expiry and detail response before resolving the approved HTTPS archive.
+The full package option preserves the V3 fallback to the base archive.
+Market metadata does not establish a license: the UI does not infer one.
+
+Production uses the verified runtime DLL's WinHTTP and cache exports;
+the existing fixed ACL private-root protocol opens a nested independent
+market lease (PulseExtras-Companion/PulseExtras-Companion). Its 32 fixed
+cache slots are separate from inventory; a fresh exclusive market-work
+directory owns temporary transfers and extraction. A preexisting or
+incompletely cleaned work directory blocks future operations; no recursive
+cleanup or adoption. The host's worker owns one inline transfer at a time,
+so cancellation callbacks stay in scope and on that worker. JSON memory
+is bounded to 64 MiB, one archive to 320 MiB and extraction/copy reservation
+to 640 MiB. Parsed results are bounded and not published after failure.
+The existing ZIP plan and lease-bound approved helper/inventory coordinator
+perform installation. A committed result survives later cleanup errors.
+The host serializes market work with runtime sessions and other maintenance,
+invalidates the local library/recovery snapshot after installation, and
+drains before releasing the private lease. Concurrent installs and the
+global download concurrency preference are not enabled by this initial
+host integration. There are no thumbnail fetches or automatic installs.
+The native fixture checks nested lease and cache I/O, scratch creation and
+drain without live network; existing synthetic market/ZIP fixture tests
+remain. CI and live HTTPS/real-host acceptance remain required.

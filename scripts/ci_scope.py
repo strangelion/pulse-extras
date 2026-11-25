@@ -21,6 +21,10 @@ COMPANION_HOST_PATHS = frozenset({
     "shared/companion_runtime_store.zig",
     "shared/companion_bridge_probe.zig",
     "shared/companion_local_import.zig",
+    "shared/companion_market_host.zig",
+    "shared/companion_market_cache.zig",
+    "shared/companion_market_service.zig",
+    "shared/companion_market_install.zig",
     "shared/companion_group_test.zig",
     "tests/abi/companion_loader.c",
 })

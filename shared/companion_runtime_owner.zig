@@ -43,6 +43,8 @@ const StoreQuarantineRecheck = *const fn (*const Lease, usize, u64, u32, u64, [*
 const StoreCleanupDispose = *const fn (*const Lease, usize, u64, u32, u64, [*]usize, *usize, [*]const u8, usize) callconv(.c) c_int;
 const StoreQuarantineUsage = *const fn (*const Lease, usize, u64, *u64) callconv(.c) c_int;
 
+extern "kernel32" fn CreateDirectoryW([*:0]const u16, ?*anyopaque) callconv(.winapi) c_int;
+extern "kernel32" fn RemoveDirectoryW([*:0]const u16) callconv(.winapi) c_int;
 extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, ?*anyopaque) callconv(.winapi) usize;
 extern "kernel32" fn CloseHandle(usize) callconv(.winapi) c_int;
 extern "kernel32" fn GetDriveTypeW([*:0]const u16) callconv(.winapi) u32;
@@ -104,6 +106,11 @@ pub const Owner = struct {
     quarantine_pins: [quarantine_pin_max]usize = undefined,
     quarantine_pin_count: usize = 0,
     cleanup_pins: bool = false,
+    market_lease: Lease = .{},
+    market_lease_opened: bool = false,
+    market_lease_close: ?LeaseClose = null,
+    market_work_handle: usize = invalid,
+    market_work_path: [1024]u16 = @splat(0),
 
     /// Worker only. Root must already be independently approved; the file
     /// pin denies writes/deletes, and the module stays loaded through drain.
@@ -164,6 +171,75 @@ pub const Owner = struct {
         const len = std.mem.indexOfScalar(u16, &self.lease.path, 0) orelse return error.InvalidRoot;
         if (len == 0) return error.InvalidRoot;
         return self.lease.path[0..len :0];
+    }
+
+    // Reuse the private-root ACL verification and exclusive owner lock for a
+    // separate nested market namespace. Never share it with pet inventory.
+    pub fn openMarketRoot(self: *Owner) ![:0]const u16 {
+        if (!self.opened or !self.lease_opened or self.store_faulted or self.market_lease_opened) return error.OwnerUnavailable;
+        const open_lease: LeaseOpen = @ptrCast(GetProcAddress(self.module, "pulse_companion_private_open_v1") orelse return error.MissingLeaseApi);
+        self.market_lease_close = @ptrCast(GetProcAddress(self.module, "pulse_companion_private_close_v1") orelse return error.MissingLeaseApi);
+        const parent = std.mem.sliceTo(&self.lease.path, 0);
+        const code = open_lease(&self.market_lease, @sizeOf(Lease), parent.ptr);
+        if (code != 0) {
+            if (code == 3) return error.PrivateRootBusy;
+            if (code == 4) return error.CleanupFailed;
+            return error.PrivateRootRejected;
+        }
+        self.market_lease_opened = true;
+        const len = std.mem.indexOfScalar(u16, &self.market_lease.path, 0) orelse return error.InvalidRoot;
+        if (len == 0) return error.InvalidRoot;
+        return self.market_lease.path[0..len :0];
+    }
+
+    pub fn marketSymbol(self: *Owner, symbol: [:0]const u8) !*const anyopaque {
+        if (!self.opened or !self.market_lease_opened or self.store_faulted) return error.OwnerUnavailable;
+        return GetProcAddress(self.module, symbol.ptr) orelse return error.MissingStoreApi;
+    }
+
+    pub fn marketRead(self: *Owner, slot: u32, bytes: []u8) !?usize {
+        const read: StoreRead = @ptrCast(try self.marketSymbol("pulse_companion_market_read_v1"));
+        var len: usize = 0;
+        const code = read(&self.market_lease, @sizeOf(Lease), slot, bytes.ptr, bytes.len, &len);
+        if (code == 1) return null;
+        try checkStore(code);
+        if (len > bytes.len) return error.InvalidRecord;
+        return len;
+    }
+
+    pub fn marketWrite(self: *Owner, slot: u32, bytes: []const u8) !void {
+        const write: StoreWrite = @ptrCast(try self.marketSymbol("pulse_companion_market_write_v1"));
+        try checkStore(write(&self.market_lease, @sizeOf(Lease), slot, bytes.ptr, bytes.len));
+    }
+
+    // Exclusive create: interrupted work stays on disk and blocks future
+    // operations; never adopt or recursively remove a preexisting directory.
+    pub fn createMarketWork(self: *Owner) ![:0]const u16 {
+        if (!self.market_lease_opened or self.market_work_handle != invalid) return error.OwnerUnavailable;
+        const root = std.mem.sliceTo(&self.market_lease.path, 0);
+        const tail = std.unicode.wtf8ToWtf16LeStringLiteral("\\market-work");
+        const len = root.len + tail.len;
+        if (len >= self.market_work_path.len) return error.InvalidRoot;
+        @memcpy(self.market_work_path[0..root.len], root);
+        @memcpy(self.market_work_path[root.len..len], tail);
+        self.market_work_path[len] = 0;
+        const path = self.market_work_path[0..len :0];
+        if (CreateDirectoryW(path.ptr, null) == 0) return error.MarketWorkBlocked;
+        self.market_work_handle = CreateFileW(path.ptr, 0x80, 3, null, 3, 0x02200000, null);
+        if (self.market_work_handle == invalid) return error.MarketWorkBlocked;
+        var info: Info = undefined;
+        if (GetFileInformationByHandle(self.market_work_handle, &info) == 0 or (info.attributes & 0x410) != 0x10 or !canonical(self.market_work_handle, path)) return error.InvalidRoot;
+        return path;
+    }
+
+    // Call only after all temporary files, borrowers and directory handles
+    // are drained. RemoveDirectory refuses unknown remaining entries.
+    pub fn finishMarketWork(self: *Owner) !void {
+        if (self.market_work_handle == invalid) return error.OwnerUnavailable;
+        if (CloseHandle(self.market_work_handle) == 0) return error.CleanupFailed;
+        self.market_work_handle = invalid;
+        if (RemoveDirectoryW(@ptrCast(&self.market_work_path)) == 0) return error.MarketWorkBlocked;
+        self.market_work_path[0] = 0;
     }
 
     fn checkStore(code: c_int) !void {
@@ -450,6 +526,15 @@ pub const Owner = struct {
     /// the failing handle so the serialized caller can retry close.
     pub fn close(self: *Owner) !void {
         try self.releaseQuarantine();
+        if (self.market_work_handle != invalid) {
+            if (CloseHandle(self.market_work_handle) == 0) return error.CleanupFailed;
+            self.market_work_handle = invalid;
+        }
+        if (self.market_lease_close) |close_lease| {
+            if (close_lease(&self.market_lease, @sizeOf(Lease)) != 0) return error.CleanupFailed;
+            self.market_lease_close = null;
+            self.market_lease_opened = false;
+        }
         if (self.opened) {
             try self.group.close();
             self.opened = false;

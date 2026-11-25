@@ -64,7 +64,7 @@ static int stopped(void *ctx, cancel_fn canceled, ULONGLONG start) {
     return canceled(ctx) || GetTickCount64() - start >= 120000;
 }
 
-int pet_market_http_get(unsigned kind, const uint8_t *url, size_t length, size_t cap,
+__declspec(dllexport) int pet_market_http_get(unsigned kind, const uint8_t *url, size_t length, size_t cap,
     void *ctx, header_fn headers, chunk_fn chunk, cancel_fn canceled, uint32_t *os_error) {
     if (!os_error) return HTTP_INVALID;
     *os_error = 0;

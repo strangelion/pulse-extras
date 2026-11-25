@@ -283,6 +283,8 @@ const Modules = struct {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "runtime_budget", .module = runtime_budget },
+                .{ .name = "runtime_group", .module = runtime_group },
+                .{ .name = "runtime_temp_store", .module = runtime_temp_store },
                 .{ .name = "process_trust", .module = process_trust },
                 .{ .name = "pulse_process", .module = process_mod },
             },
@@ -462,11 +464,12 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     runtime_root.addCSourceFiles(.{
-        .files = &.{ "shared/companion/pet_supervisor_win32.c", "shared/companion/pet_runtime_bridge_win32.c", "shared/companion/pet_private_root_win32.c", "shared/companion/pet_catalog_store_win32.c" },
+        .files = &.{ "shared/companion/pet_supervisor_win32.c", "shared/companion/pet_runtime_bridge_win32.c", "shared/companion/pet_private_root_win32.c", "shared/companion/pet_catalog_store_win32.c", "shared/companion/pet_market_http_win32.c" },
         .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
     });
     runtime_root.linkSystemLibrary("psapi", .{});
     runtime_root.linkSystemLibrary("advapi32", .{});
+    runtime_root.linkSystemLibrary("winhttp", .{});
     const runtime_bridge = b.addLibrary(.{
         .name = "pulse_companion_runtime",
         .linkage = .dynamic,

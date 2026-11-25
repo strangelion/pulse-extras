@@ -67,9 +67,13 @@ pub const Search = struct {
 };
 
 pub fn Service(comptime Transport: type) type {
+    return ServiceFor(Transport, cache_mod.Cache, false);
+}
+
+pub fn ServiceFor(comptime Transport: type, comptime CacheType: type, comptime inline_work: bool) type {
     return struct {
         const Self = @This();
-        const Tasks = tasks_mod.Tasks(Transport);
+        const Tasks = tasks_mod.TasksMode(Transport, inline_work);
         const Body = struct {
             storage: []u8,
             payload: []const u8,
@@ -97,9 +101,10 @@ pub fn Service(comptime Transport: type) type {
         allocator: std.mem.Allocator,
         tasks: *Tasks,
         pending: [8]?Pending = @splat(null),
-        cache: cache_mod.Cache,
+        cache: CacheType,
         transport: Transport,
         policy: Policy = .online,
+        cancel: importing.Cancel = .{},
         // Supplied UTC epoch seconds; refresh from the owner for each user
         // operation. A single search uses a consistent freshness snapshot.
         now: u64,
@@ -129,6 +134,7 @@ pub fn Service(comptime Transport: type) type {
         }
 
         fn get(self: *Self, request: cache_mod.Request) !Body {
+            try self.cancel.check();
             if (self.now == 0) return error.InvalidClock;
             const key = try request.key();
             const buffer = try self.allocator.alloc(u8, codec.max_record);
@@ -198,6 +204,7 @@ pub fn Service(comptime Transport: type) type {
         /// or offline results are browsable but cannot initiate installation.
         /// Return a task ID: dispatcher later joins it and calls Install.run.
         pub fn startPackage(self: *Self, root: *const Root, result: *const Search, hit: *const market.Hit, full: bool) !u64 {
+            try self.cancel.check();
             if (!result.matches(root) or !result.contains(hit)) return error.StaleSelection;
             var free_slot: ?usize = null;
             for (self.pending, 0..) |entry, n| {
@@ -259,6 +266,34 @@ pub fn Service(comptime Transport: type) type {
                 if (!progress.canceled) {
                     outcome.result = stage.run(self.tasks.io, scratch, scratch_path, budget, file, root, owner, helper, pending.source[0..pending.source_len]);
                     stage.cleanup(self.tasks.io, scratch, budget) catch |err| {
+                        outcome.stage_cleanup = err;
+                    };
+                }
+            } else |err| {
+                outcome.result = err;
+            }
+            if (self.tasks.release(id)) |_| {
+                self.pending[slot] = null;
+            } else |err| {
+                outcome.transfer_cleanup = err;
+            }
+            return outcome;
+        }
+
+        // Production consumer owns the lease-bound inventory transaction.
+        // The resolved source ID is copied by the service, not taken from UI.
+        pub fn finishPackageUsing(self: *Self, id: u64, consumer: anytype) !Finish {
+            const slot = try self.pendingSlot(id);
+            const pending = self.pending[slot].?;
+            if (pending.consumed) return error.AlreadyConsumed;
+            self.pending[slot].?.consumed = true;
+            const archive = self.tasks.join(id);
+            var outcome: Finish = .{ .result = error.Canceled };
+            if (archive) |file| {
+                const progress = try self.tasks.progress(id);
+                if (!progress.canceled) {
+                    outcome.result = consumer.run(file, pending.source[0..pending.source_len]);
+                    consumer.cleanup() catch |err| {
                         outcome.stage_cleanup = err;
                     };
                 }

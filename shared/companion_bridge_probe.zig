@@ -456,6 +456,19 @@ pub fn main(init: std.process.Init) !void {
         try owner.open(root[0..len :0], expected, 1, 128 * 1024 * 1024);
         const import_root = try owner.privateRoot(fixture_parent);
         try exerciseImport(init.io, &owner, fixture_parent, import_root);
+        // The independently ACL-checked market namespace is exercised only
+        // in the isolated fixture. No live network request is made.
+        const market_root = try owner.openMarketRoot();
+        if (market_root.len <= import_root.len or !std.mem.eql(u16, market_root[0..import_root.len], import_root)) return error.BadPrivateFixturePath;
+        _ = try owner.marketSymbol("pet_market_http_get");
+        var record_bytes: [16]u8 = undefined;
+        if (try owner.marketRead(0, &record_bytes) != null) return error.UnexpectedMarketCache;
+        try owner.marketWrite(0, "fixture-cache");
+        if (((try owner.marketRead(0, &record_bytes)) orelse return error.UnexpectedMarketCache) != 13 or !std.mem.eql(u8, record_bytes[0..13], "fixture-cache")) return error.UnexpectedMarketCache;
+        _ = try owner.createMarketWork();
+        try owner.finishMarketWork();
+        _ = try owner.createMarketWork();
+        try owner.finishMarketWork();
         var reopened = try catalog.Entry.init(1, "fixture-v1", "Fixture V1", .v1);
         if (!try store.loadPreferences(&owner, &reopened) or !reopened.favorite or !reopened.hasTag("bridge-test")) return error.PreferenceNotPersisted;
         try owner.close();

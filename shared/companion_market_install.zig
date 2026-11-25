@@ -20,25 +20,31 @@ pub const Install = struct {
     /// archive ownership until this operation returns. No publication before
     /// all ZIP payloads, CRCs and the actual package validator succeed.
     pub fn run(self: *Install, io: std.Io, scratch: std.Io.Dir, scratch_path: []const u8, budget: *Budget, archive: download.Result, root: [*:0]const u16, owner: *importing.Coordinator, helper: anytype, source_id: []const u8) !importing.Result {
-        if (self.charged != 0 or self.stage.root_created) return error.Busy;
         if (owner.fault != null) return error.RecoveryRequired;
         if (!inventory.validSource(source_id)) return error.Invalid;
+        var path: [4096]u8 = undefined;
+        const source = try self.unpack(io, scratch, scratch_path, budget, archive, &path);
+        return store.importPackage(root, owner, helper, source, source_id) catch |err| {
+            // An ambiguous managed copy may survive scratch cleanup.
+            self.recovery_required = owner.fault != null;
+            return err;
+        };
+    }
+
+    // Both legacy fixture and production lease-bound consumer use the
+    // same bounded ZIP admission/extraction and cleanup accounting.
+    pub fn unpack(self: *Install, io: std.Io, scratch: std.Io.Dir, scratch_path: []const u8, budget: *Budget, archive: download.Result, path: []u8) ![]const u8 {
+        if (self.charged != 0 or self.stage.root_created or self.recovery_required) return error.Busy;
         const size = (try archive.file.stat(io)).size;
         if (size == 0 or size != archive.bytes or size > zip.max_archive_bytes) return error.InvalidArchive;
-        var path: [4096]u8 = undefined;
-        const source = try std.fmt.bufPrint(&path, "{s}\\unpacked", .{scratch_path});
+        const source = try std.fmt.bufPrint(path, "{s}\\unpacked", .{scratch_path});
         // scratch_path is the caller-approved absolute path of scratch.
         // The existing helper independently validates normal local paths.
         const charge = 2 * zip.max_archive_bytes;
         try budget.reserve(charge);
         self.charged = charge;
         try self.stage.extract(io, archive.file, scratch);
-        return store.importPackage(root, owner, helper, source, source_id) catch |err| {
-            // An ambiguous managed copy may survive scratch cleanup. Retain
-            // the reservation until the separate recovery owner resolves it.
-            self.recovery_required = owner.fault != null;
-            return err;
-        };
+        return source;
     }
 
     /// Call after all package readers stop, including on run failure.

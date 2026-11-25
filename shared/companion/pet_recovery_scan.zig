@@ -5,7 +5,7 @@ const inventory = @import("pet_inventory.zig");
 const receipt = @import("pet_removal_receipt.zig");
 
 pub const max_rows = 4096;
-pub const Kind = enum(u32) { unknown, package, pending, preference, inventory, inventory_pending, lock, quarantine, receipt, receipt_pending, cleanup, cleanup_pending };
+pub const Kind = enum(u32) { unknown, package, pending, preference, inventory, inventory_pending, lock, quarantine, receipt, receipt_pending, cleanup, cleanup_pending, market_root };
 pub const Row = extern struct {
     id: u64,
     kind: u32,
@@ -37,7 +37,7 @@ pub fn classify(index: *const inventory.Inventory, rows: []const Row) !Report {
     var report: Report = .{};
     var seen: [inventory.max_entries]bool = @splat(false);
     for (rows) |row| {
-        if (row.kind > @backingInt(Kind.cleanup_pending)) return error.InvalidScan;
+        if (row.kind > @backingInt(Kind.market_root)) return error.InvalidScan;
         const kind: Kind = @fromBackingInt(row.kind);
         const directory = (row.attributes & 0x10) != 0;
         const reparse = (row.attributes & 0x400) != 0;
@@ -115,6 +115,9 @@ pub fn classify(index: *const inventory.Inventory, rows: []const Row) !Report {
             } else {
                 report.pending_records += 1;
             },
+            .market_root => if (!directory) {
+                report.invalid += 1;
+            },
             .inventory, .lock => if (directory) {
                 report.invalid += 1;
             },
@@ -164,7 +167,7 @@ pub fn removalState(rows: []const Row, id: u64) !RemovalState {
     var quarantined: bool = false;
     var has_receipt: bool = false;
     for (rows) |row| {
-        if (row.kind > @backingInt(Kind.cleanup_pending)) return error.InvalidScan;
+        if (row.kind > @backingInt(Kind.market_root)) return error.InvalidScan;
         const kind: Kind = @fromBackingInt(row.kind);
         if (kind == .inventory_pending) return error.RecoveryRequired;
         if (row.id != id) continue;

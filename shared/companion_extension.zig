@@ -11,6 +11,7 @@ pub const builtin_asset_id = group.Group.builtin_asset_id;
 
 const store = @import("companion_runtime_store.zig");
 const local_import = @import("companion_local_import.zig");
+const market_host = @import("companion_market_host.zig");
 const process = @import("pulse_process");
 
 pub const Snapshot = library.Snapshot;
@@ -169,6 +170,39 @@ pub fn scanRecoveryDefault(hex: []const u8) !RecoverySnapshot {
         owner.open(root, digest, 1, 128 * 1024 * 1024) catch |err| break :blk @as(anyerror!RecoverySnapshot, err);
         _ = openPrivateDefault(owner) catch |err| break :blk @as(anyerror!RecoverySnapshot, err);
         break :blk store.scanRecoveryDetailed(owner);
+    };
+    owner.close() catch return error.CleanupFailed;
+    std.heap.page_allocator.destroy(owner);
+    return outcome;
+}
+
+pub const MarketRequest = market_host.Request;
+pub const MarketSnapshot = market_host.Snapshot;
+pub const MarketOutcome = market_host.Outcome;
+pub const MarketProgress = market_host.Progress;
+pub const MarketSearch = market_host.SearchRequest;
+
+pub fn marketDefault(runtime_hex: []const u8, helper_hex: []const u8, request: *const MarketRequest, out: *MarketOutcome, progress: *MarketProgress, cancel: ImportCancel) !void {
+    if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
+    const digest = try parseDigest(runtime_hex);
+    const helper_digest = try parseDigest(helper_hex);
+    var path: [1024]u16 = undefined;
+    const root = try packageRoot(&path);
+    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\pulse-pet-demo.exe");
+    var exe: [1024]u16 = undefined;
+    if (root.len + suffix.len >= exe.len) return error.ModulePathUnavailable;
+    @memcpy(exe[0..root.len], root);
+    @memcpy(exe[root.len..][0..suffix.len], suffix);
+    const len = root.len + suffix.len;
+    exe[len] = 0;
+    var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+    const owner = try std.heap.page_allocator.create(runtime.Owner);
+    owner.* = .{};
+    const outcome = blk: {
+        owner.open(root, digest, 1, 128 * 1024 * 1024) catch |err| break :blk @as(anyerror!void, err);
+        const private = openPrivateDefault(owner) catch |err| break :blk @as(anyerror!void, err);
+        break :blk market_host.run(threaded.io(), owner, private, exe[0..len :0], helper_digest, request, out, progress, cancel);
     };
     owner.close() catch return error.CleanupFailed;
     std.heap.page_allocator.destroy(owner);
