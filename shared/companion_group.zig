@@ -23,12 +23,17 @@ const Slot = extern struct {
     child: Owner,
     stopping: c_int,
 };
+const Monitor = extern struct { job: Handle, process: Handle, capture_event: Handle, capture_since: u64 };
 const Native = extern struct {
     limit: u32,
     count: u32,
     next_id: u64,
     commit_budget: usize,
     slots: [model.max_instances]Slot,
+    monitors: [model.max_instances]Monitor,
+    capture_crashes: c_int,
+    dumps_saved: u32,
+    dumps_failed: u32,
 };
 const Options = extern struct {
     smoke: c_int = 0,
@@ -135,6 +140,9 @@ pub const TickResult = struct {
 pub const max_tick_slots = 32;
 pub const Drain = enum { normal, cooperative, force };
 
+pub const CrashPolicy = *const fn (*Native, usize, c_int) callconv(.c) c_int;
+pub const CrashStats = *const fn (*Native, usize, *u32, *u32) callconv(.c) c_int;
+
 pub const Group = struct {
     native: Native = undefined,
     manager: ?model.Manager = null,
@@ -155,6 +163,19 @@ pub const Group = struct {
         self.manager = manager;
         self.cursor = 0;
         self.drain = .normal;
+    }
+
+    pub fn configureCrash(self: *Group, callback: CrashPolicy) !void {
+        _ = try self.active();
+        try check(callback(&self.native, @sizeOf(Native), 1));
+    }
+
+    pub fn crashStats(self: *Group, callback: CrashStats) ![2]u32 {
+        _ = try self.active();
+        var saved: u32 = 0;
+        var failed: u32 = 0;
+        try check(callback(&self.native, @sizeOf(Native), &saved, &failed));
+        return .{ saved, failed };
     }
 
     fn active(self: *Group) NativeError!*model.Manager {

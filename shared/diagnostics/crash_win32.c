@@ -1,6 +1,33 @@
+#ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00
+#endif
 #include "crash_win32.h"
 #include <string.h>
+#include <stddef.h>
+
+/* The pinned GNU dbghelp header omits Io from its input union and places
+ * Status outside the output union. The documented Windows SDK ABI is
+ * pack(4), with the I/O payload at the input union start and the HRESULT
+ * at byte zero of the output union. Copy bytes instead of aliasing an
+ * incompatible vendor-header type. This backend is x64-only. */
+#pragma pack(push, 4)
+typedef struct {
+    HANDLE handle;
+    ULONG64 offset;
+    PVOID buffer;
+    ULONG bytes;
+} pulse_dump_io;
+#pragma pack(pop)
+_Static_assert(sizeof(void *) == 8, "x64 DbgHelp ABI");
+_Static_assert(offsetof(MINIDUMP_CALLBACK_INPUT, CallbackType) == 12, "callback tag ABI");
+_Static_assert(offsetof(MINIDUMP_CALLBACK_INPUT, Thread) == 16, "callback payload ABI");
+_Static_assert(offsetof(pulse_dump_io, offset) == 8 &&
+    offsetof(pulse_dump_io, buffer) == 16 && offsetof(pulse_dump_io, bytes) == 24 &&
+    sizeof(pulse_dump_io) == 28, "callback IO ABI");
+
+static void io_status(PMINIDUMP_CALLBACK_OUTPUT out, HRESULT status) {
+    memcpy(out, &status, sizeof(status));
+}
 
 BOOL pulse_dump_open(pulse_dump_backend *backend) {
     if (!backend || backend->module || backend->write) return FALSE;
@@ -39,32 +66,34 @@ static BOOL CALLBACK write_dump(PVOID opaque, const PMINIDUMP_CALLBACK_INPUT in,
     case IoStartCallback:
         if (writer->started || writer->finished) goto failed;
         writer->started = TRUE;
-        out->Status = S_FALSE;
+        io_status(out, S_FALSE);
         return TRUE;
     case IoWriteAllCallback: {
-        uint64_t offset = in->Io.Offset;
-        DWORD bytes = in->Io.BufferBytes, written = 0;
+        pulse_dump_io io;
+        memcpy(&io, (const unsigned char *)in + offsetof(MINIDUMP_CALLBACK_INPUT, Thread), sizeof(io));
+        uint64_t offset = io.offset;
+        DWORD bytes = io.bytes, written = 0;
         LARGE_INTEGER at;
         if (!writer->started || writer->finished ||
             offset > writer->limit || bytes > writer->limit - offset) goto failed;
         at.QuadPart = (LONGLONG)offset;
         if (!SetFilePointerEx(writer->file, at, NULL, FILE_BEGIN) ||
-            (bytes && (!WriteFile(writer->file, in->Io.Buffer, bytes, &written, NULL) ||
+            (bytes && (!WriteFile(writer->file, io.buffer, bytes, &written, NULL) ||
                 written != bytes))) goto failed;
-        out->Status = S_OK;
+        io_status(out, S_OK);
         return TRUE;
     }
     case IoFinishCallback:
         if (!writer->started || writer->finished) goto failed;
         writer->finished = TRUE;
-        out->Status = S_OK;
+        io_status(out, S_OK);
         return TRUE;
     default:
         return TRUE;
     }
 failed:
     writer->failed = TRUE;
-    out->Status = E_FAIL;
+    io_status(out, E_FAIL);
     return FALSE;
 }
 

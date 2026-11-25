@@ -5,6 +5,7 @@
 #include "pet_idle_policy.h"
 #include "pet_wardrobe_clock.h"
 #include "pet_gaze_policy.h"
+#include "pet_crash_watch_win32.h"
 #include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -437,6 +438,12 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv) pet_release(memory->resource_bridge, PET_RESOURCE_ARGV, 1);
     if (!argv || !sample || !validate || !sample_activity || !validate_activity || !parse_package || !schedule) goto cleanup;
+    if (argc == 5 && wcscmp(argv[1], L"--crash-watch") == 0) {
+        int watch_result = pet_crash_watch(argv[2], argv[3], argv[4], NULL);
+        if (LocalFree(argv)) ExitProcess(2);
+        pet_release(memory->resource_bridge, PET_RESOURCE_ARGV, 1);
+        ExitProcess((UINT)watch_result);
+    }
     if (argc == 2 && wcscmp(argv[1], L"--pick-folder") == 0) {
         extern int pet_pick_folder(void);
         rc = pet_pick_folder();

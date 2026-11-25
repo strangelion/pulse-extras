@@ -72,7 +72,7 @@ pet_private_result pet_private_root_close(pet_private_root *lease) {
     return PET_PRIVATE_OK;
 }
 
-pet_private_result pet_private_root_open(pet_private_root *lease, const wchar_t *parent) {
+static pet_private_result open_named(pet_private_root *lease, const wchar_t *parent, const wchar_t *name) {
     if (!lease || lease->parent || lease->root || lease->lock || !valid_parent(parent)) return PET_PRIVATE_INVALID;
     pet_private_result result = PET_PRIVATE_INVALID;
     HANDLE token = NULL;
@@ -84,7 +84,7 @@ pet_private_result pet_private_root_open(pet_private_root *lease, const wchar_t 
     if (p == INVALID_HANDLE_VALUE) return PET_PRIVATE_IO;
     lease->parent = p;
     if (!canonical(p, parent, TRUE)) goto done;
-    int n = swprintf(lease->path, CAP, L"%ls\\PulseExtras-Companion", parent);
+    int n = swprintf(lease->path, CAP, L"%ls\\%ls", parent, name);
     if (n <= 0 || n >= (int)CAP - 32) goto done;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
         result = PET_PRIVATE_IO; goto done;
@@ -129,4 +129,12 @@ done:
     if (result != PET_PRIVATE_OK && pet_private_root_close(lease) != PET_PRIVATE_OK)
         result = PET_PRIVATE_CLEANUP_FAILED;
     return result;
+}
+
+pet_private_result pet_private_root_open(pet_private_root *lease, const wchar_t *parent) {
+    return open_named(lease, parent, L"PulseExtras-Companion");
+}
+
+pet_private_result pet_private_diagnostics_open(pet_private_root *lease, const wchar_t *parent) {
+    return open_named(lease, parent, L"PulseExtras-Diagnostics");
 }

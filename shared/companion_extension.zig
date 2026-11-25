@@ -498,6 +498,7 @@ pub const RuntimePolicy = struct {
     automatic: bool = false,
     hide_on_minimize: bool = false,
     retain_history: bool = false,
+    capture_crashes: bool = false,
     batch_size: usize = 4,
     interval_ms: u64 = 500,
     grace_ms: u64 = 2000,
@@ -509,6 +510,11 @@ pub const RuntimePolicy = struct {
         if (value.len == 0) return error.InvalidPolicy;
         for (value) |ch| if (!std.ascii.isDigit(ch)) return error.InvalidPolicy;
         return std.fmt.parseInt(T, value, 10) catch error.InvalidPolicy;
+    }
+
+    pub fn effective(self: *const RuntimePolicy, limits: RuntimeLimits) usize {
+        if (!self.capture_crashes) return limits.effective();
+        return @min(@min(limits.instances, 4), limits.commit_mib / (2 * commit_per_instance_mib));
     }
 
     pub fn total(self: *const RuntimePolicy) usize {
@@ -548,6 +554,11 @@ pub const RuntimePolicy = struct {
             if (value_flag > 1) return error.InvalidPolicy;
             policy.retain_history = value_flag == 1;
         }
+        if (fields.next()) |flag| {
+            const value_flag = try number(u8, flag);
+            if (value_flag > 1) return error.InvalidPolicy;
+            policy.capture_crashes = value_flag == 1;
+        }
         if (fields.next() != null or automatic > 1 or policy.batch_size == 0 or policy.batch_size > 16 or policy.interval_ms < 100 or policy.interval_ms > 3000 or policy.grace_ms > 5000 or policy.timeout_ms > 10000 or policy.timeout_ms < policy.grace_ms + 2000) return error.InvalidPolicy;
         while (sections.next()) |section| {
             if (policy.count == policy.entries.len) return error.InvalidPolicy;
@@ -569,11 +580,15 @@ pub const RuntimePolicy = struct {
     pub fn encode(self: *const RuntimePolicy, buffer: []u8) ![]const u8 {
         const header = try std.fmt.bufPrint(buffer, "{d}:{d}:{d}:{d}:{d}", .{ @intFromBool(self.automatic), self.batch_size, self.interval_ms, self.grace_ms, self.timeout_ms });
         var len = header.len;
-        if (self.hide_on_minimize or self.retain_history) {
+        if (self.hide_on_minimize or self.retain_history or self.capture_crashes) {
             const suffix = try std.fmt.bufPrint(buffer[len..], ":{d}", .{@intFromBool(self.hide_on_minimize)});
             len += suffix.len;
         }
-        if (self.retain_history) {
+        if (self.retain_history or self.capture_crashes) {
+            const suffix = try std.fmt.bufPrint(buffer[len..], ":{d}", .{@intFromBool(self.retain_history)});
+            len += suffix.len;
+        }
+        if (self.capture_crashes) {
             const suffix = try std.fmt.bufPrint(buffer[len..], ":1", .{});
             len += suffix.len;
         }
@@ -723,6 +738,9 @@ pub const Session = struct {
     abnormal_exits: std.atomic.Value(usize) = .init(0),
     last_exit: std.atomic.Value(u32) = .init(0),
     history_status: std.atomic.Value(u32) = .init(0),
+    dumps_saved: std.atomic.Value(u32) = .init(0),
+    dumps_failed: std.atomic.Value(u32) = .init(0),
+    dump_stats_available: std.atomic.Value(bool) = .init(false),
     visibility_busy: std.atomic.Value(bool) = .init(false),
     visibility_id: std.atomic.Value(u64) = .init(0),
     visibility_show: std.atomic.Value(bool) = .init(true),
@@ -748,7 +766,7 @@ pub const Session = struct {
 
     pub fn canStart(self: *const Session) bool {
         return self.phase.load(.acquire) == @backingInt(Phase.running) and
-            self.owned.load(.acquire) < self.limits.effective() and !self.plan_active.load(.acquire) and !self.pending_start.load(.acquire) and
+            self.owned.load(.acquire) < self.policy.effective(self.limits) and !self.plan_active.load(.acquire) and !self.pending_start.load(.acquire) and
             self.pending_stop.load(.acquire) == 0 and self.stopping_id.load(.acquire) == 0;
     }
 
@@ -845,6 +863,9 @@ pub const Session = struct {
         self.abnormal_exits.store(0, .release);
         self.last_exit.store(0, .release);
         self.history_status.store(0, .release);
+        self.dumps_saved.store(0, .release);
+        self.dumps_failed.store(0, .release);
+        self.dump_stats_available.store(false, .release);
         self.denied.store(0, .release);
         self.last_rejection.store(@backingInt(Rejection.none), .release);
         self.visibility_busy.store(false, .release);
@@ -893,6 +914,15 @@ pub fn runBuiltin(session: *Session, runtime_hex: []const u8, helper_hex: []cons
     // The loop can return early from any native API. Always attempt normal
     // drain before close or emergency abandonment, even after such errors.
     const drained = drainOwned(owner, session);
+    if (owner.opened and session.policy.capture_crashes) {
+        if (drained) |_| {} else |_| session.dump_stats_available.store(false, .release);
+        if (owner.crashStats()) |stats| {
+            session.dumps_saved.store(stats[0], .release);
+            session.dumps_failed.store(stats[1], .release);
+        } else |_| {
+            session.dump_stats_available.store(false, .release);
+        }
+    }
     // History is best effort and independent of the runtime outcome.
     // Never access the private store while children may still be alive.
     if (owner.opened and session.policy.retain_history) {
@@ -1011,8 +1041,13 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
     if (canceled(context) != 0) return;
     session.set(.starting);
     try session.limits.validate();
-    const capacity = session.limits.effective();
+    const capacity = session.policy.effective(session.limits);
+    if (capacity == 0) return error.BudgetExceeded;
     try owner.open(root, digest, capacity, session.limits.commit_mib * 1024 * 1024);
+    if (session.policy.capture_crashes) {
+        try owner.configureCrash();
+        session.dump_stats_available.store(true, .release);
+    }
     if (canceled(context) != 0) return;
     const Buffers = struct {
         sources: [session_limit]RunningSource = @splat(.{}),
@@ -1223,6 +1258,14 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
         // Tick remains bounded to 32 native slots. Large sessions use a
         // shorter worker cadence so readiness and stop acknowledgement do
         // not wait a full multi-second rotation. UI polling remains 100 ms.
+        if (session.policy.capture_crashes) {
+            if (owner.crashStats()) |stats| {
+                session.dumps_saved.store(stats[0], .release);
+                session.dumps_failed.store(stats[1], .release);
+            } else |_| {
+                session.dump_stats_available.store(false, .release);
+            }
+        }
         if (failure == null) Sleep(if (capacity > 128) 20 else 100);
     }
     if (failure) |err| return err;
@@ -1251,7 +1294,7 @@ fn drainOwned(owner: *runtime.Owner, session: *Session) !void {
                 session.last_exit.store(code, .release);
             }
         }
-        if (try owner.group.remaining() != 0) Sleep(if (session.limits.effective() > 128) 20 else 50);
+        if (try owner.group.remaining() != 0) Sleep(if (session.policy.effective(session.limits) > 128) 20 else 50);
     }
     if (failure) |err| return err;
 }
@@ -1266,7 +1309,7 @@ test "session admits only one pending start within the pilot limit" {
     try std.testing.expect(!session.requestStart());
     try std.testing.expectEqual(@as(u64, 27), session.start_asset.load(.acquire));
     session.pending_start.store(false, .release);
-    session.owned.store(session.limits.effective(), .release);
+    session.owned.store(session.policy.effective(session.limits), .release);
     try std.testing.expect(!session.requestStart());
     session.reset();
     try std.testing.expectEqual(@as(usize, 0), session.owned.load(.acquire));
@@ -1492,4 +1535,16 @@ test "minimize fallback respects manual hides and restores only policy hides" {
     try std.testing.expectEqualStrings("0:4:500:2000:10000:0:1", try history_policy.encode(&encoded));
     try std.testing.expect(!(try RuntimePolicy.decode("0:4:500:2000:10000")).retain_history);
     try std.testing.expectError(error.InvalidPolicy, RuntimePolicy.decode("0:4:500:2000:10000:0:2"));
+}
+
+test "managed crash capture is opt-in and charges the monitor budget" {
+    const defaults: RuntimePolicy = .{};
+    try std.testing.expectEqual(@as(usize, 8), defaults.effective(.{}));
+    const policy = try RuntimePolicy.decode("0:4:500:2000:10000:0:0:1");
+    try std.testing.expect(policy.capture_crashes and !policy.retain_history);
+    try std.testing.expectEqual(@as(usize, 4), policy.effective(.{}));
+    try std.testing.expectEqual(@as(usize, 0), policy.effective(.{ .instances = 8, .commit_mib = 128 }));
+    var encoded: [512]u8 = undefined;
+    try std.testing.expectEqualStrings("0:4:500:2000:10000:0:0:1", try policy.encode(&encoded));
+    try std.testing.expectError(error.InvalidPolicy, RuntimePolicy.decode("0:4:500:2000:10000:0:0:2"));
 }

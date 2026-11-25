@@ -1895,3 +1895,59 @@ See [Shared Runtime](shared-runtime.md#shared-diagnostics-and-native-menu-consum
 These are code-sharing changes, not cross-process state sharing.
 Managed multi-instance crash policy, safe durable dump rotation and
 actual Pulse visual/host acceptance remain open.
+
+
+### Managed crash collection and shared retention candidate
+
+The eighth optional runtime.policy header flag enables local full-memory
+capture (default off). Older values remain unchanged. The native editor
+has 27 total model states. Enabling monitoring limits a session to four
+instances and charges 256 MiB committed-memory reservation per renderer
+plus watcher pair. The supervisor starts the digest-pinned sibling image
+in a separate one-process kill-on-close Job, transfers only restricted
+target, ready and capture-start handles, and never resumes the renderer before a bounded
+watcher attachment acknowledgement. The watcher is the only DbgHelp
+consumer; the host does not install any process exception filter.
+There is no attach-by-PID UI or arbitrary executable selection. Failure
+to enable the watcher rejects startup; no silent unmonitored fallback.
+Ordinary launches allocate no watcher processes. Group storage layout
+has changed; the existing size check rejects incompatible runtime
+binaries. Rebuild the paired runtime, helper and pinned hashes together.
+
+A second-chance fault may create a local private
+`%LOCALAPPDATA%\PulseExtras-Diagnostics` record. The shared store holds
+four completed dumps (256 MiB each, 30 days on subsequent successful
+capture) plus one 256 MiB transaction slot. The exclusive private root
+lease serializes writers. Identity-bound fixed-size index records are
+flushed before rotation; only verified owned regular single-link files
+are eligible for handle-based deletion. Unindexed, mismatched or
+interrupted records block further capture instead of silently deleting
+evidence. No scans of user directories, upload or deletion of
+user-selected standalone exports. This bounds managed dump storage
+under the cooperative private-root contract, not arbitrary same-user
+external modifications. A crash may leave one incomplete transaction
+requiring manual review. Disabling capture stops future collection;
+previous evidence is retained until managed rotation or explicit manual
+cleanup. Full dumps can contain sensitive memory.
+
+Watchers are counted in admission and drained with their renderer.
+The existing sampled working-set/CPU fields remain renderer-only; the
+numeric export now also reports capture opt-in, stats availability and
+saved/failed watcher results. Forced drain can interrupt a collector
+and leave evidence unverified. A capture-start event and the manager's monotonic reap watchdog bound a
+blocked DbgHelp operation to 30 seconds plus polling latency, with earlier
+forced shutdown on user stop. No in-process interrupt is used.
+Zig panic/forced exit without second-chance exceptions may not produce
+dumps. The actual Windows host integration remains NOT VERIFIED.
+
+The native popup is invalidated on public theme/system-color,
+settings and DPI change messages, preserving system menu navigation
+and reopening with current OS style. Exact Pulse Fluent renderer
+integration remains unsupported by the pinned SDK; no private API or
+theme ordinals are used. Visual validation on a real host remains open.
+
+CI candidate: corrected MinGW callback ABI compatibility (the GNU
+header omitted the I/O union member and misplaced output Status),
+separate synthetic managed children, normal cooperative exit, real
+second-chance fault, watcher drain, full-memory streams and six captures
+rotating to four. Keep both standalone and managed capture tests.

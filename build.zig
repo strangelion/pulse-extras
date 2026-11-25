@@ -419,6 +419,10 @@ pub fn build(b: *std.Build) void {
             "shared/companion/pet_decode_win32.c",
             "shared/companion/pet_surface_win32.c",
             "shared/companion/pet_config_win32.c",
+            "shared/companion/pet_crash_watch_win32.c",
+            "shared/companion/pet_private_root_win32.c",
+            "shared/diagnostics/crash_win32.c",
+            "shared/diagnostics/store_win32.c",
         },
     });
     for ([_][]const u8{ "user32", "gdi32", "shell32", "ole32", "windowscodecs", "uuid", "advapi32" }) |lib|

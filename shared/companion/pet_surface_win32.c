@@ -1,4 +1,5 @@
 #include "pet_surface_win32.h"
+#include "../pulse/menu_win32.h"
 
 static unsigned premultiply(unsigned value, unsigned alpha) {
     return (value * alpha + 127u) / 255u;
@@ -105,7 +106,8 @@ static LRESULT CALLBACK pet_window_proc(HWND window, UINT message, WPARAM wparam
             surface->menu_last_input = GetTickCount64();
         if (message == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE)
             cancel_menu(surface, FALSE);
-        if (message == WM_CANCELMODE || message == WM_CLOSE)
+        if (message == WM_CANCELMODE || message == WM_CLOSE ||
+            pulse_menu_theme_invalidated(message))
             cancel_menu(surface, FALSE);
         if (message == WM_TIMER && wparam == surface->menu_timer) {
             uint64_t now = GetTickCount64();

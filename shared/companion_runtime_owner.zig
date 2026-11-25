@@ -155,6 +155,18 @@ pub const Owner = struct {
         self.opened = true;
     }
 
+    pub fn configureCrash(self: *Owner) !void {
+        if (!self.opened) return error.OwnerUnavailable;
+        const callback: runtime.CrashPolicy = @ptrCast(GetProcAddress(self.module, "pulse_companion_crash_policy_v1") orelse return error.MissingCrashApi);
+        try self.group.configureCrash(callback);
+    }
+
+    pub fn crashStats(self: *Owner) ![2]u32 {
+        if (!self.opened) return error.OwnerUnavailable;
+        const callback: runtime.CrashStats = @ptrCast(GetProcAddress(self.module, "pulse_companion_crash_stats_v1") orelse return error.MissingCrashApi);
+        return self.group.crashStats(callback);
+    }
+
     pub fn privateRoot(self: *Owner, parent: [:0]const u16) ![:0]const u16 {
         if (!self.opened or self.module == 0) return error.Invalid;
         if (!self.lease_opened) {

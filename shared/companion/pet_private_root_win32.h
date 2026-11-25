@@ -24,4 +24,6 @@ typedef struct {
  * an existing root ACL or truncates an existing lock. */
 pet_private_result pet_private_root_open(pet_private_root *lease, const wchar_t *parent);
 pet_private_result pet_private_root_close(pet_private_root *lease);
+/* Separate fixed private namespace for managed diagnostic files. */
+pet_private_result pet_private_diagnostics_open(pet_private_root *lease, const wchar_t *parent);
 #endif

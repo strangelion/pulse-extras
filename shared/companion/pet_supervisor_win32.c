@@ -159,8 +159,83 @@ static BOOL package_args(const wchar_t *directory, const wchar_t *id) {
     return len && len <= 64 && wcscmp(id, L"builtin") != 0;
 }
 
+/* Launch the same already pinned/verified image in a separate diagnostic
+ * job. No broad handle inheritance, no host DbgHelp calls. The renderer
+ * remains suspended until this monitor confirms debugger attachment. */
+static void release_monitor(pet_crash_monitor *monitor) {
+    if (!monitor) return;
+    if (monitor->job) CloseHandle(monitor->job);
+    if (monitor->process) CloseHandle(monitor->process);
+    if (monitor->capture_event) CloseHandle(monitor->capture_event);
+    *monitor = (pet_crash_monitor){0};
+}
+
+static BOOL start_monitor(pet_crash_monitor *monitor, const wchar_t *image,
+    HANDLE target, wchar_t *env, const wchar_t *cwd) {
+    HANDLE ready = NULL, capture_event = NULL, inherited[3] = {0}, job = NULL;
+    PROCESS_INFORMATION child = {0};
+    LPPROC_THREAD_ATTRIBUTE_LIST attributes = NULL;
+    BOOL initialized = FALSE, success = FALSE;
+    SIZE_T bytes = 0;
+    wchar_t command[CMD_CAP];
+    ready = CreateEventW(NULL, TRUE, FALSE, NULL);
+    capture_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    job = CreateJobObjectW(NULL, NULL);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
+        JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_JOB_MEMORY;
+    limits.BasicLimitInformation.ActiveProcessLimit = 1;
+    limits.ProcessMemoryLimit = PET_CHILD_COMMIT_LIMIT;
+    limits.JobMemoryLimit = PET_CHILD_COMMIT_LIMIT;
+    if (!ready || !capture_event || !job ||
+        !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
+        !DuplicateHandle(GetCurrentProcess(), target, GetCurrentProcess(), &inherited[0],
+            PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_DUP_HANDLE | SYNCHRONIZE, TRUE, 0) ||
+        !DuplicateHandle(GetCurrentProcess(), ready, GetCurrentProcess(), &inherited[1],
+            EVENT_MODIFY_STATE, TRUE, 0) ||
+        !DuplicateHandle(GetCurrentProcess(), capture_event, GetCurrentProcess(), &inherited[2],
+            EVENT_MODIFY_STATE, TRUE, 0)) goto done;
+    InitializeProcThreadAttributeList(NULL, 2, 0, &bytes);
+    if (!bytes || bytes > 65536) goto done;
+    attributes = malloc(bytes);
+    if (!attributes || !InitializeProcThreadAttributeList(attributes, 2, 0, &bytes)) goto done;
+    initialized = TRUE;
+    if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            inherited, sizeof(inherited), NULL, NULL) ||
+        !UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+            &job, sizeof(job), NULL, NULL)) goto done;
+    int n = swprintf(command, CMD_CAP, L"\"%ls\" --crash-watch %llu %llu %llu", image,
+        (unsigned long long)(uintptr_t)inherited[0], (unsigned long long)(uintptr_t)inherited[1],
+        (unsigned long long)(uintptr_t)inherited[2]);
+    if (n <= 0 || n >= (int)CMD_CAP) goto done;
+    STARTUPINFOEXW startup = {0};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.lpAttributeList = attributes;
+    if (!CreateProcessW(image, command, NULL, NULL, TRUE,
+        EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED |
+        CREATE_NO_WINDOW, env, cwd, &startup.StartupInfo, &child)) goto done;
+    monitor->job = job; job = NULL;
+    monitor->process = child.hProcess;
+    monitor->capture_event = capture_event; capture_event = NULL;
+    BOOL contained = FALSE;
+    if (!IsProcessInJob(child.hProcess, monitor->job, &contained) || !contained ||
+        ResumeThread(child.hThread) != 1) goto done;
+    HANDLE waits[] = {ready, child.hProcess};
+    success = WaitForMultipleObjects(2, waits, FALSE, 3000) == WAIT_OBJECT_0 &&
+        WaitForSingleObject(child.hProcess, 0) == WAIT_TIMEOUT;
+done:
+    if (child.hThread) CloseHandle(child.hThread);
+    if (initialized) DeleteProcThreadAttributeList(attributes);
+    free(attributes);
+    for (unsigned i = 0; i < 3; ++i) if (inherited[i]) CloseHandle(inherited[i]);
+    if (ready) CloseHandle(ready);
+    if (capture_event) CloseHandle(capture_event);
+    if (job) CloseHandle(job);
+    return success;
+}
+
 static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approved_exe,
-    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, const wchar_t *expected_sha, const uint8_t *image_sha) {
+    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, const wchar_t *expected_sha, const uint8_t *image_sha, pet_crash_monitor *monitor) {
     if (!owner || !options || options->scale < PET_MIN_SCALE ||
         options->scale > PET_MAX_SCALE ||
         (options->smoke && (options->remember || options->reduced || options->topmost)))
@@ -276,6 +351,7 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
      * spawn. Never resume if the kernel did not confirm containment. */
     BOOL contained = FALSE;
     if (!IsProcessInJob(child.hProcess, job, &contained) || !contained ||
+        (monitor && (!image_sha || !start_monitor(monitor, approved_exe, child.hProcess, env, cwd))) ||
         ResumeThread(child.hThread) != 1) {
         result = PET_CHILD_CONTAINMENT_FAILED; goto cleanup;
     }
@@ -288,8 +364,13 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
     result = PET_CHILD_OK;
 cleanup:
     if (child.hProcess) {
+        if (monitor && monitor->job) (void)TerminateJobObject(monitor->job, 2);
         TerminateProcess(child.hProcess, 1);
-        if (WaitForSingleObject(child.hProcess, STOP_MAX_MS) == WAIT_OBJECT_0) {
+        BOOL target_done = WaitForSingleObject(child.hProcess, STOP_MAX_MS) == WAIT_OBJECT_0;
+        BOOL monitor_done = !monitor || !monitor->process ||
+            WaitForSingleObject(monitor->process, STOP_MAX_MS) == WAIT_OBJECT_0;
+        if (target_done && monitor_done) {
+            release_monitor(monitor);
             CloseHandle(child.hProcess);
         } else {
             /* Never claim a failed creation is gone on an ambiguous wait.
@@ -322,7 +403,7 @@ pet_child_result pet_child_start(pet_supervisor *owner, const wchar_t *approved_
     if (owner->job || owner->process || owner->stop || owner->state_mapping ||
         owner->state_event || owner->state_slot || owner->ready_event) return PET_CHILD_BUSY;
     if (InterlockedCompareExchange(&live_owner, 1, 0) != 0) return PET_CHILD_BUSY;
-    pet_child_result result = start_child(owner, approved_exe, options, NULL, NULL, NULL, NULL);
+    pet_child_result result = start_child(owner, approved_exe, options, NULL, NULL, NULL, NULL, NULL);
     if (result != PET_CHILD_OK) {
         /* Preserve legacy last-resort cleanup semantics. Group callers use
          * start_child directly and retain ambiguous termination ownership. */
@@ -409,15 +490,32 @@ pet_child_result pet_group_open(pet_supervisor_group *group, unsigned limit, SIZ
     return PET_CHILD_OK;
 }
 
+pet_child_result pet_group_crash_policy(pet_supervisor_group *group, BOOL enabled) {
+    if (!group || group != active_group || group->count || (enabled != FALSE && enabled != TRUE))
+        return PET_CHILD_INVALID;
+    if (enabled && (group->limit > PET_CRASH_GROUP_MAX ||
+        group->commit_budget < 2 * PET_CHILD_COMMIT_LIMIT)) return PET_CHILD_BUDGET_LIMIT;
+    group->capture_crashes = enabled;
+    return PET_CHILD_OK;
+}
+
+pet_child_result pet_group_crash_stats(pet_supervisor_group *group, uint32_t *saved, uint32_t *failed) {
+    if (!group || group != active_group || !saved || !failed) return PET_CHILD_INVALID;
+    *saved = group->dumps_saved;
+    *failed = group->dumps_failed;
+    return PET_CHILD_OK;
+}
+
 pet_child_result pet_group_admission(const pet_supervisor_group *group,
     uint64_t available_physical, uint64_t available_commit) {
     if (!group || group != active_group) return PET_CHILD_INVALID;
     if (group->count >= group->limit) return PET_CHILD_COUNT_LIMIT;
     if (group->count >= PET_GROUP_MAX) return PET_CHILD_STORAGE_LIMIT;
-    if (group->count >= group->commit_budget / PET_CHILD_COMMIT_LIMIT) return PET_CHILD_BUDGET_LIMIT;
+    SIZE_T per_instance = group->capture_crashes ? 2 * PET_CHILD_COMMIT_LIMIT : PET_CHILD_COMMIT_LIMIT;
+    if (group->count >= group->commit_budget / per_instance) return PET_CHILD_BUDGET_LIMIT;
     /* This is a conservative launch guard, not a reservation or guarantee.
      * Other processes can change available memory immediately afterward. */
-    const uint64_t need = PET_GROUP_MEMORY_HEADROOM + PET_CHILD_COMMIT_LIMIT;
+    const uint64_t need = PET_GROUP_MEMORY_HEADROOM + per_instance;
     if (available_physical < need || available_commit < need) return PET_CHILD_SYSTEM_MEMORY;
     return PET_CHILD_OK;
 }
@@ -426,7 +524,7 @@ static pet_child_result group_start(pet_supervisor_group *group, const wchar_t *
     const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, const wchar_t *expected_sha, const uint8_t *image_sha, uint64_t *id) {
     if (!id) return PET_CHILD_INVALID;
     *id = 0;
-    if (!group || group != active_group || !options || options->remember)
+    if (!group || group != active_group || !options || options->remember || (group->capture_crashes && !image_sha))
         return PET_CHILD_INVALID;
     /* Until per-instance persistence exists, reject shared registry writes. */
     pet_child_result admission = pet_group_admission(group, UINT64_MAX, UINT64_MAX);
@@ -442,7 +540,8 @@ static pet_child_result group_start(pet_supervisor_group *group, const wchar_t *
         if (slot->id) continue;
         slot->id = group->next_id++;
         ++group->count;
-        pet_child_result result = start_child(&slot->child, approved_exe, options, directory, package_id, expected_sha, image_sha);
+        pet_child_result result = start_child(&slot->child, approved_exe, options, directory, package_id, expected_sha, image_sha,
+            group->capture_crashes ? &group->monitors[i] : NULL);
         if (result != PET_CHILD_OK && !slot->child.process) {
             *slot = (pet_group_slot){0};
             --group->count;
@@ -554,16 +653,44 @@ pet_child_result pet_group_force_stop(pet_supervisor_group *group, uint64_t id) 
     pet_group_slot *slot = group_find(group, id);
     if (!slot || !slot->child.job) return PET_CHILD_INVALID;
     slot->stopping = TRUE;
-    return TerminateJobObject(slot->child.job, 1) ? PET_CHILD_OK : PET_CHILD_CONTAINMENT_FAILED;
+    pet_crash_monitor *monitor = &group->monitors[slot - group->slots];
+    BOOL monitor_ok = !monitor->job || TerminateJobObject(monitor->job, 2);
+    BOOL target_ok = TerminateJobObject(slot->child.job, 1);
+    return monitor_ok && target_ok ? PET_CHILD_OK : PET_CHILD_CONTAINMENT_FAILED;
 }
 
 pet_child_result pet_group_reap(pet_supervisor_group *group, uint64_t id, DWORD *exit_code) {
     pet_group_slot *slot = group_find(group, id);
     if (!slot || !exit_code) return PET_CHILD_INVALID;
+    pet_crash_monitor *monitor = &group->monitors[slot - group->slots];
+    /* Bound capture even without an explicit stop. Only owned jobs
+     * may be terminated; a timeout remains an abnormal outcome. */
+    if (monitor->process && monitor->capture_event &&
+        WaitForSingleObject(monitor->process, 0) == WAIT_TIMEOUT) {
+        DWORD signaled = WaitForSingleObject(monitor->capture_event, 0);
+        if (signaled == WAIT_OBJECT_0) {
+            uint64_t now = GetTickCount64();
+            if (!monitor->capture_since) monitor->capture_since = now ? now : 1;
+            else if (now >= monitor->capture_since && now - monitor->capture_since >= 30000u) {
+                if (pet_group_force_stop(group, id) != PET_CHILD_OK) return PET_CHILD_CONTAINMENT_FAILED;
+            }
+        } else if (signaled != WAIT_TIMEOUT) return PET_CHILD_OS_ERROR;
+    }
     BOOL running = FALSE;
     pet_child_result status = pet_child_status(&slot->child, &running, exit_code);
     if (status != PET_CHILD_OK) return status;
     if (running) return PET_CHILD_BUSY;
+    if (monitor->process) {
+        DWORD state = WaitForSingleObject(monitor->process, 0), code = 0;
+        if (state == WAIT_TIMEOUT) return PET_CHILD_BUSY;
+        if (state != WAIT_OBJECT_0 || !GetExitCodeProcess(monitor->process, &code)) return PET_CHILD_OS_ERROR;
+        if (code == 10) {
+            if (group->dumps_saved != UINT32_MAX) ++group->dumps_saved;
+        } else if (code != 0) {
+            if (group->dumps_failed != UINT32_MAX) ++group->dumps_failed;
+        }
+        release_monitor(monitor);
+    }
     release_child(&slot->child);
     *slot = (pet_group_slot){0};
     --group->count;
@@ -584,7 +711,10 @@ pet_child_result pet_group_close(pet_supervisor_group *group) {
 pet_child_result pet_group_abandon(pet_supervisor_group *group) {
     if (!group || group != active_group) return PET_CHILD_INVALID;
     for (unsigned i = 0; i < PET_GROUP_MAX; ++i) {
-        if (group->slots[i].id) release_child(&group->slots[i].child);
+        if (group->slots[i].id) {
+            release_monitor(&group->monitors[i]);
+            release_child(&group->slots[i].child);
+        }
     }
     group->count = 0;
     return pet_group_close(group);

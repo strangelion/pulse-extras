@@ -247,6 +247,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/companion/pet_crash_capture_test.py zig-out/crash-fixture/pulse-pet-crash-capture.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify managed multi-instance crash capture and retention
+        if: matrix.lane == 'desktop'
+        shell: pwsh
+        timeout-minutes: 8
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/diagnostics/crash_win32.c shared/diagnostics/store_win32.c shared/companion/pet_crash_watch_win32.c shared/companion/pet_private_root_win32.c tests/companion/pet_managed_crash_fixture.c -lshell32 -ladvapi32 -lole32 -luuid -o zig-out/pet-managed-crash-fixture.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_supervisor_win32.c tests/companion/pet_managed_crash_test.c -lshell32 -lpsapi -o zig-out/pet-managed-crash-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/companion/pet_managed_crash_test.py zig-out/pet-managed-crash-fixture.exe zig-out/pet-managed-crash-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test contained companion process supervision
         if: matrix.lane == 'desktop'
         shell: pwsh

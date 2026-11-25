@@ -36,6 +36,19 @@ __declspec(dllexport) BOOL pulse_companion_runtime_query(uint32_t version,
     return TRUE;
 }
 
+/* Optional versioned crash policy; storage size is checked independently
+ * by the caller before any call into this native runtime. */
+__declspec(dllexport) pet_child_result pulse_companion_crash_policy_v1(
+    pet_supervisor_group *group, SIZE_T size, BOOL enabled) {
+    if (size != sizeof(*group)) return PET_CHILD_INVALID;
+    return pet_group_crash_policy(group, enabled);
+}
+__declspec(dllexport) pet_child_result pulse_companion_crash_stats_v1(
+    pet_supervisor_group *group, SIZE_T size, uint32_t *saved, uint32_t *failed) {
+    if (size != sizeof(*group)) return PET_CHILD_INVALID;
+    return pet_group_crash_stats(group, saved, failed);
+}
+
 /* Independent versioned lease ABI; all storage belongs to the caller. */
 __declspec(dllexport) pet_private_result pulse_companion_private_open_v1(
     pet_private_root *lease, SIZE_T size, const wchar_t *parent) {

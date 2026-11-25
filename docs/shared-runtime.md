@@ -466,3 +466,21 @@ claim of exact Pulse theme parity. Future consumers can compile these
 sources into their own owner scopes; no mandatory shared DLL. Shared
 path changes require full CI, including existing native crash and menu
 fixtures plus retention tests.
+
+
+### Managed diagnostic persistence consumer
+
+The shared crash backend uses the documented x64 pack(4) DbgHelp I/O
+callback ABI, including output union offset zero; the pinned MinGW
+header's incomplete declaration must not control this layout.
+`shared/diagnostics/store_win32.c` implements fixed-slot, identity-bound
+managed dump retention under a separately ACL-verified, locked private
+root. It never adopts unknown files or user exports. Companion's
+optional out-of-process watchers are the first consumer. They are
+independently job-bounded, require explicit policy opt-in, and are
+charged against the group commit budget. No mandatory resident service
+or host process debugger is introduced. See the Companion manager
+document for caps, failure recovery, compatibility and remaining
+real-host evidence. The public Win32 menu backend retains system
+theme/navigation and invalidates active menus on theme/DPI changes;
+the pinned SDK does not provide native external Fluent rendering.

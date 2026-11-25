@@ -1,7 +1,9 @@
 /* Opt-in, out-of-process diagnostics for the sibling standalone pet only.
  * No attachment by PID, host exception filter, registry or network access. */
 #define WIN32_LEAN_AND_MEAN
+#ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00
+#endif
 #include <windows.h>
 #include "../diagnostics/crash_win32.h"
 #include <shellapi.h>
@@ -65,7 +67,7 @@ static int collect(const wchar_t *path, BOOL smoke, uint64_t limit) {
         DEBUG_EVENT event = {0};
         if (GetTickCount64() >= deadline) break;
         if (!WaitForDebugEvent(&event, 250)) {
-            if (GetLastError() == ERROR_SEM_TIMEOUT) continue;
+            if (GetLastError() == ERROR_SEM_TIMEOUT || GetLastError() == ERROR_TIMEOUT) continue;
             break;
         }
         DWORD status = DBG_CONTINUE;

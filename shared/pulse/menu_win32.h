@@ -46,4 +46,11 @@ static inline BOOL pulse_menu_escape_utf8(const char *name, wchar_t *scratch,
     out[pos] = 0;
     return TRUE;
 }
+/* System draws the native menu. Invalidate an open menu when visual
+ * settings change; do not use private theme APIs. */
+static inline BOOL pulse_menu_theme_invalidated(UINT message) {
+    return message == WM_THEMECHANGED || message == WM_SYSCOLORCHANGE ||
+        message == WM_SETTINGCHANGE || message == WM_DPICHANGED;
+}
+
 #endif

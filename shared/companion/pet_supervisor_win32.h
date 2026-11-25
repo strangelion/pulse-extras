@@ -66,11 +66,26 @@ typedef struct {
     BOOL stopping;
 } pet_group_slot;
 typedef struct {
+    HANDLE job, process, capture_event;
+    uint64_t capture_since;
+} pet_crash_monitor;
+
+#define PET_CRASH_GROUP_MAX 4u
+
+typedef struct {
     unsigned limit, count;
     uint64_t next_id;
     SIZE_T commit_budget;
     pet_group_slot slots[PET_GROUP_MAX];
+    pet_crash_monitor monitors[PET_GROUP_MAX];
+    BOOL capture_crashes;
+    uint32_t dumps_saved, dumps_failed;
 } pet_supervisor_group;
+
+/* Default off. Enable only before any launches; independently bounded
+ * renderer and monitor jobs count against the same admission budget. */
+pet_child_result pet_group_crash_policy(pet_supervisor_group *group, BOOL enabled);
+pet_child_result pet_group_crash_stats(pet_supervisor_group *group, uint32_t *saved, uint32_t *failed);
 
 pet_child_result pet_group_open(pet_supervisor_group *group, unsigned limit, SIZE_T commit_budget);
 /* Pure policy, using current owned count and caller-supplied system memory

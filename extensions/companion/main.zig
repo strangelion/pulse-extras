@@ -154,9 +154,9 @@ const Content = struct {
     import_toolbar: [3]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
-    states: [26]ui.State = undefined,
-    policy_fields: [15][64]u8 = undefined,
-    policy_nodes: [17]ui.Node = undefined,
+    states: [27]ui.State = undefined,
+    policy_fields: [16][64]u8 = undefined,
+    policy_nodes: [18]ui.Node = undefined,
     policy_numeric: [4]ui.Node = undefined,
     policy_text: [512]u8 = undefined,
     policy_actions: [3]ui.Node = undefined,
@@ -616,11 +616,24 @@ fn fillLocalDetail(content: *Content, id: u64, detail: *const library.AssetDetai
 }
 
 // The pinned model schema permits at most 32 states. Keep the existing
-// eleven and fifteen bounded editor states, even on the legacy layout.
+// eleven and sixteen bounded editor states, even on the legacy layout.
 const policy_keys = [_][]const u8{
-    "policy.automatic", "policy.batch",   "policy.interval", "policy.grace",            "policy.timeout",
-    "policy.entry.1",   "policy.entry.2", "policy.entry.3",  "policy.entry.4",          "policy.entry.5",
-    "policy.entry.6",   "policy.entry.7", "policy.entry.8",  "policy.hide-on-minimize", "policy.retain-history",
+    "policy.automatic",
+    "policy.batch",
+    "policy.interval",
+    "policy.grace",
+    "policy.timeout",
+    "policy.entry.1",
+    "policy.entry.2",
+    "policy.entry.3",
+    "policy.entry.4",
+    "policy.entry.5",
+    "policy.entry.6",
+    "policy.entry.7",
+    "policy.entry.8",
+    "policy.hide-on-minimize",
+    "policy.retain-history",
+    "policy.capture-crashes",
 };
 
 fn nativePolicyEditor(instance: *const Instance) bool {
@@ -628,7 +641,7 @@ fn nativePolicyEditor(instance: *const Instance) bool {
     return panel.table.get_state != null and panel.table.set_states != null;
 }
 
-fn policyEditorStates(policy: *const library.RuntimePolicy, buffers: *[15][64]u8, states: []ui.State) void {
+fn policyEditorStates(policy: *const library.RuntimePolicy, buffers: *[16][64]u8, states: []ui.State) void {
     states[0] = .{ .key = abi.view(policy_keys[0]), .value = abi.view(if (policy.automatic) "true" else "false") };
     const numbers = [_]u64{ @intCast(policy.batch_size), policy.interval_ms, policy.grace_ms, policy.timeout_ms };
     for (numbers, 1..) |number, n| {
@@ -647,9 +660,10 @@ fn policyEditorStates(policy: *const library.RuntimePolicy, buffers: *[15][64]u8
     }
     states[13] = .{ .key = abi.view(policy_keys[13]), .value = abi.view(if (policy.hide_on_minimize) "true" else "false") };
     states[14] = .{ .key = abi.view(policy_keys[14]), .value = abi.view(if (policy.retain_history) "true" else "false") };
+    states[15] = .{ .key = abi.view(policy_keys[15]), .value = abi.view(if (policy.capture_crashes) "true" else "false") };
 }
 
-fn decodePolicyFields(fields: *const [15][]const u8) !library.RuntimePolicy {
+fn decodePolicyFields(fields: *const [16][]const u8) !library.RuntimePolicy {
     const automatic: u8 = if (std.mem.eql(u8, fields[0], "true")) 1 else if (std.mem.eql(u8, fields[0], "false")) 0 else return error.InvalidPolicy;
     for (fields[1..5]) |field| {
         if (field.len == 0 or field.len > 16) return error.InvalidPolicy;
@@ -660,11 +674,16 @@ fn decodePolicyFields(fields: *const [15][]const u8) !library.RuntimePolicy {
     var len = head.len;
     const hide = if (std.mem.eql(u8, fields[13], "true")) true else if (std.mem.eql(u8, fields[13], "false")) false else return error.InvalidPolicy;
     const retain = if (std.mem.eql(u8, fields[14], "true")) true else if (std.mem.eql(u8, fields[14], "false")) false else return error.InvalidPolicy;
-    if (hide or retain) {
+    const capture = if (std.mem.eql(u8, fields[15], "true")) true else if (std.mem.eql(u8, fields[15], "false")) false else return error.InvalidPolicy;
+    if (hide or retain or capture) {
         const flag = try std.fmt.bufPrint(encoded[len..], ":{d}", .{@intFromBool(hide)});
         len += flag.len;
     }
-    if (retain) {
+    if (retain or capture) {
+        const flag = try std.fmt.bufPrint(encoded[len..], ":{d}", .{@intFromBool(retain)});
+        len += flag.len;
+    }
+    if (capture) {
         const flag = try std.fmt.bufPrint(encoded[len..], ":1", .{});
         len += flag.len;
     }
@@ -712,7 +731,12 @@ fn fillPolicyEditor(content: *Content, enabled: bool) ui.Node {
     content.policy_nodes[15].state = .{ .present = 1, .value = abi.view(policy_keys[14]) };
     content.policy_nodes[15].text = .{ .present = 1, .value = abi.view("保留脱敏会话历史（16条 / 30天，默认关闭）") };
     content.policy_nodes[15].enabled = .{ .present = 1, .value = @intFromBool(enabled) };
-    content.policy_nodes[16] = label("policy.host-boundary", "Windows 登录启动由 Pulse 自身设置管理；无法识别宿主窗口时不自动隐藏。关闭历史记录后不新增记录。");
+    content.policy_nodes[16] = ui.node(ui.NodeKind.checkbox);
+    content.policy_nodes[16].id = abi.view(policy_keys[15]);
+    content.policy_nodes[16].state = .{ .present = 1, .value = abi.view(policy_keys[15]) };
+    content.policy_nodes[16].text = .{ .present = 1, .value = abi.view("本地完整崩溃转储（默认关闭，最多4实例；内存可能含隐私，勿直接分享）") };
+    content.policy_nodes[16].enabled = .{ .present = 1, .value = @intFromBool(enabled) };
+    content.policy_nodes[17] = label("policy.host-boundary", "Windows 登录启动由 Pulse 自身设置管理；无法识别宿主窗口时不自动隐藏。关闭历史记录后不新增记录。");
     var node = ui.node(ui.NodeKind.stack);
     node.id = abi.view("settings.policy-editor");
     ui.withChildren(&node, &content.policy_nodes);
@@ -722,8 +746,8 @@ fn fillPolicyEditor(content: *Content, enabled: bool) ui.Node {
 fn syncPolicyEditor(instance: *Instance) void {
     if (!nativePolicyEditor(instance)) return;
     const panel = if (instance.panel) |*value| value else return;
-    var states: [16]ui.State = undefined;
-    var fields: [15][64]u8 = undefined;
+    var states: [17]ui.State = undefined;
+    var fields: [16][64]u8 = undefined;
     var legacy: [512]u8 = undefined;
     const encoded = instance.runtime_policy.encode(&legacy) catch unreachable;
     states[0] = .{ .key = abi.view("settings.runtime-policy"), .value = abi.view(encoded) };
@@ -973,7 +997,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             content.toolbar[2] = action("settings.more", "增加并发", commands[6], instance.loaded and instance.pending == 0 and instance.saved < 8);
             content.children[4] = horizontal("settings.toolbar", content.toolbar[0..3]);
             const limits = instance.runtime_limits;
-            const limits_text = std.fmt.bufPrint(&content.limits_text, "实例上限 {d} · 提交内存预算 {d} MiB · 有效上限 {d}（每实例预留 128 MiB；系统资源不足仍会拒绝启动）", .{ limits.instances, limits.commit_mib, limits.effective() }) catch unreachable;
+            const limits_text = std.fmt.bufPrint(&content.limits_text, "实例上限 {d} · 提交内存预算 {d} MiB · 有效上限 {d}（每实例预留 {d} MiB；系统资源不足仍会拒绝）", .{ limits.instances, limits.commit_mib, instance.runtime_policy.effective(limits), if (instance.runtime_policy.capture_crashes) @as(usize, 256) else @as(usize, 128) }) catch unreachable;
             content.children[5] = changingLabel(&content.limits_id, "settings.limits", limits_text);
             const editable = instance.loaded and instance.pending == 0 and instance.runtime_task_id == 0;
             content.limits_inputs[0] = ui.node(ui.NodeKind.text_input);
@@ -1195,8 +1219,8 @@ fn savePolicy(instance: *Instance) void {
     const get_state = panel.table.get_state orelse return;
     const policy = blk: {
         if (nativePolicyEditor(instance)) {
-            var buffers: [15][64]u8 = undefined;
-            var values: [15][]const u8 = undefined;
+            var buffers: [16][64]u8 = undefined;
+            var values: [16][]const u8 = undefined;
             for (policy_keys, 0..) |key, n| {
                 var needed: u32 = 0;
                 if (get_state(panel.table.context, panel.id, abi.view(key), &buffers[n], buffers[n].len, &needed) != abi.ok or needed >= buffers[n].len) {
@@ -1217,7 +1241,7 @@ fn savePolicy(instance: *Instance) void {
         refresh(instance);
         return;
     };
-    if (policy.total() > instance.runtime_limits.effective()) {
+    if (policy.total() > policy.effective(instance.runtime_limits) or policy.effective(instance.runtime_limits) == 0) {
         instance.status = "启动计划超过有效资源上限；未保存";
         refresh(instance);
         return;
@@ -1841,7 +1865,7 @@ fn maybeAutoStart(instance: *Instance) void {
 
 fn startPlan(instance: *Instance) void {
     if (!instance.active or !instance.loaded or instance.pending != 0 or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.runtime_policy.count == 0) return;
-    if (instance.runtime_policy.total() > instance.runtime_limits.effective()) {
+    if (instance.runtime_policy.total() > instance.runtime_policy.effective(instance.runtime_limits) or instance.runtime_policy.effective(instance.runtime_limits) == 0) {
         instance.runtime_status = "启动计划超过有效资源上限；未启动";
         refresh(instance);
         return;
@@ -1858,6 +1882,11 @@ fn startPlan(instance: *Instance) void {
 
 fn startSession(instance: *Instance, asset_id: u64, choice: library.LaunchProfile, planned: bool) void {
     const packed_profile = choice.pack() catch return;
+    if (instance.runtime_task_id == 0 and instance.runtime_policy.effective(instance.runtime_limits) == 0) {
+        instance.runtime_status = "崩溃监控需要每实例256 MiB预算；未启动";
+        refresh(instance);
+        return;
+    }
     if (instance.diagnostic_pending or instance.detail_request != null or instance.market_request != null or !instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0 or asset_id == 0) return;
     if (instance.runtime_task_id != 0) {
         if (instance.task_kind != .builtin_session) return;
@@ -1922,7 +1951,7 @@ fn exportDiagnostic(instance: *Instance) void {
     const tasks = instance.tasks orelse return;
     const create = tasks.create orelse return;
     const session = &instance.session;
-    const report = std.fmt.bufPrint(&instance.diagnostic_report, "PulseExtras Companion diagnostic v1\nSDK preview: {d}\nconfigured_instances: {d}\ncommit_budget_mib: {d}\neffective_limit: {d}\nstartup_batch: {d}\nstartup_interval_ms: {d}\nshutdown_grace_ms: {d}\nshutdown_timeout_ms: {d}\nowned: {d}\nready: {d}\nworking_set_bytes: {d}\nprivate_bytes: {d}\nlaunch_attempted: {d}\nlaunch_created: {d}\nrejections: {d}\nlast_rejection: {d}\nconfirmed_exits: {d}\nabnormal_exits: {d}\nlast_exit_code: {d}\nhistory_write_status: {d}\nhide_on_minimize: {d}\nhost_window_state: {d}\n", .{ abi.sdk_preview, instance.runtime_limits.instances, instance.runtime_limits.commit_mib, instance.runtime_limits.effective(), instance.runtime_policy.batch_size, instance.runtime_policy.interval_ms, instance.runtime_policy.grace_ms, instance.runtime_policy.timeout_ms, session.owned.load(.acquire), session.ready.load(.acquire), session.working_set.load(.acquire), session.private_bytes.load(.acquire), session.plan_attempted.load(.acquire), session.plan_launched.load(.acquire), session.denied.load(.acquire), session.last_rejection.load(.acquire), session.exits.load(.acquire), session.abnormal_exits.load(.acquire), session.last_exit.load(.acquire), session.history_status.load(.acquire), @intFromBool(instance.runtime_policy.hide_on_minimize), session.host_window_state.load(.acquire) }) catch return;
+    const report = std.fmt.bufPrint(&instance.diagnostic_report, "PulseExtras Companion diagnostic v1\nSDK preview: {d}\nconfigured_instances: {d}\ncommit_budget_mib: {d}\neffective_limit: {d}\nstartup_batch: {d}\nstartup_interval_ms: {d}\nshutdown_grace_ms: {d}\nshutdown_timeout_ms: {d}\nowned: {d}\nready: {d}\nworking_set_bytes: {d}\nprivate_bytes: {d}\nlaunch_attempted: {d}\nlaunch_created: {d}\nrejections: {d}\nlast_rejection: {d}\nconfirmed_exits: {d}\nabnormal_exits: {d}\nlast_exit_code: {d}\nhistory_write_status: {d}\nhide_on_minimize: {d}\nhost_window_state: {d}\ncapture_crashes: {d}\ndump_stats_available: {d}\ndumps_saved: {d}\ndumps_failed: {d}\n", .{ abi.sdk_preview, instance.runtime_limits.instances, instance.runtime_limits.commit_mib, instance.runtime_policy.effective(instance.runtime_limits), instance.runtime_policy.batch_size, instance.runtime_policy.interval_ms, instance.runtime_policy.grace_ms, instance.runtime_policy.timeout_ms, session.owned.load(.acquire), session.ready.load(.acquire), session.working_set.load(.acquire), session.private_bytes.load(.acquire), session.plan_attempted.load(.acquire), session.plan_launched.load(.acquire), session.denied.load(.acquire), session.last_rejection.load(.acquire), session.exits.load(.acquire), session.abnormal_exits.load(.acquire), session.last_exit.load(.acquire), session.history_status.load(.acquire), @intFromBool(instance.runtime_policy.hide_on_minimize), session.host_window_state.load(.acquire), @intFromBool(instance.runtime_policy.capture_crashes), @intFromBool(session.dump_stats_available.load(.acquire)), session.dumps_saved.load(.acquire), session.dumps_failed.load(.acquire) }) catch return;
     instance.diagnostic_report_len = report.len;
     instance.diagnostic_path_len = 0;
     instance.diagnostic_history_allowed = instance.runtime_task_id == 0;
@@ -3586,16 +3615,17 @@ test "runtime policy setting is opt-in and validated before publication" {
 }
 
 test "native policy fields use canonical booleans and reject injected records" {
-    var fields: [15][]const u8 = .{ "true", "2", "500", "2000", "10000", "builtin:2:0", "", "7:1:1", "", "", "", "", "", "true", "true" };
+    var fields: [16][]const u8 = .{ "true", "2", "500", "2000", "10000", "builtin:2:0", "", "7:1:1", "", "", "", "", "", "true", "true", "true" };
     const policy = try decodePolicyFields(&fields);
     try std.testing.expect(policy.automatic);
     try std.testing.expectEqual(@as(usize, 3), policy.total());
-    var buffers: [15][64]u8 = undefined;
-    var states: [15]ui.State = undefined;
+    var buffers: [16][64]u8 = undefined;
+    var states: [16]ui.State = undefined;
     policyEditorStates(&policy, &buffers, &states);
     try std.testing.expectEqualStrings("true", abi.slice(states[0].value).?);
     try std.testing.expectEqualStrings("true", abi.slice(states[13].value).?);
-    try std.testing.expect(policy.hide_on_minimize and policy.retain_history);
+    try std.testing.expect(policy.hide_on_minimize and policy.retain_history and policy.capture_crashes);
+    try std.testing.expectEqualStrings("true", abi.slice(states[15].value).?);
     try std.testing.expectEqualStrings("true", abi.slice(states[14].value).?);
     try std.testing.expectEqualStrings("7:1:1", abi.slice(states[6].value).?);
     fields[5] = "builtin:2:0;8:1:0";
@@ -3608,7 +3638,7 @@ test "native policy fields use canonical booleans and reject injected records" {
     try std.testing.expectError(error.InvalidPolicy, decodePolicyFields(&fields));
     var content: Content = undefined;
     const editor = fillPolicyEditor(&content, false);
-    try std.testing.expectEqual(@as(u32, 17), editor.children.count);
+    try std.testing.expectEqual(@as(u32, 18), editor.children.count);
     try std.testing.expectEqual(ui.NodeKind.checkbox, content.policy_nodes[0].type);
     try std.testing.expectEqual(@as(u32, 0), content.policy_nodes[0].enabled.value);
 }
