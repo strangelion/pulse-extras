@@ -689,3 +689,30 @@ Motion, SVG, ZIP installation, automatic activities and the production
 host package selection remain unsupported. The Windows CLI regression
 uses synthetic RIFF headers, so it tests admission rather than actual
 image decoding; real artwork and desktop interaction remain pending.
+
+## Automatic Classic activities — single standalone carrier
+
+Follow pinned OpenPets pet-activity-policy.ts: quiet opportunities at
+120..240 seconds, 300-second per-activity cooldown, no consecutive repeat
+when multiple enabled available activities exist. Automatic actions are
+off by default and selected individually in the localized Automatic
+activities submenu. Session-local index masks are safe only because the
+package snapshot and ordering are fixed until exit; persistent pet-ID/
+activity-ID preferences and shared multi-carrier history are not yet
+implemented. History is committed after successful first-frame
+presentation, including manual named actions. A failed decode disables
+that activity for the current session; normal interruption does not
+quarantine or reset cooldown history.
+
+The existing message/frame loop owns all opportunities, with a deadline
+cap on the same wait. No additional timer thread, polling loop, or
+catch-up queue. Availability uses the actual idle Classic row after finite
+reactions expire and excludes managed, reduced-motion, capture, hidden
+and active-activity cases. Right-click and left press reset the opportunity;
+ordinary cancellation releases the strip. One selected strip is decoded
+on demand. Windows system reduced-motion preference and power/session
+suspension integration are still separate; the current reduced flag is
+explicitly selected by the user. WIC still runs synchronously. Tests
+cover opt-in, boundary times, no consecutive repeat, cooldown, first
+frame accounting, cancellation, decode failure and disabled availability.
+No actual host automatic activity or persisted preferences are claimed.

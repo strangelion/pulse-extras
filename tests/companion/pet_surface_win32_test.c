@@ -1,6 +1,7 @@
 /* Synthetic pixels only; no OpenPets dependency or commercial assets. */
 #include "../../shared/companion/pet_surface_win32.h"
 #include "../../shared/companion/pet_menu_strings_win32.h"
+#include "../../shared/companion/pet_idle_policy.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +28,32 @@ int main(void) {
     pet_surface surface = {0};
     HANDLE thread = NULL;
     CHECK(atlas && out);
+    pet_idle_policy idle = {0};
+    CHECK(pet_idle_delay(0) == 120000 && pet_idle_delay(UINT32_MAX) == 240000);
+    CHECK(pet_idle_choose(&idle, 2, 1, 0, 0, 0) == PET_IDLE_NONE && !idle.opportunity);
+    pet_idle_toggle(&idle, 0);
+    pet_idle_toggle(&idle, 1);
+    CHECK(pet_idle_choose(&idle, 2, 1, 10, 0, 0) == PET_IDLE_NONE && idle.opportunity == 120010);
+    CHECK(pet_idle_choose(&idle, 2, 1, 120009, 0, 0) == PET_IDLE_NONE);
+    CHECK(pet_idle_choose(&idle, 2, 1, 120010, 0, 0) == 0);
+    CHECK(!idle.played); /* reservation is not presentation */
+    pet_idle_started(&idle, 0, 120010);
+    CHECK(pet_idle_choose(&idle, 2, 1, 120020, 0, 0) == PET_IDLE_NONE);
+    CHECK(pet_idle_choose(&idle, 2, 1, 240020, 0, 0) == 1);
+    pet_idle_started(&idle, 1, 240020);
+    CHECK(pet_idle_choose(&idle, 2, 1, 240030, 0, 0) == PET_IDLE_NONE);
+    CHECK(pet_idle_choose(&idle, 2, 1, 360030, 0, 0) == PET_IDLE_NONE);
+    CHECK(idle.opportunity == 480030); /* activity 0 still cooling down */
+    CHECK(pet_idle_choose(&idle, 2, 1, 480030, 0, 0) == 0);
+    pet_idle_interrupt(&idle); /* ordinary cancellation preserves history */
+    CHECK(idle.played == 3 && !idle.failed);
+    pet_idle_failed(&idle, 0);
+    CHECK(pet_idle_choose(&idle, 2, 1, 500000, 0, 0) == PET_IDLE_NONE);
+    CHECK(pet_idle_choose(&idle, 2, 0, 550000, 0, 0) == PET_IDLE_NONE && !idle.opportunity);
+    CHECK(pet_idle_choose(&idle, 2, 1, 600000, 0, 0) == PET_IDLE_NONE);
+    CHECK(pet_idle_choose(&idle, 2, 1, 720000, 0, UINT32_MAX) == 1);
+    pet_idle_failed(&idle, 1);
+    CHECK(pet_idle_choose(&idle, 2, 1, 1000000, 0, 0) == PET_IDLE_NONE && !idle.opportunity);
     pet_language lang = PET_LANGUAGE_SYSTEM;
     CHECK(pet_language_parse(L"zh-CN", &lang) && lang == PET_LANGUAGE_ZH_CN);
     CHECK(!pet_language_parse(L"invalid", &lang) && lang == PET_LANGUAGE_ZH_CN);

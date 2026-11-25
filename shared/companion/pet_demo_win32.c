@@ -2,6 +2,7 @@
 #include "pet_config_win32.h"
 #include "pet_state_win32.h"
 #include "pet_menu_strings_win32.h"
+#include "pet_idle_policy.h"
 #include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -112,7 +113,7 @@ static HANDLE parse_inherited_handle(const wchar_t *text) {
 
 enum {
     MENU_TOPMOST = 100, MENU_REDUCED, MENU_RESET, MENU_INTERACT,
-    MENU_EXIT, MENU_ACTIVITY_FIRST = 300, MENU_SCALE_50 = 200, MENU_SCALE_75, MENU_SCALE_100,
+    MENU_EXIT, MENU_ACTIVITY_FIRST = 300, MENU_AUTO_FIRST = 400, MENU_SCALE_50 = 200, MENU_SCALE_75, MENU_SCALE_100,
     MENU_SCALE_125, MENU_SCALE_150, MENU_SCALE_200
 };
 
@@ -122,7 +123,8 @@ static const unsigned menu_scales[] = {50, 75, 100, 125, 150, 200};
  * A modal menu can delay cooperative stop until dismissal; the parent
  * still owns the bounded job termination fallback. */
 static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
-    int reduced, int managed, pet_language language, const pet_package *package) {
+    int reduced, int managed, pet_language language, const pet_package *package,
+    const pet_idle_policy *idle) {
     pet_menu_strings strings = pet_menu_labels(language, GetUserDefaultUILanguage());
     HMENU menu = CreatePopupMenu();
     HMENU sizes = CreatePopupMenu();
@@ -144,24 +146,35 @@ static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
     if (package && package->meta.count) {
         HMENU actions = CreatePopupMenu();
         if (!actions) { DestroyMenu(menu); return 0; }
+        HMENU automatic = CreatePopupMenu();
+        if (!automatic) { DestroyMenu(actions); DestroyMenu(menu); return 0; }
         for (unsigned i = 0; i < package->meta.count; ++i) {
             wchar_t name[161], escaped[321];
             int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
                 (const char *)package->meta.items[i].name, -1, name, 161);
-            if (!n) { DestroyMenu(actions); DestroyMenu(menu); return 0; }
+            if (!n) { DestroyMenu(automatic); DestroyMenu(actions); DestroyMenu(menu); return 0; }
             size_t j = 0;
             for (int k = 0; k < n - 1; ++k) {
                 if (name[k] == L'&') escaped[j++] = L'&';
                 escaped[j++] = name[k];
             }
             escaped[j] = 0;
-            if (!AppendMenuW(actions, MF_STRING | (managed || reduced ? MF_GRAYED : 0),
-                MENU_ACTIVITY_FIRST + i, escaped)) {
-                DestroyMenu(actions); DestroyMenu(menu); return 0;
+            uint32_t bit = pet_idle_bit(i);
+            if (!AppendMenuW(actions, MF_STRING |
+                    (managed || reduced || (idle->failed & bit) ? MF_GRAYED : 0),
+                    MENU_ACTIVITY_FIRST + i, escaped) ||
+                !AppendMenuW(automatic, MF_STRING |
+                    (idle->enabled & bit ? MF_CHECKED : 0) |
+                    (managed || (idle->failed & bit) ? MF_GRAYED : 0),
+                    MENU_AUTO_FIRST + i, escaped)) {
+                DestroyMenu(automatic); DestroyMenu(actions); DestroyMenu(menu); return 0;
             }
         }
         if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)actions, strings.activities)) {
-            DestroyMenu(actions); DestroyMenu(menu); return 0;
+            DestroyMenu(automatic); DestroyMenu(actions); DestroyMenu(menu); return 0;
+        }
+        if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)automatic, strings.automatic)) {
+            DestroyMenu(automatic); DestroyMenu(menu); return 0;
         }
     }
     if (!AppendMenuW(menu, MF_STRING | (topmost ? MF_CHECKED : 0), MENU_TOPMOST, strings.topmost) ||
@@ -177,6 +190,16 @@ static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
         at.x, at.y, window, NULL);
     DestroyMenu(menu); /* also destroys attached submenu */
     return command;
+}
+
+/* Non-cryptographic variation only; no security decisions use this RNG. */
+static uint32_t activity_random(uint32_t *state) {
+    uint32_t x = *state ? *state : UINT32_C(0x9e3779b9);
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
 }
 
 static void usage(void) {
@@ -210,6 +233,9 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
     size_t bytes = 0, activity_bytes = 0;
     uint64_t activity_started = 0;
     int activity_displayed = 0;
+    pet_idle_policy idle = {0};
+    unsigned active_index = PET_IDLE_NONE;
+    uint32_t rng = (uint32_t)GetTickCount64() ^ GetCurrentProcessId();
     pet_surface surface = {0};
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv || !sample || !validate || !sample_activity || !validate_activity || !parse_package) goto cleanup;
@@ -356,6 +382,8 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                 if (message.message == WM_RBUTTONUP && !smoke && shown && GetCursorPos(&cursor)) {
                     if (GetCapture() == surface.window) ReleaseCapture();
                     pressed = 0;
+                    pet_idle_interrupt(&idle);
+                    active_index = PET_IDLE_NONE;
                     /* Opening the menu interrupts optional artwork; restore
                      * the base pose before any live resize. */
                     if (activity || activity_displayed) {
@@ -371,7 +399,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                         last_row = base.row; last_column = base.column;
                     }
                     unsigned command = pet_menu(surface.window, cursor, scale, topmost,
-                        reduced, state_slot != NULL, language, &package);
+                        reduced, state_slot != NULL, language, &package, &idle);
                     /* Check the owner signal immediately after the modal menu. */
                     if (stop && WaitForSingleObject(stop, 0) == WAIT_OBJECT_0) {
                         stopped = 1; done = 1; break;
@@ -385,14 +413,24 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                         reduced = !reduced;
                         started = GetTickCount64();
                         if (!state_slot) reaction = PET_STATE_IDLE;
+                    } else if (command >= MENU_AUTO_FIRST &&
+                        command - MENU_AUTO_FIRST < package.meta.count && !state_slot) {
+                        unsigned index = command - MENU_AUTO_FIRST;
+                        if (!(idle.failed & pet_idle_bit(index))) pet_idle_toggle(&idle, index);
                     } else if (command >= MENU_ACTIVITY_FIRST &&
-                        command - MENU_ACTIVITY_FIRST < package.meta.count && !state_slot && !reduced) {
+                        command - MENU_ACTIVITY_FIRST < package.meta.count && !state_slot && !reduced &&
+                        !(idle.failed & pet_idle_bit(command - MENU_ACTIVITY_FIRST))) {
                         unsigned index = command - MENU_ACTIVITY_FIRST;
                         activity_frames = package.meta.items[index].frames;
                         activity_fps = package.meta.items[index].fps;
                         activity = pet_package_load_activity(&package, index, validate_activity, &activity_bytes);
-                        if (activity) activity_started = GetTickCount64();
-                        else fputs("Package activity decode failed; base pose retained.\n", stderr);
+                        if (activity) {
+                            active_index = index;
+                            activity_started = GetTickCount64();
+                        } else {
+                            pet_idle_failed(&idle, index);
+                            fputs("Package activity decode failed; unavailable for this session.\n", stderr);
+                        }
                     } else if (command == MENU_INTERACT && !state_slot && !reduced) {
                         if (activity_path) {
                             activity = pet_demo_load_activity(activity_path, activity_frames,
@@ -431,6 +469,8 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                         }
                     }
                 } else if (message.message == WM_LBUTTONDOWN && GetCursorPos(&press)) {
+                    pet_idle_interrupt(&idle);
+                    active_index = PET_IDLE_NONE;
                     if (activity) {
                         free(activity); activity = NULL; activity_bytes = 0;
                         reaction = PET_STATE_IDLE;
@@ -499,10 +539,37 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
         }
         if (smoke && now >= smoke_end) break;
         pet_demo_sample point = {0};
+        /* Admission follows the actual Classic presentation, not a stale
+         * finite reaction code. No new opportunity during capture, reduced
+         * motion, managed mode or an outstanding optional animation. */
+        pet_demo_sample base_point = {0};
+        if (sample(version, reaction, now - started, reduced, &base_point)) goto cleanup;
+        int available = shown && !state_slot && !smoke && !reduced && !pressed &&
+            !activity && base_point.row == 0;
+        uint32_t delay_random = activity_random(&rng);
+        uint32_t choice_random = activity_random(&rng);
+        unsigned choice = pet_idle_choose(&idle, package.meta.count, available,
+            now, delay_random, choice_random);
+        if (choice != PET_IDLE_NONE) {
+            activity_frames = package.meta.items[choice].frames;
+            activity_fps = package.meta.items[choice].fps;
+            activity = pet_package_load_activity(&package, choice, validate_activity, &activity_bytes);
+            now = GetTickCount64();
+            if (activity) {
+                active_index = choice;
+                activity_started = now;
+            } else {
+                pet_idle_failed(&idle, choice);
+                fputs("Automatic activity decode failed; unavailable for this session.\n", stderr);
+            }
+        }
         if (activity) {
             int result = sample_activity(activity_frames, activity_fps,
                 now - activity_started, &point);
             if (result != 0) {
+                if (result < 0) pet_idle_failed(&idle, active_index);
+                active_index = PET_IDLE_NONE;
+                pet_idle_interrupt(&idle);
                 free(activity); activity = NULL; activity_bytes = 0;
                 reaction = PET_STATE_IDLE;
                 started = now;
@@ -514,6 +581,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                 if (pet_surface_present_activity(&surface, activity, activity_bytes,
                     activity_frames, point.column, x, y, 255) != PET_SURFACE_OK)
                     goto cleanup;
+                if (!activity_displayed) pet_idle_started(&idle, active_index, GetTickCount64());
                 activity_displayed = 1;
                 last_column = point.column;
                 ++frames;
@@ -534,6 +602,10 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
             shown = 1;
         }
         DWORD wait = point.wait_ms ? point.wait_ms : INFINITE;
+        if (idle.opportunity) {
+            uint64_t delay = idle.opportunity > now ? idle.opportunity - now : 0;
+            if (delay < wait) wait = (DWORD)delay;
+        }
         if (smoke && (uint64_t)wait > smoke_end - now) wait = (DWORD)(smoke_end - now);
         HANDLE waits[2] = {stop, state_event};
         DWORD count = state_event ? 2 : (stop ? 1 : 0);
