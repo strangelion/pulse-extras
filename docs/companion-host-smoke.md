@@ -28,13 +28,28 @@ pack and verify, writes build-evidence.json and companion-dev.pulse-ext.
 It does not install/sign/publish by default. Inspect package/manifest/member
 hashes and source provenance before explicitly authorizing native execution.
 
-For the current combined build/launch flow, choose a different fresh
-output and append `--launch`; this builds a new artifact, records it,
-installs/enables the development ID with explicit native consent and runs
-an isolated profile. Do not confuse it with reuse of the package-only
-artifact. Exact-artifact verified reuse remains a D1 implementation task.
-Use the verified tested archive SHA in every acceptance record. Official
-tools and actual matching host are required; no invented package format.
+## Reuse the exact test package
+
+Copy the recorded package SHA-256 from the package-only build's
+build-evidence.json or console output. In the same dedicated test
+environment, with the same trusted host and official author tool:
+
+```powershell
+python scripts/companion_host_smoke.py --pulse "C:\Path\To\pulse.exe" --sdk-root "C:\Path\To\PulseSdk" --reuse-from ".local\companion-d-test-01" --expected-sha256 "<64 lowercase hex from evidence>" --out ".local\companion-d-run-01" --launch --confirm-isolated-user
+```
+
+The placeholder must be replaced with the actual digest. Reuse requires
+versioned clean bundled-build evidence, copies the fixed archive into
+a new directory without replacement, checks its exact digest, invokes
+official verify, and checks manifest/member identity before official
+install/enable/run. It never recompiles or trusts file paths from evidence.
+The host, catalog and author-tool hashes must match the build's evidence.
+A separate fresh run can reuse the same artifact. The acknowledgement
+flag is not proof of OS isolation; use a dedicated test user/VM.
+No production signing or publication. Omit --launch and the confirmation
+for re-verification only. Combined build/launch remains possible with
+both flags but produces a new artifact. Use the actual tested SHA in
+every acceptance record. D1 has not yet been executed with a real host.
 
 ## 2. Execute D cases
 

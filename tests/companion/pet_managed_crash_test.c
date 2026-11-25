@@ -11,9 +11,13 @@ static BOOL start_approved(pet_supervisor_group *group, const wchar_t *path,
     pet_child_result status = pet_group_start_approved(group, path, hash, options,
         NULL, NULL, NULL, id);
     DWORD last = GetLastError();
-    if (status != PET_CHILD_OK || !*id)
+    if (status != PET_CHILD_OK || !*id) {
         fprintf(stderr, "managed startup: native_result=%d win32=%lu scale=%u retained=%d\n",
             (int)status, (unsigned long)last, options->scale, *id != 0);
+        if (last & 0x20000000u)
+            fprintf(stderr, "managed startup phase=%lu detail=%lu\n",
+                (unsigned long)((last >> 16) & 0xffu), (unsigned long)(last & 0xffffu));
+    }
     SetLastError(last);
     return status == PET_CHILD_OK && *id != 0;
 }
@@ -44,8 +48,14 @@ int main(void) {
     CHECK(pet_group_crash_policy(&group, TRUE) == PET_CHILD_OK);
     CHECK(pet_group_start(&group, argv[1], &normal, &denied) == PET_CHILD_INVALID && !denied);
     CHECK(start_approved(&group, argv[1], hash, &normal, &a));
+    /* Prove that the normal child really executed after debugger attach,
+     * not just that CreateProcess and ResumeThread returned success. */
+    CHECK(WaitForSingleObject(group.slots[0].child.ready_event, 10000) == WAIT_OBJECT_0);
+    BOOL ready = FALSE;
+    CHECK(pet_group_ready(&group, a, &ready) == PET_CHILD_OK && ready);
     CHECK(start_approved(&group, argv[1], hash, &fault, &b) && b > a);
     CHECK(group.count == 2 && group.monitors[0].process && group.monitors[1].process);
+    CHECK(WaitForSingleObject(group.slots[1].child.ready_event, 10000) == WAIT_OBJECT_0);
     CHECK(pet_group_crash_policy(&group, FALSE) == PET_CHILD_INVALID);
     CHECK(pet_group_request_stop(&group, a) == PET_CHILD_OK);
     CHECK(WaitForSingleObject(group.slots[0].child.process, 15000) == WAIT_OBJECT_0);

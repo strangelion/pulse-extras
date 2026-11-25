@@ -65,9 +65,14 @@ instead of adding private hooks. The cross-add-on binary runtime remains
 [Run 45668887992](https://github.com/strangelion/pulse-extras/actions/runs/45668887992)
 on code commit 9adf778: Ubuntu and Windows IPC passed; desktop failed
 at first approved managed watcher startup (native result 4, Win32 31),
-after canonicalizing the short TEMP path. Root cause not established;
-managed crash collection, rotation and downstream desktop checks require
-a successful rerun. Independent collector passed the earlier regression
+after canonicalizing the short TEMP path. Canonical path repair alone did not resolve it. The debugger can hold
+an extra suspension during initial event delivery; the supervisor now
+releases exactly its own CREATE_SUSPENDED count, accepts only the expected
+one/two counts for monitored children, and keeps unmonitored admission
+unchanged. The fixture checks actual renderer readiness for both children.
+Unexpected counts have numeric phase diagnostics. This is a targeted
+repair candidate, not a proven root cause or passed regression; managed
+crash collection, rotation and downstream checks require a successful rerun. Independent collector passed the earlier regression
 [45667721657](https://github.com/strangelion/pulse-extras/actions/runs/45667721657);
 [45668887999](https://github.com/strangelion/pulse-extras/actions/runs/45668887999)
 passed the automatic lightweight two-child stress preflight, not a 100-pet
@@ -135,8 +140,12 @@ SDK/host fingerprint and backend. Keep package-only as default, no
 install/launch without explicit authorization. Preserve safety bounds.
 Use clean source for acceptance; identify dirty builds as ineligible.
 Do not package test fault executables, dumps, private keys, or user data.
-The current script rebuilds each run; add exact-artifact verified reuse
-as a D1 implementation task, not a currently supported flag.
+D1 implementation candidate adds exact-artifact reuse with a required
+expected SHA-256, official re-verification, manifest/entry/member evidence
+binding and exclusive bounded copy. Clean build evidence records pinned Zig,
+SDK pin, host/catalog and author-tool digests. Launch requires explicit
+dedicated-test-user acknowledgement; this flag is not OS isolation.
+Portable fixture tests are included; real Windows packaging is NOT RUN.
 
 IMPORTANT: isolated Pulse --store/--profile alone does NOT isolate
 native data. The entry/runtime use real Windows LocalAppData
@@ -160,9 +169,12 @@ python scripts/companion_host_smoke.py --pulse "C:\Path\To\pulse.exe" --sdk-root
 It generates companion-dev.pulse-ext and build-evidence.json. For the
 pinned libwebp backend run scripts/install_pet_webp.py first and select
 libwebp instead of wic; use the intended formal backend for acceptance.
-The existing --launch explicitly builds/installs/enables/runs a new
-isolated host; use only in the dedicated test environment. Successful
-host launch or package verification alone does not prove acceptance.
+For actual installation, prefer reusing the exact verified archive with
+`--reuse-from`, `--expected-sha256`, a fresh `--out`,
+`--launch --confirm-isolated-user`; see [runbook](companion-host-smoke.md).
+Reuse requires the matching host/catalog/author-tool identity, not a
+rebuild. A combined build/launch remains explicit. Successful host launch
+or package verification alone does not prove acceptance.
 
 ### D2: real-host functional acceptance matrix
 

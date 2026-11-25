@@ -219,8 +219,14 @@ static BOOL start_monitor(pet_crash_monitor *monitor, const wchar_t *image,
     monitor->process = child.hProcess;
     monitor->capture_event = capture_event; capture_event = NULL;
     BOOL contained = FALSE;
-    if (!IsProcessInJob(child.hProcess, monitor->job, &contained) || !contained ||
-        ResumeThread(child.hThread) != 1) goto done;
+    if (!IsProcessInJob(child.hProcess, monitor->job, &contained)) goto done;
+    if (!contained) { SetLastError(ERROR_ACCESS_DENIED); goto done; }
+    DWORD previous = ResumeThread(child.hThread);
+    if (previous == (DWORD)-1) goto done;
+    if (previous != 1) {
+        SetLastError(0x20080000u | (previous & 0xffffu));
+        goto done;
+    }
     HANDLE waits[] = {ready, child.hProcess};
     DWORD wait = WaitForMultipleObjects(2, waits, FALSE, 3000);
     if (wait == WAIT_OBJECT_0) {
@@ -366,9 +372,31 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
     /* Job-list assignment is atomic with creation, unlike assigning after
      * spawn. Never resume if the kernel did not confirm containment. */
     BOOL contained = FALSE;
-    if (!IsProcessInJob(child.hProcess, job, &contained) || !contained ||
-        (monitor && (!image_sha || !start_monitor(monitor, approved_exe, child.hProcess, env, cwd))) ||
-        ResumeThread(child.hThread) != 1) {
+    if (!IsProcessInJob(child.hProcess, job, &contained)) {
+        result = PET_CHILD_CONTAINMENT_FAILED; goto cleanup;
+    }
+    if (!contained) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        result = PET_CHILD_CONTAINMENT_FAILED; goto cleanup;
+    }
+    if (monitor && (!image_sha || !start_monitor(monitor, approved_exe, child.hProcess, env, cwd))) {
+        if (!image_sha) SetLastError(ERROR_INVALID_PARAMETER);
+        result = PET_CHILD_CONTAINMENT_FAILED; goto cleanup;
+    }
+    /* DebugActiveProcess may temporarily hold its own suspension while
+     * delivering initial debug events. Release only the one suspension
+     * that we own (CREATE_SUSPENDED), never loop ResumeThread. The
+     * debugger releases its own suspension as events are continued.
+     * Normal unmonitored launches still require exactly one.
+     * A renderer is not ready until the separate ready event is observed. */
+    DWORD previous = ResumeThread(child.hThread);
+    if (previous == (DWORD)-1) {
+        result = PET_CHILD_CONTAINMENT_FAILED; goto cleanup;
+    }
+    if (previous != 1 && !(monitor && previous == 2)) {
+        /* Application-defined phase 7 records unexpected suspend count.
+         * ResumeThread does not set last-error on a successful call. */
+        SetLastError(0x20070000u | (previous & 0xffffu));
         result = PET_CHILD_CONTAINMENT_FAILED; goto cleanup;
     }
     owner->job = job; owner->process = child.hProcess; owner->stop = stop;

@@ -5,9 +5,12 @@ from pathlib import Path
 import os
 import tempfile
 import unittest
+import zipfile
 
 from companion_host_smoke import (HELPER_NAME, RUNTIME_NAME, binary_evidence, helper_evidence,
-                                  stage_package_file, verify_manifest_files)
+                                  stage_package_file, verify_manifest_files, copy_archive,
+                                  validate_evidence, verify_archive_bindings, sha256,
+                                  PACKAGE, PACKAGE_NAME, ENTRY_NAME, EVIDENCE_VERSION)
 
 
 class HelperEvidenceTests(unittest.TestCase):
@@ -89,6 +92,89 @@ class BundleTests(unittest.TestCase):
     def test_unapproved_filename(self):
         with self.assertRaises(ValueError):
             stage_package_file(self.source, self.package, "../unexpected", "0" * 64)
+
+
+class ExactPackageTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.package = self.root / PACKAGE_NAME
+        self.members = [{"path": RUNTIME_NAME, "sha256": "1" * 64},
+                        {"path": HELPER_NAME, "sha256": "2" * 64}]
+        self.manifest = {"id": PACKAGE, "native": {"library": ENTRY_NAME,
+                         "sha256": "3" * 64, "files": self.members}}
+        self.evidence = {
+            "schema_version": EVIDENCE_VERSION, "package": PACKAGE,
+            "source_revision": "a" * 40, "source_dirty": False,
+            "real_host_accepted": False, "bundled_runtime": True,
+            "zig_version": "test-version", "sdk_pin_sha256": "4" * 64,
+            "host_sha256": "5" * 64, "author_sha256": "6" * 64,
+            "sdk_catalog_sha256": "7" * 64, "dll_sha256": "3" * 64,
+            "runtime": {"sha256": "1" * 64},
+            "helper": {"sha256": "2" * 64, "backend": "wic"},
+            "package_members": self.members,
+        }
+        self.write_fixture()
+
+    def write_fixture(self, extra=False):
+        # Synthetic metadata fixture, not an official/native package.
+        raw = json.dumps(self.manifest).encode()
+        with zipfile.ZipFile(self.package, "w") as archive:
+            archive.writestr("manifest.json", raw)
+            archive.writestr("package.json", "{}")
+            for name in (ENTRY_NAME, RUNTIME_NAME, HELPER_NAME):
+                archive.writestr(name, b"fixture")
+            if extra:
+                archive.writestr("unlisted.txt", b"unexpected")
+        self.evidence["manifest_sha256"] = hashlib.sha256(raw).hexdigest()
+        self.evidence["package_sha256"] = sha256(self.package)
+
+    def validate(self):
+        validate_evidence(self.evidence, self.evidence["package_sha256"],
+                          "5" * 64, "6" * 64, "7" * 64)
+
+    def test_exact_copy_and_manifest_binding(self):
+        self.validate()
+        target = self.root / "copy.pulse-ext"
+        copy_archive(self.package, target, self.evidence["package_sha256"])
+        verify_archive_bindings(target, self.evidence)
+        self.assertEqual(sha256(target), sha256(self.package))
+        with self.assertRaises(FileExistsError):
+            copy_archive(self.package, target, self.evidence["package_sha256"])
+
+    def test_tamper_rejected(self):
+        self.package.write_bytes(b"tampered")
+        with self.assertRaises(RuntimeError):
+            copy_archive(self.package, self.root / "copy.pulse-ext", self.evidence["package_sha256"])
+        with self.assertRaises(RuntimeError):
+            verify_archive_bindings(self.package, self.evidence)
+
+    def test_foreign_id_or_extra_file_rejected(self):
+        self.manifest["id"] = "strangelion.companion"
+        self.write_fixture()
+        with self.assertRaises(RuntimeError):
+            verify_archive_bindings(self.package, self.evidence)
+        self.manifest["id"] = PACKAGE
+        self.write_fixture(extra=True)
+        with self.assertRaises(RuntimeError):
+            verify_archive_bindings(self.package, self.evidence)
+
+    def test_evidence_dirty_wrong_host_or_wrong_member_rejected(self):
+        for key, value in (("source_dirty", True), ("host_sha256", "0" * 64),
+                           ("author_sha256", "0" * 64), ("schema_version", 1),
+                           ("package_members", [{"path": "../evil.dll", "sha256": "1" * 64}])):
+            with self.subTest(key=key):
+                old = self.evidence[key]
+                self.evidence[key] = value
+                with self.assertRaises(RuntimeError):
+                    self.validate()
+                self.evidence[key] = old
+
+    def test_manifest_digest_mismatch_rejected(self):
+        self.evidence["manifest_sha256"] = "0" * 64
+        with self.assertRaises(RuntimeError):
+            verify_archive_bindings(self.package, self.evidence)
 
 
 if __name__ == "__main__":
