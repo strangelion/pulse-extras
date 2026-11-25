@@ -1005,3 +1005,12 @@ and rereads the inventory high-water mark and both fingerprints. This
 iteration does not yet expose host directory selection or import UI; it
 also does not support cancellation inside the bounded synchronous helper
 call (each call has the existing 60-second limit).
+
+## Import integration build correction
+
+The expanded MSVC integration probe links pulse_process, so its group
+adapter must use the same named process_trust module as Runner. The group
+fixture and companion library dependency graph now share that module;
+standalone legacy companion_host remains an independent test root. CI #198
+failed at compile time before the local import transaction could execute.
+The test is retained and must pass before exposing a write-capable UI.

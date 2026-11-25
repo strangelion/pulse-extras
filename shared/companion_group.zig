@@ -5,7 +5,7 @@ const model = @import("companion/pet_manager.zig");
 const catalog = @import("companion/pet_catalog.zig");
 const inventory = @import("companion/pet_inventory.zig");
 const fingerprint = @import("companion/pet_fingerprint.zig");
-const trust = @import("process/trust.zig");
+const trust = @import("process_trust");
 const Handle = ?*anyopaque;
 const Owner = extern struct {
     job: Handle,
