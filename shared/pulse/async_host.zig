@@ -161,6 +161,114 @@ pub const Dispatch = struct {
     }
 };
 
+/// A bounded, coalescing wake hint, not a terminal notification. The producer
+/// may be a worker or the owner; only the owner may reap, stop and cancel.
+/// The callback may execute before post returns. Never wait for it or assume
+/// STATE from cancel is evidence of callback drain. Keep this object and user
+/// stable until all producers have stopped and checkDrained succeeds.
+pub const Wake = struct {
+    pub const Callback = *const fn (*anyopaque) void;
+    pub const State = enum(u8) { idle, posting, queued, early, delivered, failed, poisoned };
+
+    dispatch: Dispatch,
+    callback: Callback,
+    user: *anyopaque,
+    state: std.atomic.Value(State) = std.atomic.Value(State).init(.idle),
+    enabled: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+    last_status: std.atomic.Value(abi.Status) = std.atomic.Value(abi.Status).init(abi.ok),
+    token: u64 = 0,
+    delivering: bool = false,
+
+    pub fn init(dispatch: Dispatch, callback: Callback, user: *anyopaque) host_mod.Error!Wake {
+        if (dispatch.table.size < @sizeOf(raw.PulseDispatchV1) or dispatch.table.version < raw.PULSE_DISPATCH_VERSION) return error.Abi;
+        if (dispatch.table.post == null or dispatch.table.cancel == null) return error.Unavailable;
+        return .{ .dispatch = dispatch, .callback = callback, .user = user };
+    }
+
+    /// Any thread. At most one outstanding post, with no spin or retry.
+    /// A failed post is latched; explicit owner events remain usable.
+    pub fn request(self: *Wake) void {
+        if (!self.enabled.load(.acquire)) return;
+        if (self.state.cmpxchgStrong(.idle, .posting, .acq_rel, .acquire) != null) return;
+        if (!self.enabled.load(.acquire)) {
+            self.state.store(.idle, .release);
+            return;
+        }
+        var token: u64 = 0;
+        const status = self.dispatch.table.post.?(self.dispatch.table.context, &receive, self, &token);
+        if (status != abi.ok) {
+            self.last_status.store(status, .release);
+            self.state.store(.failed, .release);
+            return;
+        }
+        if (token == 0) {
+            self.last_status.store(abi.error_state, .release);
+            self.state.store(.poisoned, .release);
+            return;
+        }
+        self.token = token;
+        // If the callback already ran, it could not depend on the token.
+        if (self.state.cmpxchgStrong(.posting, .queued, .acq_rel, .acquire)) |previous| {
+            if (previous == .early) self.state.store(.delivered, .release);
+        }
+    }
+
+    fn receive(user: ?*anyopaque) callconv(.c) void {
+        const self: *Wake = @ptrCast(@alignCast(user orelse return));
+        if (self.state.cmpxchgStrong(.posting, .early, .acq_rel, .acquire)) |previous| {
+            if (previous != .queued) return;
+            self.state.store(.delivered, .release);
+        }
+        self.delivering = true;
+        defer self.delivering = false;
+        if (self.enabled.load(.acquire)) self.callback(self.user);
+    }
+
+    /// Owner only. A delivery that preceded post return is not reusable yet.
+    /// Never touch token unless the state was acquired as queued.
+    pub fn reap(self: *Wake) void {
+        switch (self.state.load(.acquire)) {
+            .delivered => _ = self.state.cmpxchgStrong(.delivered, .idle, .acq_rel, .acquire),
+            .failed => _ = self.state.cmpxchgStrong(.failed, .idle, .acq_rel, .acquire),
+            else => {},
+        }
+    }
+
+    pub fn lastFailure(self: *const Wake) ?host_mod.Error {
+        host_mod.mapStatus(self.last_status.load(.acquire)) catch |err| return err;
+        return null;
+    }
+
+    pub fn disable(self: *Wake) void {
+        self.enabled.store(false, .release);
+    }
+
+    /// Owner only, after producers have drained. A pending callback is
+    /// cancelled only by a known token. On failure retain the slot.
+    pub fn drain(self: *Wake) host_mod.Error!void {
+        if (self.enabled.load(.acquire) or self.delivering) return error.State;
+        self.reap();
+        switch (self.state.load(.acquire)) {
+            .idle => {},
+            .queued => {
+                try self.dispatch.cancel(self.token);
+                self.state.store(.idle, .release);
+            },
+            else => return error.State,
+        }
+    }
+
+    pub fn checkDrained(self: *const Wake) error{Busy}!void {
+        if (self.delivering) return error.Busy;
+        switch (self.state.load(.acquire)) {
+            .idle, .delivered, .failed => {},
+            else => return error.Busy,
+        }
+    }
+};
+
+pub const DispatchCallback = raw.PulseDispatchCallback;
+
 const Mock = struct {
     state: TaskState = .running,
     cancel_calls: usize = 0,
@@ -283,4 +391,111 @@ test "dispatch permits callback before post returns and does not swallow STATE" 
     const token = try dispatch.post(&Mock.mark, &called);
     try std.testing.expect(called);
     try std.testing.expectError(error.State, dispatch.cancel(token));
+}
+
+const WakeMock = struct {
+    callback: DispatchCallback = null,
+    user: ?*anyopaque = null,
+    inline_delivery: bool = false,
+    reject: bool = false,
+    zero_token: bool = false,
+    fail_cancel: bool = false,
+    posts: usize = 0,
+    deliveries: usize = 0,
+
+    fn post(user: ?*anyopaque, callback: DispatchCallback, data: ?*anyopaque, out: [*c]u64) callconv(.c) abi.Status {
+        const self: *WakeMock = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        self.posts += 1;
+        if (self.reject) return abi.error_state;
+        self.callback = callback;
+        self.user = data;
+        if (self.inline_delivery) self.deliver();
+        out.* = if (self.zero_token) 0 else @intCast(self.posts);
+        return abi.ok;
+    }
+
+    fn cancel(user: ?*anyopaque, _: u64) callconv(.c) abi.Status {
+        const self: *WakeMock = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        if (self.fail_cancel or self.callback == null) return abi.error_state;
+        self.callback = null;
+        self.user = null;
+        return abi.ok;
+    }
+
+    fn dispatch(self: *WakeMock) Dispatch {
+        return .{ .table = .{
+            .size = @sizeOf(raw.PulseDispatchV1),
+            .version = raw.PULSE_DISPATCH_VERSION,
+            .context = self,
+            .post = &post,
+            .cancel = &cancel,
+        } };
+    }
+
+    fn deliver(self: *WakeMock) void {
+        const callback = self.callback orelse return;
+        const data = self.user;
+        self.callback = null;
+        self.user = null;
+        callback(data);
+    }
+
+    fn mark(user: *anyopaque) void {
+        const self: *WakeMock = @ptrCast(@alignCast(user));
+        self.deliveries += 1;
+    }
+};
+
+test "wake coalesces and tolerates callback before post returns" {
+    var mock: WakeMock = .{ .inline_delivery = true };
+    var wake = try Wake.init(mock.dispatch(), &WakeMock.mark, &mock);
+    wake.request();
+    wake.request();
+    try std.testing.expectEqual(@as(usize, 1), mock.posts);
+    try std.testing.expectEqual(@as(usize, 1), mock.deliveries);
+    wake.reap();
+    mock.inline_delivery = false;
+    wake.request();
+    wake.request();
+    try std.testing.expectEqual(@as(usize, 2), mock.posts);
+    try std.testing.expectError(error.Busy, wake.checkDrained());
+    mock.deliver();
+    try std.testing.expectEqual(@as(usize, 2), mock.deliveries);
+    wake.disable();
+    try wake.drain();
+    try wake.checkDrained();
+}
+
+test "wake retains failed cancel and suppresses late callback during stop" {
+    var mock: WakeMock = .{ .fail_cancel = true };
+    var wake = try Wake.init(mock.dispatch(), &WakeMock.mark, &mock);
+    wake.request();
+    wake.disable();
+    try std.testing.expectError(error.State, wake.drain());
+    try std.testing.expectError(error.Busy, wake.checkDrained());
+    wake.request();
+    try std.testing.expectEqual(@as(usize, 1), mock.posts);
+    mock.deliver();
+    try std.testing.expectEqual(@as(usize, 0), mock.deliveries);
+    try wake.drain();
+    try wake.checkDrained();
+}
+
+test "wake reports queue rejection without looping and poisons invalid successful token" {
+    var mock: WakeMock = .{ .reject = true };
+    var wake = try Wake.init(mock.dispatch(), &WakeMock.mark, &mock);
+    wake.request();
+    wake.request();
+    try std.testing.expectEqual(@as(usize, 1), mock.posts);
+    try std.testing.expectEqual(error.State, wake.lastFailure().?);
+    wake.reap();
+    mock.reject = false;
+    mock.zero_token = true;
+    wake.request();
+    try std.testing.expectEqual(@as(usize, 2), mock.posts);
+    wake.disable();
+    try std.testing.expectError(error.State, wake.drain());
+    try std.testing.expectError(error.Busy, wake.checkDrained());
+    mock.deliver();
+    try std.testing.expectEqual(@as(usize, 0), mock.deliveries);
 }

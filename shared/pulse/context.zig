@@ -246,6 +246,9 @@ pub fn Navigation(comptime capacity: usize) type {
         latest: ?Ticket = null,
         pending: bool = false,
         generation: u64 = 0,
+        notify: ?*const fn (*anyopaque) void = null,
+        notify_user: ?*anyopaque = null,
+        notifying: bool = false,
 
         pub fn open(self: *Self, table: Table) Error!void {
             if (self.table != null or self.poisoned) return error.State;
@@ -298,6 +301,14 @@ pub fn Navigation(comptime capacity: usize) type {
             ticket.len = source.len;
             self.latest = ticket;
             self.pending = true;
+            // Only a nonblocking wake hint; never resolve from this callback.
+            if (self.notify) |notify_fn| {
+                if (self.notify_user) |data| {
+                    self.notifying = true;
+                    defer self.notifying = false;
+                    notify_fn(data);
+                }
+            }
         }
 
         /// Consume at most one latest directory; older events are replaced.
@@ -328,7 +339,7 @@ pub fn Navigation(comptime capacity: usize) type {
         }
 
         pub fn checkDrained(self: *const Self) error{Busy}!void {
-            if (self.table != null or self.poisoned) return error.Busy;
+            if (self.table != null or self.poisoned or self.notifying) return error.Busy;
         }
     };
 }

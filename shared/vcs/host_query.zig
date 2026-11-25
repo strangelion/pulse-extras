@@ -5,7 +5,8 @@
 //! Caller must establish repository/tool trust before start. Cancellation
 //! discards results; the provider is still bounded by its own command
 //! deadlines. Do not interpret a cancel request as a completed process join.
-//! No automatic polling, dispatch or DLL unload is implied by this bridge.
+//! Optional dispatch hints may advance an owner pump; they do not prove terminal
+//! task state. No automatic polling or DLL unload is implied by this bridge.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -28,6 +29,8 @@ pub const Query = struct {
     published: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     discard: bool = false,
     stopped: bool = false,
+    wake: ?*async_host.Wake = null,
+    admitting: bool = false,
 
     pub fn init(table: async_host.TaskTable) host_mod.Error!Query {
         return .{ .task = try async_host.Task.init(table) };
@@ -50,11 +53,14 @@ pub const Query = struct {
             .work = &work,
             .user = self,
         };
+        self.admitting = true;
+        defer self.admitting = false;
         try self.task.start(&descriptor);
     }
 
     fn work(user: ?*anyopaque, context: [*c]const async_host.Context) callconv(.c) u32 {
         const self: *Query = @ptrCast(@alignCast(user orelse return @backingInt(async_host.TaskState.failed)));
+        defer if (self.wake) |wake| wake.request();
         if (context == null) return @backingInt(async_host.TaskState.failed);
         const cancelled = context.*.cancelled orelse return @backingInt(async_host.TaskState.failed);
         if (cancelled(context.*.context) != 0) return @backingInt(async_host.TaskState.cancelled);
@@ -185,6 +191,8 @@ pub const Resolution = struct {
     published: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     discard: bool = false,
     stopped: bool = false,
+    wake: ?*async_host.Wake = null,
+    admitting: bool = false,
 
     pub fn init(table: async_host.TaskTable) host_mod.Error!Resolution {
         return .{ .task = try async_host.Task.init(table) };
@@ -206,11 +214,14 @@ pub const Resolution = struct {
             .work = &work,
             .user = self,
         };
+        self.admitting = true;
+        defer self.admitting = false;
         try self.task.start(&descriptor);
     }
 
     fn work(user: ?*anyopaque, ctx: [*c]const async_host.Context) callconv(.c) u32 {
         const self: *Resolution = @ptrCast(@alignCast(user orelse return @backingInt(async_host.TaskState.failed)));
+        defer if (self.wake) |wake| wake.request();
         if (ctx == null) return @backingInt(async_host.TaskState.failed);
         const cancelled = ctx.*.cancelled orelse return @backingInt(async_host.TaskState.failed);
         if (cancelled(ctx.*.context) != 0) return @backingInt(async_host.TaskState.cancelled);
@@ -403,6 +414,8 @@ pub const Binding = struct {
     controller: Controller,
     resolution: Resolution,
     resolver: ?Resolver = null,
+    wake: ?async_host.Wake = null,
+    pumping: bool = false,
     navigation: Navigation = .{},
     navigation_generation: ?u64 = null,
     model: ?ui.Panel = null,
@@ -452,6 +465,46 @@ pub const Binding = struct {
             };
         }
         self.accepting = true;
+    }
+
+    /// Configure once at the final stable address, before panel/navigation
+    /// registration or any task. Workers may only request a wake; all state
+    /// transitions and SDK task/model calls still belong to the owner.
+    pub fn configureDispatch(self: *Binding, dispatch: async_host.Dispatch) host_mod.Error!void {
+        if (self.wake != null or self.model != null or self.controller.stopped or self.navigation.table != null or self.controller.query.task.occupied() or self.resolution.task.occupied()) return error.State;
+        self.wake = try async_host.Wake.init(dispatch, &onWake, self);
+        if (self.wake) |*wake| {
+            self.controller.query.wake = wake;
+            self.resolution.wake = wake;
+            self.navigation.notify = &onNavigation;
+            self.navigation.notify_user = wake;
+        }
+    }
+
+    fn onNavigation(user: *anyopaque) void {
+        const wake: *async_host.Wake = @ptrCast(@alignCast(user));
+        wake.request();
+    }
+
+    fn onWake(user: *anyopaque) void {
+        const self: *Binding = @ptrCast(@alignCast(user));
+        // Inline delivery during admission or borrowed context callback may
+        // precede the task ID or invalidate the host's callback contract.
+        if (!self.accepting or self.pumping or self.navigation.notifying or self.controller.query.admitting or self.resolution.admitting) return;
+        self.pump() catch |err| {
+            self.last_error = err;
+        };
+    }
+
+    /// A latched dispatch failure is independent of provider/query outcome.
+    pub fn notificationFailure(self: *const Binding) ?host_mod.Error {
+        if (self.wake) |*wake| return wake.lastFailure();
+        return null;
+    }
+
+    fn drainWake(self: *Binding) host_mod.Error!void {
+        if (self.controller.query.task.occupied() or self.resolution.task.occupied() or self.navigation.table != null) return;
+        if (self.wake) |*wake| try wake.drain();
     }
 
     /// Opt in before subscribing. The resolver and all policy/provider
@@ -677,6 +730,10 @@ pub const Binding = struct {
     /// An explicit owner event can advance a task and repaint. No wait or
     /// recursive dispatch. After closing, the owner may still pump to drain.
     pub fn pump(self: *Binding) host_mod.Error!void {
+        if (self.pumping) return error.State;
+        self.pumping = true;
+        defer self.pumping = false;
+        if (self.wake) |*wake| wake.reap();
         self.invalidateNavigation() catch |err| {
             self.last_error = err;
             if (self.accepting) self.render() catch {};
@@ -692,7 +749,11 @@ pub const Binding = struct {
             return err;
         };
         self.last_error = null;
-        if (self.accepting) try self.render();
+        if (self.accepting) {
+            try self.render();
+        } else if (self.controller.stopped) {
+            try self.drainWake();
+        }
     }
 
     pub fn render(self: *Binding) host_mod.Error!void {
@@ -738,6 +799,7 @@ pub const Binding = struct {
     /// userdata alive until checkDrained or the documented host destroy gate.
     pub fn requestStop(self: *Binding) host_mod.Error!void {
         self.accepting = false;
+        if (self.wake) |*wake| wake.disable();
         var failure: ?host_mod.Error = null;
         self.navigation.close() catch |err| {
             failure = err;
@@ -751,6 +813,9 @@ pub const Binding = struct {
         self.closeModel() catch |err| {
             failure = err;
         };
+        self.drainWake() catch |err| {
+            failure = err;
+        };
         self.last_error = failure;
         if (failure) |err| return err;
     }
@@ -760,6 +825,7 @@ pub const Binding = struct {
         try self.navigation.checkDrained();
         try self.resolution.checkDrained();
         try self.controller.checkDrained();
+        if (self.wake) |*wake| try wake.checkDrained();
     }
 };
 
@@ -1396,6 +1462,125 @@ test "explicit refresh re-enters repository authorization instead of reusing the
     try std.testing.expectEqual(panel.Phase.ready, binding.controller.view().phase);
     try std.testing.expectEqual(@as(usize, 3), resolver.calls);
     try std.testing.expectEqual(@as(usize, 2), mock.calls);
+    try binding.requestStop();
+    try binding.checkDrained();
+}
+
+const MockDispatch = struct {
+    callback: async_host.DispatchCallback = null,
+    data: ?*anyopaque = null,
+    reject: bool = false,
+    fail_cancel: bool = false,
+    inline_delivery: bool = false,
+    posts: usize = 0,
+
+    fn post(user: ?*anyopaque, callback: async_host.DispatchCallback, data: ?*anyopaque, out: [*c]u64) callconv(.c) abi.Status {
+        const self: *MockDispatch = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        self.posts += 1;
+        if (self.reject or self.callback != null) return abi.error_state;
+        self.callback = callback;
+        self.data = data;
+        if (self.inline_delivery) self.deliver();
+        out.* = @intCast(self.posts);
+        return abi.ok;
+    }
+
+    fn cancel(user: ?*anyopaque, _: u64) callconv(.c) abi.Status {
+        const self: *MockDispatch = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        if (self.fail_cancel or self.callback == null) return abi.error_state;
+        self.callback = null;
+        self.data = null;
+        return abi.ok;
+    }
+
+    fn dispatch(self: *MockDispatch) async_host.Dispatch {
+        return .{ .table = .{
+            .size = @sizeOf(@FieldType(async_host.Dispatch, "table")),
+            .version = 1,
+            .context = self,
+            .post = &post,
+            .cancel = &cancel,
+        } };
+    }
+
+    fn deliver(self: *MockDispatch) void {
+        const callback = self.callback orelse return;
+        const data = self.data;
+        self.callback = null;
+        self.data = null;
+        callback(data);
+    }
+};
+
+test "dispatch hints advance navigation and terminal query without a polling loop" {
+    var mock: Mock = .{};
+    var resolver: MockResolver = .{ .host_task = &mock };
+    var host_ui: MockUi = .{};
+    var host_context: MockNavigation = .{};
+    var dispatch: MockDispatch = .{};
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.configureResolver(resolver.resolver());
+    try binding.configureDispatch(dispatch.dispatch());
+    try binding.openWithTable(host_ui.table());
+    try binding.openNavigationWithTable(host_context.table());
+    try std.testing.expect(!binding.resolution.task.occupied());
+    dispatch.deliver();
+    try std.testing.expect(binding.resolution.task.occupied());
+    mock.runWork();
+    // Host has published terminal state before this delivery.
+    dispatch.deliver();
+    try std.testing.expect(binding.controller.query.task.occupied());
+    mock.runWork();
+    dispatch.deliver();
+    try std.testing.expectEqual(panel.Phase.ready, binding.controller.view().phase);
+    try std.testing.expectEqual(@as(usize, 3), dispatch.posts);
+    try std.testing.expect(dispatch.callback == null);
+    try binding.requestStop();
+    try binding.checkDrained();
+}
+
+test "early dispatch does not publish or recursively poll before host terminal state" {
+    var mock: Mock = .{};
+    var host_ui: MockUi = .{};
+    var dispatch: MockDispatch = .{ .inline_delivery = true };
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.configureDispatch(dispatch.dispatch());
+    try binding.openWithTable(host_ui.table());
+    const workspace = try identity.Workspace.init(.git, "repo", "repo");
+    try binding.select(mock.provider(), &workspace);
+    // runWork assigns terminal state only after the worker function returns.
+    mock.runWork();
+    try std.testing.expectEqual(panel.Phase.refreshing, binding.controller.view().phase);
+    try std.testing.expectEqual(@as(usize, 1), dispatch.posts);
+    try std.testing.expect(binding.controller.view().snapshot == null);
+    try binding.pump();
+    try std.testing.expectEqual(panel.Phase.ready, binding.controller.view().phase);
+    try binding.requestStop();
+    try binding.checkDrained();
+}
+
+test "dispatch rejection preserves manual result delivery and failed cancel retains binding" {
+    var mock: Mock = .{};
+    var host_ui: MockUi = .{};
+    var dispatch: MockDispatch = .{ .reject = true };
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.configureDispatch(dispatch.dispatch());
+    try binding.openWithTable(host_ui.table());
+    const workspace = try identity.Workspace.init(.git, "repo", "repo");
+    try binding.select(mock.provider(), &workspace);
+    mock.runWork();
+    try std.testing.expectEqual(error.State, binding.notificationFailure().?);
+    try binding.pump();
+    try std.testing.expectEqual(panel.Phase.ready, binding.controller.view().phase);
+    dispatch.reject = false;
+    host_ui.click(7, panel.command_refresh);
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expectEqual(panel.Phase.ready, binding.controller.view().phase);
+    dispatch.fail_cancel = true;
+    try std.testing.expectError(error.State, binding.requestStop());
+    try std.testing.expectError(error.Busy, binding.checkDrained());
+    dispatch.deliver();
     try binding.requestStop();
     try binding.checkDrained();
 }
