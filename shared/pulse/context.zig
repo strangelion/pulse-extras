@@ -234,7 +234,7 @@ pub fn Navigation(comptime capacity: usize) type {
             len: usize = 0,
 
             pub fn directory(self: *const Ticket) ?[]const u8 {
-                if (self.len == 0) return null;
+                if (self.len == 0 or self.len > capacity) return null;
                 return self.bytes[0..self.len];
             }
         };
@@ -311,7 +311,7 @@ pub fn Navigation(comptime capacity: usize) type {
         /// Recheck on the owner thread before applying a resolution result.
         /// A ticket is not an authorization or proof of repository identity.
         pub fn isCurrent(self: *const Self, ticket: *const Ticket) bool {
-            if (!self.accepting) return false;
+            if (!self.accepting or ticket.len > capacity) return false;
             const latest = if (self.latest) |*value| value else return false;
             return latest.generation == ticket.generation and std.mem.eql(u8, latest.bytes[0..latest.len], ticket.bytes[0..ticket.len]);
         }
@@ -428,6 +428,12 @@ test "navigation failed unsubscribe keeps userdata alive and disables admission"
     try nav.close();
     try nav.checkDrained();
     try testing.expect(mock.callback == null);
+    try nav.open(mock.table());
+    const reopened = nav.take().?;
+    try testing.expect(!nav.isCurrent(&initial));
+    try testing.expect(nav.isCurrent(&reopened));
+    try nav.close();
+    try nav.checkDrained();
 }
 
 test "navigation successful zero subscription id never certifies drain" {
