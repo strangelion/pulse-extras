@@ -433,3 +433,22 @@ actual output bounds and CRC; keep archive pinned. Portable file-backed
 and malformed metadata tests added. Real upstream ZIP fixture verification
 still pending. Previous af52c35 actual helper/durable import CI step passed
 Windows; remaining checks in progress at time of this change.
+
+## Bounded ZIP payload extraction
+
+pet_zip.zig now exposes extractFile for an already approved private scratch
+root and pinned archive file. Reinspect archive before exclusive creation of
+unpacked; extract only normalized admitted paths, using a positional range
+reader per entry and Zig standard raw Deflate with a fixed history window.
+Stored and deflated payloads are streamed through 16 KiB chunks; exact
+uncompressed length, CRC32 and compressed-range exhaustion are required.
+No extra output byte is written, even if size metadata is false. Empty
+compressed directory records are validated too. Existing staging is never
+reused, and failed staging remains unpublished for explicit cleanup. No
+recursive deletion, no user source mutation, no full archive allocation.
+This is a low-level staging API: caller must provide private ACL/root,
+archive pin, worker lifecycle and subsequent validated import; no live
+market download, crash recovery or full end-to-end ZIP import yet.
+Added real file-backed extraction and raw Deflate/CRC/size/suffix tests.
+Previous af52c35 full regression and stress passed; 419a106 Ubuntu passed
+and Windows still running when this change started. Latest CI pending.
