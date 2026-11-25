@@ -108,6 +108,26 @@ int main(void) {
     CHECK(RegQueryValueExW(key, PET_PREFERENCES_VALUE, NULL, &type, unchanged, &bytes) == ERROR_SUCCESS);
     CHECK(bytes == sizeof(bad) && memcmp(unchanged, bad, sizeof(bad)) == 0);
     CHECK(pet_config_load(key, &actual) == PET_CONFIG_INVALID); /* legacy value untouched */
+    /* Gaze is independent of the two intentionally corrupt prior values. */
+    int gaze = 1;
+    CHECK(pet_gaze_config_load(key, &gaze) == PET_CONFIG_MISSING && gaze == 1);
+    CHECK(pet_gaze_config_save(key, 0) == PET_CONFIG_OK);
+    CHECK(pet_gaze_config_load(key, &gaze) == PET_CONFIG_OK && gaze == 0);
+    CHECK(pet_gaze_config_save(key, 1) == PET_CONFIG_OK);
+    CHECK(pet_gaze_config_load(key, &gaze) == PET_CONFIG_OK && gaze == 1);
+    CHECK(pet_gaze_config_save(key, 2) == PET_CONFIG_INVALID);
+    DWORD bad_gaze[] = {0x455a4750u, 2, 0};
+    CHECK(RegSetValueExW(key, PET_GAZE_VALUE, 0, REG_BINARY,
+        (const BYTE *)bad_gaze, sizeof(bad_gaze)) == ERROR_SUCCESS);
+    CHECK(pet_gaze_config_load(key, &gaze) == PET_CONFIG_INVALID && gaze == 1);
+    CHECK(pet_gaze_config_save(key, 0) == PET_CONFIG_INVALID);
+    DWORD check_gaze[3] = {0};
+    bytes = sizeof(check_gaze);
+    CHECK(RegQueryValueExW(key, PET_GAZE_VALUE, NULL, &type,
+        (BYTE *)check_gaze, &bytes) == ERROR_SUCCESS);
+    CHECK(bytes == sizeof(bad_gaze) && !memcmp(check_gaze, bad_gaze, bytes));
+    CHECK(pet_config_load(key, &actual) == PET_CONFIG_INVALID);
+    CHECK(pet_preferences_load(key, "cat", &restored) == PET_CONFIG_INVALID);
     rc = 0;
 cleanup:
     if (key) RegCloseKey(key);

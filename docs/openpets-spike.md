@@ -326,10 +326,10 @@ changed; the sample pixels are not distributable pet artwork.
 Build on Windows from repository root with the pinned Zig:
 
 ```powershell
-zig build-exe -target x86_64-windows-gnu -O ReleaseSafe shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 --dep runtime_allocator --dep runtime_budget --dep runtime_event_log --dep runtime_group --dep runtime_latest_task '-Mroot=shared/companion/pet_demo.zig' -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_budget '-Mruntime_allocator=shared/runtime/allocator.zig' -target x86_64-windows-gnu -O ReleaseSafe '-Mruntime_budget=shared/runtime/budget.zig' -target x86_64-windows-gnu -O ReleaseSafe '-Mruntime_event_log=shared/runtime/event_log.zig' -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_allocator '-Mruntime_group=shared/runtime/group.zig' -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_group '-Mruntime_latest_task=shared/runtime/latest_task.zig' '-femit-bin=pulse-pet-demo.exe'
-.\pulse-pet-demo.exe
-.\pulse-pet-demo.exe --reduced-motion
-.\pulse-pet-demo.exe --webp-v2 C:\path\to\spritesheet.webp
+zig build pet-demo -Doptimize=ReleaseSafe --summary all
+.\zig-out\bin\pulse-pet-demo.exe
+.\zig-out\bin\pulse-pet-demo.exe --reduced-motion
+.\zig-out\bin\pulse-pet-demo.exe --webp-v2 C:\path\to\spritesheet.webp
 ```
 
 The default demo generates original geometric placeholder pixels, shows
@@ -1093,3 +1093,34 @@ no persistent gaze flag yet. Tests cover anchors, all sector centers,
 dead zone, motion timeout, eligibility and suspension; package smoke
 validates admitted and invalid anchors without WIC. Real artwork
 visual/CPU acceptance still required.
+
+## Unified companion build and persistent gaze preference
+
+Build from the repository root with the pinned Zig, using the same
+entry point as Windows CI:
+
+```powershell
+zig build pet-demo -Doptimize=ReleaseSafe --summary all
+.\zig-out\bin\pulse-pet-demo.exe --smoke
+```
+
+The explicit pet-demo step reuses the existing Modules graph, native
+Windows GNU target and system libraries. It installs only the experimental
+executable under zig-out/bin and does not add a product to the default
+DLL install. All Windows smoke/host fixtures use this output. The old
+standalone positional zig build-exe command omits named runtime modules
+and fails with "no module named runtime_group"; do not use it. Close any
+previous demo before rebuilding and run the installed path, not a stale
+root executable.
+
+The global GazeV1 preference is a separate 12-byte versioned REG_BINARY
+record with exact boolean payload. It defaults enabled; --gaze and
+--no-gaze explicitly override a saved value. Only --remember reads/writes,
+only real supported V2 artwork can change this preference, and writes
+require a normal visible exit and explicit CLI or menu edit. Reduced
+motion suppresses tracking without changing the preference. Invalid
+or unknown values are preserved independently of SettingsV1 and
+PetPreferencesV1. Tests cover missing, both boolean values, invalid
+input and unknown-version retention in a volatile registry key.
+The previous Gaze revision had Windows CI still running when work began;
+the new build step and preference changes require their own verification.

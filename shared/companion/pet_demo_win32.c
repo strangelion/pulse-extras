@@ -328,7 +328,7 @@ static uint32_t activity_random(uint32_t *state) {
 }
 
 static void usage(void) {
-    fputs("pulse-pet-demo [--reduced-motion] [--language system|zh-CN|zh-TW|en-US] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE] [--activity FILE FRAMES FPS] [--package DIR ID | --check-package DIR ID | --check-package-task DIR ID]\n"
+    fputs("pulse-pet-demo [--reduced-motion] [--gaze|--no-gaze] [--language system|zh-CN|zh-TW|en-US] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE] [--activity FILE FRAMES FPS] [--package DIR ID | --check-package DIR ID | --check-package-task DIR ID]\n"
         "Left click: interact. Left drag: move. Right click: menu. --smoke: hidden synthetic test.\n", stderr);
 }
 
@@ -391,7 +391,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     int rc = 1, argc = 0, reduced = 0, smoke = 0;
     unsigned reaction = PET_STATE_IDLE;
     unsigned version = 2, scale = 100;
-    int gaze_enabled = 1, gaze_supported = 0;
+    int gaze_enabled = 1, gaze_supported = 0, gaze_writable = 0, gaze_dirty = 0, gaze_set = 0;
     pet_gaze gaze = {.direction = PET_GAZE_NONE};
     double gaze_x = 0.5, gaze_y = 1.0;
     int topmost = 0, scale_set = 0, topmost_set = 0, reduced_set = 0;
@@ -434,7 +434,11 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     if (!argv || !sample || !validate || !sample_activity || !validate_activity || !parse_package || !schedule) goto cleanup;
     for (int i = 1; i < argc; ++i) {
         if (wcscmp(argv[i], L"--smoke") == 0 && !smoke) smoke = 1;
-        else if (!reduced_set && (wcscmp(argv[i], L"--reduced-motion") == 0 ||
+        else if (!gaze_set && (wcscmp(argv[i], L"--gaze") == 0 ||
+            wcscmp(argv[i], L"--no-gaze") == 0)) {
+            gaze_enabled = wcscmp(argv[i], L"--gaze") == 0;
+            gaze_set = 1;
+        } else if (!reduced_set && (wcscmp(argv[i], L"--reduced-motion") == 0 ||
             wcscmp(argv[i], L"--motion") == 0)) {
             reduced = wcscmp(argv[i], L"--reduced-motion") == 0;
             reduced_set = 1;
@@ -482,10 +486,10 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     }
     pet_demo_sample activity_check = {0};
     if ((package_dir && (path || activity_path || smoke || state_map)) ||
-        ((check_package || check_task) && (stop || remember || reset_position)) ||
+        ((check_package || check_task) && (stop || remember || reset_position || gaze_set)) ||
         (activity_path && (smoke || state_map ||
             sample_activity(activity_frames, activity_fps, 0, &activity_check) != 0)) ||
-        (smoke && (path || reduced_set || topmost_set || remember || reset_position)) ||
+        (smoke && (path || reduced_set || topmost_set || remember || reset_position || gaze_set)) ||
         (reset_position && !remember) || (!!state_map != !!state_event) ||
         (state_map && (!stop || state_map == stop || state_event == stop || state_map == state_event))) {
         usage();
@@ -541,12 +545,16 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             goto cleanup;
         }
     }
+    gaze_supported = version == 2 && (path || package_dir) && !smoke;
+    if (gaze_set && !gaze_supported) { usage(); goto cleanup; }
+    gaze_dirty = gaze_set;
     if (remember) {
         LSTATUS status = open_settings(memory->resource_bridge, &settings);
         if (status == ERROR_FILE_NOT_FOUND) {
             /* Defer creation until a clean, visible exit. */
             can_save = 1;
             prefs_writable = package_dir != NULL;
+            gaze_writable = gaze_supported;
         } else if (status == ERROR_SUCCESS) {
             pet_config_result result = pet_config_load(settings, &saved);
             can_save = result == PET_CONFIG_OK || result == PET_CONFIG_MISSING;
@@ -557,6 +565,16 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             }
         }
         if (!can_save) fputs("Saved companion settings unavailable or incompatible; using defaults without overwrite.\n", stderr);
+        if (gaze_supported && settings) {
+            int previous = 1;
+            pet_config_result result = pet_gaze_config_load(settings, &previous);
+            gaze_writable = result == PET_CONFIG_OK || result == PET_CONFIG_MISSING;
+            if (result == PET_CONFIG_OK && !gaze_set) gaze_enabled = previous;
+            if (!gaze_writable) {
+                pet_note(memory->resource_bridge, PET_NOTE_IO_FAILURE);
+                fputs("Saved gaze preference incompatible or unavailable; preserved.\n", stderr);
+            }
+        }
         if (package_dir && settings) {
             pet_config_result result = pet_preferences_load(settings, package.meta.pet_id, &restored_prefs);
             prefs_writable = result == PET_CONFIG_OK || result == PET_CONFIG_MISSING;
@@ -588,7 +606,6 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         fputs("Saved outfit decode failed; default appearance retained.\n", stderr);
     }
     if (!atlas) goto cleanup;
-    gaze_supported = version == 2 && (path || package_dir) && !smoke;
     idle.unavailable = unavailable_activities(&package, outfit);
     if (pet_surface_open_scaled(&surface, topmost, FALSE, scale) != PET_SURFACE_OK) goto cleanup;
     if (smoke) {
@@ -681,6 +698,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                         if (!state_slot) reaction = PET_STATE_IDLE;
                     } else if (command == MENU_GAZE && gaze_supported && !reduced) {
                         gaze_enabled = !gaze_enabled;
+                        gaze_dirty = 1;
                         pet_gaze_reset(&gaze);
                     } else if (command == MENU_OUTFIT_AUTO && package.meta.rule_count) {
                         auto_outfit = 1;
@@ -1002,12 +1020,18 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         goto cleanup;
     }
     rc = 0;
-    if (remember && shown && (can_save || (prefs_writable && prefs_dirty))) {
+    if (remember && shown && (can_save || (prefs_writable && prefs_dirty) ||
+        (gaze_writable && gaze_dirty))) {
         if (!settings) (void)create_settings(memory->resource_bridge, &settings);
         pet_config next = {x, y, scale, PET_CONFIG_POSITION |
             (topmost ? PET_CONFIG_TOPMOST : 0) | (reduced ? PET_CONFIG_REDUCED : 0)};
         if (can_save && (!settings || pet_config_save(settings, &next) != PET_CONFIG_OK))
             fputs("Companion settings not saved; existing incompatible data preserved.\n", stderr);
+        if (gaze_writable && gaze_dirty &&
+            (!settings || pet_gaze_config_save(settings, gaze_enabled) != PET_CONFIG_OK)) {
+            pet_note(memory->resource_bridge, PET_NOTE_IO_FAILURE);
+            fputs("Gaze preference not saved; existing incompatible data preserved.\n", stderr);
+        }
         if (package_dir && prefs_dirty && prefs_writable) {
             pet_preferences prefs;
             if (!settings || !pet_preferences_update(&package.meta, outfit, auto_outfit, idle.enabled,

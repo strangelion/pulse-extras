@@ -39,6 +39,29 @@ pet_config_result pet_config_save(HKEY key, const pet_config *config) {
 }
 
 
+pet_config_result pet_gaze_config_load(HKEY key, int *enabled) {
+    if (!key || !enabled) return PET_CONFIG_INVALID;
+    DWORD data[3] = {0}, bytes = sizeof(data), type = 0;
+    LSTATUS status = RegQueryValueExW(key, PET_GAZE_VALUE, NULL, &type, (BYTE *)data, &bytes);
+    if (status == ERROR_FILE_NOT_FOUND) return PET_CONFIG_MISSING;
+    if (status == ERROR_MORE_DATA) return PET_CONFIG_INVALID;
+    if (status != ERROR_SUCCESS) return PET_CONFIG_IO_ERROR;
+    if (type != REG_BINARY || bytes != sizeof(data) || data[0] != 0x455a4750u ||
+        data[1] != 1 || data[2] > 1) return PET_CONFIG_INVALID;
+    *enabled = (int)data[2];
+    return PET_CONFIG_OK;
+}
+
+pet_config_result pet_gaze_config_save(HKEY key, int enabled) {
+    if (!key || (enabled != 0 && enabled != 1)) return PET_CONFIG_INVALID;
+    int previous;
+    pet_config_result result = pet_gaze_config_load(key, &previous);
+    if (result != PET_CONFIG_OK && result != PET_CONFIG_MISSING) return result;
+    DWORD data[] = {0x455a4750u, 1, (DWORD)enabled};
+    return RegSetValueExW(key, PET_GAZE_VALUE, 0, REG_BINARY,
+        (const BYTE *)data, sizeof(data)) == ERROR_SUCCESS ? PET_CONFIG_OK : PET_CONFIG_IO_ERROR;
+}
+
 /* All fields byte arrays: fixed on-disk layout independent of alignment.
  * One value caps the number of retained pets; no automatic eviction. */
 typedef struct {

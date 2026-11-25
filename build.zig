@@ -346,6 +346,31 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(hello_panel);
 
+    // Standalone companion uses the existing GNU Windows native ABI.
+    // Explicit step: no demo in the default production DLL install.
+    const pet_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu });
+    var pet_modules = Modules.add(b, pet_target, optimize, vcs_test_config);
+    const pet_root = b.createModule(.{
+        .root_source_file = b.path("shared/companion/pet_demo.zig"),
+        .target = pet_target,
+        .optimize = optimize,
+        .imports = pet_modules.imports(),
+        .link_libc = true,
+    });
+    pet_root.addCSourceFiles(.{
+        .files = &.{
+            "shared/companion/pet_demo_win32.c",
+            "shared/companion/pet_decode_win32.c",
+            "shared/companion/pet_surface_win32.c",
+            "shared/companion/pet_config_win32.c",
+        },
+    });
+    for ([_][]const u8{ "user32", "gdi32", "shell32", "ole32", "windowscodecs", "uuid", "advapi32" }) |lib|
+        pet_root.linkSystemLibrary(lib, .{});
+    const pet = b.addExecutable(.{ .name = "pulse-pet-demo", .root_module = pet_root });
+    const pet_step = b.step("pet-demo", "Build and install the experimental standalone Windows companion");
+    pet_step.dependOn(&b.addInstallArtifact(pet, .{}).step);
+
     // Every module also runs its own tests on the host target, so the wrappers
     // are checked even when the probe does not use them yet.
     var host_modules = Modules.add(b, b.graph.host, .Debug, vcs_test_config);

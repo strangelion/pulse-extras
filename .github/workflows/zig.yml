@@ -144,15 +144,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          zig build-exe -target x86_64-windows-gnu -O ReleaseSafe shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 --dep runtime_allocator --dep runtime_budget --dep runtime_event_log --dep runtime_group --dep runtime_latest_task '-Mroot=shared/companion/pet_demo.zig' -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_budget '-Mruntime_allocator=shared/runtime/allocator.zig' -target x86_64-windows-gnu -O ReleaseSafe '-Mruntime_budget=shared/runtime/budget.zig' -target x86_64-windows-gnu -O ReleaseSafe '-Mruntime_event_log=shared/runtime/event_log.zig' -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_allocator '-Mruntime_group=shared/runtime/group.zig' -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_group '-Mruntime_latest_task=shared/runtime/latest_task.zig' '-femit-bin=zig-out/pulse-pet-demo.exe'
+          zig build pet-demo -Doptimize=ReleaseSafe --summary all
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./zig-out/pulse-pet-demo.exe --smoke
+          & ./zig-out/bin/pulse-pet-demo.exe --smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./zig-out/pulse-pet-demo.exe --smoke --scale 150
+          & ./zig-out/bin/pulse-pet-demo.exe --smoke --scale 150
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/companion/pet_stop_smoke.py zig-out/pulse-pet-demo.exe
+          python tests/companion/pet_stop_smoke.py zig-out/bin/pulse-pet-demo.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/companion/pet_package_smoke.py zig-out/pulse-pet-demo.exe
+          python tests/companion/pet_package_smoke.py zig-out/bin/pulse-pet-demo.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test contained companion process supervision
         if: runner.os == 'Windows'
@@ -160,7 +160,7 @@ jobs:
         run: |
           zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_supervisor_win32.c tests/companion/pet_supervisor_win32_test.c -lshell32 -o zig-out/pet-supervisor-test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $demo = (Resolve-Path ./zig-out/pulse-pet-demo.exe).Path
+          $demo = (Resolve-Path ./zig-out/bin/pulse-pet-demo.exe).Path
           & ./zig-out/pet-supervisor-test.exe $demo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exercise approved Zig companion host with actual child

@@ -4,6 +4,7 @@
 
 #define PET_CONFIG_KEY L"Software\\PulseExtras\\CompanionDemo"
 #define PET_CONFIG_VALUE L"SettingsV1"
+#define PET_GAZE_VALUE L"GazeV1"
 #define PET_CONFIG_TOPMOST 1u
 #define PET_CONFIG_REDUCED 2u
 #define PET_CONFIG_POSITION 4u
@@ -22,6 +23,11 @@ typedef enum {
  * invalid/unknown record. The supplied key remains caller-owned. */
 pet_config_result pet_config_load(HKEY key, pet_config *config);
 pet_config_result pet_config_save(HKEY key, const pet_config *config);
+
+/* Independent global idle-gaze preference; old records remain unchanged.
+ * Exact boolean wire value; invalid existing records are not overwritten. */
+pet_config_result pet_gaze_config_load(HKEY key, int *enabled);
+pet_config_result pet_gaze_config_save(HKEY key, int enabled);
 
 /* Independent, bounded ID-based preferences; legacy SettingsV1 unchanged.
  * No paths, names, timestamps, decoded assets or session failure history. */
