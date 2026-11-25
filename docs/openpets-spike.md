@@ -1153,3 +1153,48 @@ They do not exercise a real foreground modal menu. On the interactive
 desktop verify outside click, Escape, submenu use, 20s idle, Alt+Tab,
 repeated reopen, focus restoration and normal pet movement. No SVG or
 Motion support added in this bug-fix revision.
+
+## Scoped CI and multi-pet stress benchmark
+
+Classify docs, VCS-only, companion-only or full. Companion-only runs
+shared runtime/process and companion unit/native tests, skips JJ/SVN,
+unrelated production DLLs and SDK checks. VCS-only runs shared
+runtime/process and VCS tests plus production builds, skips companion.
+Mixed/shared/build/workflow/unknown changes remain full. The stable
+regression gate requires the selected checks.
+
+The independent stress workflow runs when its harness/workflow changes
+on the experimental branch, or via manual dispatch. Default: 100
+hidden synthetic V2 processes, 30 seconds of one-second sampling after
+every child has presented its first frame. Ordinary pet changes do
+not start 100 processes.
+
+```powershell
+zig build pet-demo -Doptimize=ReleaseSafe
+python tests/companion/pet_stress.py --count 100 --seconds 30 --output zig-out/stress-100
+python tests/companion/pet_stress.py --count 10 --seconds 30 --scale 50 --visible --webp 2 zig-out/test-assets/juhuali/spritesheet.webp --output zig-out/stress-visible
+# Repeat --webp VERSION FILE or --package DIR ID to rotate distinct pets.
+```
+
+Admission requires 32 MiB per synthetic or 64 MiB per real-artwork
+process plus 512 MiB available physical memory. Abort below 512 MiB.
+These are guardrails, not hard OS caps. Visible slots tile primary work
+area and wrap if too small; hidden mode does not exercise gaze or
+visible desktop compositing. No settings writes or asset downloads.
+Each child has a finite render-loop lifetime, inherits an explicit
+shared stop event, and is joined or individually terminated after a
+global 10s grace interval. Native startup decode is not hard-cancellable;
+parent death is not full Job Object containment.
+
+Artifacts: summary.json, samples.csv, processes.csv (per-source slot
+and PID). Working set, private bytes, peak working set, CPU seconds,
+interval core/machine percent, handles, threads, GDI/USER objects,
+page faults, process I/O bytes/operations and available memory. Summed
+working sets may double count shared pages. Process I/O is not physical
+disk/network bandwidth. First CPU sample has no prior interval. Each
+child must exit zero with explicit heap/task/native drain markers.
+Forced termination fails. CI artifacts retained 14 days. No GPU or
+frame-latency metrics yet. Actual measurements require successful run.
+The 100-process synthetic case is not a single-process multi-pet test
+or a heterogeneous visible artwork result; those need separate runs.
+Menu styling remains a separate change.

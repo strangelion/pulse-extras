@@ -14,6 +14,17 @@ class ScopeTests(unittest.TestCase):
     def test_vcs_only(self):
         self.assertEqual(classify(["shared/vcs/providers/git.zig", "docs/roadmap.md"]), "vcs")
 
+    def test_companion_only(self):
+        for path in ("shared/companion/pet_demo.zig", "shared/companion/pet_surface_win32.c",
+                     "tests/companion/pet_stress.py", "shared/companion_host.zig"):
+            self.assertEqual(classify([path, "docs/openpets-spike.md"]), "companion")
+
+    def test_mixed_or_shared_is_full(self):
+        for path in ("shared/runtime/group.zig", "shared/process/trust.zig",
+                     "shared/vcs/providers/git.zig", "extensions/hello-panel/main.zig",
+                     "build.zig", ".github/workflows/pet-stress.yml", "sdk/upstream.toml"):
+            self.assertEqual(classify(["shared/companion/pet_demo.zig", path]), "full")
+
     def test_full_for_other_paths(self):
         for path in (
             "build.zig", ".zig-version", ".gitattributes", ".gitignore",

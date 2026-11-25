@@ -1,0 +1,56 @@
+name: Companion stress benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: Independent hidden pet processes (1-100)
+        type: number
+        default: 100
+      seconds:
+        description: Sampling duration (5-180 seconds)
+        type: number
+        default: 30
+  push:
+    branches: [experiment/openpets-ipc]
+    paths:
+      - tests/companion/pet_stress.py
+      - .github/workflows/pet-stress.yml
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Restore Zig archive cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/pulse-zig-archives
+          key: zig-archive-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.zig-version', 'scripts/zig-downloads.json') }}
+      - run: python scripts/install_zig.py
+      - run: zig build pet-demo -Doptimize=ReleaseSafe --summary all
+      - name: Sample independent hidden instances
+        env:
+          PET_COUNT: ${{ inputs.count || 100 }}
+          PET_SECONDS: ${{ inputs.seconds || 30 }}
+        shell: pwsh
+        run: |
+          python tests/companion/pet_stress.py --count $env:PET_COUNT --seconds $env:PET_SECONDS --output zig-out/pet-stress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Publish measurements even on benchmark failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-stress
+          path: zig-out/pet-stress/
+          if-no-files-found: warn
+          retention-days: 14

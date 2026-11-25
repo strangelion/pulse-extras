@@ -421,6 +421,8 @@ pub fn build(b: *std.Build) void {
         "shared/companion/native_dispatch.zig",
     };
     const test_step = b.step("test", "Run native ABI, wrapper and lifecycle regression tests");
+    const companion_tests = b.step("test-companion", "Run companion unit and shared runtime tests");
+    const vcs_tests = b.step("test-vcs", "Run VCS unit and shared runtime tests");
     for (test_sources) |source| {
         const unit_tests = b.addTest(.{
             .root_module = b.createModule(.{
@@ -430,6 +432,12 @@ pub fn build(b: *std.Build) void {
                 .imports = host_modules.imports(),
             }),
         });
-        test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+        const run = b.addRunArtifact(unit_tests);
+        test_step.dependOn(&run.step);
+        const runtime = std.mem.startsWith(u8, source, "shared/runtime/") or std.mem.startsWith(u8, source, "shared/process/");
+        if (runtime or std.mem.startsWith(u8, source, "shared/companion/"))
+            companion_tests.dependOn(&run.step);
+        if (runtime or std.mem.startsWith(u8, source, "shared/vcs/"))
+            vcs_tests.dependOn(&run.step);
     }
 }

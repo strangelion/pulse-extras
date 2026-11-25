@@ -21,6 +21,9 @@ def classify(paths: list[str]) -> str:
     if all(is_doc(path) or (path.startswith("shared/vcs/") and path.endswith(".zig"))
            for path in paths):
         return "vcs"
+    if all(is_doc(path) or path.startswith(("shared/companion/", "tests/companion/")) or
+           path == "shared/companion_host.zig" for path in paths):
+        return "companion"
     return "full"
 
 
@@ -68,7 +71,9 @@ def main() -> None:
             if scope == "docs":
                 out.write("Documentation-only change; no Zig build, ABI or VCS integration tests run.\n")
             elif scope == "vcs":
-                out.write("VCS regression and DLL builds on both OSes; pinned SDK regeneration and C ABI loader omitted for this change.\n")
+                out.write("VCS regression and DLL builds; companion and SDK checks omitted.\n")
+            elif scope == "companion":
+                out.write("Companion unit/native regression; unrelated VCS, production DLL and SDK checks omitted.\n")
             else:
                 out.write("Full regression, SDK regeneration and Windows C ABI loader.\n")
 

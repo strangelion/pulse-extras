@@ -326,7 +326,7 @@ static uint32_t activity_random(uint32_t *state) {
 }
 
 static void usage(void) {
-    fputs("pulse-pet-demo [--reduced-motion] [--gaze|--no-gaze] [--language system|zh-CN|zh-TW|en-US] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE] [--activity FILE FRAMES FPS] [--package DIR ID | --check-package DIR ID | --check-package-task DIR ID]\n"
+    fputs("pulse-pet-demo [--reduced-motion] [--gaze|--no-gaze] [--language system|zh-CN|zh-TW|en-US] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE] [--stress-seconds 10..300 [--stress-hidden] [--stress-slot 1..100]] [--activity FILE FRAMES FPS] [--package DIR ID | --check-package DIR ID | --check-package-task DIR ID]\n"
         "Left click: interact. Left drag: move. Right click: menu. --smoke: hidden synthetic test.\n", stderr);
 }
 
@@ -386,7 +386,8 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     if (!memory || !memory->context || !memory->allocate || !memory->release || !memory->resource_bridge ||
         !async || !async->owner || !async->bind || !async->submit || !async->start || !async->take ||
         !async->invalidate || !async->busy || !async->stop) return 1;
-    int rc = 1, argc = 0, reduced = 0, smoke = 0;
+    int rc = 1, argc = 0, reduced = 0, smoke = 0, stress_hidden = 0, stress_ready = 0;
+    unsigned stress_seconds = 0, stress_slot = 0;
     unsigned reaction = PET_STATE_IDLE;
     unsigned version = 2, scale = 100;
     int gaze_enabled = 1, gaze_supported = 0, gaze_writable = 0, gaze_dirty = 0, gaze_set = 0;
@@ -432,6 +433,11 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     if (!argv || !sample || !validate || !sample_activity || !validate_activity || !parse_package || !schedule) goto cleanup;
     for (int i = 1; i < argc; ++i) {
         if (wcscmp(argv[i], L"--smoke") == 0 && !smoke) smoke = 1;
+        else if (!stress_seconds && wcscmp(argv[i], L"--stress-seconds") == 0 &&
+            i + 1 < argc && parse_activity_number(argv[i + 1], 300, &stress_seconds)) ++i;
+        else if (!stress_hidden && wcscmp(argv[i], L"--stress-hidden") == 0) stress_hidden = 1;
+        else if (!stress_slot && wcscmp(argv[i], L"--stress-slot") == 0 &&
+            i + 1 < argc && parse_activity_number(argv[i + 1], 100, &stress_slot)) ++i;
         else if (!gaze_set && (wcscmp(argv[i], L"--gaze") == 0 ||
             wcscmp(argv[i], L"--no-gaze") == 0)) {
             gaze_enabled = wcscmp(argv[i], L"--gaze") == 0;
@@ -488,6 +494,9 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         (activity_path && (smoke || state_map ||
             sample_activity(activity_frames, activity_fps, 0, &activity_check) != 0)) ||
         (smoke && (path || reduced_set || topmost_set || remember || reset_position || gaze_set)) ||
+        ((stress_hidden || stress_slot) && !stress_seconds) ||
+        (stress_seconds && (stress_seconds < 10 || smoke || remember || reset_position ||
+            state_map || check_package || check_task || activity_path)) ||
         (reset_position && !remember) || (!!state_map != !!state_event) ||
         (state_map && (!stop || state_map == stop || state_event == stop || state_map == state_event))) {
         usage();
@@ -632,10 +641,22 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             clamp_long((int64_t)y + surface.height / 2)};
         if (!constrain(&surface, center, &x, &y)) goto cleanup;
     }
+    if (stress_slot) {
+        unsigned columns = (unsigned)(work.right - work.left) / surface.width;
+        unsigned rows = (unsigned)(work.bottom - work.top) / surface.height;
+        if (!columns) columns = 1;
+        if (!rows) rows = 1;
+        unsigned slot = stress_slot - 1;
+        x = clamp_long((int64_t)work.left + (slot % columns) * surface.width);
+        y = clamp_long((int64_t)work.top + ((slot / columns) % rows) * surface.height);
+        if (pet_clamp_position(&work, surface.width, surface.height, &x, &y) != PET_SURFACE_OK)
+            goto cleanup;
+    }
     POINT press = {0}, cursor = {0};
     LONG press_x = 0, press_y = 0;
     int pressed = 0, dragged = 0;
     uint64_t started = GetTickCount64(), smoke_end = started + 500;
+    uint64_t stress_end = started + (uint64_t)stress_seconds * 1000;
     unsigned last_row = UINT32_MAX, last_column = UINT32_MAX, frames = 0;
     int shown = 0, done = 0;
     unsigned interaction = 0;
@@ -829,7 +850,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                 if (reaction == PET_STATE_TESTING) received_testing = 1;
             }
         }
-        if (smoke && now >= smoke_end) break;
+        if ((smoke && now >= smoke_end) || (stress_seconds && now >= stress_end)) break;
         if (surface.schedule_dirty) {
             surface.schedule_dirty = FALSE;
             schedule_due = 0;
@@ -976,12 +997,17 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                 ++frames;
             }
         }
-        if (!smoke && !shown) {
+        if (!smoke && !stress_hidden && !shown) {
             if (pet_surface_show(&surface, TRUE) != PET_SURFACE_OK) goto cleanup;
             shown = 1;
             /* First presentation must remain default. Immediately revisit
              * a due outfit, even when reduced motion has no frame deadline. */
             if (switch_due) schedule_due = 0;
+        }
+        if (stress_seconds && !stress_ready && frames) {
+            fputs("Companion stress: ready\n", stderr);
+            fflush(stderr);
+            stress_ready = 1;
         }
         DWORD wait = point.wait_ms ? point.wait_ms : INFINITE;
         if (pet_gaze_eligible(version, gaze_supported && gaze_enabled, shown, reduced,
@@ -998,6 +1024,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
             if (delay < wait) wait = (DWORD)delay;
         }
         if (smoke && (uint64_t)wait > smoke_end - now) wait = (DWORD)(smoke_end - now);
+        if (stress_seconds && (uint64_t)wait > stress_end - now) wait = (DWORD)(stress_end - now);
         HANDLE waits[3];
         DWORD count = 0;
         if (stop) waits[count++] = stop;
@@ -1013,6 +1040,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         if (stop && result == WAIT_OBJECT_0) { stopped = 1; break; }
         if (result == WAIT_FAILED || (count && result >= WAIT_ABANDONED_0 && result < WAIT_ABANDONED_0 + count)) goto cleanup;
     }
+    if (stress_seconds && !stress_ready) goto cleanup;
     if (smoke && !stopped && (frames < 2 || (state_slot && !received_testing))) {
         fputs("Hidden smoke test did not advance the animation.\n", stderr);
         goto cleanup;
