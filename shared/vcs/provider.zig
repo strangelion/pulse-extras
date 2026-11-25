@@ -73,6 +73,17 @@ pub const Changes = struct {
     behind: u32 = 0,
 };
 
+/// Count availability is independent of the stored numeric value. Consumers
+/// must not present a default zero as a measured count.
+pub const CountAvailability = struct {
+    staged: Availability = .not_queried,
+    modified: Availability = .not_queried,
+    untracked: Availability = .not_queried,
+    conflicted: Availability = .not_queried,
+    ahead: Availability = .not_queried,
+    behind: Availability = .not_queried,
+};
+
 /// What a read-only summary can say. Absent fields carry the reason through
 /// `availability` instead of pretending the repository is empty.
 pub const Snapshot = struct {
@@ -82,6 +93,9 @@ pub const Snapshot = struct {
     /// Branch, bookmark, stream or trunk-relative path, depending on the VCS.
     reference: Text = .{},
     changes: Changes = .{},
+    counts: CountAvailability = .{},
+    /// Some providers report only whether a revision has conflicts.
+    has_conflict: ?bool = null,
     /// Human-readable detail for errors and partial states; never parsed.
     detail: Text = .{},
 };

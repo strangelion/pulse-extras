@@ -4,6 +4,8 @@
 
 The last full verified CI baseline is [c330c24 / run 45421511648](https://github.com/strangelion/pulse-extras/actions/runs/45421511648): Ubuntu 83/83 tests, Windows 81 passed and 2 SVN integrations skipped, 6/6 Windows DLL build steps on both runners, pinned SDK regeneration, and 16 C ABI loader lifecycle cycles. Both Zig archive caches hit. These are historical results, not a claim that later commits or real VCS host integration have passed.
 
+Current merged Runtime baseline: [2759b51 / run 45514152046](https://github.com/strangelion/pulse-extras/actions/runs/45514152046), Windows 131/133 and Ubuntu 129/133 (platform-only skips), isolated Windows Job Object tests, both ReleaseSafe builds and Regression gate passed. Main CI 45515451399 was still running at review. This is a library baseline, not a VCS panel release.
+
 ## P0 — Zig and SDK compatibility
 
 - [x] Pinned Zig 0.17.1, public Pulse 1.0.60 SDK / Preview 3, x64 MSVC ABI.

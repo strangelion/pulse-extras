@@ -22,6 +22,11 @@ pub const Status = struct {
     upstream: contract.Text = .{},
     oid: ?identity.RevisionId = null,
     detached: bool = false,
+    seen_oid: bool = false,
+    seen_head: bool = false,
+    seen_upstream: bool = false,
+    seen_ab: bool = false,
+    distance_known: bool = false,
     changes: Changes = .{},
 };
 
@@ -62,6 +67,8 @@ fn parseHeader(record: []const u8, status: *Status) ParseError!void {
     const key = body[0..split];
     const value = body[split + 1 ..];
     if (std.mem.eql(u8, key, "branch.oid")) {
+        if (status.seen_oid) return error.Malformed;
+        status.seen_oid = true;
         if (std.mem.eql(u8, value, "(initial)")) return;
         if (value.len != 40 and value.len != 64) return error.Malformed;
         for (value) |byte| {
@@ -69,6 +76,8 @@ fn parseHeader(record: []const u8, status: *Status) ParseError!void {
         }
         status.oid = identity.RevisionId.init(.git, value) catch return error.Malformed;
     } else if (std.mem.eql(u8, key, "branch.head")) {
+        if (status.seen_head) return error.Malformed;
+        status.seen_head = true;
         if (std.mem.eql(u8, value, "(detached)")) {
             status.detached = true;
             return;
@@ -76,24 +85,34 @@ fn parseHeader(record: []const u8, status: *Status) ParseError!void {
         if (value.len == 0) return error.Malformed;
         status.branch = contract.Text.init(value) catch return error.Malformed;
     } else if (std.mem.eql(u8, key, "branch.upstream")) {
+        if (status.seen_upstream) return error.Malformed;
+        status.seen_upstream = true;
         if (value.len == 0) return error.Malformed;
         status.upstream = contract.Text.init(value) catch return error.Malformed;
     } else if (std.mem.eql(u8, key, "branch.ab")) {
-        parseAheadBehind(value, &status.changes);
+        if (status.seen_ab) return error.Malformed;
+        status.seen_ab = true;
+        status.distance_known = try parseAheadBehind(value, &status.changes);
     }
 }
 
-fn parseAheadBehind(value: []const u8, changes: *Changes) void {
+fn parseAheadBehind(value: []const u8, changes: *Changes) ParseError!bool {
     var tokens = std.mem.splitScalar(u8, value, ' ');
-    while (tokens.next()) |token| {
-        if (token.len < 2) continue;
-        const number = std.fmt.parseInt(u32, token[1..], 10) catch continue;
-        switch (token[0]) {
-            '+' => changes.ahead = number,
-            '-' => changes.behind = number,
-            else => {},
-        }
+    const ahead = tokens.next() orelse return error.Malformed;
+    const behind = tokens.next() orelse return error.Malformed;
+    if (tokens.next() != null or ahead.len < 2 or behind.len < 2 or ahead[0] != '+' or behind[0] != '-') return error.Malformed;
+    if (std.mem.eql(u8, ahead, "+?") and std.mem.eql(u8, behind, "-?")) return false;
+    for (ahead[1..]) |byte| {
+        if (!std.ascii.isDigit(byte)) return error.Malformed;
     }
+    for (behind[1..]) |byte| {
+        if (!std.ascii.isDigit(byte)) return error.Malformed;
+    }
+    const a = std.fmt.parseInt(u32, ahead[1..], 10) catch return error.Malformed;
+    const b = std.fmt.parseInt(u32, behind[1..], 10) catch return error.Malformed;
+    changes.ahead = a;
+    changes.behind = b;
+    return true;
 }
 
 fn firstField(record: []const u8, index: usize) ?[]const u8 {
@@ -157,12 +176,21 @@ pub const Git = struct {
         if (!outcome.succeeded()) return mapFailure(outcome.stderr);
 
         const status = parseStatus(outcome.stdout) catch return error.Parse;
-        if (!status.detached and status.branch.slice().len == 0) return error.Parse;
+        if (!status.seen_oid or !status.seen_head or (status.detached and status.oid == null)) return error.Parse;
         var snapshot = contract.Snapshot{
             .availability = .ready,
             .workspace = workspace.*,
             .revision = status.oid,
             .changes = status.changes,
+            .counts = .{
+                .staged = .ready,
+                .modified = .ready,
+                .untracked = .ready,
+                .conflicted = .ready,
+                .ahead = if (status.distance_known) .ready else .unknown,
+                .behind = if (status.distance_known) .ready else .unknown,
+            },
+            .has_conflict = status.changes.conflicted != 0,
         };
         snapshot.reference = status.branch;
         if (status.detached) {
@@ -354,4 +382,22 @@ test "malformed known git fields are not silently accepted" {
 
 fn testSessionClock() i64 {
     return 1000;
+}
+
+test "ahead behind counts distinguish zero unknown and malformed" {
+    const zero = try parseStatus("# branch.ab +0 -0\x00");
+    try std.testing.expect(zero.distance_known);
+    const unknown = try parseStatus("# branch.ab +? -?\x00");
+    try std.testing.expect(!unknown.distance_known);
+    for ([_][]const u8{
+        "# branch.ab +1\x00",
+        "# branch.ab +1 +2\x00",
+        "# branch.ab +4294967296 -0\x00",
+        "# branch.ab +0 -0 extra\x00",
+        "# branch.ab +? -0\x00",
+        "# branch.ab +0 -0\x00# branch.ab +1 -1\x00",
+        "# branch.head main\x00# branch.head other\x00",
+    }) |fixture| {
+        try std.testing.expectError(error.Malformed, parseStatus(fixture));
+    }
 }

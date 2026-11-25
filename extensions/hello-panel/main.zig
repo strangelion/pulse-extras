@@ -197,12 +197,19 @@ fn placementFromValue(value: []const u16) ui_mount.Placement {
 }
 
 fn openPanel(instance: *Instance) host_mod.Error!void {
+    return openPanelAt(instance, requestedPlacement());
+}
+
+fn openPanelAt(instance: *Instance, placement: ui_mount.Placement) host_mod.Error!void {
     if (instance.panel != null) return;
     var table: ui_model.TableV1 = undefined;
     const status = ui_model.query(instance.host.raw(), &table);
     diag.status("ui.model", status);
     if (status != abi.ok) return host_mod.mapStatus(status);
+    if (table.size < @sizeOf(ui_model.TableV1) or table.version < ui_model.version_1) return error.Abi;
     const create = table.create orelse return error.Unavailable;
+    if (table.close == null or table.update == null) return error.Unavailable;
+    if (placement != .sidebar and (table.subscribe_command == null or table.unsubscribe == null)) return error.Unavailable;
     instance.model = table;
     var mount: ui_mount.TableV1 = undefined;
     const mount_status = ui_mount.query(instance.host.raw(), &mount);
@@ -210,7 +217,6 @@ fn openPanel(instance: *Instance) host_mod.Error!void {
     if (mount_status == abi.ok) instance.mount = mount;
     readContext(instance);
 
-    const placement = requestedPlacement();
     instance.placement = placement;
     var panel_id: u64 = 0;
     const created = blk: {
@@ -234,7 +240,7 @@ fn openPanel(instance: *Instance) host_mod.Error!void {
         var subscription: u64 = 0;
         const subscribed = subscribe(table.context, panel_id, abi.view(command_close), onCommand, instance, &subscription);
         diag.status("ui.model.subscribe", subscribed);
-        if (subscribed != abi.ok) {
+        if (subscribed != abi.ok or subscription == 0) {
             // Partial activation: the panel exists, its command subscription
             // does not. Close it; if the host refuses, keep the panel so
             // deactivate/destroy can retry instead of leaking live callbacks.
@@ -242,6 +248,7 @@ fn openPanel(instance: *Instance) host_mod.Error!void {
                 diag.status("cleanup-close-failed", @intFromError(close_err));
                 instance.panel = panel;
             }
+            if (subscribed == abi.ok) return error.State;
             return host_mod.mapStatus(subscribed);
         }
         instance.subscription = subscription;
@@ -300,6 +307,7 @@ fn closePanel(instance: *Instance) host_mod.Error!void {
         }
         if (panel.close()) |_| {
             instance.panel = null;
+            instance.subscription = 0;
             diag.event("panel-close");
         } else |err| {
             diag.status("panel-close-failed", @intFromError(err));
@@ -328,11 +336,11 @@ fn registerOpenCommand(instance: *Instance) void {
 fn activate(raw: ?*anyopaque) callconv(.c) abi.Status {
     diag.event("activate");
     const instance: *Instance = @ptrCast(@alignCast(raw orelse return abi.error_argument));
-    instance.active = true;
     openPanel(instance) catch |err| {
         diag.status("activate-failed", @intFromError(err));
         return statusOf(err);
     };
+    instance.active = true;
     return abi.ok;
 }
 
@@ -442,4 +450,96 @@ test "entry validates the host table before allocating an instance" {
     accepted.destroy.?(accepted.instance);
 
     try std.testing.expectEqual(@as(u32, 3), PulsePluginSdkPreview());
+}
+
+const MockModel = struct {
+    missing_subscribe: bool = false,
+    fail_subscribe: bool = false,
+    fail_close: bool = false,
+    created: usize = 0,
+    closed: usize = 0,
+    subscribed: bool = false,
+
+    fn query(raw: ?*anyopaque, name: abi.StringView, version: u32, output: ?*anyopaque, size: u32) callconv(.c) abi.Status {
+        const self: *MockModel = @ptrCast(@alignCast(raw orelse return abi.error_argument));
+        const id = abi.slice(name) orelse return abi.error_argument;
+        if (!std.mem.eql(u8, id, ui_model.interface_name)) return abi.error_unavailable;
+        if (version != ui_model.version_1 or size < @sizeOf(ui_model.TableV1)) return abi.error_abi;
+        const table: *ui_model.TableV1 = @ptrCast(@alignCast(output orelse return abi.error_argument));
+        table.* = std.mem.zeroes(ui_model.TableV1);
+        table.size = @sizeOf(ui_model.TableV1);
+        table.version = ui_model.version_1;
+        table.context = self;
+        table.create = &create;
+        table.update = &update;
+        table.close = &close;
+        table.unsubscribe = &unsubscribe;
+        if (!self.missing_subscribe) table.subscribe_command = &subscribe;
+        return abi.ok;
+    }
+
+    fn create(raw: ?*anyopaque, _: abi.StringView, tree: [*c]const ui_model.Tree, out: [*c]u64) callconv(.c) abi.Status {
+        const self: *MockModel = @ptrCast(@alignCast(raw orelse return abi.error_argument));
+        if (tree == null or tree.*.root == null or out == null) return abi.error_argument;
+        self.created += 1;
+        out.* = 1;
+        return abi.ok;
+    }
+
+    fn update(_: ?*anyopaque, _: u64, _: [*c]const ui_model.Tree) callconv(.c) abi.Status {
+        return abi.ok;
+    }
+
+    fn subscribe(raw: ?*anyopaque, _: u64, _: abi.StringView, callback: ui_model.ClickFn, user: ?*anyopaque, out: [*c]u64) callconv(.c) abi.Status {
+        const self: *MockModel = @ptrCast(@alignCast(raw orelse return abi.error_argument));
+        if (self.fail_subscribe) return abi.error_permission;
+        if (callback == null or user == null or out == null) return abi.error_argument;
+        self.subscribed = true;
+        out.* = 2;
+        return abi.ok;
+    }
+
+    fn unsubscribe(raw: ?*anyopaque, _: u64) callconv(.c) abi.Status {
+        const self: *MockModel = @ptrCast(@alignCast(raw orelse return abi.error_argument));
+        self.subscribed = false;
+        return abi.ok;
+    }
+
+    fn close(raw: ?*anyopaque, _: u64) callconv(.c) abi.Status {
+        const self: *MockModel = @ptrCast(@alignCast(raw orelse return abi.error_argument));
+        if (self.fail_close) return abi.error_permission;
+        self.closed += 1;
+        self.subscribed = false;
+        return abi.ok;
+    }
+
+    fn instance(self: *MockModel) Instance {
+        const host: abi.HostV1 = .{ .size = @sizeOf(abi.HostV1), .version = abi.abi_version, .context = self, .query_interface = &query };
+        return .{ .host = host_mod.Host.init(&host) catch unreachable };
+    }
+};
+
+test "mock host missing callbacks fail before panel creation" {
+    var mock: MockModel = .{ .missing_subscribe = true };
+    var instance = mock.instance();
+    try std.testing.expectError(error.Unavailable, openPanelAt(&instance, .workspace));
+    try std.testing.expectEqual(@as(usize, 0), mock.created);
+    try std.testing.expect(instance.panel == null);
+}
+
+test "mock host failed subscribe rolls back and failed close stays retryable" {
+    var mock: MockModel = .{ .fail_subscribe = true, .fail_close = true };
+    var instance = mock.instance();
+    try std.testing.expectError(error.Permission, openPanelAt(&instance, .workspace));
+    try std.testing.expect(instance.panel != null);
+    try std.testing.expectEqual(@as(usize, 0), mock.closed);
+    mock.fail_close = false;
+    try closePanel(&instance);
+    try std.testing.expect(instance.panel == null);
+    mock.fail_subscribe = false;
+    try openPanelAt(&instance, .workspace);
+    try std.testing.expect(mock.subscribed);
+    try closePanel(&instance);
+    try std.testing.expect(!mock.subscribed);
+    try std.testing.expectEqual(mock.created, mock.closed);
 }

@@ -831,3 +831,23 @@ test "containment fault cannot be mistaken for a clean drain or retried" {
     try testing.expectError(error.ContainmentFailed, runner.finishStop());
     try testing.expect(runner.diagnostics().output.?.containment_fault);
 }
+
+test "Windows job cancellation drains owned result and permits reuse" {
+    if (@import("builtin").os.tag != .windows or @import("builtin").cpu.arch != .x86_64) return error.SkipZigTest;
+    var runner = Runner.init(testing.allocator, testing.io);
+    try runner.configureTree(.windows_job);
+    try runner.start(.{ .argv = &.{ "ping.exe", "-n", "10", "127.0.0.1" }, .timeout_ns = 15 * std.time.ns_per_s });
+    defer cleanupPendingForTest(&runner);
+    try std.Io.sleep(testing.io, .fromMilliseconds(200), .boot);
+    const cancellation = try runner.cancelPending();
+    try testing.expect(cancellation == .cancelled);
+    try runner.checkDrained();
+    {
+        var outcome = try runner.run(.{ .argv = &.{ "cmd", "/d", "/c", "echo reusable" } });
+        defer outcome.deinit();
+        try testing.expect(outcome.succeeded());
+    }
+    try runner.checkDrained();
+    runner.requestStop();
+    try runner.finishStop();
+}
