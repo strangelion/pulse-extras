@@ -187,7 +187,7 @@ const Mock = struct {
         var snapshot: Snapshot = std.mem.zeroes(Snapshot);
         snapshot.size = @sizeOf(Snapshot);
         snapshot.id = if (self.wrong_snapshot) id + 1 else id;
-        snapshot.state = @intFromEnum(self.state);
+        snapshot.state = @backingInt(self.state);
         (callback orelse return abi.error_argument)(data, &snapshot);
         return abi.ok;
     }
@@ -212,7 +212,7 @@ const Mock = struct {
     }
 
     fn work(_: ?*anyopaque, _: [*c]const Context) callconv(.c) raw.PulseTaskState {
-        return @intFromEnum(TaskState.completed);
+        return @backingInt(TaskState.completed);
     }
 
     fn descriptor() Descriptor {

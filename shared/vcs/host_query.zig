@@ -51,16 +51,16 @@ pub const Query = struct {
     }
 
     fn work(user: ?*anyopaque, context: [*c]const async_host.Context) callconv(.c) u32 {
-        const self: *Query = @ptrCast(@alignCast(user orelse return @intFromEnum(async_host.TaskState.failed)));
-        if (context == null) return @intFromEnum(async_host.TaskState.failed);
-        const cancelled = context.*.cancelled orelse return @intFromEnum(async_host.TaskState.failed);
-        if (cancelled(context.*.context) != 0) return @intFromEnum(async_host.TaskState.cancelled);
+        const self: *Query = @ptrCast(@alignCast(user orelse return @backingInt(async_host.TaskState.failed)));
+        if (context == null) return @backingInt(async_host.TaskState.failed);
+        const cancelled = context.*.cancelled orelse return @backingInt(async_host.TaskState.failed);
+        if (cancelled(context.*.context) != 0) return @backingInt(async_host.TaskState.cancelled);
         self.result = self.provider.summarize(&self.workspace);
         self.published.store(true, .release);
         if (self.result) |_| {
-            return @intFromEnum(if (cancelled(context.*.context) != 0) async_host.TaskState.cancelled else async_host.TaskState.completed);
+            return @backingInt(if (cancelled(context.*.context) != 0) async_host.TaskState.cancelled else async_host.TaskState.completed);
         } else |err| {
-            return @intFromEnum(if (err == error.Cancelled) async_host.TaskState.cancelled else async_host.TaskState.failed);
+            return @backingInt(if (err == error.Cancelled) async_host.TaskState.cancelled else async_host.TaskState.failed);
         }
     }
 
@@ -143,7 +143,7 @@ const Mock = struct {
         var snapshot: async_host.Snapshot = std.mem.zeroes(async_host.Snapshot);
         snapshot.size = @sizeOf(async_host.Snapshot);
         snapshot.id = id;
-        snapshot.state = @intFromEnum(self.state);
+        snapshot.state = @backingInt(self.state);
         (callback orelse return abi.error_argument)(data, &snapshot);
         return abi.ok;
     }
@@ -167,7 +167,7 @@ const Mock = struct {
 
     fn runWork(self: *Mock) void {
         const context: async_host.Context = .{ .id = 1, .context = self, .cancelled = &cancelled };
-        self.state = @enumFromInt(self.descriptor.work.?(self.descriptor.user, &context));
+        self.state = @fromBackingInt(@intCast(self.descriptor.work.?(self.descriptor.user, &context)));
     }
 
     fn detectImpl(_: *anyopaque, _: []const u8, _: *detect.Result) void {}
