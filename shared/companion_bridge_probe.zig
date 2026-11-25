@@ -72,6 +72,21 @@ pub fn main() !void {
     try owner.group.beginDrain(false);
     try owner.close();
     try owner.open(root[0..len :0], expected, 1, 128 * 1024 * 1024);
+    // The workflow supplies an isolated, freshly created directory. Never
+    // obtain the actual user's LocalAppData for this fixture.
+    var parent: [1024]u16 = undefined;
+    const parent_len = GetEnvironmentVariableW(std.unicode.wtf8ToWtf16LeStringLiteral("PULSE_BRIDGE_FIXTURE_PRIVATE_PARENT"), &parent, parent.len);
+    if (parent_len == 0 or parent_len >= parent.len) return error.MissingFixtureParent;
+    const fixture_parent = parent[0..parent_len :0];
+    const private = try owner.privateRoot(fixture_parent);
+    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\PulseExtras-Companion");
+    if (private.len != fixture_parent.len + suffix.len or
+        !std.mem.eql(u16, private[0..fixture_parent.len], fixture_parent) or
+        !std.mem.endsWith(u16, private, suffix)) return error.BadPrivateFixturePath;
+    _ = try owner.privateRoot(fixture_parent);
     try owner.close();
-    std.debug.print("Pinned runtime owner verified\n", .{});
+    try owner.open(root[0..len :0], expected, 1, 128 * 1024 * 1024);
+    _ = try owner.privateRoot(fixture_parent);
+    try owner.close();
+    std.debug.print("Pinned runtime owner and private lease ABI verified\n", .{});
 }

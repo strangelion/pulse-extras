@@ -264,8 +264,16 @@ jobs:
           zig build-exe -target x86_64-windows-msvc -O ReleaseSafe --dep runtime_budget '-Mroot=shared/companion_bridge_probe.zig' '-Mruntime_budget=shared/runtime/budget.zig' '-femit-bin=zig-out/companion-bridge-probe.exe'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:PULSE_BRIDGE_FIXTURE_SHA256 = (Get-FileHash -Algorithm SHA256 ./zig-out/bin/pulse_companion_runtime.dll).Hash
-          & ./zig-out/companion-bridge-probe.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $leaseFixture = Join-Path (Resolve-Path zig-out).Path ("bridge-lease-" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Path $leaseFixture -ErrorAction Stop | Out-Null
+          $env:PULSE_BRIDGE_FIXTURE_PRIVATE_PARENT = $leaseFixture
+          try {
+            & ./zig-out/companion-bridge-probe.exe
+            if ($LASTEXITCODE -ne 0) { throw "Companion bridge probe failed: $LASTEXITCODE" }
+          } finally {
+            Remove-Item -LiteralPath $leaseFixture -Recurse -Force -ErrorAction Stop
+            Remove-Item Env:PULSE_BRIDGE_FIXTURE_PRIVATE_PARENT
+          }
       - name: Exercise bundled Companion DLL with actual pet lifecycle
         if: matrix.lane == 'desktop'
         shell: pwsh

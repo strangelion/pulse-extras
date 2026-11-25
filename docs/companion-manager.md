@@ -926,3 +926,13 @@ categories in Running instead of just a counter; a native cleanup failure
 still drains the group. A nonzero child exit with confirmed reap does not
 stop unrelated healthy instances; a failing last child retains the terminal
 error. Native supervision failures and unconfirmed stops remain fail-closed.
+
+## Runtime error-path drain and lease ABI regression
+
+All session-loop exits, including unexpected native API errors, now enter the
+same bounded cooperative/forced drain before attempting owner close. An
+unconfirmed exit still returns a failure; emergency abandonment is not
+normal capacity reclamation. The MSVC bridge probe now opens, closes and
+reopens a private-root lease through the GNU DLL, using a unique CI-only
+parent and cleaning the isolated fixture afterwards. This does not access
+actual LocalAppData or prove managed asset launch end to end.

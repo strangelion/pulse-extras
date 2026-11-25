@@ -185,8 +185,9 @@ pub fn runBuiltin(session: *Session, runtime_hex: []const u8, helper_hex: []cons
     owner.* = .{};
     defer session.reset();
     const outcome = runOwned(owner, session, root, digest, helper[0..len :0], &helper_digest, canceled, context);
-    // Cleanup must run for both successful and failed starts. Retain owner
-    // memory if native module/handle cleanup itself fails.
+    // The loop can return early from any native API. Always attempt normal
+    // drain before close or emergency abandonment, even after such errors.
+    const drained = drainOwned(owner, session);
     const closed = owner.close();
     if (closed) |_| {
         std.heap.page_allocator.destroy(owner);
@@ -195,6 +196,7 @@ pub fn runBuiltin(session: *Session, runtime_hex: []const u8, helper_hex: []cons
         std.heap.page_allocator.destroy(owner);
         return error.UnconfirmedShutdown;
     }
+    try drained;
     return outcome;
 }
 
@@ -312,24 +314,28 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
         }
         if (failure == null) Sleep(100);
     }
+    if (failure) |err| return err;
+}
+
+fn drainOwned(owner: *runtime.Owner, session: *Session) !void {
     session.set(.stopping);
     session.pending_start.store(false, .release);
     session.pending_stop.store(0, .release);
-    if (try owner.group.remaining() != 0) {
-        session.set(.stopping);
-        try owner.group.beginDrain(false);
-        const stop = GetTickCount64();
-        while (try owner.group.remaining() != 0) {
-            const elapsed = GetTickCount64() - stop;
-            if (elapsed >= 5_000) break;
-            if (elapsed >= 2_000) try owner.group.beginDrain(true);
-            const count = try owner.group.tick(&rows);
-            for (rows[0..count]) |row| {
-                if (row.failure) |err| failure = err;
-            }
-            if (try owner.group.remaining() != 0) Sleep(50);
+    if (!owner.opened) return;
+    if (try owner.group.remaining() == 0) return;
+    try owner.group.beginDrain(false);
+    const stop = GetTickCount64();
+    var rows: [group.max_tick_slots]group.TickResult = undefined;
+    var failure: ?anyerror = null;
+    while (try owner.group.remaining() != 0) {
+        const elapsed = GetTickCount64() - stop;
+        if (elapsed >= 5_000) return error.UnconfirmedShutdown;
+        if (elapsed >= 2_000) try owner.group.beginDrain(true);
+        const count = try owner.group.tick(&rows);
+        for (rows[0..count]) |row| {
+            if (row.failure) |err| failure = err;
         }
-        if (try owner.group.remaining() != 0) return error.UnconfirmedShutdown;
+        if (try owner.group.remaining() != 0) Sleep(50);
     }
     if (failure) |err| return err;
 }
