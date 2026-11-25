@@ -10,6 +10,7 @@ const inventory = @import("companion/pet_inventory.zig");
 pub const builtin_asset_id = group.Group.builtin_asset_id;
 
 const store = @import("companion_runtime_store.zig");
+const local_import = @import("companion_local_import.zig");
 
 pub const Snapshot = library.Snapshot;
 pub const PreferenceAction = enum { toggle_favorite, add_tag, remove_tag };
@@ -94,6 +95,62 @@ pub fn editPreferenceDefault(hex: []const u8, edit: *const PreferenceEdit) !void
     owner.close() catch return error.CleanupFailed;
     std.heap.page_allocator.destroy(owner);
     return outcome;
+}
+
+pub const ImportResult = local_import.Result;
+pub const ImportRequest = struct {
+    source: [4096]u8 = undefined,
+    source_len: usize = 0,
+    source_id: [64]u8 = undefined,
+    id_len: usize = 0,
+
+    pub fn init(source: []const u8, id: []const u8) !ImportRequest {
+        if (source.len < 4 or source.len > 4096 or !std.ascii.isAlphabetic(source[0]) or source[1] != ':' or source[2] != '\\' or
+            std.mem.indexOfScalar(u8, source, 0) != null or !std.unicode.utf8ValidateSlice(source) or !inventory.validSource(id)) return error.InvalidSource;
+        var request: ImportRequest = .{};
+        @memcpy(request.source[0..source.len], source);
+        @memcpy(request.source_id[0..id.len], id);
+        request.source_len = source.len;
+        request.id_len = id.len;
+        return request;
+    }
+};
+
+pub const validSourceId = inventory.validSource;
+
+pub fn importDefault(runtime_hex: []const u8, helper_hex: []const u8, request: *const ImportRequest) !ImportResult {
+    if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
+    const digest = try parseDigest(runtime_hex);
+    const helper_digest = try parseDigest(helper_hex);
+    var path: [1024]u16 = undefined;
+    const root = try packageRoot(&path);
+    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\pulse-pet-demo.exe");
+    var exe: [1024]u16 = undefined;
+    if (root.len + suffix.len >= exe.len) return error.ModulePathUnavailable;
+    @memcpy(exe[0..root.len], root);
+    @memcpy(exe[root.len..][0..suffix.len], suffix);
+    const len = root.len + suffix.len;
+    exe[len] = 0;
+    var threaded = std.Io.Threaded.init(std.heap.page_allocator);
+    defer threaded.deinit();
+    const owner = try std.heap.page_allocator.create(runtime.Owner);
+    owner.* = .{};
+    const outcome = blk: {
+        owner.open(root, digest, 1, 128 * 1024 * 1024) catch |err| break :blk @as(anyerror!ImportResult, err);
+        const private = openPrivateDefault(owner) catch |err| break :blk @as(anyerror!ImportResult, err);
+        break :blk local_import.run(threaded.io(), owner, private, exe[0..len :0], helper_digest, request.source[0..request.source_len], request.source_id[0..request.id_len]);
+    };
+    owner.close() catch return error.CleanupFailed;
+    std.heap.page_allocator.destroy(owner);
+    return outcome;
+}
+
+test "import request copies bounded local path and valid metadata identity" {
+    const request = try ImportRequest.init("C:\\素材\\cat", "cat");
+    try std.testing.expectEqualStrings("C:\\素材\\cat", request.source[0..request.source_len]);
+    try std.testing.expectError(error.InvalidSource, ImportRequest.init("relative", "cat"));
+    try std.testing.expectError(error.InvalidSource, ImportRequest.init("C:\\cat", "builtin"));
+    try std.testing.expectError(error.InvalidSource, ImportRequest.init("C:\\cat", "CAT"));
 }
 
 // Experimental UI admission ceiling, independent of native storage capacity.

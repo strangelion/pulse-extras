@@ -7,6 +7,8 @@
 #include "pulse/resources.h"
 #include "pulse/tasks.h"
 #include "pulse/dispatch.h"
+#include "pulse/dialogs.h"
+#include "pulse/context.h"
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); return 1; } } while (0)
 #define REQUIRE(x) do { if (!(x)) { fprintf(stderr, "ABI fixture line %d: %s\n", __LINE__, #x); return PULSE_ERROR_ARGUMENT; } } while (0)
@@ -14,7 +16,7 @@
 static const char *commands[] = {
     "companion.library", "companion.running", "companion.market", "companion.global",
     "companion.settings.refresh", "companion.download.less", "companion.download.more",
-    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove"
+    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel"
 };
 typedef struct {
     uint64_t page, next, pending, version;
@@ -30,8 +32,8 @@ typedef struct {
     uint64_t dispatch_id;
     char saved, requested;
     uint32_t operation;
-    PulseUiClickFn click[19];
-    void *users[19];
+    PulseUiClickFn click[21];
+    void *users[21];
     uint64_t task, aux_task;
     PulseTaskWorkFn aux_work;
     void *aux_user;
@@ -40,6 +42,9 @@ typedef struct {
     PulseTaskState task_state;
     PulseTaskWorkFn task_work;
     void *task_user;
+    uint64_t dialog;
+    PulseDialogClosed dialog_closed;
+    void *dialog_user;
     PulseResourcesCompletionFn completion;
     void *reply_user;
 } Fixture;
@@ -51,11 +56,11 @@ static int same(PulseStringView s, const char *text) {
 }
 
 static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
-    REQUIRE(t && t->size == sizeof(*t) && t->root && t->command_count == 19 && t->commands);
-    for (unsigned i = 0; i < 19; ++i) REQUIRE(same(t->commands[i], commands[i]));
+    REQUIRE(t && t->size == sizeof(*t) && t->root && t->command_count == 21 && t->commands);
+    for (unsigned i = 0; i < 21; ++i) REQUIRE(same(t->commands[i], commands[i]));
     const PulseUiModelNode *root = t->root;
     REQUIRE(root->size == sizeof(*root) && root->type == PULSE_UI_MODEL_STACK);
-    REQUIRE(root->children.present && root->children.data && (root->children.count >= 3 && root->children.count <= 24));
+    REQUIRE(root->children.present && root->children.data && (root->children.count >= 3 && root->children.count <= 28));
     const PulseUiModelNode *nav = root->children.data;
     REQUIRE(nav->children.present && nav->children.count == 4 && nav->children.data);
     for (unsigned i = 0; i < 4; ++i) {
@@ -131,7 +136,7 @@ static PulseStatus PULSE_CALL update(void *ctx, uint64_t page, const PulseUiMode
 static PulseStatus PULSE_CALL subscribe(void *ctx, uint64_t page, PulseStringView command, PulseUiClickFn click, void *user, uint64_t *id) {
     Fixture *f = ctx;
     REQUIRE(page && page == f->page && click && user && id);
-    for (unsigned i = 0; i < 19; ++i) {
+    for (unsigned i = 0; i < 21; ++i) {
         if (!same(command, commands[i])) continue;
         REQUIRE(!f->click[i]);
         if (f->fail_subscribe && i == 2) return PULSE_ERROR_STATE;
@@ -320,6 +325,38 @@ static void pump(Fixture *f) {
     LeaveCriticalSection(&f->dispatch_lock);
     if (cb) cb(user);
 }
+static PulseStatus PULSE_CALL selection(void *ctx, PulseContextSelectionFn callback, void *user) {
+    (void)ctx;
+    PulseContextSelectionEntry entry = {.size=sizeof(entry), .flags=PULSE_CONTEXT_ENTRY_DIRECTORY,
+        .path=view("C:\\fixture\\cat"), .name=view("cat")};
+    PulseContextSelectionSnapshot snapshot = {.size=sizeof(snapshot), .entries=&entry, .entry_count=1};
+    REQUIRE(callback && user);
+    callback(user, &snapshot);
+    return PULSE_OK;
+}
+static PulseStatus PULSE_CALL show_dialog(void *ctx, const PulseDialogRequest *request,
+    PulseDialogStateChanged changed, PulseDialogClosed closed, void *user, uint64_t *id) {
+    Fixture *f = ctx;
+    (void)changed;
+    REQUIRE(!f->dialog && request && closed && user && id);
+    REQUIRE(request->button_count == 2 && request->cancel_button == 1 && request->model);
+    REQUIRE(request->model->state_count == 2 && request->model->states);
+    REQUIRE(same(request->model->states[0].key, "import.path"));
+    REQUIRE(same(request->model->states[0].value, "C:\\fixture\\cat"));
+    REQUIRE(same(request->model->states[1].value, "cat"));
+    f->dialog = ++f->next; *id = f->dialog;
+    f->dialog_closed = closed; f->dialog_user = user;
+    return PULSE_OK;
+}
+static PulseStatus PULSE_CALL close_dialog(void *ctx, uint64_t dialog) {
+    Fixture *f = ctx;
+    REQUIRE(dialog && dialog == f->dialog && f->dialog_closed);
+    PulseDialogClosed callback = f->dialog_closed;
+    void *user = f->dialog_user;
+    f->dialog = 0; f->dialog_closed = NULL; f->dialog_user = NULL;
+    callback(user, dialog, PULSE_OK, view("cancel"), NULL, 0);
+    return PULSE_OK;
+}
 static PulseStatus PULSE_CALL query(void *ctx, PulseStringView name, uint32_t version, void *out, uint32_t size) {
     Fixture *f = ctx;
     REQUIRE(version == 1 && out);
@@ -334,6 +371,16 @@ static PulseStatus PULSE_CALL query(void *ctx, PulseStringView name, uint32_t ve
     if (same(name, PULSE_DISPATCH_INTERFACE) && f->auto_dispatch) {
         REQUIRE(size >= sizeof(PulseDispatchV1));
         PulseDispatchV1 t = {.size=sizeof(t), .version=1, .context=f, .post=post, .cancel=cancel_dispatch};
+        memcpy(out, &t, sizeof(t)); return PULSE_OK;
+    }
+    if (f->bundled && same(name, PULSE_DIALOGS_INTERFACE_NAME)) {
+        REQUIRE(size >= sizeof(PulseDialogsV1));
+        PulseDialogsV1 t = {.size=sizeof(t), .version=1, .context=f, .show=show_dialog, .close=close_dialog};
+        memcpy(out, &t, sizeof(t)); return PULSE_OK;
+    }
+    if (f->bundled && same(name, PULSE_CONTEXT_INTERFACE_NAME)) {
+        REQUIRE(size >= sizeof(PulseContextV1));
+        PulseContextV1 t = {.size=sizeof(t), .version=1, .context=f, .get_selection=selection};
         memcpy(out, &t, sizeof(t)); return PULSE_OK;
     }
     if (same(name, PULSE_TASKS_INTERFACE_NAME)) {
@@ -367,7 +414,7 @@ static int deliver(Fixture *f, PulseStatus status, int wrong_operation) {
     return 0;
 }
 static int click(Fixture *f, unsigned i) {
-    CHECK(i < 19 && f->click[i] && f->page);
+    CHECK(i < 21 && f->click[i] && f->page);
     f->click[i](f->users[i], f->page, view(commands[i]));
     return 0;
 }
@@ -377,7 +424,7 @@ static int cycle(PulsePluginEntryV1Fn entry, int fallback) {
     PulseHostV1 host = {.size=sizeof(host), .version=1, .context=&f, .query_interface=query};
     PulsePluginV1 out = {.size=sizeof(out), .version=1};
     CHECK(entry(&host, &out) == PULSE_OK && out.instance && out.activate && out.deactivate && out.destroy);
-    CHECK(out.activate(out.instance) == PULSE_OK && f.created == 1 && f.subscribed == 19 && f.pending && f.task);
+    CHECK(out.activate(out.instance) == PULSE_OK && f.created == 1 && f.subscribed == 21 && f.pending && f.task);
     CHECK(click(&f, 3) == 0 && f.global && !f.enabled_more);
     CHECK(deliver(&f, PULSE_OK, 0) == 0 && f.enabled_more && f.enabled_less);
     CHECK(click(&f, 6) == 0 && f.pending && f.requested == '5' && !f.enabled_more);
@@ -394,7 +441,7 @@ static int cycle(PulsePluginEntryV1Fn entry, int fallback) {
     CHECK(click(&f, 4) == 0 && f.pending);
     f.fail_remove = 1;
     out.deactivate(out.instance);
-    CHECK(!f.pending && f.canceled == 1 && f.page && f.subscribed == 19);
+    CHECK(!f.pending && f.canceled == 1 && f.page && f.subscribed == 21);
     CHECK(f.task_canceled == 1 && f.task_state == PULSE_TASK_CANCELLED);
     CHECK(click(&f, 6) == 0 && !f.pending); /* inactive callbacks cannot save */
     f.fail_remove = 0;
@@ -449,6 +496,8 @@ static int bundled_session(PulsePluginEntryV1Fn entry) {
     CHECK(cancel_task(&f, f.task) == PULSE_OK);
     for (unsigned i = 0; i < 100 && f.task; ++i) { Sleep(20); pump(&f); }
     CHECK(!f.task);
+    CHECK(click(&f, 19) == 0 && f.dialog && !f.task);
+    CHECK(close_dialog(&f, f.dialog) == PULSE_OK && !f.dialog && !f.task);
     CHECK(click(&f, 1) == 0 && f.task && f.worker);
     for (unsigned i = 0; i < 750 && f.task; ++i) { Sleep(20); pump(&f); }
     CHECK(!f.task && f.task_state == PULSE_TASK_COMPLETED && f.start_enabled);

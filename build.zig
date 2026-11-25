@@ -269,6 +269,7 @@ const Modules = struct {
             .imports = &.{
                 .{ .name = "runtime_budget", .module = runtime_budget },
                 .{ .name = "process_trust", .module = process_trust },
+                .{ .name = "pulse_process", .module = process_mod },
             },
         });
         var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod, .vcs_capabilities = vcs_capabilities, .vcs_identity = vcs_identity, .vcs_risk = vcs_risk, .vcs_detect = vcs_detect, .vcs_provider = vcs_provider, .vcs_cli = vcs_cli, .vcs_snapshot = vcs_snapshot, .vcs_git = vcs_git, .vcs_jj = vcs_jj, .vcs_svn = vcs_svn };

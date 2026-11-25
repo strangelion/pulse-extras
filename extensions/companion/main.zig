@@ -1,5 +1,5 @@
 //! Experimental native Companion settings contribution. All SDK calls
-//! are on the UI thread. Read-only inventory I/O uses a host task.
+//! are on the UI thread. Inventory reads and writes use host tasks.
 const std = @import("std");
 const raw = @import("pulse_raw");
 const abi = @import("pulse_abi");
@@ -24,7 +24,7 @@ const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -61,6 +61,11 @@ const Instance = struct {
     work_done: std.atomic.Value(bool) = .init(false),
     work_error: ?anyerror = null,
     preference_edit: ?library.PreferenceEdit = null,
+    import_request: ?library.ImportRequest = null,
+    import_result: ?library.ImportResult = null,
+    import_dialog: u64 = 0,
+    dialogs: ?raw.PulseDialogsV1 = null,
+    import_cancel_requested: bool = false,
     work_snapshot: library.Snapshot = .{},
     library_snapshot: library.Snapshot = .{},
     library_loaded: bool = false,
@@ -75,7 +80,8 @@ const Instance = struct {
 const Content = struct {
     declared: [commands.len]abi.StringView = undefined,
     navigation: [4]ui.Node = undefined,
-    children: [26]ui.Node = undefined,
+    children: [28]ui.Node = undefined,
+    import_toolbar: [2]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
     states: [4]ui.State = undefined,
@@ -157,7 +163,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 content.children[5] = changingLabel(&content.dynamic_ids[1], "library.count", line);
                 count = 6;
                 if (snapshot.count == 0) {
-                    content.children[count] = if (snapshot.total == 0) label("library.empty", "暂无本地素材；导入功能尚未接入。") else label("library.no-match", "没有匹配的素材，请调整搜索条件。");
+                    content.children[count] = if (snapshot.total == 0) label("library.empty", "暂无本地素材；打包运行时后可导入。") else label("library.no-match", "没有匹配的素材，请调整搜索条件。");
                     count += 1;
                 }
                 if (snapshot.count > 16) {
@@ -192,6 +198,13 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     content.children[count] = label(id, body);
                     count += 1;
                 }
+            }
+            if (instance.dialogs != null and config.helper_sha256.len == 64 and config.runtime_sha256.len == 64) {
+                const enabled = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.import_dialog == 0;
+                content.import_toolbar[0] = action("library.import", "导入本地素材", commands[19], enabled);
+                content.import_toolbar[1] = action("library.import-cancel", "取消导入", commands[20], instance.import_request != null and instance.task_id != 0 and !instance.import_cancel_requested);
+                content.children[count] = horizontal("library.import-toolbar", content.import_toolbar[0..if (instance.import_request != null) @as(usize, 2) else 1]);
+                count += 1;
             }
         },
         .running => {
@@ -377,6 +390,12 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
             return raw.PULSE_TASK_FAILED;
         };
     }
+    if (instance.import_request) |*request| {
+        instance.import_result = library.importDefault(config.runtime_sha256, config.helper_sha256, request) catch |err| {
+            instance.work_error = err;
+            return raw.PULSE_TASK_FAILED;
+        };
+    }
     library.readFilteredDefault(&instance.work_snapshot, .{ .query = instance.query[0..instance.query_len], .favorites_only = instance.favorites_only, .cancel = canceled, .context = context[0].context }) catch |err| {
         if (err == error.Canceled) return raw.PULSE_TASK_CANCELLED;
         instance.work_error = err;
@@ -517,16 +536,19 @@ fn pollLibrary(instance: *Instance) void {
     diag.status("companion-library-terminal", instance.task_state);
     instance.task_id = 0;
     const was_edit = instance.preference_edit != null;
+    const was_import = instance.import_request != null;
     instance.preference_edit = null;
+    instance.import_request = null;
+    instance.import_cancel_requested = false;
     const done = instance.work_done.load(.acquire);
     if (instance.task_state == raw.PULSE_TASK_COMPLETED and done and instance.work_error == null) {
         instance.library_snapshot = instance.work_snapshot;
         instance.library_loaded = true;
         instance.library_offset = 0;
-        instance.library_status = if (was_edit) "偏好已保存并重新读取" else if (instance.library_snapshot.missing) "固定目录中尚无素材清单（未创建文件）" else "已读取持久化清单；尚未验证素材文件";
+        instance.library_status = if (was_import) (if (instance.import_result != null and instance.import_result.? == .existing) "素材已存在；未重复复制" else "素材已导入并重新读取") else if (was_edit) "偏好已保存并重新读取" else if (instance.library_snapshot.missing) "固定目录中尚无素材清单（未创建文件）" else "已读取持久化清单；尚未验证素材文件";
     } else {
         instance.library_loaded = false;
-        instance.library_status = if (instance.task_state == raw.PULSE_TASK_CANCELLED) (if (was_edit) "编辑任务已取消；请刷新确认磁盘状态" else "读取已取消") else if (done) if (instance.work_error) |err| @errorName(err) else "读取结果无效" else "读取未完成";
+        instance.library_status = if (was_import and done and instance.import_result != null) "导入已提交；请刷新确认库存" else if (instance.task_state == raw.PULSE_TASK_CANCELLED) (if (was_import or was_edit) "任务已取消；请刷新确认磁盘状态" else "读取已取消") else if (done) if (instance.work_error) |err| @errorName(err) else "读取结果无效" else "读取未完成";
     }
     refresh(instance);
 }
@@ -570,7 +592,7 @@ fn pollRuntime(instance: *Instance) void {
 }
 
 fn startRuntimeCheck(instance: *Instance) void {
-    if (!instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0 or instance.preference_edit != null) return;
+    if (!instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0 or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0) return;
     const tasks = instance.tasks orelse return;
     const create = tasks.create orelse return;
     // Existing dispatcher/timer is required: do not create an uncollectable task.
@@ -606,7 +628,7 @@ fn startBuiltin(instance: *Instance) void {
 }
 
 fn startAsset(instance: *Instance, asset_id: u64) void {
-    if (!instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or asset_id == 0) return;
+    if (!instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or asset_id == 0) return;
     if (instance.runtime_task_id != 0) {
         if (instance.task_kind != .builtin_session) return;
         instance.runtime_status = if (instance.session.requestAsset(asset_id)) "已提交新增实例请求" else "暂不可新增实例；请等待或停止";
@@ -702,6 +724,7 @@ fn startLibraryAsset(instance: *Instance) void {
 }
 
 fn startPreference(instance: *Instance, action_kind: library.PreferenceAction) void {
+    if (instance.import_dialog != 0 or instance.import_request != null) return;
     if (!instance.active or !instance.library_loaded or instance.task_id != 0 or instance.runtime_task_id != 0 or config.runtime_sha256.len != 64 or instance.dispatch == null) return;
     const panel = instance.panel orelse return;
     const get_state = panel.table.get_state orelse return;
@@ -737,9 +760,135 @@ fn startPreference(instance: *Instance, action_kind: library.PreferenceAction) v
     refresh(instance);
 }
 
+const Selection = struct {
+    path: [4096]u8 = undefined,
+    len: usize = 0,
+    id: [64]u8 = undefined,
+    id_len: usize = 0,
+
+    fn capture(user: ?*anyopaque, snapshot: [*c]const raw.PulseContextSelectionSnapshot) callconv(.c) void {
+        const self: *Selection = @ptrCast(@alignCast(user orelse return));
+        if (snapshot == null or snapshot[0].size < @sizeOf(raw.PulseContextSelectionSnapshot) or snapshot[0].entry_count != 1 or snapshot[0].entries == null) return;
+        const entry = &snapshot[0].entries[0];
+        if (entry.size < @sizeOf(raw.PulseContextSelectionEntry) or (entry.flags & raw.PULSE_CONTEXT_ENTRY_DIRECTORY) == 0) return;
+        const path = abi.slice(entry.path) orelse return;
+        if (path.len < 4 or path.len > self.path.len or !std.unicode.utf8ValidateSlice(path) or std.mem.indexOfScalar(u8, path, 0) != null) return;
+        @memcpy(self.path[0..path.len], path);
+        self.len = path.len;
+        const name = abi.slice(entry.name) orelse return;
+        if (library.validSourceId(name)) {
+            @memcpy(self.id[0..name.len], name);
+            self.id_len = name.len;
+        }
+    }
+};
+
+fn importClosed(user: ?*anyopaque, dialog: u64, status: abi.Status, button: abi.StringView, states: [*c]const ui.State, count: u32) callconv(.c) void {
+    const instance: *Instance = @ptrCast(@alignCast(user orelse return));
+    if (dialog == 0 or dialog != instance.import_dialog) return;
+    instance.import_dialog = 0;
+    if (!instance.active) return;
+    if (status != abi.ok or !std.mem.eql(u8, abi.slice(button) orelse "", "import")) {
+        refresh(instance);
+        return;
+    }
+    if (instance.task_id != 0 or instance.runtime_task_id != 0 or instance.section != .library or count != 2 or states == null) {
+        instance.library_status = "导入条件已变化，请重试";
+        refresh(instance);
+        return;
+    }
+    var path: ?[]const u8 = null;
+    var id: ?[]const u8 = null;
+    for (states[0..count]) |state| {
+        const key = abi.slice(state.key) orelse continue;
+        if (std.mem.eql(u8, key, "import.path") and path == null) path = abi.slice(state.value) else if (std.mem.eql(u8, key, "import.id") and id == null) id = abi.slice(state.value);
+    }
+    instance.import_request = library.ImportRequest.init(path orelse "", id orelse "") catch {
+        instance.library_status = "请输入本地绝对目录及 pet.json 中的有效素材 ID";
+        refresh(instance);
+        return;
+    };
+    instance.import_result = null;
+    instance.import_cancel_requested = false;
+    startLibrary(instance, false);
+    if (instance.task_id == 0) instance.import_request = null;
+    refresh(instance);
+}
+
+fn showImport(instance: *Instance) void {
+    if (!instance.active or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.tasks == null or instance.dispatch == null or config.helper_sha256.len != 64 or config.runtime_sha256.len != 64) return;
+    const dialogs = instance.dialogs orelse return;
+    const show = dialogs.show orelse return;
+    var selection: Selection = .{};
+    const context = instance.host.queryOptional(raw.PulseContextV1, raw.PULSE_CONTEXT_INTERFACE_NAME, raw.PULSE_CONTEXT_VERSION_1) catch null;
+    if (context) |table| {
+        if (table.get_selection) |get| {
+            if (get(table.context, Selection.capture, &selection) != abi.ok) selection = .{};
+        }
+    }
+    var fields = [_]ui.Node{ ui.node(ui.NodeKind.text_input), ui.node(ui.NodeKind.text_input) };
+    fields[0].id = abi.view("import.path");
+    fields[0].text = .{ .present = 1, .value = abi.view("素材文件夹") };
+    fields[0].placeholder = .{ .present = 1, .value = abi.view("本地绝对路径，例如 C:\\Pets\\cat") };
+    fields[0].state = .{ .present = 1, .value = abi.view("import.path") };
+    fields[1].id = abi.view("import.id");
+    fields[1].text = .{ .present = 1, .value = abi.view("来源 ID") };
+    fields[1].placeholder = .{ .present = 1, .value = abi.view("pet.json 中的 id") };
+    fields[1].state = .{ .present = 1, .value = abi.view("import.id") };
+    var root = ui.node(ui.NodeKind.stack);
+    root.id = abi.view("import.form");
+    root.gap = .{ .present = 1, .value = 8 };
+    ui.withChildren(&root, &fields);
+    const states = [_]ui.State{
+        .{ .key = abi.view("import.path"), .value = abi.view(selection.path[0..selection.len]) },
+        .{ .key = abi.view("import.id"), .value = abi.view(selection.id[0..selection.id_len]) },
+    };
+    var tree = std.mem.zeroes(ui.Tree);
+    tree.size = @sizeOf(ui.Tree);
+    tree.root = &root;
+    tree.states = &states;
+    tree.state_count = states.len;
+    const buttons = [_]raw.PulseDialogButton{
+        .{ .size = @sizeOf(raw.PulseDialogButton), .kind = raw.PULSE_DIALOG_BUTTON_PRIMARY, .id = abi.view("import"), .text = abi.view("导入") },
+        .{ .size = @sizeOf(raw.PulseDialogButton), .kind = raw.PULSE_DIALOG_BUTTON_STANDARD, .id = abi.view("cancel"), .text = abi.view("取消") },
+    };
+    const request: raw.PulseDialogRequest = .{
+        .size = @sizeOf(raw.PulseDialogRequest),
+        .title = abi.view("导入 OpenPets 素材"),
+        .message = abi.view("选择含 pet.json 的文件夹，确认来源 ID。仅复制到私有素材库，不修改源文件。"),
+        .width = 560,
+        .height = 160,
+        .default_button = 0,
+        .cancel_button = 1,
+        .button_count = buttons.len,
+        .buttons = &buttons,
+        .model = &tree,
+    };
+    var id: u64 = 0;
+    if (show(dialogs.context, &request, null, importClosed, instance, &id) != abi.ok or id == 0) {
+        instance.library_status = "宿主未能打开导入确认窗口";
+    } else {
+        instance.import_dialog = id;
+    }
+    refresh(instance);
+}
+
+fn cancelImport(instance: *Instance) void {
+    if (instance.import_request == null or instance.task_id == 0 or instance.import_cancel_requested) return;
+    const tasks = instance.tasks orelse return;
+    const cancel = tasks.cancel orelse return;
+    if (cancel(tasks.context, instance.task_id) == abi.ok) {
+        instance.import_cancel_requested = true;
+        instance.library_status = "已请求取消；等待受控 Helper 返回，已提交的写入不会撤销";
+    } else {
+        instance.library_status = "取消请求失败；仍保留任务所有权";
+    }
+    refresh(instance);
+}
+
 fn startLibrary(instance: *Instance, capture_query: bool) void {
     const tasks = instance.tasks orelse return;
-    if (instance.task_id != 0) return;
+    if (instance.task_id != 0 or instance.import_dialog != 0) return;
     const create = tasks.create orelse return;
     if (capture_query) {
         const panel = instance.panel orelse return;
@@ -764,7 +913,7 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     instance.library_loaded = false;
     const descriptor: raw.PulseTaskDescriptor = .{
         .size = @sizeOf(raw.PulseTaskDescriptor),
-        .title = abi.view(if (instance.preference_edit != null) "保存桌宠偏好" else "读取桌宠素材清单"),
+        .title = abi.view(if (instance.import_request != null) "导入桌宠素材" else if (instance.preference_edit != null) "保存桌宠偏好" else "读取桌宠素材清单"),
         .type = abi.view("companion.library"),
         .work = readLibrary,
         .user = instance,
@@ -772,7 +921,7 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     var id: u64 = 0;
     if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
         instance.task_id = id;
-        instance.library_status = if (instance.preference_edit != null) "正在保存素材偏好" else "正在自动读取素材清单";
+        instance.library_status = if (instance.import_request != null) "正在导入本地素材" else if (instance.preference_edit != null) "正在保存素材偏好" else "正在自动读取素材清单";
         armTimer(instance);
         if (instance.timer == null) instance.library_status = "正在读取；宿主自动刷新不可用，可手动检查";
     } else {
@@ -823,6 +972,8 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             16 => startPreference(instance, .toggle_favorite),
             17 => startPreference(instance, .add_tag),
             18 => startPreference(instance, .remove_tag),
+            19 => showImport(instance),
+            20 => cancelImport(instance),
             else => {},
         }
         return;
@@ -834,6 +985,16 @@ fn close(instance: *Instance) host_mod.Error!void {
     instance.runtime_checked = false;
     instance.runtime_status = if (config.runtime_sha256.len == 0) "未打包运行时；无法启动桌宠" else "切换至运行管理时检查同包运行时";
     stopTimer(instance);
+    if (instance.import_dialog != 0) {
+        const dialogs = instance.dialogs orelse return error.State;
+        const close_dialog = dialogs.close orelse return error.Unavailable;
+        host_mod.mapStatus(close_dialog(dialogs.context, instance.import_dialog)) catch |err| switch (err) {
+            error.State => {},
+            else => return err,
+        };
+        instance.import_dialog = 0;
+    }
+    instance.dialogs = null;
     var cancel_error: ?host_mod.Error = null;
     for ([_]u64{ instance.runtime_task_id, instance.task_id }) |id| {
         if (id == 0) continue;
@@ -920,6 +1081,10 @@ fn open(instance: *Instance) host_mod.Error!void {
     instance.dispatch = try instance.host.queryOptional(raw.PulseDispatchV1, raw.PULSE_DISPATCH_INTERFACE, raw.PULSE_DISPATCH_VERSION);
     if (instance.dispatch) |dispatch| {
         if (dispatch.post == null or dispatch.cancel == null) instance.dispatch = null;
+    }
+    instance.dialogs = instance.host.queryOptional(raw.PulseDialogsV1, raw.PULSE_DIALOGS_INTERFACE_NAME, raw.PULSE_DIALOGS_VERSION_1) catch null;
+    if (instance.dialogs) |dialogs| {
+        if (dialogs.show == null or dialogs.close == null) instance.dialogs = null;
     }
     instance.active = true;
     const had_tasks = instance.task_id != 0 or instance.runtime_task_id != 0;

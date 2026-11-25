@@ -1014,3 +1014,18 @@ fixture and companion library dependency graph now share that module;
 standalone legacy companion_host remains an independent test root. CI #198
 failed at compile time before the local import transaction could execute.
 The test is retained and must pass before exposing a write-capable UI.
+
+## Pulse-native local import confirmation
+
+The library exposes Import only for the bundled, verified runtime/helper
+and a host supporting pulse.dialogs. pulse.context.get_selection copies a
+single selected directory and a valid leaf ID into the native confirmation
+form; absent/invalid selection leaves editable empty fields. The source ID
+must match pet.json. Canceling the dialog creates no task. Confirmed fields
+are copied into bounded plugin-owned memory and sent to the existing local
+import transaction in a host task with a private Threaded I/O instance.
+Preference writes and runtime tasks cannot overlap the import. Cancellation
+is cooperative at task boundaries; the bounded helper call may finish and
+an already committed import is never represented as rolled back. The ABI
+fixture verifies selection-prefill and cancel without touching user files;
+actual import backend remains covered by the isolated bridge regression.

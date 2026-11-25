@@ -3,6 +3,7 @@
   "id": "strangelion.companion-dev",
   "name": "Pulse Companion (Development)",
   "resources": [
-    "settings.own"
+    "settings.own",
+    "context.read"
   ]
 }
