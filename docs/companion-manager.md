@@ -231,3 +231,17 @@ source file deletion or ID allocator yet. Fixed the obsolete Zig array
 repetition syntax from failed run 45570423680 using a typed @splat array.
 New tests cover round trip, every truncation prefix, wrong ID, small output,
 feature filtering and removal guards. CI remains required.
+
+## Durable per-asset preference files
+
+Windows adapter stores PCT1 records under an approved private local root,
+using numeric stable IDs, bounded file sizes, exclusive pending files,
+flush, then same-volume replacement. Prior records are validated before
+replacement; invalid or unknown versions are not overwritten. A pending
+file left by a crash blocks saving and is not silently deleted. This is
+not a full power-loss transaction guarantee. The root ACL and serialized
+ownership remain caller responsibilities. The source asset directory is
+not accessed by these operations. Actual persistent inventory/ID allocation,
+import and root setup/recovery are still pending. Windows CI adds an isolated
+real-file round trip/replacement/corrupt-record preservation test. Prior
+Ubuntu run 45570692091 passed; Windows was still running at check time.

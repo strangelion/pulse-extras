@@ -193,6 +193,13 @@ jobs:
         run: |
           zig test shared/companion/pet_supervisor_win32.c tests/companion/pet_host_fixture.c -target x86_64-windows-gnu -lc -lpsapi --dep runtime_budget '-Mroot=shared/companion_group.zig' '-Mruntime_budget=shared/runtime/budget.zig'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test durable companion catalog preferences
+        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
+        shell: pwsh
+        timeout-minutes: 4
+        run: |
+          zig test shared/companion/pet_catalog_store_win32.c tests/companion/pet_catalog_store_fixture.c -target x86_64-windows-gnu -lc --dep runtime_budget '-Mroot=shared/companion_catalog_store.zig' '-Mruntime_budget=shared/runtime/budget.zig'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Fetch pinned native SDK headers
         if: runner.os == 'Windows' && needs.scope.outputs.level == 'full'
         run: python scripts/fetch_sdk.py
