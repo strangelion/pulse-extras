@@ -887,3 +887,18 @@ asset selection are not connected yet. The bundled fixture now starts a
 second real pet in the same task, checks two ready instances, switches to the
 library, and stops the entire group. Pilot limit is not the final configured
 limit; 100-pet host testing remains separate.
+
+## Per-instance snapshots and targeted stop
+
+The runtime worker publishes bounded copies of the current instance rows
+via a nonblocking atomic lock; UI retains its prior copy when publication
+is busy. Rows show stable instance ID, state, PID, measured CPU core percent,
+working set, private bytes and handle count; absent samples are not zero.
+A fixed text input and command accept an explicit instance ID (not a row
+index/PID). At most one targeted stop is pending/in progress; the worker
+revalidates the ID, cooperatively stops that instance, escalates after two
+seconds and requires confirmed reap. A five-second failure drains the group
+with explicit diagnostics. Stop All remains available. The bundled fixture
+now starts two actual helpers, stops ID 1, verifies ID 2 remains, then stops
+all. The pilot limit stays eight. This does not yet authorize managed asset
+starts or make the limit configurable.

@@ -24,7 +24,7 @@ const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -55,6 +55,7 @@ const Instance = struct {
     runtime_status: []const u8 = if (config.runtime_sha256.len == 0) "未打包运行时；无法启动桌宠" else "切换至运行管理时检查同包运行时",
     runtime_checked: bool = false,
     session: library.Session = .{},
+    running_rows: library.RunningSnapshot = .{},
     stop_requested: bool = false,
     task_state: u32 = raw.PULSE_TASK_RUNNING,
     work_done: std.atomic.Value(bool) = .init(false),
@@ -76,7 +77,8 @@ const Content = struct {
     children: [24]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
-    states: [1]ui.State = undefined,
+    states: [2]ui.State = undefined,
+    stop_toolbar: [2]ui.Node = undefined,
     row_text: [16][256]u8 = undefined,
     row_ids: [16][64]u8 = undefined,
     dynamic_ids: [4][64]u8 = undefined,
@@ -187,6 +189,32 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 }, instance.session.ready.load(.acquire), instance.session.owned.load(.acquire), instance.session.denied.load(.acquire), instance.session.working_set.load(.acquire) / 1024, instance.session.private_bytes.load(.acquire) / 1024 }) catch unreachable;
                 content.children[4] = changingLabel(&content.dynamic_ids[1], "running.metrics", status);
                 count = 5;
+                if (instance.running_rows.count != 0) {
+                    content.stop_toolbar[0] = ui.node(ui.NodeKind.text_input);
+                    content.stop_toolbar[0].id = abi.view("running.stop-id");
+                    content.stop_toolbar[0].state = .{ .present = 1, .value = abi.view("running.stop-id") };
+                    content.stop_toolbar[0].placeholder = .{ .present = 1, .value = abi.view("输入实例 ID") };
+                    const can_stop = !instance.stop_requested and instance.session.pending_stop.load(.acquire) == 0 and instance.session.stopping_id.load(.acquire) == 0 and phase == .running and !instance.session.pending_start.load(.acquire);
+                    content.stop_toolbar[1] = action("running.stop-one", "停止指定实例", commands[14], can_stop);
+                    content.children[count] = horizontal("running.stop-toolbar", &content.stop_toolbar);
+                    count += 1;
+                    for (instance.running_rows.rows[0..instance.running_rows.count], 0..) |item, n| {
+                        const state = switch (item.state) {
+                            .starting => "启动中",
+                            .running => "运行中",
+                            .stopping => "正在退出",
+                        };
+                        const body = if (item.metrics) |metrics| blk: {
+                            if (metrics.cpu_core_percent) |cpu| {
+                                break :blk std.fmt.bufPrint(&content.row_text[n], "ID {d} · {s} · PID {d} · CPU {d:.1}% · 工作集 {d} KiB · 私有 {d} KiB · 句柄 {d}", .{ item.id, state, metrics.pid, cpu, metrics.working_set / 1024, metrics.private_bytes / 1024, metrics.handles }) catch unreachable;
+                            }
+                            break :blk std.fmt.bufPrint(&content.row_text[n], "ID {d} · {s} · PID {d} · CPU — · 工作集 {d} KiB · 私有 {d} KiB · 句柄 {d}", .{ item.id, state, metrics.pid, metrics.working_set / 1024, metrics.private_bytes / 1024, metrics.handles }) catch unreachable;
+                        } else std.fmt.bufPrint(&content.row_text[n], "ID {d} · {s} · 暂无资源采样", .{ item.id, state }) catch unreachable;
+                        const id = std.fmt.bufPrint(&content.row_ids[n], "instance-{x}-{x}", .{ item.id, std.hash.Wyhash.hash(0, body) }) catch unreachable;
+                        content.children[count] = label(id, body);
+                        count += 1;
+                    }
+                }
             }
         },
         .market => content.children[2] = label("market.status", "市场服务已独立实现，尚未连接宿主工作线程。搜索、下载和安装暂不可用。"),
@@ -211,6 +239,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     tree.commands = &content.declared;
     tree.command_count = content.declared.len;
     content.states[0] = .{ .key = abi.view("library.query"), .value = abi.view(instance.query[0..instance.query_len]) };
+    content.states[1] = .{ .key = abi.view("running.stop-id"), .value = abi.view("") };
     tree.states = &content.states;
     tree.state_count = content.states.len;
 }
@@ -470,7 +499,10 @@ fn pollRuntime(instance: *Instance) void {
         return;
     }
     if (!terminal(instance.runtime_task_state)) {
-        if (instance.task_kind == .builtin_session and instance.section == .running) refresh(instance);
+        if (instance.task_kind == .builtin_session) {
+            instance.session.copyRows(&instance.running_rows);
+            if (instance.section == .running) refresh(instance);
+        }
         return;
     }
     if (release(tasks.context, instance.runtime_task_id) != abi.ok) {
@@ -480,6 +512,7 @@ fn pollRuntime(instance: *Instance) void {
     }
     diag.status("companion-runtime-terminal", instance.runtime_task_state);
     instance.runtime_task_id = 0;
+    instance.running_rows = .{};
     const done = instance.runtime_done.load(.acquire);
     if (instance.task_kind == .builtin_session) {
         instance.stop_requested = false;
@@ -536,6 +569,7 @@ fn startBuiltin(instance: *Instance) void {
     instance.runtime_done.store(false, .release);
     instance.runtime_error = null;
     instance.session.reset();
+    instance.running_rows = .{};
     instance.stop_requested = false;
     instance.task_kind = .builtin_session;
     const descriptor: raw.PulseTaskDescriptor = .{
@@ -567,6 +601,28 @@ fn stopBuiltin(instance: *Instance) void {
     } else {
         instance.runtime_status = "停止请求未确认";
     }
+    refresh(instance);
+}
+
+fn stopOne(instance: *Instance) void {
+    if (instance.runtime_task_id == 0 or instance.task_kind != .builtin_session or instance.stop_requested) return;
+    const panel = instance.panel orelse return;
+    const get_state = panel.table.get_state orelse return;
+    var bytes: [32]u8 = undefined;
+    var needed: u32 = 0;
+    if (get_state(panel.table.context, panel.id, abi.view("running.stop-id"), &bytes, bytes.len, &needed) != abi.ok or needed == 0 or needed >= bytes.len) {
+        instance.runtime_status = "请输入有效实例 ID";
+        refresh(instance);
+        return;
+    }
+    const id = std.fmt.parseInt(u64, bytes[0..needed], 10) catch 0;
+    for (instance.running_rows.rows[0..instance.running_rows.count]) |item| {
+        if (item.id != id or item.state == .stopping) continue;
+        instance.runtime_status = if (instance.session.requestStop(id)) "已提交指定实例停止请求" else "停止请求繁忙；请稍后重试";
+        refresh(instance);
+        return;
+    }
+    instance.runtime_status = "实例 ID 不存在或已在退出";
     refresh(instance);
 }
 
@@ -650,6 +706,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             },
             12 => startBuiltin(instance),
             13 => stopBuiltin(instance),
+            14 => stopOne(instance),
             else => {},
         }
         return;

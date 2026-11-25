@@ -14,13 +14,14 @@
 static const char *commands[] = {
     "companion.library", "companion.running", "companion.market", "companion.global",
     "companion.settings.refresh", "companion.download.less", "companion.download.more",
-    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop"
+    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one"
 };
 typedef struct {
     uint64_t page, next, pending, version;
     unsigned created, removed, canceled, updates, subscribed, fail_subscribe;
     int fallback, fail_remove, enabled_more, enabled_less, global, saved_present;
-    int auto_dispatch, bundled, start_enabled, stop_enabled, first_frame, two_ready;
+    int auto_dispatch, bundled, start_enabled, stop_enabled, first_frame, two_ready, only_second;
+    unsigned running_rows;
     HANDLE worker;
     volatile LONG cancel_flag;
     CRITICAL_SECTION dispatch_lock;
@@ -29,8 +30,8 @@ typedef struct {
     uint64_t dispatch_id;
     char saved, requested;
     uint32_t operation;
-    PulseUiClickFn click[14];
-    void *users[14];
+    PulseUiClickFn click[15];
+    void *users[15];
     uint64_t task, aux_task;
     PulseTaskWorkFn aux_work;
     void *aux_user;
@@ -50,8 +51,8 @@ static int same(PulseStringView s, const char *text) {
 }
 
 static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
-    REQUIRE(t && t->size == sizeof(*t) && t->root && t->command_count == 14 && t->commands);
-    for (unsigned i = 0; i < 14; ++i) REQUIRE(same(t->commands[i], commands[i]));
+    REQUIRE(t && t->size == sizeof(*t) && t->root && t->command_count == 15 && t->commands);
+    for (unsigned i = 0; i < 15; ++i) REQUIRE(same(t->commands[i], commands[i]));
     const PulseUiModelNode *root = t->root;
     REQUIRE(root->size == sizeof(*root) && root->type == PULSE_UI_MODEL_STACK);
     REQUIRE(root->children.present && root->children.data && (root->children.count >= 3 && root->children.count <= 24));
@@ -74,14 +75,20 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
         f->enabled_more = (int)more->enabled.value;
     }
     if (same(root->children.data[1].id, "running")) {
-        REQUIRE(root->children.count == 4 || root->children.count == 5);
+        REQUIRE(root->children.count >= 4 && root->children.count <= 14);
         const PulseUiModelNode *toolbar = root->children.data + 3;
         REQUIRE(toolbar->children.present && toolbar->children.count == 2);
         f->start_enabled = (int)toolbar->children.data[0].enabled.value;
         f->stop_enabled = (int)toolbar->children.data[1].enabled.value;
         f->first_frame = 0;
         f->two_ready = 0;
-        if (root->children.count == 5) {
+        f->running_rows = root->children.count >= 6 ? root->children.count - 6 : 0;
+        f->only_second = 0;
+        if (f->running_rows == 1) {
+            const PulseStringView row = root->children.data[6].text.value;
+            f->only_second = row.data && row.length >= 5 && memcmp(row.data, "ID 2 ", 5) == 0;
+        }
+        if (root->children.count >= 5) {
             const PulseStringView text = root->children.data[4].text.value;
             const char *prefix = "首帧已确认";
             const char *two = "首帧已确认 · 运行 2/2";
@@ -124,7 +131,7 @@ static PulseStatus PULSE_CALL update(void *ctx, uint64_t page, const PulseUiMode
 static PulseStatus PULSE_CALL subscribe(void *ctx, uint64_t page, PulseStringView command, PulseUiClickFn click, void *user, uint64_t *id) {
     Fixture *f = ctx;
     REQUIRE(page && page == f->page && click && user && id);
-    for (unsigned i = 0; i < 14; ++i) {
+    for (unsigned i = 0; i < 15; ++i) {
         if (!same(command, commands[i])) continue;
         REQUIRE(!f->click[i]);
         if (f->fail_subscribe && i == 2) return PULSE_ERROR_STATE;
@@ -146,7 +153,11 @@ static PulseStatus PULSE_CALL remove_page(void *ctx, uint64_t page) {
 }
 static PulseStatus PULSE_CALL get_state(void *ctx, uint64_t page, PulseStringView key, char *buffer, uint32_t capacity, uint32_t *needed) {
     Fixture *f = ctx;
-    REQUIRE(page == f->page && same(key, "library.query") && needed && buffer && capacity >= 5);
+    REQUIRE(page == f->page && needed && buffer && capacity >= 5);
+    if (same(key, "running.stop-id")) {
+        memcpy(buffer, "1", 2); *needed = 1; return PULSE_OK;
+    }
+    REQUIRE(same(key, "library.query"));
     memcpy(buffer, "test", 5);
     *needed = 4;
     return PULSE_OK;
@@ -356,7 +367,7 @@ static int deliver(Fixture *f, PulseStatus status, int wrong_operation) {
     return 0;
 }
 static int click(Fixture *f, unsigned i) {
-    CHECK(i < 14 && f->click[i] && f->page);
+    CHECK(i < 15 && f->click[i] && f->page);
     f->click[i](f->users[i], f->page, view(commands[i]));
     return 0;
 }
@@ -366,7 +377,7 @@ static int cycle(PulsePluginEntryV1Fn entry, int fallback) {
     PulseHostV1 host = {.size=sizeof(host), .version=1, .context=&f, .query_interface=query};
     PulsePluginV1 out = {.size=sizeof(out), .version=1};
     CHECK(entry(&host, &out) == PULSE_OK && out.instance && out.activate && out.deactivate && out.destroy);
-    CHECK(out.activate(out.instance) == PULSE_OK && f.created == 1 && f.subscribed == 14 && f.pending && f.task);
+    CHECK(out.activate(out.instance) == PULSE_OK && f.created == 1 && f.subscribed == 15 && f.pending && f.task);
     CHECK(click(&f, 3) == 0 && f.global && !f.enabled_more);
     CHECK(deliver(&f, PULSE_OK, 0) == 0 && f.enabled_more && f.enabled_less);
     CHECK(click(&f, 6) == 0 && f.pending && f.requested == '5' && !f.enabled_more);
@@ -383,7 +394,7 @@ static int cycle(PulsePluginEntryV1Fn entry, int fallback) {
     CHECK(click(&f, 4) == 0 && f.pending);
     f.fail_remove = 1;
     out.deactivate(out.instance);
-    CHECK(!f.pending && f.canceled == 1 && f.page && f.subscribed == 14);
+    CHECK(!f.pending && f.canceled == 1 && f.page && f.subscribed == 15);
     CHECK(f.task_canceled == 1 && f.task_state == PULSE_TASK_CANCELLED);
     CHECK(click(&f, 6) == 0 && !f.pending); /* inactive callbacks cannot save */
     f.fail_remove = 0;
@@ -454,6 +465,9 @@ static int bundled_session(PulsePluginEntryV1Fn entry) {
             for (unsigned i = 0; i < 100 && f.aux_task; ++i) { Sleep(20); pump(&f); }
             CHECK(!f.aux_task && f.aux_released == 1 && f.task == session);
             CHECK(click(&f, 1) == 0 && f.first_frame && f.stop_enabled);
+            CHECK(f.running_rows == 2 && click(&f, 14) == 0);
+            for (unsigned i = 0; i < 400 && f.task && !f.only_second; ++i) { Sleep(20); pump(&f); }
+            CHECK(f.task && f.only_second && f.stop_enabled);
             CHECK(click(&f, 13) == 0 && !f.stop_enabled);
             for (unsigned i = 0; i < 400 && f.task; ++i) { Sleep(20); pump(&f); }
             CHECK(!f.task && f.task_state == PULSE_TASK_CANCELLED && f.start_enabled);

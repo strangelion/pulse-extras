@@ -55,6 +55,12 @@ pub const session_limit: usize = 8;
 
 // One pending built-in start; all native operations remain worker-owned.
 pub const Phase = enum(u32) { idle, starting, running, stopping };
+pub const RunningRow = model.Instance;
+pub const RunningSnapshot = struct {
+    count: usize = 0,
+    rows: [session_limit]RunningRow = undefined,
+};
+
 pub const Session = struct {
     phase: std.atomic.Value(u32) = .init(@backingInt(Phase.idle)),
     working_set: std.atomic.Value(usize) = .init(0),
@@ -63,6 +69,10 @@ pub const Session = struct {
     ready: std.atomic.Value(usize) = .init(0),
     denied: std.atomic.Value(usize) = .init(0),
     pending_start: std.atomic.Value(bool) = .init(false),
+    pending_stop: std.atomic.Value(u64) = .init(0),
+    stopping_id: std.atomic.Value(u64) = .init(0),
+    snapshot_lock: std.atomic.Value(bool) = .init(false),
+    snapshot: RunningSnapshot = .{},
 
     pub fn set(self: *Session, phase: Phase) void {
         self.phase.store(@backingInt(phase), .release);
@@ -70,7 +80,8 @@ pub const Session = struct {
 
     pub fn canStart(self: *const Session) bool {
         return self.phase.load(.acquire) == @backingInt(Phase.running) and
-            self.owned.load(.acquire) < session_limit and !self.pending_start.load(.acquire);
+            self.owned.load(.acquire) < session_limit and !self.pending_start.load(.acquire) and
+            self.pending_stop.load(.acquire) == 0 and self.stopping_id.load(.acquire) == 0;
     }
 
     // Called only by the UI producer. A duplicate request is not queued.
@@ -80,7 +91,32 @@ pub const Session = struct {
         return !self.pending_start.swap(true, .acq_rel);
     }
 
+    pub fn requestStop(self: *Session, id: u64) bool {
+        if (id == 0 or self.phase.load(.acquire) != @backingInt(Phase.running) or
+            self.pending_start.load(.acquire) or self.stopping_id.load(.acquire) != 0) return false;
+        return self.pending_stop.cmpxchgStrong(0, id, .acq_rel, .acquire) == null;
+    }
+
+    // Neither side waits for the other. Skip a busy publication/read;
+    // the next tick retries. All non-atomic row fields are lock-protected.
+    pub fn publishRows(self: *Session, rows: []const RunningRow) void {
+        if (self.snapshot_lock.swap(true, .acquire)) return;
+        defer self.snapshot_lock.store(false, .release);
+        self.snapshot.count = @min(rows.len, session_limit);
+        @memcpy(self.snapshot.rows[0..self.snapshot.count], rows[0..self.snapshot.count]);
+    }
+
+    pub fn copyRows(self: *Session, out: *RunningSnapshot) void {
+        if (self.snapshot_lock.swap(true, .acquire)) return;
+        defer self.snapshot_lock.store(false, .release);
+        out.count = self.snapshot.count;
+        @memcpy(out.rows[0..out.count], self.snapshot.rows[0..out.count]);
+    }
+
     pub fn reset(self: *Session) void {
+        self.pending_stop.store(0, .release);
+        self.stopping_id.store(0, .release);
+        self.publishRows(&.{});
         self.pending_start.store(false, .release);
         self.owned.store(0, .release);
         self.ready.store(0, .release);
@@ -131,6 +167,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
     var failure: ?anyerror = started.failure;
     var rows: [group.max_tick_slots]group.TickResult = undefined;
     var begin = GetTickCount64();
+    var stop_since: u64 = 0;
     while (failure == null and canceled(context) == 0) {
         if (session.pending_start.load(.acquire)) {
             session.set(.starting);
@@ -146,25 +183,55 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
             }
             session.pending_start.store(false, .release);
         }
+        const requested = session.pending_stop.load(.acquire);
+        if (requested != 0 and canceled(context) == 0) {
+            // Keep admission closed before clearing the pending command.
+            session.stopping_id.store(requested, .release);
+            if (owner.group.stop(requested, false)) |_| {
+                stop_since = GetTickCount64();
+            } else |err| {
+                session.stopping_id.store(0, .release);
+                if (err == error.UnknownInstance) {
+                    _ = session.denied.fetchAdd(1, .monotonic);
+                } else {
+                    failure = err;
+                }
+            }
+            session.pending_stop.store(0, .release);
+        }
+        const stopping = session.stopping_id.load(.acquire);
+        if (stopping != 0 and GetTickCount64() - stop_since >= 2_000) {
+            owner.group.stop(stopping, true) catch |err| {
+                if (err != error.UnknownInstance) failure = err;
+            };
+        }
         const count = try owner.group.tick(&rows);
         for (rows[0..count]) |row| {
             if (row.failure) |err| failure = err;
             if (row.exit_code) |code| {
-                if (code != 0) failure = error.ChildExited;
+                if (row.id == stopping) {
+                    session.stopping_id.store(0, .release);
+                } else if (code != 0) {
+                    failure = error.ChildExited;
+                }
             }
         }
+        if (session.stopping_id.load(.acquire) != 0 and GetTickCount64() - stop_since >= 5_000) failure = error.UnconfirmedShutdown;
         var items: [session_limit]model.Instance = undefined;
         const owned = try owner.group.snapshot(0, &items);
         var ready: usize = 0;
+        var starting: usize = 0;
         var working_set: usize = 0;
         var private_bytes: usize = 0;
         for (items[0..owned]) |item| {
             if (item.state == .running) ready += 1;
+            if (item.state == .starting) starting += 1;
             if (item.metrics) |metrics| {
                 working_set += metrics.working_set;
                 private_bytes += metrics.private_bytes;
             }
         }
+        session.publishRows(items[0..owned]);
         session.owned.store(owned, .release);
         session.ready.store(ready, .release);
         session.working_set.store(working_set, .release);
@@ -173,7 +240,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
             session.set(.stopping);
             break;
         }
-        if (ready == owned) {
+        if (starting == 0) {
             session.set(.running);
         } else if (GetTickCount64() - begin >= 15_000) {
             failure = error.ReadinessTimeout;
@@ -182,6 +249,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
     }
     session.set(.stopping);
     session.pending_start.store(false, .release);
+    session.pending_stop.store(0, .release);
     if (try owner.group.remaining() != 0) {
         session.set(.stopping);
         try owner.group.beginDrain(false);
@@ -214,6 +282,24 @@ test "session admits only one pending start within the pilot limit" {
     session.reset();
     try std.testing.expectEqual(@as(usize, 0), session.owned.load(.acquire));
     try std.testing.expect(!session.requestStart());
+}
+
+test "running snapshot copies stable IDs and stop requests are bounded" {
+    var session: Session = .{};
+    const rows = [_]RunningRow{ .{ .id = 9, .asset_id = 1 }, .{ .id = 11, .asset_id = 1 } };
+    session.publishRows(&rows);
+    var copy: RunningSnapshot = .{};
+    session.copyRows(&copy);
+    try std.testing.expectEqual(@as(usize, 2), copy.count);
+    try std.testing.expectEqual(@as(u64, 11), copy.rows[1].id);
+    session.set(.running);
+    try std.testing.expect(!session.requestStop(0));
+    try std.testing.expect(session.requestStop(11));
+    try std.testing.expect(!session.requestStop(9));
+    try std.testing.expect(!session.canStart());
+    session.reset();
+    session.copyRows(&copy);
+    try std.testing.expectEqual(@as(usize, 0), copy.count);
 }
 
 test "runtime approval requires exactly one SHA-256 hex digest" {
