@@ -1299,3 +1299,25 @@ on probe failure. No silent skip, forced success, unverified codec
 installation or replacement of WebP with synthetic rendering. The
 actual WIC initialization problem remains open; a portable decoder would
 require a separately reviewed, version-pinned dependency and tests.
+
+### Opt-in static WebP decoder experiment
+
+Run 45561454990 isolated both failures to wic-decoder, HRESULT 0x88982f8b.
+Default WIC remains unchanged; mixed-hidden and mixed-visible explicitly
+build libwebp, while wic-mixed-hidden is retained for manual WIC diagnostics.
+
+```powershell
+python scripts/install_pet_webp.py
+zig build pet-demo -Doptimize=ReleaseSafe -Dpet-libwebp=true
+```
+
+Official libwebp 1.6.0 archive size and SHA-256 cross-checked with Debian
+and Buildroot. Verify archive before extraction, bound entries/expansion,
+retain COPYING and PATENTS. No runtime DLL lookup or download. Existing
+container preflight, dimension checks, codec quota and allocator-owned RGBA
+buffer remain. Serialize full decoder calls. Internal libwebp scratch is
+NOT charged to the tracked 48 MiB budget; measure OS memory and integrate
+before release. Distribute COPYING/PATENTS with static-linked binaries.
+Fixtures generated and pixel-checked with Pillow locally. Windows/Zig
+compilation and dependency downloading were unavailable locally; require
+CI and dual-source probe before reporting the new backend as working.

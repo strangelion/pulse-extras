@@ -9,8 +9,8 @@ import json
 from pathlib import Path
 import sys
 
-V1 = "UklGRpwAAABXRUJQVlA4TI8AAAAv/8XTAQdQy97UvP8BAEX6/58i+p/63//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//97/8qAAA="
-V2 = "UklGRrgAAABXRUJQVlA4TKsAAAAv/8U7AgdQsnI3qP8BAUnS//2BEf3P+M9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+nwYA"
+V1 = "UklGRpwAAABXRUJQVlA4TI8AAAAv/8XTAQfQpcKVu/8BAEX6/58i+p/63//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//97/8qAAA="
+V2 = "UklGRrgAAABXRUJQVlA4TKsAAAAv/8U7AgdQ2oaUqv8BAUnS//2BEf3P+M9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+85///Oc///nPf/7zn//85z//+c9//vOf//znP//5z3/+nwYA"
 
 
 def decode_atlas(encoded, expected_size, width, height, digest):
@@ -33,14 +33,14 @@ def main():
     package = root / "fixture-v1"
     package.mkdir()
     (package / "spritesheet.webp").write_bytes(decode_atlas(V1, 164, 1536, 1872,
-        '3b752f8e6a5042ec69cbf77a26b8524c79bbdd33451295783f85b79b824abcad'))
+        'be2805429859a98badce1ac1cecde243f4b4e22d7b4ebb1259ce0666dabf6c09'))
     (package / "pet.json").write_text(json.dumps({
         "id": "fixture-v1", "displayName": "Fixture V1",
         "description": "Original stress fixture",
         "spritesheetPath": "spritesheet.webp"
     }), encoding="utf-8")
     (root / "fixture-v2.webp").write_bytes(decode_atlas(V2, 192, 1536, 2288,
-        '19c91ac469d5d81c0538413bff234d8eaa0e70e072d7764ec10b5dde885ff292'))
+        '9ab0cd6bc08d58f85485c7e88ee62b4f261e1f5bfdebf5b86ddd5fab363e242d'))
 
 
 if __name__ == "__main__":

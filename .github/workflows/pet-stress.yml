@@ -14,13 +14,14 @@ on:
       profile:
         description: Benchmark workload (visible mode needs desktop visual validation)
         type: choice
-        options: [synthetic-hidden, mixed-hidden, mixed-visible]
+        options: [synthetic-hidden, mixed-hidden, mixed-visible, wic-mixed-hidden]
         default: synthetic-hidden
   push:
     branches: [experiment/openpets-ipc]
     paths:
       - tests/companion/pet_stress.py
       - tests/companion/pet_stress_fixtures.py
+      - scripts/install_pet_webp.py
       - .github/workflows/pet-stress.yml
 
 permissions:
@@ -47,7 +48,20 @@ jobs:
           path: ${{ runner.temp }}/pulse-zig-archives
           key: zig-archive-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.zig-version', 'scripts/zig-downloads.json') }}
       - run: python scripts/install_zig.py
-      - run: zig build pet-demo -Doptimize=ReleaseSafe --summary all
+      - name: Stage pinned static WebP decoder
+        if: matrix.profile == 'mixed-hidden' || matrix.profile == 'mixed-visible'
+        run: python scripts/install_pet_webp.py
+      - name: Build selected companion backend
+        env:
+          PET_PROFILE: ${{ matrix.profile }}
+        shell: pwsh
+        run: |
+          $buildArgs = @('build', 'pet-demo', '-Doptimize=ReleaseSafe', '--summary', 'all')
+          if ($env:PET_PROFILE -eq 'mixed-hidden' -or $env:PET_PROFILE -eq 'mixed-visible') {
+            $buildArgs += '-Dpet-libwebp=true'
+          }
+          zig @buildArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Sample independent instances (${{ matrix.profile }})
         env:
           PET_PROFILE: ${{ matrix.profile }}

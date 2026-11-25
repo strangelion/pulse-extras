@@ -5,6 +5,10 @@
 #include <stdio.h>
 #include <wchar.h>
 #include <string.h>
+#ifdef PULSE_PET_LIBWEBP
+#include "src/webp/decode.h"
+static SRWLOCK webp_decode_lock = SRWLOCK_INIT;
+#endif
 
 #define MAX_COMPRESSED (16u * 1024u * 1024u)
 
@@ -305,6 +309,36 @@ static uint8_t *decode_static(const pet_memory *memory, const wchar_t *path, HAN
     DWORD length = 0;
     uint8_t *input = pinned ? read_handle(memory, pinned, limit, &length) : read_local(memory, path, limit, &length);
     uint8_t *pixels = NULL;
+#ifdef PULSE_PET_LIBWEBP
+    const char *stage = "read-input";
+    int width_actual = 0, height_actual = 0;
+    if (!input) goto portable_cleanup;
+    stage = "preflight";
+    if (validate(kind, input, length)) goto portable_cleanup;
+    stage = "libwebp-version";
+    if (WebPGetDecoderVersion() != 0x010600) goto portable_cleanup;
+    stage = "libwebp-header";
+    if (!WebPGetInfo(input, length, &width_actual, &height_actual) ||
+        width_actual != (int)width || height_actual != (int)height) goto portable_cleanup;
+    stage = "pixel-allocation";
+    pixels = pet_alloc(memory, bytes);
+    if (!pixels) goto portable_cleanup;
+    stage = "libwebp-decode";
+    AcquireSRWLockExclusive(&webp_decode_lock);
+    uint8_t *decoded = WebPDecodeRGBAInto(input, length, pixels, bytes, (int)stride);
+    ReleaseSRWLockExclusive(&webp_decode_lock);
+    if (decoded != pixels) goto portable_cleanup;
+    *decoded_bytes = bytes;
+portable_cleanup:
+    pet_free(memory, input, length);
+    pet_release(memory->resource_bridge, PET_RESOURCE_CODEC, 1);
+    if (!*decoded_bytes) {
+        pet_free(memory, pixels, bytes);
+        pixels = NULL;
+        fprintf(stderr, "WebP static decoder rejected asset (stage=%s).\n", stage);
+    }
+    return pixels;
+#else
     IWICImagingFactory *factory = NULL;
     IWICStream *stream = NULL;
     IWICBitmapDecoder *decoder = NULL;
@@ -377,6 +411,7 @@ cleanup:
             stage, (unsigned long)(uint32_t)hr);
     }
     return pixels;
+#endif
 }
 
 uint8_t *pet_demo_load_webp(const pet_memory *memory, const wchar_t *path, unsigned version,

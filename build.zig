@@ -367,6 +367,37 @@ pub fn build(b: *std.Build) void {
     });
     for ([_][]const u8{ "user32", "gdi32", "shell32", "ole32", "windowscodecs", "uuid", "advapi32" }) |lib|
         pet_root.linkSystemLibrary(lib, .{});
+    // Explicit experimental backend. The default WIC build is unchanged.
+    if (b.option(bool, "pet-libwebp", "Use the pinned static WebP decoder for pet-demo") orelse false) {
+        const source = b.path("zig-out/deps/libwebp-1.6.0");
+        pet_root.addIncludePath(source);
+        pet_root.addCMacro("PULSE_PET_LIBWEBP", "1");
+        pet_root.addCSourceFiles(.{
+            .root = source,
+            .files = &.{
+                "src/dec/alpha_dec.c", "src/dec/buffer_dec.c", "src/dec/frame_dec.c",
+                "src/dec/idec_dec.c", "src/dec/io_dec.c", "src/dec/quant_dec.c",
+                "src/dec/tree_dec.c", "src/dec/vp8_dec.c", "src/dec/vp8l_dec.c",
+                "src/dec/webp_dec.c",
+                "src/dsp/alpha_processing.c", "src/dsp/cpu.c", "src/dsp/dec.c",
+                "src/dsp/dec_clip_tables.c", "src/dsp/filters.c", "src/dsp/lossless.c",
+                "src/dsp/rescaler.c", "src/dsp/upsampling.c", "src/dsp/yuv.c",
+                "src/dsp/alpha_processing_sse2.c", "src/dsp/dec_sse2.c",
+                "src/dsp/filters_sse2.c", "src/dsp/lossless_sse2.c",
+                "src/dsp/rescaler_sse2.c", "src/dsp/upsampling_sse2.c",
+                "src/dsp/yuv_sse2.c", "src/dsp/alpha_processing_sse41.c",
+                "src/dsp/dec_sse41.c", "src/dsp/lossless_sse41.c",
+                "src/dsp/upsampling_sse41.c", "src/dsp/yuv_sse41.c",
+                "src/dsp/lossless_avx2.c",
+                "src/utils/bit_reader_utils.c", "src/utils/color_cache_utils.c",
+                "src/utils/filters_utils.c", "src/utils/huffman_utils.c",
+                "src/utils/palette.c", "src/utils/quant_levels_dec_utils.c",
+                "src/utils/rescaler_utils.c", "src/utils/random_utils.c",
+                "src/utils/thread_utils.c", "src/utils/utils.c",
+            },
+            .flags = &.{"-DWEBP_DSP_OMIT_C_CODE=0"},
+        });
+    }
     const pet = b.addExecutable(.{ .name = "pulse-pet-demo", .root_module = pet_root });
     const pet_step = b.step("pet-demo", "Build and install the experimental standalone Windows companion");
     pet_step.dependOn(&b.addInstallArtifact(pet, .{}).step);
