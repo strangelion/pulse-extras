@@ -179,3 +179,33 @@ verify numeric-only contents, no private paths or tokens, and no overwrite.
 Repeat with missing dispatcher, constrained resources and while
 deactivating. Record exact host version, source revision, logs and
 screenshots; never count the ABI fixture as real desktop acceptance.
+
+Verify the new policy editor: toggle auto-start, edit the four numeric
+fields and two nonadjacent plan rows, save, reload and confirm canonical
+values. Verify invalid intervals, duplicate IDs, a semicolon in one row,
+and resource-limit violation cannot save. An older host without set_states
+must retain the compatible text field. Change download concurrency while
+editing the policy and verify it does not replace the unsaved draft.
+For the pet right-click menu verify checked toggles, radio sizes/outfits
+and grouped separators, then exercise keyboard dismissal, high contrast,
+light/dark Windows settings, multiple monitor DPI and stop while open.
+The native menu's actual appearance is not evidence of Pulse theme parity.
+
+For the default-off minimize option, use an isolated host; ensure all
+actual main windows are minimized, verify hide acknowledgements, restore
+one main window, and verify only policy-hidden pets show. A manually hidden
+pet must stay hidden; manually showing a pet while minimized overrides the
+policy until the next restore/minimize cycle. Test multiple windows,
+tray-only, disabled flag, unknown main-window class, and stopping while
+hidden. Window observation is a pinned-source compatibility fallback, not
+a guaranteed host SDK interface. Confirm Pulse's own login startup plus the
+saved plugin activation plan separately; the plugin never writes OS startup
+entries.
+
+Enable retained diagnostic history explicitly on the isolated profile.
+After a normal isolated session drain, export diagnostics and verify
+history_write_status and retained_sessions. After 17 small fixture
+sessions confirm only 16 records; aged rows disappear on the next append.
+Test malformed and pending records in a fixture-only private root, with
+no destructive recovery or user export cleanup. Full memory dumps and
+visual Fluent theme parity remain unverified/unimplemented.

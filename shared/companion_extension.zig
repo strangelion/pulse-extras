@@ -10,6 +10,7 @@ const inventory = @import("companion/pet_inventory.zig");
 pub const builtin_asset_id = group.Group.builtin_asset_id;
 
 const store = @import("companion_runtime_store.zig");
+const history = @import("companion/pet_history.zig");
 const local_import = @import("companion_local_import.zig");
 const market_host = @import("companion_market_host.zig");
 const process = @import("pulse_process");
@@ -31,6 +32,7 @@ pub const readFilteredDefault = library.readFilteredDefault;
 extern "kernel32" fn GetModuleHandleExW(u32, *const anyopaque, *usize) callconv(.winapi) c_int;
 extern "kernel32" fn GetModuleFileNameW(usize, [*]u16, u32) callconv(.winapi) u32;
 extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
+extern "kernel32" fn GetSystemTimeAsFileTime(*[2]u32) callconv(.winapi) void;
 extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
 extern "kernel32" fn GetWindowsDirectoryW([*]u16, u32) callconv(.winapi) u32;
 extern "kernel32" fn LoadLibraryExW([*:0]const u16, ?*anyopaque, u32) callconv(.winapi) usize;
@@ -494,6 +496,8 @@ pub const LaunchEntry = struct {
 
 pub const RuntimePolicy = struct {
     automatic: bool = false,
+    hide_on_minimize: bool = false,
+    retain_history: bool = false,
     batch_size: usize = 4,
     interval_ms: u64 = 500,
     grace_ms: u64 = 2000,
@@ -534,6 +538,16 @@ pub const RuntimePolicy = struct {
             .grace_ms = try number(u64, fields.next() orelse return error.InvalidPolicy),
             .timeout_ms = try number(u64, fields.next() orelse return error.InvalidPolicy),
         };
+        if (fields.next()) |flag| {
+            const value_flag = try number(u8, flag);
+            if (value_flag > 1) return error.InvalidPolicy;
+            policy.hide_on_minimize = value_flag == 1;
+        }
+        if (fields.next()) |flag| {
+            const value_flag = try number(u8, flag);
+            if (value_flag > 1) return error.InvalidPolicy;
+            policy.retain_history = value_flag == 1;
+        }
         if (fields.next() != null or automatic > 1 or policy.batch_size == 0 or policy.batch_size > 16 or policy.interval_ms < 100 or policy.interval_ms > 3000 or policy.grace_ms > 5000 or policy.timeout_ms > 10000 or policy.timeout_ms < policy.grace_ms + 2000) return error.InvalidPolicy;
         while (sections.next()) |section| {
             if (policy.count == policy.entries.len) return error.InvalidPolicy;
@@ -555,6 +569,14 @@ pub const RuntimePolicy = struct {
     pub fn encode(self: *const RuntimePolicy, buffer: []u8) ![]const u8 {
         const header = try std.fmt.bufPrint(buffer, "{d}:{d}:{d}:{d}:{d}", .{ @intFromBool(self.automatic), self.batch_size, self.interval_ms, self.grace_ms, self.timeout_ms });
         var len = header.len;
+        if (self.hide_on_minimize or self.retain_history) {
+            const suffix = try std.fmt.bufPrint(buffer[len..], ":{d}", .{@intFromBool(self.hide_on_minimize)});
+            len += suffix.len;
+        }
+        if (self.retain_history) {
+            const suffix = try std.fmt.bufPrint(buffer[len..], ":1", .{});
+            len += suffix.len;
+        }
         for (self.entries[0..self.count]) |entry| {
             const suffix = if (entry.asset_id == builtin_asset_id)
                 try std.fmt.bufPrint(buffer[len..], ";builtin:{d}:{d}", .{ entry.count, entry.profile })
@@ -567,6 +589,105 @@ pub const RuntimePolicy = struct {
 };
 
 pub const Visibility = enum { unknown, visible, hidden, pending_show, pending_hide };
+pub const HostWindowState = enum(u32) { unknown, normal, minimized };
+
+// Read-only fallback for the exact main-window class verified in pinned
+// upstream src/app/single_instance_coordinator.cpp. The class is not a
+// stable SDK contract: absence, API failure or an incomplete enumeration
+// returns unknown. No HWND survives the synchronous observation.
+const WindowProbe = struct {
+    const Enumerate = *const fn (*const fn (usize, isize) callconv(.winapi) c_int, isize) callconv(.winapi) c_int;
+    const Process = *const fn (usize, *u32) callconv(.winapi) u32;
+    const ClassName = *const fn (usize, [*]u16, c_int) callconv(.winapi) c_int;
+    const Predicate = *const fn (usize) callconv(.winapi) c_int;
+    module: usize,
+    enumerate: Enumerate,
+    process: Process,
+    class_name: ClassName,
+    visible: Predicate,
+    iconic: Predicate,
+
+    fn open() !WindowProbe {
+        const name = std.unicode.wtf8ToWtf16LeStringLiteral("user32.dll");
+        const module = LoadLibraryExW(name, null, 0x800);
+        if (module == 0) return error.WindowProbeUnavailable;
+        errdefer _ = FreeLibrary(module);
+        return .{
+            .module = module,
+            .enumerate = @ptrCast(GetProcAddress(module, "EnumWindows") orelse return error.WindowProbeUnavailable),
+            .process = @ptrCast(GetProcAddress(module, "GetWindowThreadProcessId") orelse return error.WindowProbeUnavailable),
+            .class_name = @ptrCast(GetProcAddress(module, "GetClassNameW") orelse return error.WindowProbeUnavailable),
+            .visible = @ptrCast(GetProcAddress(module, "IsWindowVisible") orelse return error.WindowProbeUnavailable),
+            .iconic = @ptrCast(GetProcAddress(module, "IsIconic") orelse return error.WindowProbeUnavailable),
+        };
+    }
+
+    fn close(self: WindowProbe) void {
+        _ = FreeLibrary(self.module);
+    }
+
+    const Observation = struct {
+        probe: *const WindowProbe,
+        pid: u32,
+        scanned: usize = 0,
+        windows: usize = 0,
+        normal: usize = 0,
+    };
+
+    fn visit(window: usize, context: isize) callconv(.winapi) c_int {
+        const observation: *Observation = @ptrFromInt(@as(usize, @bitCast(context)));
+        observation.scanned += 1;
+        if (observation.scanned > 4096) return 0;
+        var pid: u32 = 0;
+        if (observation.probe.process(window, &pid) == 0 or pid != observation.pid) return 1;
+        var name: [128]u16 = undefined;
+        const len = observation.probe.class_name(window, &name, name.len);
+        const main = std.unicode.wtf8ToWtf16LeStringLiteral("PulseMainWindow");
+        if (len <= 0 or len >= name.len - 1) return 0;
+        if (@as(usize, @intCast(len)) != main.len or !std.mem.eql(u16, name[0..@intCast(len)], main)) return 1;
+        if (observation.probe.visible(window) == 0) return 1;
+        observation.windows += 1;
+        if (observation.probe.iconic(window) == 0) observation.normal += 1;
+        return 1;
+    }
+
+    fn observe(self: *const WindowProbe) HostWindowState {
+        var observation: Observation = .{ .probe = self, .pid = GetCurrentProcessId() };
+        if (self.enumerate(visit, @bitCast(@intFromPtr(&observation))) == 0) return .unknown;
+        return classifyWindows(observation.windows, observation.normal);
+    }
+};
+
+fn classifyWindows(windows: usize, normal: usize) HostWindowState {
+    if (windows == 0 or normal > windows) return .unknown;
+    return if (normal == 0) .minimized else .normal;
+}
+
+const AutoVisibility = struct {
+    hidden_by_policy: bool = false,
+    manual_override: bool = false,
+
+    fn desired(self: *AutoVisibility, state: HostWindowState, current: Visibility, manual: ?bool) ?bool {
+        if (state != .minimized) self.manual_override = false;
+        if (manual) |show| {
+            self.hidden_by_policy = false;
+            self.manual_override = state == .minimized;
+            return show;
+        }
+        if (state == .minimized) {
+            if (current == .visible and !self.manual_override) return false;
+        } else if (self.hidden_by_policy and current == .hidden) {
+            // Unknown observation restores only our own acknowledged hide,
+            // preventing a changed host class or tray state from stranding pets.
+            return true;
+        }
+        return null;
+    }
+
+    fn accepted(self: *AutoVisibility, show: bool, manual: bool) void {
+        if (!manual) self.hidden_by_policy = !show;
+    }
+};
 pub const RunningRow = model.Instance;
 pub const RunningSource = struct {
     id: u64 = 0,
@@ -574,6 +695,7 @@ pub const RunningSource = struct {
     visibility: Visibility = .unknown,
     visibility_since: u64 = 0,
     visibility_failed: bool = false,
+    auto_visibility: AutoVisibility = .{},
     bytes: [64]u8 = @splat(0),
     len: usize = 0,
 
@@ -600,9 +722,11 @@ pub const Session = struct {
     exits: std.atomic.Value(usize) = .init(0),
     abnormal_exits: std.atomic.Value(usize) = .init(0),
     last_exit: std.atomic.Value(u32) = .init(0),
+    history_status: std.atomic.Value(u32) = .init(0),
     visibility_busy: std.atomic.Value(bool) = .init(false),
     visibility_id: std.atomic.Value(u64) = .init(0),
     visibility_show: std.atomic.Value(bool) = .init(true),
+    host_window_state: std.atomic.Value(u32) = .init(@backingInt(HostWindowState.unknown)),
     phase: std.atomic.Value(u32) = .init(@backingInt(Phase.idle)),
     working_set: std.atomic.Value(usize) = .init(0),
     private_bytes: std.atomic.Value(usize) = .init(0),
@@ -720,6 +844,7 @@ pub const Session = struct {
         self.exits.store(0, .release);
         self.abnormal_exits.store(0, .release);
         self.last_exit.store(0, .release);
+        self.history_status.store(0, .release);
         self.denied.store(0, .release);
         self.last_rejection.store(@backingInt(Rejection.none), .release);
         self.visibility_busy.store(false, .release);
@@ -728,6 +853,7 @@ pub const Session = struct {
     }
 
     fn clearLive(self: *Session) void {
+        self.host_window_state.store(@backingInt(HostWindowState.unknown), .release);
         self.plan_active.store(false, .release);
         self.visibility_busy.store(false, .release);
         self.visibility_id.store(0, .release);
@@ -762,10 +888,23 @@ pub fn runBuiltin(session: *Session, runtime_hex: []const u8, helper_hex: []cons
     const owner = try std.heap.page_allocator.create(runtime.Owner);
     owner.* = .{};
     defer session.clearLive();
+    const started_at = GetTickCount64();
     const outcome = runOwned(owner, session, root, digest, helper[0..len :0], &helper_digest, canceled, context);
     // The loop can return early from any native API. Always attempt normal
     // drain before close or emergency abandonment, even after such errors.
     const drained = drainOwned(owner, session);
+    // History is best effort and independent of the runtime outcome.
+    // Never access the private store while children may still be alive.
+    if (owner.opened and session.policy.retain_history) {
+        if (drained) |_| {
+            const failed = if (outcome) |_| false else |_| true;
+            appendSessionHistory(owner, session, GetTickCount64() - started_at, failed) catch {
+                session.history_status.store(2, .release);
+            };
+        } else |_| {
+            session.history_status.store(2, .release);
+        }
+    }
     const closed = owner.close();
     if (closed) |_| {
         std.heap.page_allocator.destroy(owner);
@@ -775,6 +914,58 @@ pub fn runBuiltin(session: *Session, runtime_hex: []const u8, helper_hex: []cons
         return error.UnconfirmedShutdown;
     }
     try drained;
+    return outcome;
+}
+
+fn unixSeconds() !u64 {
+    var value: [2]u32 = undefined;
+    GetSystemTimeAsFileTime(&value);
+    const seconds = ((@as(u64, value[1]) << 32) | value[0]) / 10_000_000;
+    if (seconds <= 11_644_473_600) return error.InvalidClock;
+    return seconds - 11_644_473_600;
+}
+
+fn appendSessionHistory(owner: *runtime.Owner, session: *Session, elapsed_ms: u64, failed: bool) !void {
+    _ = try openPrivateDefault(owner);
+    var buffer: [history.max_bytes]u8 = undefined;
+    var log: history.History = .{};
+    if (try owner.readHistory(&buffer)) |len| log = try history.History.decode(buffer[0..len]);
+    const now = try unixSeconds();
+    try log.append(.{
+        .stamp = now,
+        .elapsed_ms = elapsed_ms,
+        .attempted = session.plan_attempted.load(.acquire),
+        .launched = session.plan_launched.load(.acquire),
+        .exits = session.exits.load(.acquire),
+        .abnormal = session.abnormal_exits.load(.acquire),
+        .denied = session.denied.load(.acquire),
+        .last_exit = session.last_exit.load(.acquire),
+        .failed = @intFromBool(failed),
+    });
+    try owner.writeHistory(try log.encode(&buffer));
+    session.history_status.store(1, .release);
+}
+
+// Read an existing typed history through an independent verified owner.
+// Never auto-create a dump or scan arbitrary paths; callers can report
+// unavailable if the private lease is held by a running session.
+pub fn appendDiagnosticHistory(runtime_hex: []const u8, output: []u8) !usize {
+    if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
+    const digest = try parseDigest(runtime_hex);
+    var path: [1024]u16 = undefined;
+    const root = try packageRoot(&path);
+    const owner = try std.heap.page_allocator.create(runtime.Owner);
+    owner.* = .{};
+    const outcome = blk: {
+        owner.open(root, digest, 1, 128 * 1024 * 1024) catch |err| break :blk @as(anyerror!usize, err);
+        _ = openPrivateDefault(owner) catch |err| break :blk @as(anyerror!usize, err);
+        var buffer: [history.max_bytes]u8 = undefined;
+        const len = (owner.readHistory(&buffer) catch |err| break :blk @as(anyerror!usize, err)) orelse break :blk @as(anyerror!usize, 0);
+        const log = history.History.decode(buffer[0..len]) catch |err| break :blk @as(anyerror!usize, err);
+        break :blk log.format(output);
+    };
+    owner.close() catch return error.CleanupFailed;
+    std.heap.page_allocator.destroy(owner);
     return outcome;
 }
 
@@ -851,7 +1042,19 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
     var stop_since: u64 = 0;
     var next_batch = begin + session.policy.interval_ms;
     var all_ready = false;
+    const probe: ?WindowProbe = if (session.policy.hide_on_minimize) WindowProbe.open() catch null else null;
+    defer if (probe) |value| value.close();
+    var host_window_state: HostWindowState = .unknown;
+    var next_window_poll: u64 = 0;
     while (failure == null and canceled(context) == 0) {
+        if (probe) |*value| {
+            const now = GetTickCount64();
+            if (now >= next_window_poll) {
+                host_window_state = value.observe();
+                session.host_window_state.store(@backingInt(host_window_state), .release);
+                next_window_poll = now + 500;
+            }
+        }
         if (session.plan_cancel.load(.acquire)) session.plan_active.store(false, .release);
         if (session.plan_active.load(.acquire) and all_ready and session.pending_stop.load(.acquire) == 0 and session.stopping_id.load(.acquire) == 0 and !session.visibility_busy.load(.acquire) and session.visibility_id.load(.acquire) == 0 and (plan_index % session.policy.batch_size != 0 or GetTickCount64() >= next_batch)) {
             if (session.policy.at(plan_index)) |entry| {
@@ -957,9 +1160,11 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
         const show = session.visibility_show.load(.acquire);
         if (visibility != 0) session.visibility_busy.store(true, .release);
         var visibility_pending = false;
+        var defer_manual = false;
         // Index by source slot; only the worker mutates acknowledgement state.
         for (sources) |*source| {
             if (source.id == 0) continue;
+            const manual = visibility != 0 and (visibility == std.math.maxInt(u64) or visibility == source.id);
             if (source.visibility == .pending_show or source.visibility == .pending_hide) {
                 const acknowledged = owner.group.visibilityAck(source.id) catch false;
                 if (acknowledged) {
@@ -968,8 +1173,11 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
                     source.visibility = .unknown;
                     source.visibility_failed = true;
                     session.reject(.unknown_instance);
-                } else visibility_pending = true;
-                continue;
+                } else {
+                    visibility_pending = true;
+                    if (manual) defer_manual = true;
+                    continue;
+                }
             }
             if (source.visibility_failed) continue;
             // Only a first-frame-confirmed row can reuse its ready event.
@@ -982,19 +1190,20 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
             }
             if (!running) continue;
             if (source.visibility == .unknown) source.visibility = .visible;
-            if (visibility == 0 or (visibility != std.math.maxInt(u64) and visibility != source.id)) continue;
-            if (source.visibility == (if (show) Visibility.visible else Visibility.hidden)) continue;
-            owner.group.requestVisibility(source.id, show) catch {
+            const requested = source.auto_visibility.desired(host_window_state, source.visibility, if (manual) show else null) orelse continue;
+            if (source.visibility == (if (requested) Visibility.visible else Visibility.hidden)) continue;
+            owner.group.requestVisibility(source.id, requested) catch {
                 source.visibility = .unknown;
                 source.visibility_failed = true;
                 session.reject(.unknown_instance);
                 continue;
             };
-            source.visibility = if (show) .pending_show else .pending_hide;
+            source.auto_visibility.accepted(requested, manual);
+            source.visibility = if (requested) .pending_show else .pending_hide;
             source.visibility_since = GetTickCount64();
             visibility_pending = true;
         }
-        if (visibility != 0) session.visibility_id.store(0, .release);
+        if (visibility != 0 and !defer_manual) session.visibility_id.store(0, .release);
         session.visibility_busy.store(visibility_pending, .release);
         session.publishNamedRows(items[0..owned], sources);
         session.owned.store(owned, .release);
@@ -1254,4 +1463,33 @@ pub fn exportDiagnostic(report: []const u8, output: []u8) !usize {
     const closed = CloseHandle(file) != 0;
     if (!ok or !closed) return error.DiagnosticWrite;
     return output_len;
+}
+
+test "minimize fallback respects manual hides and restores only policy hides" {
+    try std.testing.expectEqual(HostWindowState.unknown, classifyWindows(0, 0));
+    try std.testing.expectEqual(HostWindowState.normal, classifyWindows(2, 1));
+    try std.testing.expectEqual(HostWindowState.minimized, classifyWindows(2, 0));
+    var auto: AutoVisibility = .{};
+    try std.testing.expectEqual(@as(?bool, false), auto.desired(.minimized, .visible, null));
+    auto.accepted(false, false);
+    try std.testing.expectEqual(@as(?bool, true), auto.desired(.unknown, .hidden, null));
+    auto.accepted(true, false);
+    try std.testing.expect(auto.desired(.normal, .hidden, null) == null);
+    try std.testing.expectEqual(@as(?bool, false), auto.desired(.minimized, .hidden, false));
+    try std.testing.expect(auto.desired(.normal, .hidden, null) == null);
+    try std.testing.expectEqual(@as(?bool, true), auto.desired(.minimized, .hidden, true));
+    try std.testing.expect(auto.desired(.minimized, .visible, null) == null);
+    _ = auto.desired(.normal, .visible, null);
+    try std.testing.expectEqual(@as(?bool, false), auto.desired(.minimized, .visible, null));
+    const policy = try RuntimePolicy.decode("0:4:500:2000:10000:1");
+    try std.testing.expect(policy.hide_on_minimize);
+    var encoded: [512]u8 = undefined;
+    try std.testing.expectEqualStrings("0:4:500:2000:10000:1", try policy.encode(&encoded));
+    try std.testing.expect(!(try RuntimePolicy.decode("0:4:500:2000:10000")).hide_on_minimize);
+    try std.testing.expectError(error.InvalidPolicy, RuntimePolicy.decode("0:4:500:2000:10000:2"));
+    const history_policy = try RuntimePolicy.decode("0:4:500:2000:10000:0:1");
+    try std.testing.expect(history_policy.retain_history and !history_policy.hide_on_minimize);
+    try std.testing.expectEqualStrings("0:4:500:2000:10000:0:1", try history_policy.encode(&encoded));
+    try std.testing.expect(!(try RuntimePolicy.decode("0:4:500:2000:10000")).retain_history);
+    try std.testing.expectError(error.InvalidPolicy, RuntimePolicy.decode("0:4:500:2000:10000:0:2"));
 }

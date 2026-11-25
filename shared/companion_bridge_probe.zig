@@ -8,6 +8,7 @@ const model = @import("companion/pet_manager.zig");
 const store = @import("companion_runtime_store.zig");
 const catalog = @import("companion/pet_catalog.zig");
 const local_import = @import("companion_local_import.zig");
+const history = @import("companion/pet_history.zig");
 
 extern "kernel32" fn GetFullPathNameW([*:0]const u16, u32, [*]u16, ?*anyopaque) callconv(.winapi) u32;
 extern "kernel32" fn LoadLibraryExW([*:0]const u16, ?*anyopaque, u32) callconv(.winapi) usize;
@@ -464,6 +465,16 @@ pub fn main(init: std.process.Init) !void {
         try owner.open(root[0..len :0], expected, 1, 128 * 1024 * 1024);
         const import_root = try owner.privateRoot(fixture_parent);
         try exerciseImport(init.io, &owner, fixture_parent, import_root);
+        // Verify fixed owned history storage and rotation without touching
+        // imported packages, user exports or any non-fixture directory.
+        var log: history.History = .{};
+        var history_bytes: [history.max_bytes]u8 = undefined;
+        if (try owner.readHistory(&history_bytes) != null) return error.UnexpectedHistory;
+        for (1..18) |n| try log.append(.{ .stamp = n, .exits = n });
+        try owner.writeHistory(try log.encode(&history_bytes));
+        const history_len = (try owner.readHistory(&history_bytes)) orelse return error.UnexpectedHistory;
+        const reopened_history = try history.History.decode(history_bytes[0..history_len]);
+        if (reopened_history.count != 16 or reopened_history.records[0].stamp != 2) return error.UnexpectedHistory;
         // The independently ACL-checked market namespace is exercised only
         // in the isolated fixture. No live network request is made.
         const market_root = try owner.openMarketRoot();

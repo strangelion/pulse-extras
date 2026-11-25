@@ -278,6 +278,28 @@ pub const Owner = struct {
         };
     }
 
+    pub fn readHistory(self: *Owner, bytes: []u8) !?usize {
+        if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
+        if (try self.group.remaining() != 0) return error.ActiveInstances;
+        const read: StoreRead = @ptrCast(GetProcAddress(self.module, "pulse_companion_history_read_v1") orelse return error.MissingStoreApi);
+        var len: usize = 0;
+        const code = read(&self.lease, @sizeOf(Lease), 0, bytes.ptr, bytes.len, &len);
+        if (code == 1) return null;
+        try checkStore(code);
+        if (len > bytes.len) return error.InvalidRecord;
+        return len;
+    }
+
+    pub fn writeHistory(self: *Owner, bytes: []const u8) !void {
+        if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
+        if (try self.group.remaining() != 0) return error.ActiveInstances;
+        const write: StoreWrite = @ptrCast(GetProcAddress(self.module, "pulse_companion_history_write_v1") orelse return error.MissingStoreApi);
+        checkStore(write(&self.lease, @sizeOf(Lease), 0, bytes.ptr, bytes.len)) catch |err| {
+            self.store_faulted = true;
+            return err;
+        };
+    }
+
     pub fn scanStore(self: *Owner, rows: []scan.Row) !usize {
         if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
         if (rows.len == 0 or rows.len > scan.max_rows) return error.InvalidScan;

@@ -1775,3 +1775,70 @@ timing and whether closing the settings page causes deactivation remain
 actual-host acceptance questions. The new code does not implement Windows
 login startup, persistent named per-instance plans, arbitrary export paths,
 host-minimize events or automatic deletion of exported reports.
+
+## Stage C closeout: policy editor and desktop menu semantics
+
+The pinned ui-model schema documents boolean state as true/false and a
+32-state maximum. The global page now has a native checkbox for plugin
+activation, four separate numeric inputs for batch/interval/grace/deadline,
+eight independent plan row inputs, and a default-off minimize policy. All rows are parsed using the same
+bounded durable runtime.policy codec; no schema migration. The editor uses
+26 states in total. Hosts without get_state/set_states retain the existing
+text editor. Successful settings reads and policy writes synchronize the
+draft; unrelated preference writes do not erase it. Failed synchronization
+disables saving until a successful reload; malformed rows and delimiter
+injection fail closed. Row text remains asset:count:profile.
+
+The native desktop menu keeps the OS-owned keyboard/navigation, monitor
+placement and cancellation path. Size and outfit use radio selection;
+independent toggles remain check marks, and groups have consistent
+separators. A radio styling failure preserves the ordinary checked items.
+This is native menu semantic/visual polish, not Pulse Fluent renderer
+integration. The pinned host uses internal FluentMenu C++ code, which is
+not a public SDK service. No private exports, DLL injection or hooks are
+used. Exact theme synchronization and visual acceptance are outstanding.
+
+Windows login startup is owned by the user's Pulse host startup setting;
+the public SDK does not expose startup registration, a stable main-window
+handle or a minimize event. The plugin never creates an independent login
+task. The saved opt-in activation plan starts only when Pulse activates the
+plugin. Enable Pulse's own login setting and verify isolated activation.
+Upstream's pinned SingleInstanceCoordinator names its primary class
+PulseMainWindow. The default-off minimize compatibility probe enumerates
+only the current process's visible windows of that exact class every
+500 ms using system User32 functions; all recognized windows must be
+iconic. Unknown/absent/failed or incomplete enumeration is not minimized.
+No caption guesses, hooks, borrowed HWND lifetime or private host calls.
+The worker uses the existing acknowledged visibility channel; manual
+commands supersede automatic hides, and normal/unknown observations
+restore only policy-hidden instances. Tray-only and changed host class
+are unsupported, not falsely identified as minimized. The optional
+sixth policy header flag is :1 (default false); the seventh is an
+opt-in history flag (0/1, default false). Old five-field values
+remain unchanged. Older versions reject extended values rather than
+automatically interpreting them. Real host class and window behavior
+must be validated, especially multi-window and tray transitions.
+
+The managed diagnostic history is a single fixed session-history.pdh
+record (PDH1, at most 16 numeric-only rows, maximum 1192 bytes, SHA-256
+corruption check) under the exclusive private root lease. After the user opts in and a successful
+child drain the worker appends elapsed time, UTC seconds, planned starts,
+confirmed exit/abnormal/rejection counters, last exit and run result.
+Old rows beyond 30 days expire on append, or oldest rows rotate at 16.
+No timer/service or directory sweep; no paths, names, PIDs, raw memory or
+tokens. Existing invalid records are never overwritten; interrupted
+pending files block history writes and are reported by recovery scans.
+History errors are separate from the actual run outcome, and the report
+contains history_write_status (0 not attempted, 1 saved, 2 unavailable).
+Explicit diagnostic export includes retained history when it can acquire
+the private lease; otherwise records unavailable and exports the current
+numeric snapshot. User exports and probe logs are not deleted. Disabling history stops
+new writes; it does not delete prior evidence. Fixture-only ABI sessions
+retain the default off and do not create history in the user's private root.
+
+Full crash dumps remain a separate gate: upstream Pulse's own
+crash_reporter/crash_guard already handles host-process fault attribution,
+and the plugin must not replace its exception filter. An isolated
+child-only dump collector needs explicit opt-in, capped storage, crash
+injection, privacy and teardown validation. Redacted history is not a
+memory dump and cannot prove a host or child crash was captured.

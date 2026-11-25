@@ -5,7 +5,7 @@ const inventory = @import("pet_inventory.zig");
 const receipt = @import("pet_removal_receipt.zig");
 
 pub const max_rows = 4096;
-pub const Kind = enum(u32) { unknown, package, pending, preference, inventory, inventory_pending, lock, quarantine, receipt, receipt_pending, cleanup, cleanup_pending, market_root };
+pub const Kind = enum(u32) { unknown, package, pending, preference, inventory, inventory_pending, lock, quarantine, receipt, receipt_pending, cleanup, cleanup_pending, market_root, history, history_pending };
 pub const Row = extern struct {
     id: u64,
     kind: u32,
@@ -30,6 +30,7 @@ pub const Report = struct {
     receipt_pending: usize = 0,
     cleanup_markers: usize = 0,
     cleanup_pending: usize = 0,
+    history_pending: usize = 0,
 };
 
 pub fn classify(index: *const inventory.Inventory, rows: []const Row) !Report {
@@ -37,7 +38,7 @@ pub fn classify(index: *const inventory.Inventory, rows: []const Row) !Report {
     var report: Report = .{};
     var seen: [inventory.max_entries]bool = @splat(false);
     for (rows) |row| {
-        if (row.kind > @backingInt(Kind.market_root)) return error.InvalidScan;
+        if (row.kind > @backingInt(Kind.history_pending)) return error.InvalidScan;
         const kind: Kind = @fromBackingInt(row.kind);
         const directory = (row.attributes & 0x10) != 0;
         const reparse = (row.attributes & 0x400) != 0;
@@ -118,7 +119,12 @@ pub fn classify(index: *const inventory.Inventory, rows: []const Row) !Report {
             .market_root => if (!directory) {
                 report.invalid += 1;
             },
-            .inventory, .lock => if (directory) {
+            .history_pending => if (directory) {
+                report.invalid += 1;
+            } else {
+                report.history_pending += 1;
+            },
+            .inventory, .lock, .history => if (directory) {
                 report.invalid += 1;
             },
         }
@@ -167,7 +173,7 @@ pub fn removalState(rows: []const Row, id: u64) !RemovalState {
     var quarantined: bool = false;
     var has_receipt: bool = false;
     for (rows) |row| {
-        if (row.kind > @backingInt(Kind.market_root)) return error.InvalidScan;
+        if (row.kind > @backingInt(Kind.history_pending)) return error.InvalidScan;
         const kind: Kind = @fromBackingInt(row.kind);
         if (kind == .inventory_pending) return error.RecoveryRequired;
         if (row.id != id) continue;
@@ -419,4 +425,16 @@ test "cleanup intent blocks all subsequent namespace operations" {
     const snapshot = try inspect(&index, &.{ dir, marker });
     try std.testing.expectEqual(@as(usize, 1), snapshot.summary.cleanup_markers);
     try std.testing.expectEqual(QuarantineState.blocked, snapshot.quarantine[0].state);
+}
+
+test "diagnostic history pending is reported without blocking unrelated removal" {
+    var index: inventory.Inventory = .{};
+    try index.publish(try index.reserve(), "cat");
+    const normal: Row = .{ .id = 1, .kind = @backingInt(Kind.package), .attributes = 0x10 };
+    const final: Row = .{ .id = 0, .kind = @backingInt(Kind.history), .attributes = 0x80 };
+    const pending: Row = .{ .id = 0, .kind = @backingInt(Kind.history_pending), .attributes = 0x80 };
+    const report = try classify(&index, &.{ normal, final, pending });
+    try std.testing.expectEqual(@as(usize, 1), report.history_pending);
+    try std.testing.expectEqual(@as(usize, 0), report.unknown);
+    try std.testing.expectEqual(RemovalState.normal, try removalState(&.{ normal, final, pending }, 1));
 }

@@ -29,11 +29,12 @@ static HANDLE root_open(const wchar_t *root) {
     return h;
 }
 
-typedef enum { RECORD_NORMAL, RECORD_CACHE, RECORD_RECEIPT, RECORD_CLEANUP } record_kind;
+typedef enum { RECORD_NORMAL, RECORD_CACHE, RECORD_RECEIPT, RECORD_CLEANUP, RECORD_HISTORY } record_kind;
 
 static size_t record_limit(uint64_t id, record_kind kind) {
     if (kind == RECORD_RECEIPT || kind == RECORD_CLEANUP) return id ? PET_REMOVAL_RECEIPT_BYTES : 0;
     if (kind == RECORD_CACHE) return id < PET_MARKET_CACHE_SLOTS ? PET_MARKET_CACHE_MAX : 0;
+    if (kind == RECORD_HISTORY) return id == 0 ? PET_HISTORY_MAX : 0;
     return id ? PET_CATALOG_RECORD_MAX : PET_INVENTORY_MAX;
 }
 
@@ -49,6 +50,12 @@ static BOOL names(const wchar_t *root, uint64_t id, record_kind kind, wchar_t *f
         if (id >= PET_MARKET_CACHE_SLOTS) return FALSE;
         int a = swprintf(final, PATH_CAP, L"%ls\\market-%02u.cache", root, (unsigned)id);
         int b = swprintf(temp, PATH_CAP, L"%ls\\market.pending", root);
+        return a > 0 && a < (int)PATH_CAP && b > 0 && b < (int)PATH_CAP;
+    }
+    if (kind == RECORD_HISTORY) {
+        if (id) return FALSE;
+        int a = swprintf(final, PATH_CAP, L"%ls\\session-history.pdh", root);
+        int b = swprintf(temp, PATH_CAP, L"%ls\\session-history.pending", root);
         return a > 0 && a < (int)PATH_CAP && b > 0 && b < (int)PATH_CAP;
     }
     if (!id) {
@@ -198,4 +205,13 @@ pet_store_result pet_cleanup_marker_read(const wchar_t *root, uint64_t id,
 pet_store_result pet_cleanup_marker_write(const wchar_t *root, uint64_t id,
     const uint8_t *data, size_t length) {
     return write_record(root, id, RECORD_CLEANUP, data, length);
+}
+
+pet_store_result pet_history_read(const wchar_t *root, uint8_t *out,
+    size_t capacity, size_t *written) {
+    return read_record(root, 0, RECORD_HISTORY, out, capacity, written);
+}
+
+pet_store_result pet_history_write(const wchar_t *root, const uint8_t *data, size_t length) {
+    return write_record(root, 0, RECORD_HISTORY, data, length);
 }

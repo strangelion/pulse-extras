@@ -140,6 +140,15 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
     if (f->global) {
         REQUIRE(root->children.count == 13);
         REQUIRE(same(root->children.data[7].command.value, commands[52]));
+        REQUIRE(t->state_count == 26);
+        REQUIRE(same(t->states[11].key, "policy.automatic"));
+        REQUIRE(same(t->states[23].key, "policy.entry.8"));
+        REQUIRE(same(t->states[24].key, "policy.hide-on-minimize"));
+        REQUIRE(same(t->states[25].key, "policy.retain-history"));
+        /* The fixture intentionally omits set_states: retain the old
+         * editable text field on older hosts. */
+        REQUIRE(root->children.data[9].type == PULSE_UI_MODEL_TEXT_INPUT);
+        REQUIRE(same(root->children.data[9].state.value, "settings.runtime-policy"));
         REQUIRE(same(root->children.data[10].children.data[0].command.value, commands[80]));
         REQUIRE(same(root->children.data[11].command.value, commands[87]));
         const PulseUiModelNode *toolbar = root->children.data + 4;

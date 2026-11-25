@@ -43,9 +43,12 @@ const Instance = struct {
     saved: u8 = 4,
     runtime_limits: library.RuntimeLimits = .{},
     runtime_policy: library.RuntimePolicy = .{},
+    policy_write_pending: bool = false,
+    policy_sync_failed: bool = false,
     auto_considered: bool = false,
     auto_pending: bool = false,
     diagnostic_pending: bool = false,
+    diagnostic_history_allowed: bool = false,
     diagnostic_report: [4096]u8 = undefined,
     diagnostic_report_len: usize = 0,
     diagnostic_path: [1024]u8 = undefined,
@@ -151,7 +154,10 @@ const Content = struct {
     import_toolbar: [3]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
-    states: [11]ui.State = undefined,
+    states: [26]ui.State = undefined,
+    policy_fields: [15][64]u8 = undefined,
+    policy_nodes: [17]ui.Node = undefined,
+    policy_numeric: [4]ui.Node = undefined,
     policy_text: [512]u8 = undefined,
     policy_actions: [3]ui.Node = undefined,
     visibility_actions: [4]ui.Node = undefined,
@@ -261,7 +267,7 @@ fn fillImportToolbar(nodes: *[3]ui.Node, embedded_picker: bool, enabled: bool, i
 }
 
 fn recoveryText(report: library.RecoveryReport, buffer: []u8) ![]const u8 {
-    return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d} · 隔离待恢复 {d} · 未登记保留 {d}。隔离逻辑字节：待恢复 {d} B · 未登记 {d} B · 未统计目录 {d}。凭证 {d} · 待处理凭证 {d} · 清理标记 {d} · 待处理清理 {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved, report.quarantined_registered, report.quarantined_removed, report.quarantine_registered_bytes, report.quarantine_removed_bytes, report.quarantine_unmeasured, report.receipts, report.receipt_pending, report.cleanup_markers, report.cleanup_pending });
+    return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d} · 隔离待恢复 {d} · 未登记保留 {d}。隔离逻辑字节：待恢复 {d} B · 未登记 {d} B · 未统计目录 {d}。凭证 {d} · 待处理凭证 {d} · 清理标记 {d} · 待处理清理 {d} · 诊断历史待处理 {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved, report.quarantined_registered, report.quarantined_removed, report.quarantine_registered_bytes, report.quarantine_removed_bytes, report.quarantine_unmeasured, report.receipts, report.receipt_pending, report.cleanup_markers, report.cleanup_pending, report.history_pending });
 }
 
 fn recoverySuffix(snapshot: *const library.RecoverySnapshot, id: u64) []const u8 {
@@ -609,6 +615,128 @@ fn fillLocalDetail(content: *Content, id: u64, detail: *const library.AssetDetai
     return result;
 }
 
+// The pinned model schema permits at most 32 states. Keep the existing
+// eleven and fifteen bounded editor states, even on the legacy layout.
+const policy_keys = [_][]const u8{
+    "policy.automatic", "policy.batch", "policy.interval", "policy.grace", "policy.timeout",
+    "policy.entry.1", "policy.entry.2", "policy.entry.3", "policy.entry.4",
+    "policy.entry.5", "policy.entry.6", "policy.entry.7", "policy.entry.8",
+    "policy.hide-on-minimize", "policy.retain-history",
+};
+
+fn nativePolicyEditor(instance: *const Instance) bool {
+    const panel = instance.panel orelse return false;
+    return panel.table.get_state != null and panel.table.set_states != null;
+}
+
+fn policyEditorStates(policy: *const library.RuntimePolicy, buffers: *[15][64]u8, states: []ui.State) void {
+    states[0] = .{ .key = abi.view(policy_keys[0]), .value = abi.view(if (policy.automatic) "true" else "false") };
+    const numbers = [_]u64{ @intCast(policy.batch_size), policy.interval_ms, policy.grace_ms, policy.timeout_ms };
+    for (numbers, 1..) |number, n| {
+        const value = std.fmt.bufPrint(&buffers[n], "{d}", .{number}) catch unreachable;
+        states[n] = .{ .key = abi.view(policy_keys[n]), .value = abi.view(value) };
+    }
+    for (0..8) |n| {
+        const value = if (n >= policy.count) "" else blk: {
+            const entry = policy.entries[n];
+            break :blk if (entry.asset_id == library.builtin_asset_id)
+                std.fmt.bufPrint(&buffers[5 + n], "builtin:{d}:{d}", .{ entry.count, entry.profile }) catch unreachable
+            else
+                std.fmt.bufPrint(&buffers[5 + n], "{d}:{d}:{d}", .{ entry.asset_id, entry.count, entry.profile }) catch unreachable;
+        };
+        states[5 + n] = .{ .key = abi.view(policy_keys[5 + n]), .value = abi.view(value) };
+    }
+    states[13] = .{ .key = abi.view(policy_keys[13]), .value = abi.view(if (policy.hide_on_minimize) "true" else "false") };
+    states[14] = .{ .key = abi.view(policy_keys[14]), .value = abi.view(if (policy.retain_history) "true" else "false") };
+}
+
+fn decodePolicyFields(fields: *const [15][]const u8) !library.RuntimePolicy {
+    const automatic: u8 = if (std.mem.eql(u8, fields[0], "true")) 1 else if (std.mem.eql(u8, fields[0], "false")) 0 else return error.InvalidPolicy;
+    for (fields[1..5]) |field| {
+        if (field.len == 0 or field.len > 16) return error.InvalidPolicy;
+        for (field) |ch| if (!std.ascii.isDigit(ch)) return error.InvalidPolicy;
+    }
+    var encoded: [512]u8 = undefined;
+    const head = try std.fmt.bufPrint(&encoded, "{d}:{s}:{s}:{s}:{s}", .{ automatic, fields[1], fields[2], fields[3], fields[4] });
+    var len = head.len;
+    const hide = if (std.mem.eql(u8, fields[13], "true")) true else if (std.mem.eql(u8, fields[13], "false")) false else return error.InvalidPolicy;
+    const retain = if (std.mem.eql(u8, fields[14], "true")) true else if (std.mem.eql(u8, fields[14], "false")) false else return error.InvalidPolicy;
+    if (hide or retain) {
+        const flag = try std.fmt.bufPrint(encoded[len..], ":{d}", .{@intFromBool(hide)});
+        len += flag.len;
+    }
+    if (retain) {
+        const flag = try std.fmt.bufPrint(encoded[len..], ":1", .{});
+        len += flag.len;
+    }
+    for (fields[5..13]) |field| {
+        if (field.len == 0) continue;
+        if (field.len >= 64 or std.mem.indexOfScalar(u8, field, ';') != null) return error.InvalidPolicy;
+        const tail = try std.fmt.bufPrint(encoded[len..], ";{s}", .{field});
+        len += tail.len;
+    }
+    return library.RuntimePolicy.decode(encoded[0..len]);
+}
+
+fn policyInput(key: []const u8, prompt: []const u8, enabled: bool) ui.Node {
+    var node = ui.node(ui.NodeKind.text_input);
+    node.id = abi.view(key);
+    node.state = .{ .present = 1, .value = abi.view(key) };
+    node.placeholder = .{ .present = 1, .value = abi.view(prompt) };
+    node.enabled = .{ .present = 1, .value = @intFromBool(enabled) };
+    return node;
+}
+
+fn fillPolicyEditor(content: *Content, enabled: bool) ui.Node {
+    content.policy_nodes[0] = ui.node(ui.NodeKind.checkbox);
+    content.policy_nodes[0].id = abi.view(policy_keys[0]);
+    content.policy_nodes[0].state = .{ .present = 1, .value = abi.view(policy_keys[0]) };
+    content.policy_nodes[0].text = .{ .present = 1, .value = abi.view("Pulse 插件激活时自动执行已保存计划") };
+    content.policy_nodes[0].enabled = .{ .present = 1, .value = @intFromBool(enabled) };
+    content.policy_nodes[1] = label("policy.launch-help", "每批数量（1–16）与批次间隔（100–3000 ms）");
+    content.policy_numeric[0] = policyInput(policy_keys[1], "每批数量", enabled);
+    content.policy_numeric[1] = policyInput(policy_keys[2], "间隔 ms", enabled);
+    content.policy_nodes[2] = horizontal("policy.launch-fields", content.policy_numeric[0..2]);
+    content.policy_nodes[3] = label("policy.stop-help", "协作退出（0–5000 ms）与总超时（不超过 10000 ms，至少多 2000 ms）");
+    content.policy_numeric[2] = policyInput(policy_keys[3], "协作退出 ms", enabled);
+    content.policy_numeric[3] = policyInput(policy_keys[4], "总超时 ms", enabled);
+    content.policy_nodes[4] = horizontal("policy.stop-fields", content.policy_numeric[2..4]);
+    content.policy_nodes[5] = label("policy.entries-help", "最多八项；每行：素材ID:数量:配置（0默认/1备用）；builtin 为内置；空行忽略。");
+    for (0..8) |n| content.policy_nodes[6 + n] = policyInput(policy_keys[5 + n], "例如 builtin:2:0", enabled);
+    content.policy_nodes[14] = ui.node(ui.NodeKind.checkbox);
+    content.policy_nodes[14].id = abi.view(policy_keys[13]);
+    content.policy_nodes[14].state = .{ .present = 1, .value = abi.view(policy_keys[13]) };
+    content.policy_nodes[14].text = .{ .present = 1, .value = abi.view("Pulse 主窗口全部最小化时自动隐藏（兼容回退，默认关闭）") };
+    content.policy_nodes[14].enabled = .{ .present = 1, .value = @intFromBool(enabled) };
+    content.policy_nodes[15] = ui.node(ui.NodeKind.checkbox);
+    content.policy_nodes[15].id = abi.view(policy_keys[14]);
+    content.policy_nodes[15].state = .{ .present = 1, .value = abi.view(policy_keys[14]) };
+    content.policy_nodes[15].text = .{ .present = 1, .value = abi.view("保留脱敏会话历史（16条 / 30天，默认关闭）") };
+    content.policy_nodes[15].enabled = .{ .present = 1, .value = @intFromBool(enabled) };
+    content.policy_nodes[16] = label("policy.host-boundary", "Windows 登录启动由 Pulse 自身设置管理；无法识别宿主窗口时不自动隐藏。关闭历史记录后不新增记录。");
+    var node = ui.node(ui.NodeKind.stack);
+    node.id = abi.view("settings.policy-editor");
+    ui.withChildren(&node, &content.policy_nodes);
+    return node;
+}
+
+fn syncPolicyEditor(instance: *Instance) void {
+    if (!nativePolicyEditor(instance)) return;
+    const panel = if (instance.panel) |*value| value else return;
+    var states: [16]ui.State = undefined;
+    var fields: [15][64]u8 = undefined;
+    var legacy: [512]u8 = undefined;
+    const encoded = instance.runtime_policy.encode(&legacy) catch unreachable;
+    states[0] = .{ .key = abi.view("settings.runtime-policy"), .value = abi.view(encoded) };
+    policyEditorStates(&instance.runtime_policy, &fields, states[1..]);
+    panel.setStates(&states) catch {
+        instance.policy_sync_failed = true;
+        instance.status = "已读取保存值，但无法同步编辑控件；请重新读取后再编辑";
+        return;
+    };
+    instance.policy_sync_failed = false;
+}
+
 fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     for (commands, 0..) |command, n| content.declared[n] = abi.view(command);
     const selected: usize = @backingInt(instance.section);
@@ -861,10 +989,14 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             content.limits_inputs[1].enabled = .{ .present = 1, .value = @intFromBool(editable) };
             content.children[6] = horizontal("settings.runtime-inputs", &content.limits_inputs);
             content.children[7] = action("settings.limits-save", "保存运行限制（下次启动生效）", commands[52], editable);
-            const policy_editable = editable and instance.task_id == 0 and !instance.auto_pending;
-            content.children[8] = label("settings.policy-help", "运行策略：自动(0/1):每批数量:间隔ms:协作退出ms:总超时ms；追加 ;素材ID:数量:配置(0默认/1备用)，builtin 表示内置。自动默认关闭。");
-            content.children[9] = searchInput("settings.runtime-policy", "0:4:500:2000:10000;builtin:2:0");
-            content.children[9].enabled = .{ .present = 1, .value = @intFromBool(policy_editable) };
+            const policy_editable = editable and instance.task_id == 0 and !instance.auto_pending and !instance.policy_sync_failed;
+            if (nativePolicyEditor(instance)) {
+                content.children[8] = label("settings.policy-help", "启动与退出策略（保存后下次会话生效；自动默认关闭）");
+                content.children[9] = fillPolicyEditor(content, policy_editable);
+            } else {
+                content.children[8] = label("settings.policy-help", "旧宿主兼容编辑：自动(0/1):每批数量:间隔ms:协作退出ms:总超时ms[:最小化隐藏0/1][:保留历史0/1]；追加 ;素材ID:数量:配置(0默认/1备用)。");
+                content.children[9] = policyInput("settings.runtime-policy", "0:4:500:2000:10000;builtin:2:0", policy_editable);
+            }
             content.policy_actions[0] = action("settings.policy-save", "保存启动与退出策略", commands[80], policy_editable);
             content.policy_actions[1] = action("settings.plan-start", "执行已保存启动计划", commands[81], policy_editable and instance.runtime_policy.count != 0);
             content.policy_actions[2] = action("settings.plan-cancel", "取消剩余启动", commands[82], instance.runtime_task_id != 0 and instance.session.plan_active.load(.acquire));
@@ -898,6 +1030,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     content.states[9] = .{ .key = abi.view("library.profile"), .value = abi.view("100:0:0") };
     const policy_value = instance.runtime_policy.encode(&content.policy_text) catch unreachable;
     content.states[10] = .{ .key = abi.view("settings.runtime-policy"), .value = abi.view(policy_value) };
+    policyEditorStates(&instance.runtime_policy, &content.policy_fields, content.states[11..]);
     tree.states = &content.states;
     tree.state_count = content.states.len;
 }
@@ -971,6 +1104,8 @@ fn completed(user: ?*anyopaque, reply: [*c]const raw.PulseResourcesReply) callco
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
     if (reply == null or reply[0].size < @sizeOf(raw.PulseResourcesReply) or instance.pending == 0 or reply[0].request_id != instance.pending) return;
     const operation = instance.pending_operation;
+    const policy_changed = instance.policy_write_pending;
+    instance.policy_write_pending = false;
     instance.pending = 0;
     instance.pending_operation = 0;
     instance.loaded = false;
@@ -1001,6 +1136,7 @@ fn completed(user: ?*anyopaque, reply: [*c]const raw.PulseResourcesReply) callco
         instance.version = value.settings.version;
         instance.loaded = true;
         instance.status = if (operation == raw.PULSE_RESOURCES_SETTINGS_SET) "偏好已确认保存；下次下载队列和运行会话采用新设置" else "已读取设置（未配置时采用默认值）";
+        if (operation == raw.PULSE_RESOURCES_SETTINGS_GET or policy_changed) syncPolicyEditor(instance);
     } else |_| {
         instance.status = "宿主设置数据无效；未覆盖原有设置";
     }
@@ -1055,13 +1191,29 @@ fn saveLimits(instance: *Instance) void {
 }
 
 fn savePolicy(instance: *Instance) void {
-    if (!instance.loaded or instance.pending != 0 or instance.runtime_task_id != 0 or instance.task_id != 0 or instance.auto_pending) return;
+    if (!instance.loaded or instance.pending != 0 or instance.runtime_task_id != 0 or instance.task_id != 0 or instance.auto_pending or instance.policy_sync_failed) return;
     const panel = instance.panel orelse return;
     const get_state = panel.table.get_state orelse return;
-    var bytes: [513]u8 = undefined;
-    var needed: u32 = 0;
-    if (get_state(panel.table.context, panel.id, abi.view("settings.runtime-policy"), &bytes, bytes.len, &needed) != abi.ok or needed > 512) return;
-    const policy = library.RuntimePolicy.decode(bytes[0..needed]) catch {
+    const policy = blk: {
+        if (nativePolicyEditor(instance)) {
+            var buffers: [15][64]u8 = undefined;
+            var values: [15][]const u8 = undefined;
+            for (policy_keys, 0..) |key, n| {
+                var needed: u32 = 0;
+                if (get_state(panel.table.context, panel.id, abi.view(key), &buffers[n], buffers[n].len, &needed) != abi.ok or needed >= buffers[n].len) {
+                    instance.status = "无法读取启动策略控件；未保存";
+                    refresh(instance);
+                    return;
+                }
+                values[n] = buffers[n][0..needed];
+            }
+            break :blk decodePolicyFields(&values);
+        }
+        var bytes: [513]u8 = undefined;
+        var needed: u32 = 0;
+        if (get_state(panel.table.context, panel.id, abi.view("settings.runtime-policy"), &bytes, bytes.len, &needed) != abi.ok or needed > 512) return;
+        break :blk library.RuntimePolicy.decode(bytes[0..needed]);
+    } catch {
         instance.status = "运行策略格式或范围无效；未保存";
         refresh(instance);
         return;
@@ -1072,7 +1224,10 @@ fn savePolicy(instance: *Instance) void {
         return;
     }
     var encoded: [512]u8 = undefined;
-    saveSetting(instance, policy_preference, policy.encode(&encoded) catch return);
+    const value = policy.encode(&encoded) catch return;
+    instance.policy_write_pending = true;
+    saveSetting(instance, policy_preference, value);
+    if (instance.pending == 0) instance.policy_write_pending = false;
 }
 
 fn saveSetting(instance: *Instance, key: []const u8, value: []const u8) void {
@@ -1102,6 +1257,27 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
     const canceled = context[0].cancelled orelse return raw.PULSE_TASK_FAILED;
     if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
     if (instance.diagnostic_pending) {
+        const report = &instance.diagnostic_report;
+        var len = instance.diagnostic_report_len;
+        if (instance.diagnostic_history_allowed) {
+            const extra = library.appendDiagnosticHistory(config.runtime_sha256, report[len..]) catch |err| blk: {
+                if (err == error.CleanupFailed) {
+                    instance.work_error = err;
+                    return raw.PULSE_TASK_FAILED;
+                }
+                const line = std.fmt.bufPrint(report[len..], "\nretained_history_status: {s}\n", .{@errorName(err)}) catch {
+                    instance.work_error = error.InvalidDiagnostic;
+                    return raw.PULSE_TASK_FAILED;
+                };
+                break :blk line.len;
+            };
+            len += extra;
+        } else {
+            const line = std.fmt.bufPrint(report[len..], "\nretained_history_status: active_session\n", .{}) catch unreachable;
+            len += line.len;
+        }
+        if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
+        instance.diagnostic_report_len = len;
         instance.diagnostic_path_len = library.exportDiagnostic(instance.diagnostic_report[0..instance.diagnostic_report_len], &instance.diagnostic_path) catch |err| {
             instance.work_error = err;
             return raw.PULSE_TASK_FAILED;
@@ -1437,6 +1613,7 @@ fn pollLibrary(instance: *Instance) void {
     instance.task_id = 0;
     if (instance.diagnostic_pending) {
         instance.diagnostic_pending = false;
+        instance.diagnostic_history_allowed = false;
         if (instance.task_state != raw.PULSE_TASK_COMPLETED or !instance.work_done.load(.acquire) or instance.work_error != null) {
             instance.diagnostic_path_len = 0;
             instance.diagnostic_status = if (instance.work_error) |err| @errorName(err) else "诊断导出未确认";
@@ -1613,7 +1790,7 @@ fn pollRuntime(instance: *Instance) void {
 }
 
 fn startRuntimeCheck(instance: *Instance) void {
-    if (instance.detail_request != null or instance.market_request != null or !instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0 or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0) return;
+    if (instance.diagnostic_pending or instance.detail_request != null or instance.market_request != null or !instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0 or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0) return;
     const tasks = instance.tasks orelse return;
     const create = tasks.create orelse return;
     // Existing dispatcher/timer is required: do not create an uncollectable task.
@@ -1682,7 +1859,7 @@ fn startPlan(instance: *Instance) void {
 
 fn startSession(instance: *Instance, asset_id: u64, choice: library.LaunchProfile, planned: bool) void {
     const packed_profile = choice.pack() catch return;
-    if (instance.detail_request != null or instance.market_request != null or !instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0 or asset_id == 0) return;
+    if (instance.diagnostic_pending or instance.detail_request != null or instance.market_request != null or !instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0 or asset_id == 0) return;
     if (instance.runtime_task_id != 0) {
         if (instance.task_kind != .builtin_session) return;
         instance.runtime_status = if (instance.session.requestAssetProfile(asset_id, choice)) "已提交新增实例请求" else "暂不可新增实例；请等待或停止";
@@ -1746,9 +1923,10 @@ fn exportDiagnostic(instance: *Instance) void {
     const tasks = instance.tasks orelse return;
     const create = tasks.create orelse return;
     const session = &instance.session;
-    const report = std.fmt.bufPrint(&instance.diagnostic_report, "PulseExtras Companion diagnostic v1\nSDK preview: {d}\nconfigured_instances: {d}\ncommit_budget_mib: {d}\neffective_limit: {d}\nstartup_batch: {d}\nstartup_interval_ms: {d}\nshutdown_grace_ms: {d}\nshutdown_timeout_ms: {d}\nowned: {d}\nready: {d}\nworking_set_bytes: {d}\nprivate_bytes: {d}\nlaunch_attempted: {d}\nlaunch_created: {d}\nrejections: {d}\nlast_rejection: {d}\nconfirmed_exits: {d}\nabnormal_exits: {d}\nlast_exit_code: {d}\n", .{ abi.sdk_preview, instance.runtime_limits.instances, instance.runtime_limits.commit_mib, instance.runtime_limits.effective(), instance.runtime_policy.batch_size, instance.runtime_policy.interval_ms, instance.runtime_policy.grace_ms, instance.runtime_policy.timeout_ms, session.owned.load(.acquire), session.ready.load(.acquire), session.working_set.load(.acquire), session.private_bytes.load(.acquire), session.plan_attempted.load(.acquire), session.plan_launched.load(.acquire), session.denied.load(.acquire), session.last_rejection.load(.acquire), session.exits.load(.acquire), session.abnormal_exits.load(.acquire), session.last_exit.load(.acquire) }) catch return;
+    const report = std.fmt.bufPrint(&instance.diagnostic_report, "PulseExtras Companion diagnostic v1\nSDK preview: {d}\nconfigured_instances: {d}\ncommit_budget_mib: {d}\neffective_limit: {d}\nstartup_batch: {d}\nstartup_interval_ms: {d}\nshutdown_grace_ms: {d}\nshutdown_timeout_ms: {d}\nowned: {d}\nready: {d}\nworking_set_bytes: {d}\nprivate_bytes: {d}\nlaunch_attempted: {d}\nlaunch_created: {d}\nrejections: {d}\nlast_rejection: {d}\nconfirmed_exits: {d}\nabnormal_exits: {d}\nlast_exit_code: {d}\nhistory_write_status: {d}\nhide_on_minimize: {d}\nhost_window_state: {d}\n", .{ abi.sdk_preview, instance.runtime_limits.instances, instance.runtime_limits.commit_mib, instance.runtime_limits.effective(), instance.runtime_policy.batch_size, instance.runtime_policy.interval_ms, instance.runtime_policy.grace_ms, instance.runtime_policy.timeout_ms, session.owned.load(.acquire), session.ready.load(.acquire), session.working_set.load(.acquire), session.private_bytes.load(.acquire), session.plan_attempted.load(.acquire), session.plan_launched.load(.acquire), session.denied.load(.acquire), session.last_rejection.load(.acquire), session.exits.load(.acquire), session.abnormal_exits.load(.acquire), session.last_exit.load(.acquire), session.history_status.load(.acquire), @intFromBool(instance.runtime_policy.hide_on_minimize), session.host_window_state.load(.acquire) }) catch return;
     instance.diagnostic_report_len = report.len;
     instance.diagnostic_path_len = 0;
+    instance.diagnostic_history_allowed = instance.runtime_task_id == 0;
     instance.diagnostic_pending = true;
     instance.work_done.store(false, .release);
     instance.work_error = null;
@@ -2800,6 +2978,8 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
 
 fn close(instance: *Instance) host_mod.Error!void {
     instance.active = false;
+    instance.policy_write_pending = false;
+    instance.policy_sync_failed = false;
     instance.auto_pending = false;
     instance.market_image_test = false;
     instance.market_image_rejected = false;
@@ -3298,7 +3478,7 @@ test "market panel requires explicit admission and has no implicit install" {
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[4].enabled.value);
     try std.testing.expect(std.mem.indexOf(u8, abi.slice(content.children[5].text.value).?, library.market_gallery_url) != null);
     try std.testing.expectEqualStrings("search", abi.slice(content.children[3].glyph.value).?);
-    try std.testing.expectEqual(@as(u32, 11), tree.state_count);
+    try std.testing.expectEqual(@as(u32, 26), tree.state_count);
     try std.testing.expect(instance.market_selected == null);
 }
 
@@ -3404,4 +3584,32 @@ test "runtime policy setting is opt-in and validated before publication" {
     try std.testing.expect(policy.automatic);
     try std.testing.expectEqual(@as(usize, 2), policy.total());
     try std.testing.expectError(error.InvalidSettings, readRuntimePolicy(.{ .values = &values, .count = 2 }));
+}
+
+test "native policy fields use canonical booleans and reject injected records" {
+    var fields: [15][]const u8 = .{ "true", "2", "500", "2000", "10000", "builtin:2:0", "", "7:1:1", "", "", "", "", "", "true", "true" };
+    const policy = try decodePolicyFields(&fields);
+    try std.testing.expect(policy.automatic);
+    try std.testing.expectEqual(@as(usize, 3), policy.total());
+    var buffers: [15][64]u8 = undefined;
+    var states: [15]ui.State = undefined;
+    policyEditorStates(&policy, &buffers, &states);
+    try std.testing.expectEqualStrings("true", abi.slice(states[0].value).?);
+    try std.testing.expectEqualStrings("true", abi.slice(states[13].value).?);
+    try std.testing.expect(policy.hide_on_minimize and policy.retain_history);
+    try std.testing.expectEqualStrings("true", abi.slice(states[14].value).?);
+    try std.testing.expectEqualStrings("7:1:1", abi.slice(states[6].value).?);
+    fields[5] = "builtin:2:0;8:1:0";
+    try std.testing.expectError(error.InvalidPolicy, decodePolicyFields(&fields));
+    fields[5] = "builtin:2:0";
+    fields[0] = "1";
+    try std.testing.expectError(error.InvalidPolicy, decodePolicyFields(&fields));
+    fields[0] = "false";
+    fields[1] = "2:3";
+    try std.testing.expectError(error.InvalidPolicy, decodePolicyFields(&fields));
+    var content: Content = undefined;
+    const editor = fillPolicyEditor(&content, false);
+    try std.testing.expectEqual(@as(u32, 17), editor.children.count);
+    try std.testing.expectEqual(ui.NodeKind.checkbox, content.policy_nodes[0].type);
+    try std.testing.expectEqual(@as(u32, 0), content.policy_nodes[0].enabled.value);
 }

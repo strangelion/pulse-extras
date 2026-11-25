@@ -80,7 +80,7 @@ typedef struct {
 } pet_scan_row;
 enum { SCAN_UNKNOWN, SCAN_PACKAGE, SCAN_PENDING, SCAN_PREFERENCE,
     SCAN_INVENTORY, SCAN_INVENTORY_PENDING, SCAN_LOCK, SCAN_QUARANTINE,
-    SCAN_RECEIPT, SCAN_RECEIPT_PENDING, SCAN_CLEANUP, SCAN_CLEANUP_PENDING, SCAN_MARKET_ROOT };
+    SCAN_RECEIPT, SCAN_RECEIPT_PENDING, SCAN_CLEANUP, SCAN_CLEANUP_PENDING, SCAN_MARKET_ROOT, SCAN_HISTORY, SCAN_HISTORY_PENDING };
 #define PET_SCAN_MAX 4096u
 
 static pet_scan_row scan_row(const WIN32_FIND_DATAW *data) {
@@ -90,6 +90,8 @@ static pet_scan_row scan_row(const WIN32_FIND_DATAW *data) {
     else if (!wcscmp(name, L"inventory.pending")) row.kind = SCAN_INVENTORY_PENDING;
     else if (!wcscmp(name, L"owner.lock")) row.kind = SCAN_LOCK;
     else if (!wcscmp(name, L"PulseExtras-Companion")) row.kind = SCAN_MARKET_ROOT;
+    else if (!wcscmp(name, L"session-history.pdh")) row.kind = SCAN_HISTORY;
+    else if (!wcscmp(name, L"session-history.pending")) row.kind = SCAN_HISTORY_PENDING;
     else if (wcslen(name) >= 20 && !wcsncmp(name, L"pet-", 4)) {
         uint64_t id = 0;
         for (size_t i = 4; i < 20; ++i) {
@@ -575,4 +577,18 @@ __declspec(dllexport) pet_store_result pulse_companion_market_write_v1(
     if (!live_lease(lease, size) || slot >= PET_MARKET_CACHE_SLOTS)
         return PET_STORE_INVALID;
     return pet_market_cache_write(lease->path, (uint32_t)slot, data, length);
+}
+
+__declspec(dllexport) pet_store_result pulse_companion_history_read_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id,
+    uint8_t *out, SIZE_T capacity, SIZE_T *written) {
+    if (!live_lease(lease, size) || id) return PET_STORE_INVALID;
+    return pet_history_read(lease->path, out, capacity, written);
+}
+
+__declspec(dllexport) pet_store_result pulse_companion_history_write_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id,
+    const uint8_t *data, SIZE_T length) {
+    if (!live_lease(lease, size) || id) return PET_STORE_INVALID;
+    return pet_history_write(lease->path, data, length);
 }

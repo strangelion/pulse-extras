@@ -205,6 +205,17 @@ static unsigned pet_menu(const pet_resources *resources, pet_surface *surface, H
             destroy_menu(resources, sizes, 1); destroy_menu(resources, menu, attached); return 0;
         }
     }
+    /* Native radio selection makes mutually exclusive sizes distinguishable
+     * from the independent toggles below; arbitrary custom scale has no
+     * falsely checked preset. The original checked menu remains fallback. */
+    for (unsigned i = 0; i < sizeof(menu_scales) / sizeof(menu_scales[0]); ++i) {
+        if (scale == menu_scales[i]) {
+            (void)CheckMenuRadioItem(sizes, MENU_SCALE_50,
+                MENU_SCALE_50 + (UINT)(sizeof(menu_scales) / sizeof(menu_scales[0]) - 1u),
+                MENU_SCALE_50 + i, MF_BYCOMMAND);
+            break;
+        }
+    }
     if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)sizes, strings.size)) {
         destroy_menu(resources, sizes, 1); destroy_menu(resources, menu, attached); return 0;
     }
@@ -238,6 +249,10 @@ static unsigned pet_menu(const pet_resources *resources, pet_surface *surface, H
                 destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0;
             }
         }
+        if (!auto_outfit && outfit <= package->meta.outfit_count)
+            (void)CheckMenuRadioItem(outfits, MENU_OUTFIT_FIRST,
+                MENU_OUTFIT_FIRST + package->meta.outfit_count,
+                MENU_OUTFIT_FIRST + outfit, MF_BYCOMMAND);
         if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)outfits, strings.outfit)) {
             destroy_menu(resources, outfits, 1); destroy_menu(resources, menu, attached); return 0;
         }
@@ -279,10 +294,12 @@ static unsigned pet_menu(const pet_resources *resources, pet_surface *surface, H
         }
         ++attached;
     }
-    if (!AppendMenuW(menu, MF_STRING | (topmost ? MF_CHECKED : 0), MENU_TOPMOST, strings.topmost) ||
+    if (!AppendMenuW(menu, MF_SEPARATOR, 0, NULL) ||
+        !AppendMenuW(menu, MF_STRING | (topmost ? MF_CHECKED : 0), MENU_TOPMOST, strings.topmost) ||
         !AppendMenuW(menu, MF_STRING | (reduced ? MF_CHECKED : 0), MENU_REDUCED, strings.reduced) ||
         (gaze_supported && !AppendMenuW(menu, MF_STRING | (gaze_enabled ? MF_CHECKED : 0) |
             (reduced ? MF_GRAYED : 0), MENU_GAZE, strings.gaze)) ||
+        !AppendMenuW(menu, MF_SEPARATOR, 0, NULL) ||
         !AppendMenuW(menu, MF_STRING, MENU_RESET, strings.reset) ||
         !AppendMenuW(menu, MF_STRING | (managed || reduced ? MF_GRAYED : 0), MENU_INTERACT, strings.interact) ||
         !AppendMenuW(menu, MF_SEPARATOR, 0, NULL) ||
