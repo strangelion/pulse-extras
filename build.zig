@@ -431,10 +431,11 @@ pub fn build(b: *std.Build) void {
             .imports = host_modules.imports(),
         });
         import_root.addCSourceFiles(.{
-            .files = &.{ "shared/companion/pet_catalog_store_win32.c", "tests/companion/pet_catalog_store_fixture.c", "shared/companion/pet_market_http_win32.c" },
+            .files = &.{ "shared/companion/pet_catalog_store_win32.c", "tests/companion/pet_catalog_store_fixture.c", "shared/companion/pet_market_http_win32.c", "shared/companion/pet_private_root_win32.c" },
             .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
         });
         import_root.linkSystemLibrary("winhttp", .{});
+        import_root.linkSystemLibrary("advapi32", .{});
         const import_tests = b.addTest(.{ .root_module = import_root });
         import_integration.dependOn(&b.addRunArtifact(import_tests).step);
     }

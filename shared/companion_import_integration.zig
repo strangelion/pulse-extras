@@ -32,6 +32,7 @@ test {
     _ = http.Downloads;
     _ = @import("companion_market_cache.zig");
     _ = @import("companion_market_service.zig");
+    _ = @import("companion_preferences_write.zig");
 }
 
 extern "c" fn pet_catalog_store_fixture_open([*]u16, u32) c_int;

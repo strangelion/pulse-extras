@@ -95,3 +95,17 @@ int pet_market_cache_fixture_close(const wchar_t *root) {
     if (!DeleteFileW(file) && GetLastError() != ERROR_FILE_NOT_FOUND) return 0;
     return RemoveDirectoryW(root);
 }
+
+/* Only the isolated private-root preference fixture uses this cleanup.
+ * Do not call on a production root; unknown files prevent directory removal. */
+int pet_private_preferences_fixture_close(const wchar_t *parent) {
+    wchar_t root[1024], lock[1024];
+    int n = swprintf(root, 1024, L"%ls\\PulseExtras-Companion", parent);
+    if (n <= 0 || n >= 1024) return 0;
+    n = swprintf(lock, 1024, L"%ls\\owner.lock", root);
+    if (n <= 0 || n >= 1024) return 0;
+    if (!DeleteFileW(lock) && GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) return 0;
+    if (GetFileAttributesW(root) != INVALID_FILE_ATTRIBUTES &&
+        !pet_catalog_store_fixture_close(root)) return 0;
+    return RemoveDirectoryW(parent);
+}

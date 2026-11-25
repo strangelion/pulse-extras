@@ -705,3 +705,19 @@ created by UI, and caller approval of the parent remains required.
 Add native desktop CI test of creation, second-owner rejection, close and
 reopen, and preservation of unrelated content in an incompatible existing
 root. No production write permissions or release readiness claimed.
+
+## Private-owner preference transactions
+
+Connect the native root lease to a serialized Zig preference writer and
+existing durable PCI/PCT store. Re-read inventory identity and preferences
+under the held lease before every edit. Compare a content revision token
+(presence bit plus SHA-256 of canonical PCT1 bytes); reject stale selection
+or version mismatch rather than overwrite. Support explicit favorite value,
+add/remove tag and idempotent no-op. Never publish a successful new state
+until atomic store write returns success. On write failure fault the owner;
+close/reopen and reload before further edits. A content token is not a
+monotonic revision and cannot detect ABA. The owner is not yet connected
+to the production DLL; approved parent provisioning and a compatible MSVC
+backend remain open. Test on a fresh private child with actual ACL lease,
+second-owner rejection, stale edit, Unicode tag, reload, and no-op.
+No automatic cleanup of user content. New integration CI pending.
