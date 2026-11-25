@@ -332,3 +332,22 @@ exit/output, then publish/save the inventory; not wired in this commit.
 Windows package smoke now exercises real staging, byte equality and
 existing target rejection. Previous SHA inventory regression passed; new
 native staging tests and prior fingerprint integration await CI.
+
+## Import transaction coordinator
+
+The worker coordinator probes a validated source digest, returns existing
+ID on a duplicate before any writes, reserves/persists the high-water
+mark, invokes the staged-copy helper, then publishes and persists the
+inventory. The Windows store adapter binds this to actual inventory writes;
+the typed helper uses the approved Runner with Windows job policy, explicit
+environment, bounded output and timeout, checks exact machine output and
+clean exit. Any ambiguous reservation-save, staging or commit error latches
+a recovery fault and ID; partial imports remain invisible in memory and
+no retry occurs without recovery. If the final write succeeded but reported
+an error, disk reload is required to resolve ambiguity. No automatic orphan
+adoption/deletion or root initialization. Native store test uses fake stage;
+actual staging is tested separately. End-to-end real-helper transaction and
+UI remain pending. Fixed independent Python SHA reference: use actual NUL
+rather than four literal escape characters. Both Windows regressions
+45575428171 and 45576460968 stopped at this assertion before staging test.
+Both mixed preflights and Linux regressions passed. Latest CI pending.

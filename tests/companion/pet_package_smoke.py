@@ -46,7 +46,7 @@ def main() -> None:
         def reference():
             files = sorted((p.relative_to(root).as_posix(), p.read_bytes())
                            for p in root.rglob("*") if p.is_file())
-            digest = hashlib.sha256(b"pulse-classic-package-sha256-v1\\x00")
+            digest = hashlib.sha256(b"pulse-classic-package-sha256-v1\x00")
             digest.update(struct.pack("<Q", len(files)))
             for path, data in files:
                 name = path.encode("ascii")
