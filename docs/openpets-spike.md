@@ -520,3 +520,27 @@ test verifies the registered class cursor without moving the real mouse.
 Retest pointer enter/leave, click and drag on the real desktop after
 rebuilding. The screenshot does not establish resource usage,
 full animation coverage, or compatibility across Windows installations.
+
+## Initial manual resource observation and approved native host seam
+
+A user-provided Windows Task Manager screenshot (2026-11-25) shows
+pulse-pet-demo.exe at 15.5 MB in the Memory column, 0% CPU, 0 MB/s disk
+and 0 Mbps network, with Juhuali visible. This is one displayed sample,
+not a private-bytes/working-set benchmark, CPU average, GPU measurement,
+leak test or release acceptance. Exact binary build and elapsed run
+time are not established. No claim of cursor retest is made from it.
+
+shared/companion_host.zig connects the main branch process trust module,
+native behavior controller and the C process supervisor on one serialized
+worker. Start verifies an independently approved hash/path, then calls
+the contained launcher; the installation ACL and same-user trust limits
+remain caller responsibilities. A borrowed process handle can join the
+worker's wait set alongside event and scheduler deadlines. Stop clears
+activity and disables dispatch before requesting bounded shutdown.
+An ambiguous publish or status failure abandons the owned job and
+requires explicit restart; no automatic restart or rendered-ack claim.
+The actual hidden child test checks wrong-digest rejection, task-to-state
+publication, successful child exit and handle release. The CI fixture
+hashes its own freshly built executable only for isolated test approval.
+No Pulse SDK callback, extension entrypoint, asset selection in the
+supervisor or shipping package is enabled by this seam.

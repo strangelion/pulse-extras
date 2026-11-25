@@ -161,6 +161,13 @@ jobs:
           $demo = (Resolve-Path ./zig-out/pulse-pet-demo.exe).Path
           & ./zig-out/pet-supervisor-test.exe $demo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise approved Zig companion host with actual child
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 4
+        run: |
+          zig test shared/companion_host.zig shared/companion/pet_supervisor_win32.c tests/companion/pet_host_fixture.c -target x86_64-windows-gnu -lc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Fetch pinned native SDK headers
         if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
         run: python scripts/fetch_sdk.py
