@@ -415,3 +415,21 @@ reloaded duplicate, actual final/source fingerprint, preference save/reload
 and runner drain. Isolated test cleanup is limited to known filenames.
 New integration is not yet verified by CI. The real Pulse page, recovery
 and online market transport are still separate pending work.
+
+## Classic ZIP admission plan
+
+Upstream path contract checked in OpenPetsHQ/openpets packages/pet-format/src/node/paths.ts
+and node/archive.ts. pet_zip.zig reads pinned archive ranges (not the
+whole archive) and produces a bounded normalized extraction plan, accepting
+flat or one safe wrapper directory, stored/deflate ZIP32 and data descriptors.
+Limits: 320 MiB archive/aggregate output, 290 files + 3 directory entries,
+128 KiB metadata, 16 MiB WebP, 2 MiB activity strip and 16 MiB aggregate
+activities. Strict initial policy rejects archive/entry comments, ZIP64,
+unknown extra fields, encrypted or special entries, traversal, reserved DOS
+names, mixed layout, duplicates, hidden/overlapping local ranges and
+local/central disagreement. Does NOT decompress, verify CRC of payloads,
+create files or import ZIPs yet. The next extractor must use this plan,
+actual output bounds and CRC; keep archive pinned. Portable file-backed
+and malformed metadata tests added. Real upstream ZIP fixture verification
+still pending. Previous af52c35 actual helper/durable import CI step passed
+Windows; remaining checks in progress at time of this change.
