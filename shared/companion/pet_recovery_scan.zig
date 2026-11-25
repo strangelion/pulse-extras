@@ -110,5 +110,5 @@ test "classify top-level recovery states without modifying inventory" {
     }, result);
     try std.testing.expectEqual(@as(usize, 2), index.count);
     try std.testing.expectEqual(@as(u64, 3), index.next_id);
-    try std.testing.expectError(error.InvalidScan, classify(&index, &.{rows[0], rows[0]}));
+    try std.testing.expectError(error.InvalidScan, classify(&index, &.{ rows[0], rows[0] }));
 }
