@@ -188,3 +188,80 @@ test "quarantine distinguishes interrupted removal from unregistered retained co
     try std.testing.expectEqual(@as(usize, 1), report.quarantined_removed);
     try std.testing.expectEqual(@as(usize, 0), report.orphan_packages);
 }
+
+pub const RegisteredState = enum { normal, interrupted_removal, missing, blocked };
+pub const RegisteredDetail = struct {
+    id: u64,
+    state: RegisteredState,
+};
+
+pub const Snapshot = struct {
+    summary: Report = .{},
+    count: usize = 0,
+    details: [inventory.max_entries]RegisteredDetail = undefined,
+
+    pub fn stateFor(self: *const Snapshot, id: u64) ?RegisteredState {
+        for (self.details[0..self.count]) |detail| {
+            if (detail.id == id) return detail.state;
+        }
+        return null;
+    }
+};
+
+// Retain only registered IDs, bounded by PCI3 capacity. A state is a
+// diagnostic snapshot, never proof of contents or authority to mutate.
+pub fn inspect(index: *const inventory.Inventory, rows: []const Row) !Snapshot {
+    var result: Snapshot = .{ .summary = try classify(index, rows) };
+    var global_pending = false;
+    for (rows) |row| {
+        if (row.kind == @backingInt(Kind.inventory_pending)) global_pending = true;
+    }
+    for (index.entries[0..index.count]) |record| {
+        var has_target = false;
+        for (rows) |row| {
+            if (row.id == record.id and (row.kind == @backingInt(Kind.package) or row.kind == @backingInt(Kind.quarantine) or row.kind == @backingInt(Kind.pending))) has_target = true;
+        }
+        const state: RegisteredState = if (record.digest == null or record.secondary == null or global_pending)
+            .blocked
+        else if (removalState(rows, record.id)) |status|
+            switch (status) {
+                .normal => .normal,
+                .quarantined => .interrupted_removal,
+            }
+        else |_|
+            if (has_target) .blocked else .missing;
+        result.details[result.count] = .{ .id = record.id, .state = state };
+        result.count += 1;
+    }
+    return result;
+}
+
+test "registered recovery details distinguish interrupted missing blocked and normal IDs" {
+    var index: inventory.Inventory = .{};
+    for (0..5) |n| {
+        const byte: u8 = @intCast(n + 1);
+        try index.publishPair(try index.reserve(), "cat", .{ .primary = @splat(byte), .secondary = @splat(byte) });
+    }
+    try index.publish(try index.reserve(), "legacy");
+    const rows = [_]Row{
+        .{ .id = 1, .kind = @backingInt(Kind.package), .attributes = 0x10 },
+        .{ .id = 2, .kind = @backingInt(Kind.quarantine), .attributes = 0x10 },
+        .{ .id = 4, .kind = @backingInt(Kind.package), .attributes = 0x410 },
+        .{ .id = 5, .kind = @backingInt(Kind.package), .attributes = 0x10 },
+        .{ .id = 5, .kind = @backingInt(Kind.quarantine), .attributes = 0x10 },
+        .{ .id = 6, .kind = @backingInt(Kind.package), .attributes = 0x10 },
+        .{ .id = 7, .kind = @backingInt(Kind.quarantine), .attributes = 0x10 },
+    };
+    const snapshot = try inspect(&index, &rows);
+    try std.testing.expectEqual(@as(usize, 6), snapshot.count);
+    try std.testing.expectEqual(RegisteredState.normal, snapshot.stateFor(1).?);
+    try std.testing.expectEqual(RegisteredState.interrupted_removal, snapshot.stateFor(2).?);
+    try std.testing.expectEqual(RegisteredState.missing, snapshot.stateFor(3).?);
+    try std.testing.expectEqual(RegisteredState.blocked, snapshot.stateFor(4).?);
+    try std.testing.expectEqual(RegisteredState.blocked, snapshot.stateFor(5).?);
+    try std.testing.expectEqual(RegisteredState.blocked, snapshot.stateFor(6).?);
+    try std.testing.expect(snapshot.stateFor(7) == null);
+    try std.testing.expectEqual(@as(usize, 1), snapshot.summary.quarantined_removed);
+    const pending = try inspect(&index, &.{ .{ .id = 1, .kind = @backingInt(Kind.package), .attributes = 0x10 }, .{ .id = 0, .kind = @backingInt(Kind.inventory_pending), .attributes = 0x80 } });
+    try std.testing.expectEqual(RegisteredState.blocked, pending.stateFor(1).?);
+}

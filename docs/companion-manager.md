@@ -1132,3 +1132,20 @@ after rename, restoration, commit, and reimport with a new ID. The UI scan
 reports both quarantine categories; destructive/restore commands remain
 unexposed until the Windows regression passes. New CI and actual Pulse
 acceptance remain NOT VERIFIED.
+
+## Per-asset recovery diagnostics
+
+The bounded recovery snapshot now carries one typed state per registered
+stable asset ID (at most 512). Library rows label the last scanned state:
+directory present, interrupted removal, missing, or blocked by ambiguous
+namespace / missing digest evidence. The scan runs under the same verified
+private-root lease, and report and details come from the same enumeration.
+A successful scan does not prove file contents or authorize mutation; the
+worker must revalidate identity and namespace immediately before any later
+write. Preference edits and imports invalidate the displayed snapshot.
+Unregistered retained copies are counted separately, never offered as
+registered restore targets. Unit tests cover reparse points, conflicts,
+legacy records, missing IDs and pending inventory; the isolated bridge
+fixture checks the state before restoration, after restoration and after
+committed removal. No new host SDK interface or destructive UI command is
+introduced while the preceding native removal regression is pending.

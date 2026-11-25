@@ -99,11 +99,14 @@ pub fn editPreferenceDefault(hex: []const u8, edit: *const PreferenceEdit) !void
     return outcome;
 }
 
-pub const RecoveryReport = @import("companion/pet_recovery_scan.zig").Report;
+const recovery = @import("companion/pet_recovery_scan.zig");
+pub const RecoveryReport = recovery.Report;
+pub const RecoverySnapshot = recovery.Snapshot;
+pub const RecoveryState = recovery.RegisteredState;
 
 // Use the same verified module and private-root lease as other maintenance
 // operations. The scan never adopts or deletes any asset or preference.
-pub fn scanRecoveryDefault(hex: []const u8) !RecoveryReport {
+pub fn scanRecoveryDefault(hex: []const u8) !RecoverySnapshot {
     if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
     const digest = try parseDigest(hex);
     var path: [1024]u16 = undefined;
@@ -111,9 +114,9 @@ pub fn scanRecoveryDefault(hex: []const u8) !RecoveryReport {
     const owner = try std.heap.page_allocator.create(runtime.Owner);
     owner.* = .{};
     const outcome = blk: {
-        owner.open(root, digest, 1, 128 * 1024 * 1024) catch |err| break :blk @as(anyerror!RecoveryReport, err);
-        _ = openPrivateDefault(owner) catch |err| break :blk @as(anyerror!RecoveryReport, err);
-        break :blk store.scanRecovery(owner);
+        owner.open(root, digest, 1, 128 * 1024 * 1024) catch |err| break :blk @as(anyerror!RecoverySnapshot, err);
+        _ = openPrivateDefault(owner) catch |err| break :blk @as(anyerror!RecoverySnapshot, err);
+        break :blk store.scanRecoveryDetailed(owner);
     };
     owner.close() catch return error.CleanupFailed;
     std.heap.page_allocator.destroy(owner);

@@ -29,6 +29,10 @@ pub fn saveInventory(owner: *runtime.Owner, value: *const inventory.Inventory) !
 // A complete bounded scan under the private lease. No mutation or automatic
 // adoption; a malformed inventory or incomplete enumeration is an error.
 pub fn scanRecovery(owner: *runtime.Owner) !recovery.Report {
+    return (try scanRecoveryDetailed(owner)).summary;
+}
+
+pub fn scanRecoveryDetailed(owner: *runtime.Owner) !recovery.Snapshot {
     const index = try std.heap.page_allocator.create(inventory.Inventory);
     defer std.heap.page_allocator.destroy(index);
     index.* = .{};
@@ -36,7 +40,7 @@ pub fn scanRecovery(owner: *runtime.Owner) !recovery.Report {
     const rows = try std.heap.page_allocator.alloc(recovery.Row, recovery.max_rows);
     defer std.heap.page_allocator.free(rows);
     const count = try owner.scanStore(rows);
-    return recovery.classify(index, rows[0..count]);
+    return recovery.inspect(index, rows[0..count]);
 }
 
 fn checkedRemoval(owner: *runtime.Owner, index: *inventory.Inventory, expected: inventory.Record, state: recovery.RemovalState) !void {

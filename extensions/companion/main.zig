@@ -75,8 +75,8 @@ const Instance = struct {
     picker_request: u64 = 0,
     fallback_pick: bool = false,
     recovery_scan: bool = false,
-    work_recovery_report: ?library.RecoveryReport = null,
-    recovery_report: ?library.RecoveryReport = null,
+    work_recovery_report: ?library.RecoverySnapshot = null,
+    recovery_report: ?library.RecoverySnapshot = null,
     picked_folder: ?library.PickedFolder = null,
     dialogs: ?raw.PulseDialogsV1 = null,
     import_cancel_requested: bool = false,
@@ -102,7 +102,7 @@ const Content = struct {
     preference_toolbar: [4]ui.Node = undefined,
     asset_toolbar: [2]ui.Node = undefined,
     stop_toolbar: [2]ui.Node = undefined,
-    row_text: [16][256]u8 = undefined,
+    row_text: [16][384]u8 = undefined,
     row_ids: [16][64]u8 = undefined,
     dynamic_ids: [4][64]u8 = undefined,
     library_count: [160]u8 = undefined,
@@ -142,6 +142,15 @@ fn horizontal(id: []const u8, children: []const ui.Node) ui.Node {
 
 fn recoveryText(report: library.RecoveryReport, buffer: []u8) ![]const u8 {
     return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d} · 隔离待恢复 {d} · 已移除保留 {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved, report.quarantined_registered, report.quarantined_removed });
+}
+
+fn recoverySuffix(snapshot: *const library.RecoverySnapshot, id: u64) []const u8 {
+    return switch (snapshot.stateFor(id) orelse return "") {
+        .normal => " · 扫描：目录在位",
+        .interrupted_removal => " · 扫描：隔离待恢复",
+        .missing => " · 扫描：目录缺失",
+        .blocked => " · 扫描：需检查",
+    };
 }
 
 fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
@@ -212,7 +221,8 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     count += 1;
                 }
                 for (snapshot.rows[instance.library_offset..end], 0..) |*row, n| {
-                    const body = std.fmt.bufPrint(&content.row_text[n], "#{d}  {s} · {s} · {s} · 标签 {d} {s}", .{ row.id, row.sourceId(), if (row.paired) "双摘要记录" else "待重验", if (row.favorite) "已收藏" else "未收藏", row.tag_count, row.first_tag[0..row.first_tag_len] }) catch unreachable;
+                    const suffix = if (instance.recovery_report) |*report| recoverySuffix(report, row.id) else "";
+                    const body = std.fmt.bufPrint(&content.row_text[n], "#{d}  {s} · {s} · {s} · 标签 {d} {s}{s}", .{ row.id, row.sourceId(), if (row.paired) "双摘要记录" else "待重验", if (row.favorite) "已收藏" else "未收藏", row.tag_count, row.first_tag[0..row.first_tag_len], suffix }) catch unreachable;
                     const id = std.fmt.bufPrint(&content.row_ids[n], "asset-{x}-{x}", .{ row.id, std.hash.Wyhash.hash(0, body) }) catch unreachable;
                     content.children[count] = label(id, body);
                     count += 1;
@@ -239,8 +249,8 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 content.children[count] = action("library.recovery-scan", "扫描恢复状态（只读）", commands[22], can_scan);
                 count += 1;
             }
-            if (instance.recovery_report) |report| {
-                const body = recoveryText(report, &content.recovery_text) catch unreachable;
+            if (instance.recovery_report) |*report| {
+                const body = recoveryText(report.summary, &content.recovery_text) catch unreachable;
                 content.children[count] = changingLabel(&content.dynamic_ids[2], "library.recovery-report", body);
                 count += 1;
             }
@@ -1179,6 +1189,7 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     }
     instance.work_done.store(false, .release);
     instance.work_error = null;
+    if (instance.import_request != null or instance.preference_edit != null) instance.recovery_report = null;
     instance.work_snapshot = .{};
     if (!instance.fallback_pick and !instance.recovery_scan) instance.library_loaded = false;
     const descriptor: raw.PulseTaskDescriptor = .{
@@ -1573,4 +1584,14 @@ test "recovery summary reports anomalies without promising repair" {
     try std.testing.expect(std.mem.indexOf(u8, body, "孤立目录 3") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "无效项 4") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "未执行清理") != null);
+}
+
+test "recovery labels identify registered assets and leave unknown IDs unmarked" {
+    var snapshot: library.RecoverySnapshot = .{};
+    snapshot.details[0] = .{ .id = 2, .state = .interrupted_removal };
+    snapshot.details[1] = .{ .id = 3, .state = .missing };
+    snapshot.count = 2;
+    try std.testing.expectEqualStrings(" · 扫描：隔离待恢复", recoverySuffix(&snapshot, 2));
+    try std.testing.expectEqualStrings(" · 扫描：目录缺失", recoverySuffix(&snapshot, 3));
+    try std.testing.expectEqualStrings("", recoverySuffix(&snapshot, 4));
 }

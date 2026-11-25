@@ -238,13 +238,16 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     }
     // Simulate interruption after the durable rename but before index commit.
     try owner.moveQuarantine(record.id, false);
-    const interrupted = try store.scanRecovery(owner);
-    if (interrupted.quarantined_registered != 1 or interrupted.missing != 2) return error.UnexpectedRecoveryScan;
+    const interrupted = try store.scanRecoveryDetailed(owner);
+    if (interrupted.summary.quarantined_registered != 1 or interrupted.summary.missing != 2) return error.UnexpectedRecoveryScan;
+    if (interrupted.stateFor(record.id) != .interrupted_removal) return error.UnexpectedRecoveryScan;
     try store.restoreInterruptedRemoval(owner, record);
-    if (!std.meta.eql(report, try store.scanRecovery(owner))) return error.RestoreFailed;
+    const restored = try store.scanRecoveryDetailed(owner);
+    if (!std.meta.eql(report, restored.summary) or restored.stateFor(record.id) != .normal) return error.RestoreFailed;
     try store.quarantineRemove(owner, record);
     const removed = try store.scanRecovery(owner);
     if (removed.quarantined_removed != 1 or removed.quarantined_registered != 0 or removed.registered != 3 or removed.missing != 1) return error.UnexpectedRecoveryScan;
+    if ((try store.scanRecoveryDetailed(owner)).stateFor(record.id) != null) return error.UnexpectedRecoveryScan;
     if (!try store.loadInventory(owner, index) or index.count != 4 or index.next_id != 6) return error.InventoryNotPersisted;
     if (store.restoreInterruptedRemoval(owner, record)) |_| {
         return error.RestoredRemovedId;
