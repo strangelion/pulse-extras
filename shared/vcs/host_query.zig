@@ -15,7 +15,7 @@ const identity = @import("vcs_identity");
 const contract = @import("vcs_provider");
 const panel = @import("vcs_panel");
 const ui = @import("pulse_ui_model");
-const context = @import("pulse_context");
+const context_mod = @import("pulse_context");
 const capabilities = @import("vcs_capabilities");
 const detect = @import("vcs_detect");
 
@@ -254,7 +254,7 @@ pub const Controller = struct {
 /// close. Failed close retains the handle; no new commands are accepted.
 /// Tool/repository approval and provider lifetime belong to the caller.
 pub const Binding = struct {
-    pub const Navigation = context.Navigation(identity.max_path_bytes);
+    pub const Navigation = context_mod.Navigation(identity.max_path_bytes);
 
     controller: Controller,
     navigation: Navigation = .{},
@@ -311,10 +311,10 @@ pub const Binding = struct {
     /// Subscribe only after the panel is live. Callback delivery stores a
     /// bounded directory ticket; no VCS tool or filesystem lookup runs there.
     pub fn openNavigation(self: *Binding, host: host_mod.Host) host_mod.Error!void {
-        try self.openNavigationWithTable(try context.Table.init(host.raw()));
+        try self.openNavigationWithTable(try context_mod.Table.init(host.raw()));
     }
 
-    pub fn openNavigationWithTable(self: *Binding, table: context.Table) host_mod.Error!void {
+    pub fn openNavigationWithTable(self: *Binding, table: context_mod.Table) host_mod.Error!void {
         if (!self.accepting) return error.State;
         self.navigation.open(table) catch |err| {
             self.controller.clear() catch {};
@@ -851,17 +851,17 @@ test "model update failure does not free an active host task" {
 }
 
 const MockNavigation = struct {
-    callback: context.ChangeFn = null,
+    callback: context_mod.ChangeFn = null,
     data: ?*anyopaque = null,
     fail_close: bool = false,
 
-    fn get(_: ?*anyopaque, callback: context.ChangeFn, data: ?*anyopaque) callconv(.c) abi.Status {
-        var snapshot: context.Snapshot = .{ .size = @sizeOf(context.Snapshot), .directory = abi.view("one") };
+    fn get(_: ?*anyopaque, callback: context_mod.ChangeFn, data: ?*anyopaque) callconv(.c) abi.Status {
+        var snapshot: context_mod.Snapshot = .{ .size = @sizeOf(context_mod.Snapshot), .directory = abi.view("one") };
         (callback orelse return abi.error_argument)(data, &snapshot);
         return abi.ok;
     }
 
-    fn subscribe(user: ?*anyopaque, callback: context.ChangeFn, data: ?*anyopaque, out: [*c]context.SubscriptionId) callconv(.c) abi.Status {
+    fn subscribe(user: ?*anyopaque, callback: context_mod.ChangeFn, data: ?*anyopaque, out: [*c]context_mod.SubscriptionId) callconv(.c) abi.Status {
         const self: *MockNavigation = @ptrCast(@alignCast(user orelse return abi.error_argument));
         self.callback = callback;
         self.data = data;
@@ -869,7 +869,7 @@ const MockNavigation = struct {
         return abi.ok;
     }
 
-    fn unsubscribe(user: ?*anyopaque, id: context.SubscriptionId) callconv(.c) abi.Status {
+    fn unsubscribe(user: ?*anyopaque, id: context_mod.SubscriptionId) callconv(.c) abi.Status {
         const self: *MockNavigation = @ptrCast(@alignCast(user orelse return abi.error_argument));
         if (id != 3) return abi.error_argument;
         if (self.fail_close) return abi.error_permission;
@@ -878,10 +878,10 @@ const MockNavigation = struct {
         return abi.ok;
     }
 
-    fn table(self: *MockNavigation) context.Table {
+    fn table(self: *MockNavigation) context_mod.Table {
         return .{ .raw = .{
-            .size = @sizeOf(context.TableV1),
-            .version = context.version_1,
+            .size = @sizeOf(context_mod.TableV1),
+            .version = context_mod.version_1,
             .context = self,
             .get = &get,
             .subscribe = &subscribe,
@@ -890,7 +890,7 @@ const MockNavigation = struct {
     }
 
     fn navigate(self: *MockNavigation, path: []const u8) void {
-        var snapshot: context.Snapshot = .{ .size = @sizeOf(context.Snapshot), .directory = abi.view(path) };
+        var snapshot: context_mod.Snapshot = .{ .size = @sizeOf(context_mod.Snapshot), .directory = abi.view(path) };
         if (self.callback) |callback| callback(self.data, &snapshot);
     }
 };
