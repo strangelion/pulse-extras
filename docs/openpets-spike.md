@@ -326,7 +326,7 @@ changed; the sample pixels are not distributable pet artwork.
 Build on Windows from repository root with the pinned Zig:
 
 ```powershell
-zig build-exe -target x86_64-windows-gnu -O ReleaseSafe shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 --dep runtime_allocator --dep runtime_budget --dep runtime_event_log --dep runtime_group -Mroot=shared/companion/pet_demo.zig -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_budget -Mruntime_allocator=shared/runtime/allocator.zig -target x86_64-windows-gnu -O ReleaseSafe -Mruntime_budget=shared/runtime/budget.zig -target x86_64-windows-gnu -O ReleaseSafe -Mruntime_event_log=shared/runtime/event_log.zig -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_allocator -Mruntime_group=shared/runtime/group.zig '-femit-bin=pulse-pet-demo.exe'
+zig build-exe -target x86_64-windows-gnu -O ReleaseSafe shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 --dep runtime_allocator --dep runtime_budget --dep runtime_event_log --dep runtime_group '-Mroot=shared/companion/pet_demo.zig' -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_budget '-Mruntime_allocator=shared/runtime/allocator.zig' -target x86_64-windows-gnu -O ReleaseSafe '-Mruntime_budget=shared/runtime/budget.zig' -target x86_64-windows-gnu -O ReleaseSafe '-Mruntime_event_log=shared/runtime/event_log.zig' -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_allocator '-Mruntime_group=shared/runtime/group.zig' '-femit-bin=pulse-pet-demo.exe'
 .\pulse-pet-demo.exe
 .\pulse-pet-demo.exe --reduced-motion
 .\pulse-pet-demo.exe --webp-v2 C:\path\to\spritesheet.webp
@@ -855,3 +855,14 @@ completion/transactional presentation path. WIC cancellation is not
 guaranteed to interrupt a native call; parent process supervision
 remains a separate safety boundary. Do not claim nonblocking native
 decode, timing or host unload acceptance until the real path is tested.
+
+### PowerShell module flag regression
+
+Run 45546675388 passed Ubuntu, but the Windows standalone build command
+failed with 'found another zig file ".zig" after root source file ".zig"'.
+Quote every -Mname=path.zig argument as a single PowerShell token, just as
+-femit-bin is already quoted. Keep module dependencies and smoke tests
+unchanged. This is a command-line correction, not confirmation that the
+new native runtime has compiled or passed Windows tests. The failure
+became visible after the phase 3 commit, so record a separate correction
+rather than rewriting published branch history.
