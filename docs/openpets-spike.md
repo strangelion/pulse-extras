@@ -130,3 +130,25 @@ Run 45444213171 failed in zig fmt on both runners at the legacy array repetition
 expression in the oversized-frame test (line 195). Replace that expression with
 a fixed buffer initialized by @memset. No claim of compilation or test success
 until the follow-up run finishes.
+
+## Windows pipe primitive (experimental)
+
+The pure Zig probe and discovery/framing tests passed Windows and Linux CI
+in run [45527745615](https://github.com/strangelion/pulse-extras/actions/runs/45527745615).
+The separate C Win32 primitive in shared/companion/openpets_pipe_win32.{h,c}
+now implements local byte-mode overlapped named-pipe read/write, finite
+deadline waits, event cancellation with completion draining, server-PID
+matching on the opened pipe, and idempotent handle close. The caller must
+supply a separately authenticated, live process handle and retain it during
+open. PID matching is not a substitute for trusted executable and owner
+verification. The primitive fails fast on missing/busy endpoints; no retry,
+token, discovery, process launch or host integration is added. All calls
+belong on a worker. Kernel cancellation completion can delay the drain;
+do not advertise a strict deadline for all synchronous OS calls or the drain.
+
+A Windows CI test compiles the primitive with Zig's C compiler and exercises
+an isolated kernel named pipe with synthetic data, timeout, cancellation,
+subsequent I/O, EOF and repeated close. It is not a running OpenPets test.
+This experiment is not linked into the shipping DLL. The remaining gate
+is secure opened-handle discovery/ACL and independently authenticated
+process identity, then a Zig adapter and real approved hello/status.

@@ -81,6 +81,14 @@ jobs:
           PULSE_REQUIRE_GIT: '1'
           PULSE_REQUIRE_JJ: '1'
       - run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
+      - name: Compile and exercise experimental Windows named pipe
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/openpets_pipe_win32.c tests/companion/openpets_pipe_win32_test.c -o zig-out/openpets-pipe-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/openpets-pipe-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Fetch pinned native SDK headers
         if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
         run: python scripts/fetch_sdk.py
