@@ -26,7 +26,7 @@ const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -80,6 +80,7 @@ const Instance = struct {
     recovery_scan: bool = false,
     work_recovery_report: ?library.RecoverySnapshot = null,
     recovery_report: ?library.RecoverySnapshot = null,
+    quarantine_offset: usize = 0,
     picked_folder: ?library.PickedFolder = null,
     dialogs: ?raw.PulseDialogsV1 = null,
     import_cancel_requested: bool = false,
@@ -111,6 +112,12 @@ const Content = struct {
     dynamic_ids: [4][64]u8 = undefined,
     library_count: [160]u8 = undefined,
     recovery_text: [768]u8 = undefined,
+    quarantine_nodes: [6]ui.Node = undefined,
+    quarantine_paging: [2]ui.Node = undefined,
+    quarantine_heading: [160]u8 = undefined,
+    quarantine_heading_id: [64]u8 = undefined,
+    quarantine_text: [4][160]u8 = undefined,
+    quarantine_ids: [4][64]u8 = undefined,
     root: ui.Node = undefined,
     value: [256]u8 = undefined,
 };
@@ -161,7 +168,7 @@ fn fillImportToolbar(nodes: *[3]ui.Node, embedded_picker: bool, enabled: bool, i
 }
 
 fn recoveryText(report: library.RecoveryReport, buffer: []u8) ![]const u8 {
-    return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d} · 隔离待恢复 {d} · 已移除保留 {d}。隔离逻辑字节：待恢复 {d} B · 已移除 {d} B · 未统计目录 {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved, report.quarantined_registered, report.quarantined_removed, report.quarantine_registered_bytes, report.quarantine_removed_bytes, report.quarantine_unmeasured });
+    return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d} · 隔离待恢复 {d} · 未登记保留 {d}。隔离逻辑字节：待恢复 {d} B · 未登记 {d} B · 未统计目录 {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved, report.quarantined_registered, report.quarantined_removed, report.quarantine_registered_bytes, report.quarantine_removed_bytes, report.quarantine_unmeasured });
 }
 
 fn recoverySuffix(snapshot: *const library.RecoverySnapshot, id: u64) []const u8 {
@@ -171,6 +178,43 @@ fn recoverySuffix(snapshot: *const library.RecoverySnapshot, id: u64) []const u8
         .missing => " · 扫描：目录缺失",
         .blocked => " · 扫描：需检查",
     };
+}
+
+const quarantine_page_size = 4;
+
+fn quarantineText(detail: library.QuarantineDetail, buffer: []u8) ![]const u8 {
+    const state: []const u8 = switch (detail.state) {
+        .interrupted_removal => "登记未移除，待恢复",
+        .unregistered_retained => "未登记保留（来源未证实）",
+        .blocked => "异常，需人工检查",
+    };
+    if (detail.logical_bytes) |bytes| return std.fmt.bufPrint(buffer, "#{d} · {s} · {d} B", .{ detail.id, state, bytes });
+    return std.fmt.bufPrint(buffer, "#{d} · {s} · 大小未统计", .{ detail.id, state });
+}
+
+fn fillQuarantine(report: *const library.RecoverySnapshot, offset: usize, content: *Content) ui.Node {
+    const start = @min(offset, report.quarantine_count);
+    const end = @min(start + quarantine_page_size, report.quarantine_count);
+    const heading = std.fmt.bufPrint(&content.quarantine_heading, "隔离区（只读）：{d} 项 · 显示 {d}–{d} · 列表未收录 {d} 项", .{ report.quarantine_total, if (start == end) 0 else start + 1, end, report.quarantine_total - report.quarantine_count }) catch unreachable;
+    content.quarantine_nodes[0] = changingLabel(&content.quarantine_heading_id, "quarantine.heading", heading);
+    var count: usize = 1;
+    for (report.quarantine[start..end], 0..) |detail, n| {
+        const body = quarantineText(detail, &content.quarantine_text[n]) catch unreachable;
+        const id = std.fmt.bufPrint(&content.quarantine_ids[n], "quarantine-{x}-{x}", .{ detail.id, std.hash.Wyhash.hash(0, body) }) catch unreachable;
+        content.quarantine_nodes[count] = label(id, body);
+        count += 1;
+    }
+    if (report.quarantine_count > quarantine_page_size) {
+        content.quarantine_paging[0] = action("quarantine.previous", "上一组", commands[25], start >= quarantine_page_size);
+        content.quarantine_paging[1] = action("quarantine.next", "下一组", commands[26], end < report.quarantine_count);
+        content.quarantine_nodes[count] = horizontal("quarantine.paging", &content.quarantine_paging);
+        count += 1;
+    }
+    var node = ui.node(ui.NodeKind.stack);
+    node.id = abi.view("library.quarantine-list");
+    node.gap = .{ .present = 1, .value = 6 };
+    ui.withChildren(&node, content.quarantine_nodes[0..count]);
+    return node;
 }
 
 fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
@@ -264,6 +308,10 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 const body = recoveryText(report.summary, &content.recovery_text) catch unreachable;
                 content.children[count] = changingLabel(&content.dynamic_ids[2], "library.recovery-report", body);
                 count += 1;
+                if (report.quarantine_total != 0) {
+                    content.children[count] = fillQuarantine(report, instance.quarantine_offset, content);
+                    count += 1;
+                }
                 if (instance.library_loaded and instance.library_snapshot.count != 0 and instance.dialogs != null and config.runtime_sha256.len == 64 and config.helper_sha256.len == 64) {
                     const enabled = canMaintain(instance);
                     content.removal_toolbar[0] = action("library.remove", "隔离移除指定素材", commands[23], enabled);
@@ -627,6 +675,7 @@ fn pollLibrary(instance: *Instance) void {
     instance.task_id = 0;
     if (instance.recovery_scan) {
         instance.recovery_scan = false;
+        instance.quarantine_offset = 0;
         const done = instance.work_done.load(.acquire);
         if (instance.task_state == raw.PULSE_TASK_COMPLETED and done and instance.work_error == null and instance.work_recovery_report != null) {
             instance.recovery_report = instance.work_recovery_report;
@@ -1380,6 +1429,16 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             22 => startRecovery(instance),
             23 => showRemoval(instance, .quarantine),
             24 => showRemoval(instance, .restore_interrupted),
+            25 => if (instance.recovery_report != null and instance.quarantine_offset >= quarantine_page_size) {
+                instance.quarantine_offset -= quarantine_page_size;
+                refresh(instance);
+            },
+            26 => if (instance.recovery_report) |*report| {
+                if (instance.quarantine_offset + quarantine_page_size < report.quarantine_count) {
+                    instance.quarantine_offset += quarantine_page_size;
+                    refresh(instance);
+                }
+            },
             else => {},
         }
         return;
@@ -1712,7 +1771,7 @@ test "empty library hides pagination and manual poll unless needed" {
 test "recovery summary reports anomalies without promising repair" {
     var buffer: [768]u8 = undefined;
     const body = try recoveryText(.{ .registered = 2, .missing = 1, .orphan_packages = 3, .invalid = 4, .quarantine_removed_bytes = 1024, .quarantine_unmeasured = 1 }, &buffer);
-    try std.testing.expect(std.mem.indexOf(u8, body, "已移除 1024 B") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "未登记 1024 B") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "未统计目录 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "已登记 2") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "缺失 1") != null);
@@ -1764,4 +1823,16 @@ test "import toolbar initializes every visible node for both picker modes" {
         const canceling = fillImportToolbar(&nodes, embedded, false, true, false);
         try std.testing.expectEqual(@as(u32, 0), canceling[canceling.len - 1].enabled.value);
     }
+}
+
+test "quarantine rows distinguish unknown size from measured zero" {
+    var buffer: [160]u8 = undefined;
+    const detail: library.QuarantineDetail = .{ .id = 7, .state = .unregistered_retained };
+    const unknown = try quarantineText(detail, &buffer);
+    try std.testing.expect(std.mem.indexOf(u8, unknown, "大小未统计") != null);
+    var measured = detail;
+    measured.logical_bytes = 0;
+    const zero = try quarantineText(measured, &buffer);
+    try std.testing.expect(std.mem.indexOf(u8, zero, "0 B") != null);
+    try std.testing.expect(std.mem.indexOf(u8, zero, "来源未证实") != null);
 }

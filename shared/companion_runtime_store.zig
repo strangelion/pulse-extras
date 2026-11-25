@@ -45,20 +45,17 @@ pub fn scanRecoveryDetailed(owner: *runtime.Owner) !recovery.Snapshot {
     // A refused or skipped package contributes to the unknown count,
     // not an apparent zero-size directory. No authorization to delete.
     snapshot.summary.quarantine_unmeasured = snapshot.summary.quarantined_registered + snapshot.summary.quarantined_removed;
-    var attempts: usize = 0;
-    for (rows[0..count]) |row| {
-        if (attempts == 64) break;
-        if (row.kind != @backingInt(recovery.Kind.quarantine) or (row.attributes & 0x410) != 0x10 or row.id >= index.next_id) continue;
-        if ((recovery.removalState(rows[0..count], row.id) catch continue) != .quarantined) continue;
-        attempts += 1;
-        const bytes = owner.quarantineUsage(row.id) catch |err| switch (err) {
+    for (snapshot.quarantine[0..snapshot.quarantine_count]) |*detail| {
+        if (detail.state == .blocked) continue;
+        const bytes = owner.quarantineUsage(detail.id) catch |err| switch (err) {
             error.MissingStoreApi => break,
             error.InvalidRecord, error.StoreIo, error.StoreBusy => continue,
             else => return err,
         };
-        if (index.get(row.id)) |_| {
+        detail.logical_bytes = bytes;
+        if (detail.state == .interrupted_removal) {
             snapshot.summary.quarantine_registered_bytes += bytes;
-        } else |_| {
+        } else {
             snapshot.summary.quarantine_removed_bytes += bytes;
         }
         snapshot.summary.quarantine_unmeasured -= 1;

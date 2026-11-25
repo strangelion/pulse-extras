@@ -198,10 +198,38 @@ pub const RegisteredDetail = struct {
     state: RegisteredState,
 };
 
+pub const max_quarantine_details = 64;
+pub const QuarantineState = enum { interrupted_removal, unregistered_retained, blocked };
+pub const QuarantineDetail = struct {
+    id: u64,
+    state: QuarantineState,
+    logical_bytes: ?u64 = null,
+};
+
 pub const Snapshot = struct {
     summary: Report = .{},
     count: usize = 0,
     details: [inventory.max_entries]RegisteredDetail = undefined,
+    quarantine_total: usize = 0,
+    quarantine_count: usize = 0,
+    quarantine: [max_quarantine_details]QuarantineDetail = undefined,
+
+    // Keep the lowest IDs in stable order, independent of native enumeration.
+    // Report the full entry count separately so a bounded list is explicit.
+    fn addQuarantine(self: *Snapshot, detail: QuarantineDetail) void {
+        self.quarantine_total += 1;
+        var pos: usize = 0;
+        while (pos < self.quarantine_count and self.quarantine[pos].id < detail.id) : (pos += 1) {}
+        if (pos < self.quarantine_count and self.quarantine[pos].id == detail.id) {
+            self.quarantine[pos].state = .blocked;
+            return;
+        }
+        if (pos == self.quarantine.len) return;
+        self.quarantine_count = @min(self.quarantine_count + 1, self.quarantine.len);
+        var i = self.quarantine_count - 1;
+        while (i > pos) : (i -= 1) self.quarantine[i] = self.quarantine[i - 1];
+        self.quarantine[pos] = detail;
+    }
 
     pub fn stateFor(self: *const Snapshot, id: u64) ?RegisteredState {
         for (self.details[0..self.count]) |detail| {
@@ -211,8 +239,8 @@ pub const Snapshot = struct {
     }
 };
 
-// Retain only registered IDs, bounded by PCI3 capacity. A state is a
-// diagnostic snapshot, never proof of contents or authority to mutate.
+// Keep registered IDs and a separately bounded quarantine list. Neither
+// diagnostic snapshot proves contents, provenance or authority to mutate.
 pub fn inspect(index: *const inventory.Inventory, rows: []const Row) !Snapshot {
     var result: Snapshot = .{ .summary = try classify(index, rows) };
     var global_pending = false;
@@ -234,6 +262,18 @@ pub fn inspect(index: *const inventory.Inventory, rows: []const Row) !Snapshot {
         else |_| if (has_target) .blocked else .missing;
         result.details[result.count] = .{ .id = record.id, .state = state };
         result.count += 1;
+    }
+    for (rows) |row| {
+        if (row.kind != @backingInt(Kind.quarantine)) continue;
+        var state: QuarantineState = .blocked;
+        if (row.id < index.next_id and (row.attributes & 0x410) == 0x10) {
+            if (result.stateFor(row.id)) |registered| {
+                if (registered == .interrupted_removal) state = .interrupted_removal;
+            } else if ((removalState(rows, row.id) catch .normal) == .quarantined) {
+                state = .unregistered_retained;
+            }
+        }
+        result.addQuarantine(.{ .id = row.id, .state = state });
     }
     return result;
 }
@@ -266,4 +306,36 @@ test "registered recovery details distinguish interrupted missing blocked and no
     try std.testing.expectEqual(@as(usize, 1), snapshot.summary.quarantined_removed);
     const pending = try inspect(&index, &.{ .{ .id = 1, .kind = @backingInt(Kind.package), .attributes = 0x10 }, .{ .id = 0, .kind = @backingInt(Kind.inventory_pending), .attributes = 0x80 } });
     try std.testing.expectEqual(RegisteredState.blocked, pending.stateFor(1).?);
+}
+
+test "quarantine details separate registered unregistered and unsafe entries" {
+    var index: inventory.Inventory = .{};
+    try index.publishPair(try index.reserve(), "cat", .{ .primary = @splat(1), .secondary = @splat(2) });
+    try index.publish(try index.reserve(), "removed");
+    try index.remove(2);
+    const snapshot = try inspect(&index, &.{
+        .{ .id = 3, .kind = @backingInt(Kind.quarantine), .attributes = 0x10 },
+        .{ .id = 2, .kind = @backingInt(Kind.quarantine), .attributes = 0x10 },
+        .{ .id = 1, .kind = @backingInt(Kind.quarantine), .attributes = 0x10 },
+        .{ .id = 4, .kind = @backingInt(Kind.quarantine), .attributes = 0x410 },
+    });
+    try std.testing.expectEqual(@as(usize, 4), snapshot.quarantine_count);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.quarantine[0].id);
+    try std.testing.expectEqual(QuarantineState.interrupted_removal, snapshot.quarantine[0].state);
+    try std.testing.expectEqual(QuarantineState.unregistered_retained, snapshot.quarantine[1].state);
+    try std.testing.expectEqual(QuarantineState.blocked, snapshot.quarantine[2].state);
+    try std.testing.expectEqual(QuarantineState.blocked, snapshot.quarantine[3].state);
+    try std.testing.expect(snapshot.quarantine[1].logical_bytes == null);
+}
+
+test "quarantine detail cap retains smallest IDs and reports omitted entries" {
+    var snapshot: Snapshot = .{};
+    for (0..max_quarantine_details + 5) |n| {
+        snapshot.addQuarantine(.{ .id = max_quarantine_details + 5 - n, .state = .blocked });
+    }
+    try std.testing.expectEqual(@as(usize, max_quarantine_details + 5), snapshot.quarantine_total);
+    try std.testing.expectEqual(@as(usize, max_quarantine_details), snapshot.quarantine_count);
+    for (snapshot.quarantine[0..snapshot.quarantine_count], 1..) |detail, id| {
+        try std.testing.expectEqual(@as(u64, id), detail.id);
+    }
 }

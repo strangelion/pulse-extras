@@ -103,6 +103,7 @@ const recovery = @import("companion/pet_recovery_scan.zig");
 pub const RecoveryReport = recovery.Report;
 pub const RecoverySnapshot = recovery.Snapshot;
 pub const RecoveryState = recovery.RegisteredState;
+pub const QuarantineDetail = recovery.QuarantineDetail;
 
 pub const RemovalAction = enum { quarantine, restore_interrupted };
 pub const RemovalRequest = struct {

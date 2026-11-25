@@ -1200,3 +1200,23 @@ estimate of reclaimable disk space. I/O itself is not guaranteed to return
 within a fixed deadline. Nothing is removed; no cleanup authorization is
 inferred. The bridge fixture checks equal measured bytes before and after
 committing a removal. New CI and real-host UI remain unverified.
+
+## Read-only quarantine browser
+
+The same recovery snapshot retains at most 64 fixed-name quarantine entries,
+ordered by ID, with the full entry count and an explicit omitted count.
+The library shows four entries per page, including interrupted registered
+removals, unregistered retained copies (provenance unknown), and blocked
+entries such as unreserved IDs, reparses or conflicting names. Measurements
+are attached to each retained detail; zero bytes and unmeasured are distinct.
+The totals cover only successfully measured ordinary entries. Invalid
+namespace entries remain separate from the ordinary-directory unmeasured
+counter. No extra traversal or host API is introduced; measurement work is
+bounded by the same list. The previous aggregate wording no longer implies
+that an unregistered directory proves a successfully committed removal.
+Tests cover ordering, bounded retention, unsafe entries, measurement labels
+and real interrupted/committed states in the isolated bridge fixture.
+Permanent deletion remains disabled: a reserved numeric ID and a fixed
+directory name do not prove that the bytes were created by a successful
+managed removal. A durable provenance record and a separately verified
+cleanup transaction are still required. New CI and real UI are unverified.

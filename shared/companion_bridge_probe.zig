@@ -244,6 +244,7 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     const measured = interrupted.summary.quarantine_registered_bytes;
     if (measured == 0 or interrupted.summary.quarantine_removed_bytes != 0 or interrupted.summary.quarantine_unmeasured != 0) return error.UnexpectedQuarantineUsage;
     if (try owner.quarantineUsage(record.id) != measured) return error.UnexpectedQuarantineUsage;
+    if (interrupted.quarantine_count != 1 or interrupted.quarantine[0].id != record.id or interrupted.quarantine[0].state != .interrupted_removal or interrupted.quarantine[0].logical_bytes != measured) return error.UnexpectedQuarantineUsage;
     try store.restoreInterruptedRemoval(owner, record);
     const restored = try store.scanRecoveryDetailed(owner);
     if (!std.meta.eql(report, restored.summary) or restored.stateFor(record.id) != .normal) return error.RestoreFailed;
@@ -251,7 +252,9 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     const removed = try store.scanRecovery(owner);
     if (removed.quarantined_removed != 1 or removed.quarantined_registered != 0 or removed.registered != 3 or removed.missing != 1) return error.UnexpectedRecoveryScan;
     if (removed.quarantine_removed_bytes != measured or removed.quarantine_registered_bytes != 0 or removed.quarantine_unmeasured != 0) return error.UnexpectedQuarantineUsage;
-    if ((try store.scanRecoveryDetailed(owner)).stateFor(record.id) != null) return error.UnexpectedRecoveryScan;
+    const retained = try store.scanRecoveryDetailed(owner);
+    if (retained.stateFor(record.id) != null) return error.UnexpectedRecoveryScan;
+    if (retained.quarantine_count != 1 or retained.quarantine[0].id != record.id or retained.quarantine[0].state != .unregistered_retained or retained.quarantine[0].logical_bytes != measured) return error.UnexpectedQuarantineUsage;
     if (!try store.loadInventory(owner, index) or index.count != 4 or index.next_id != 6) return error.InventoryNotPersisted;
     if (store.restoreInterruptedRemoval(owner, record)) |_| {
         return error.RestoredRemovedId;
