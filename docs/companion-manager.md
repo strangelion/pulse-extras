@@ -452,3 +452,19 @@ market download, crash recovery or full end-to-end ZIP import yet.
 Added real file-backed extraction and raw Deflate/CRC/size/suffix tests.
 Previous af52c35 full regression and stress passed; 419a106 Ubuntu passed
 and Windows still running when this change started. Latest CI pending.
+
+## CI lane split and pinned ZIP API repair
+
+3906930 passed formatting but failed compiling pet_zip.zig on both platforms:
+Io.Dir.makeDir is not available in pinned Zig 0.17.1. Use createDir with
+.default_dir; exclusive creation remains mandatory. No toolchain change.
+CI regression now runs general Windows/Linux checks and a separate Windows
+companion matrix (ipc and desktop) in parallel, preserving every existing
+native test and the SDK/DLL build checks. The desktop lane builds its own
+helper rather than trusting an artifact from another lane. Fast standalone
+ZIP regression precedes the broader unit suite. Existing Regression gate
+requires both general and native matrix results on companion/full changes;
+docs and VCS retain explicit skip semantics. Classify the catalog store
+and real import integration adapters as companion paths. Workflow edits
+trigger full CI; automatic codec preflight and manual heavy benchmarks
+remain separate. Actual latency and the repaired ZIP tests await CI.

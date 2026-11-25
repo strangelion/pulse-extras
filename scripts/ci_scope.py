@@ -22,7 +22,8 @@ def classify(paths: list[str]) -> str:
            for path in paths):
         return "vcs"
     if all(is_doc(path) or path.startswith(("shared/companion/", "tests/companion/")) or
-           path in ("shared/companion_host.zig", "shared/companion_group.zig") for path in paths):
+           path in ("shared/companion_host.zig", "shared/companion_group.zig",
+                    "shared/companion_catalog_store.zig", "shared/companion_import_integration.zig") for path in paths):
         return "companion"
     return "full"
 

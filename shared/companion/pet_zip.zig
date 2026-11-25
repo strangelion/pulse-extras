@@ -370,7 +370,7 @@ fn extractEntry(source: FileSource, entry: *const Entry, output: ?std.Io.File) !
 pub fn extractFile(io: std.Io, archive: std.Io.File, scratch: std.Io.Dir) !void {
     var plan: Plan = .{};
     try inspectFile(io, archive, &plan);
-    try scratch.makeDir(io, "unpacked");
+    try scratch.createDir(io, "unpacked", .default_dir);
     const root = try scratch.openDir(io, "unpacked", .{ .follow_symlinks = false });
     defer root.close(io);
     const source: FileSource = .{ .io = io, .file = archive };
@@ -390,7 +390,7 @@ pub fn extractFile(io: std.Io, archive: std.Io.File, scratch: std.Io.Dir) !void 
             const folder = path[0..slash];
             const created = if (eq(folder, "outfits")) &outfits else &activities;
             if (!created.*) {
-                try root.makeDir(io, folder);
+                try root.createDir(io, folder, .default_dir);
                 created.* = true;
             }
             parent = try root.openDir(io, folder, .{ .follow_symlinks = false });

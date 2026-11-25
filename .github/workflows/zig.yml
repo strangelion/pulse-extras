@@ -70,6 +70,10 @@ jobs:
             echo "::error::Zig formatting differs; apply zig fmt locally before committing."
             exit 1
           fi
+      - name: Fast ZIP admission and extraction regression
+        if: needs.scope.outputs.level != 'vcs'
+        timeout-minutes: 4
+        run: zig test shared/companion/pet_zip.zig
       - name: Isolated Windows Job Object tests (phase diagnostics)
         if: runner.os == 'Windows'
         timeout-minutes: 4
@@ -114,101 +118,6 @@ jobs:
       - name: Build production extensions
         if: needs.scope.outputs.level != 'companion'
         run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
-      - name: Prepare companion native test output
-        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
-        shell: pwsh
-        run: New-Item -ItemType Directory -Force zig-out | Out-Null
-      - name: Compile and exercise experimental Windows named pipe
-        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
-        shell: pwsh
-        run: |
-          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/openpets_pipe_win32.c tests/companion/openpets_pipe_win32_test.c -o zig-out/openpets-pipe-test.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./zig-out/openpets-pipe-test.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Compile and exercise experimental Windows discovery trust
-        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
-        shell: pwsh
-        run: |
-          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/openpets_trust_win32.c tests/companion/openpets_trust_win32_test.c -ladvapi32 -o zig-out/openpets-trust-test.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./zig-out/openpets-trust-test.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Exercise Zig to Win32 OpenPets probe end to end
-        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
-        shell: pwsh
-        run: |
-          zig test shared/companion/openpets_windows.zig shared/companion/openpets_bridge_win32.c shared/companion/openpets_trust_win32.c shared/companion/openpets_pipe_win32.c tests/companion/openpets_bridge_fixture.c -target x86_64-windows-gnu -lc -ladvapi32
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Exercise native layered pet surface with synthetic pixels
-        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
-        shell: pwsh
-        run: |
-          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_surface_win32.c tests/companion/pet_surface_win32_test.c -luser32 -lgdi32 -o zig-out/pet-surface-test.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./zig-out/pet-surface-test.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Test isolated companion configuration record
-        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
-        shell: pwsh
-        run: |
-          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_config_win32.c tests/companion/pet_config_win32_test.c -ladvapi32 -o zig-out/pet-config-test.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./zig-out/pet-config-test.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Build and smoke test standalone desktop companion
-        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
-        shell: pwsh
-        run: |
-          zig build pet-demo -Doptimize=ReleaseSafe --summary all
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./zig-out/bin/pulse-pet-demo.exe --smoke
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./zig-out/bin/pulse-pet-demo.exe --smoke --scale 150
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/companion/pet_stop_smoke.py zig-out/bin/pulse-pet-demo.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/companion/pet_package_smoke.py zig-out/bin/pulse-pet-demo.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Test contained companion process supervision
-        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
-        shell: pwsh
-        run: |
-          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_supervisor_win32.c tests/companion/pet_supervisor_win32_test.c -lshell32 -lpsapi -o zig-out/pet-supervisor-test.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $demo = (Resolve-Path ./zig-out/bin/pulse-pet-demo.exe).Path
-          & ./zig-out/pet-supervisor-test.exe $demo
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Exercise approved Zig companion host with actual child
-        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
-        shell: pwsh
-        timeout-minutes: 4
-        run: |
-          zig test shared/companion_host.zig shared/companion/pet_supervisor_win32.c tests/companion/pet_host_fixture.c -target x86_64-windows-gnu -lc -lpsapi
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Exercise multi-instance Zig companion manager
-        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
-        shell: pwsh
-        timeout-minutes: 4
-        run: |
-          zig test shared/companion/pet_supervisor_win32.c tests/companion/pet_host_fixture.c -target x86_64-windows-gnu -lc -lpsapi --dep runtime_budget '-Mroot=shared/companion_group.zig' '-Mruntime_budget=shared/runtime/budget.zig'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Test durable companion catalog preferences
-        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
-        shell: pwsh
-        timeout-minutes: 4
-        run: |
-          zig test shared/companion/pet_catalog_store_win32.c tests/companion/pet_catalog_store_fixture.c -target x86_64-windows-gnu -lc --dep runtime_budget '-Mroot=shared/companion_catalog_store.zig' '-Mruntime_budget=shared/runtime/budget.zig'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Test actual companion helper import and durable reload
-        if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
-        shell: pwsh
-        timeout-minutes: 5
-        run: |
-          python tests/companion/pet_stress_fixtures.py zig-out/import-fixtures
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          zig build test-companion-import --summary all
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Fetch pinned native SDK headers
         if: runner.os == 'Windows' && needs.scope.outputs.level == 'full'
         run: python scripts/fetch_sdk.py
@@ -226,10 +135,135 @@ jobs:
           & ./zig-out/abi-loader.exe $dll[0].FullName
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+  companion_native:
+    name: Windows companion (${{ matrix.lane }})
+    needs: scope
+    if: needs.scope.outputs.level == 'companion' || needs.scope.outputs.level == 'full'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [ipc, desktop]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Restore Zig archive cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/pulse-zig-archives
+          key: zig-archive-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.zig-version', 'scripts/zig-downloads.json') }}
+      - name: Install and verify pinned Zig
+        run: python scripts/install_zig.py
+      - run: zig version
+      - name: Prepare companion native test output
+        if: matrix.lane == 'ipc'
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force zig-out | Out-Null
+      - name: Compile and exercise experimental Windows named pipe
+        if: matrix.lane == 'ipc'
+        shell: pwsh
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/openpets_pipe_win32.c tests/companion/openpets_pipe_win32_test.c -o zig-out/openpets-pipe-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/openpets-pipe-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile and exercise experimental Windows discovery trust
+        if: matrix.lane == 'ipc'
+        shell: pwsh
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/openpets_trust_win32.c tests/companion/openpets_trust_win32_test.c -ladvapi32 -o zig-out/openpets-trust-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/openpets-trust-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise Zig to Win32 OpenPets probe end to end
+        if: matrix.lane == 'ipc'
+        shell: pwsh
+        run: |
+          zig test shared/companion/openpets_windows.zig shared/companion/openpets_bridge_win32.c shared/companion/openpets_trust_win32.c shared/companion/openpets_pipe_win32.c tests/companion/openpets_bridge_fixture.c -target x86_64-windows-gnu -lc -ladvapi32
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise native layered pet surface with synthetic pixels
+        if: matrix.lane == 'ipc'
+        shell: pwsh
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_surface_win32.c tests/companion/pet_surface_win32_test.c -luser32 -lgdi32 -o zig-out/pet-surface-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/pet-surface-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test isolated companion configuration record
+        if: matrix.lane == 'ipc'
+        shell: pwsh
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_config_win32.c tests/companion/pet_config_win32_test.c -ladvapi32 -o zig-out/pet-config-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/pet-config-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prepare companion native test output
+        if: matrix.lane == 'desktop'
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force zig-out | Out-Null
+      - name: Build and smoke test standalone desktop companion
+        if: matrix.lane == 'desktop'
+        shell: pwsh
+        run: |
+          zig build pet-demo -Doptimize=ReleaseSafe --summary all
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/bin/pulse-pet-demo.exe --smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/bin/pulse-pet-demo.exe --smoke --scale 150
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/companion/pet_stop_smoke.py zig-out/bin/pulse-pet-demo.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/companion/pet_package_smoke.py zig-out/bin/pulse-pet-demo.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test contained companion process supervision
+        if: matrix.lane == 'desktop'
+        shell: pwsh
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_supervisor_win32.c tests/companion/pet_supervisor_win32_test.c -lshell32 -lpsapi -o zig-out/pet-supervisor-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $demo = (Resolve-Path ./zig-out/bin/pulse-pet-demo.exe).Path
+          & ./zig-out/pet-supervisor-test.exe $demo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise approved Zig companion host with actual child
+        if: matrix.lane == 'desktop'
+        shell: pwsh
+        timeout-minutes: 4
+        run: |
+          zig test shared/companion_host.zig shared/companion/pet_supervisor_win32.c tests/companion/pet_host_fixture.c -target x86_64-windows-gnu -lc -lpsapi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise multi-instance Zig companion manager
+        if: matrix.lane == 'desktop'
+        shell: pwsh
+        timeout-minutes: 4
+        run: |
+          zig test shared/companion/pet_supervisor_win32.c tests/companion/pet_host_fixture.c -target x86_64-windows-gnu -lc -lpsapi --dep runtime_budget '-Mroot=shared/companion_group.zig' '-Mruntime_budget=shared/runtime/budget.zig'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test durable companion catalog preferences
+        if: matrix.lane == 'desktop'
+        shell: pwsh
+        timeout-minutes: 4
+        run: |
+          zig test shared/companion/pet_catalog_store_win32.c tests/companion/pet_catalog_store_fixture.c -target x86_64-windows-gnu -lc --dep runtime_budget '-Mroot=shared/companion_catalog_store.zig' '-Mruntime_budget=shared/runtime/budget.zig'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test actual companion helper import and durable reload
+        if: matrix.lane == 'desktop'
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          python tests/companion/pet_stress_fixtures.py zig-out/import-fixtures
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          zig build test-companion-import --summary all
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   gate:
     name: Regression gate
     if: always()
-    needs: [scope, checks]
+    needs: [scope, checks, companion_native]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -238,21 +272,22 @@ jobs:
           SCOPE_RESULT: ${{ needs.scope.result }}
           LEVEL: ${{ needs.scope.outputs.level }}
           CHECKS_RESULT: ${{ needs.checks.result }}
+          NATIVE_RESULT: ${{ needs.companion_native.result }}
         shell: bash
         run: |
           if [[ "$SCOPE_RESULT" != success ]]; then
             echo "::error::Change classification did not succeed"
             exit 1
           fi
-          case "$LEVEL:$CHECKS_RESULT" in
-            docs:skipped)
+          case "$LEVEL:$CHECKS_RESULT:$NATIVE_RESULT" in
+            docs:skipped:skipped)
               echo "Documentation-only change; code checks not run."
               ;;
-            vcs:success|companion:success|full:success)
+            vcs:success:skipped|companion:success:success|full:success:success)
               echo "Required $LEVEL regression checks passed."
               ;;
             *)
-              echo "::error::Unexpected scope/check status: $LEVEL:$CHECKS_RESULT"
+              echo "::error::Unexpected scope/check status: $LEVEL:$CHECKS_RESULT:$NATIVE_RESULT"
               exit 1
               ;;
           esac
