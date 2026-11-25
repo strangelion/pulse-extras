@@ -281,3 +281,17 @@ __declspec(dllexport) pet_store_result pulse_companion_quarantine_usage_v1(
     if (result == PET_STORE_OK) *bytes = count.bytes;
     return result;
 }
+
+/* Independent fixed-ID receipt ABI. The caller owns the typed codec. */
+__declspec(dllexport) pet_store_result pulse_companion_receipt_read_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id,
+    uint8_t *out, SIZE_T capacity, SIZE_T *written) {
+    if (!live_lease(lease, size)) return PET_STORE_INVALID;
+    return pet_removal_receipt_read(lease->path, id, out, capacity, written);
+}
+__declspec(dllexport) pet_store_result pulse_companion_receipt_write_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id,
+    const uint8_t *data, SIZE_T length) {
+    if (!live_lease(lease, size)) return PET_STORE_INVALID;
+    return pet_removal_receipt_write(lease->path, id, data, length);
+}

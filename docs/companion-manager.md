@@ -1220,3 +1220,22 @@ Permanent deletion remains disabled: a reserved numeric ID and a fixed
 directory name do not prove that the bytes were created by a successful
 managed removal. A durable provenance record and a separately verified
 cleanup transaction are still required. New CI and real UI are unverified.
+
+## Immutable removal receipt foundation (not deletion authorization)
+
+PRC1 is a fixed 221-byte record containing the stable asset ID, source ID,
+recorded SHA-256/SHA-512 pair, native volume serial and directory file index,
+and a SHA-256 corruption checksum. The checksum is not a MAC or proof
+against same-user hostile writes. The codec rejects truncated, mismatched
+and malformed records. The independent versioned native receipt store uses
+only pet-<id>.prc and pet-<id>.prc.pending, exclusive pending creation,
+write-through and no-replace publication. Existing receipts are never
+replaced. There is no delete API. The real bridge fixture exercises this
+store with synthetic identity values; production removal does not yet
+publish a receipt. Until the exact rename handle supplies the directory
+identity, receipt publication is tied to the committed inventory removal,
+and content/namespace are verified again before cleanup, no receipt is
+accepted as deletion authority. Old or interrupted quarantines must remain
+unproven rather than be automatically assigned a receipt. Unknown receipt
+files currently remain visible as unknown scan entries; classification and
+transaction integration are subsequent steps. CI is not yet verified.

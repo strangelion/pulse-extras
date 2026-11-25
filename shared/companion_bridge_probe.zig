@@ -267,6 +267,22 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     const after_reimport = try store.scanRecovery(owner);
     if (after_reimport.quarantined_removed != 1 or after_reimport.registered != 4) return error.UnexpectedRecoveryScan;
     std.debug.print("Quarantine removal, interrupted recovery and fresh-ID reimport verified\n", .{});
+    // Exercise the immutable typed storage independently. These synthetic
+    // directory identity values are fixture-only, not cleanup credentials.
+    const receipt = @import("companion/pet_removal_receipt.zig");
+    const sample: receipt.Receipt = .{ .record = record, .volume = 42, .file_index = 1234 };
+    if (try owner.readRemovalReceipt(record.id) != null) return error.UnexpectedReceipt;
+    try owner.writeRemovalReceipt(sample);
+    if (!std.meta.eql(sample, (try owner.readRemovalReceipt(record.id)) orelse return error.MissingReceipt)) return error.UnexpectedReceipt;
+    var replacement = sample;
+    replacement.file_index += 1;
+    if (owner.writeRemovalReceipt(replacement)) |_| {
+        return error.OverwroteRemovalReceipt;
+    } else |err| {
+        if (err != error.StoreBusy) return err;
+    }
+    if (!std.meta.eql(sample, (try owner.readRemovalReceipt(record.id)) orelse return error.MissingReceipt)) return error.UnexpectedReceipt;
+    std.debug.print("Immutable receipt storage and overwrite refusal verified\n", .{});
 }
 
 pub fn main(init: std.process.Init) !void {

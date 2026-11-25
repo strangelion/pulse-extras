@@ -553,6 +553,7 @@ pub fn build(b: *std.Build) void {
         "shared/companion/pet_catalog.zig",
         "shared/companion/pet_inventory.zig",
         "shared/companion/pet_recovery_scan.zig",
+        "shared/companion/pet_removal_receipt.zig",
         "shared/companion/pet_fingerprint.zig",
         "shared/companion/pet_import.zig",
         "shared/companion/pet_import_helper.zig",

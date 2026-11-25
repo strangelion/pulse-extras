@@ -4,6 +4,7 @@
 const std = @import("std");
 const runtime = @import("companion_group.zig");
 const scan = @import("companion/pet_recovery_scan.zig");
+const receipt = @import("companion/pet_removal_receipt.zig");
 
 const invalid = @as(usize, @bitCast(@as(isize, -1)));
 const name = std.unicode.wtf8ToWtf16LeStringLiteral("pulse_companion_runtime.dll");
@@ -200,6 +201,34 @@ pub const Owner = struct {
         };
         if (count > rows.len) return error.InvalidScan;
         return count;
+    }
+
+    pub fn readRemovalReceipt(self: *Owner, id: u64) !?receipt.Receipt {
+        if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
+        if (id == 0) return error.InvalidRecord;
+        const read: StoreRead = @ptrCast(GetProcAddress(self.module, "pulse_companion_receipt_read_v1") orelse return error.MissingStoreApi);
+        var bytes: [receipt.encoded_size]u8 = undefined;
+        var len: usize = 0;
+        const code = read(&self.lease, @sizeOf(Lease), id, &bytes, bytes.len, &len);
+        if (code == 1) return null;
+        checkStore(code) catch |err| {
+            if (err == error.CleanupFailed) self.store_faulted = true;
+            return err;
+        };
+        if (len != bytes.len) return error.InvalidReceipt;
+        return try receipt.Receipt.decode(&bytes, id);
+    }
+
+    pub fn writeRemovalReceipt(self: *Owner, value: receipt.Receipt) !void {
+        if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
+        if (try self.group.remaining() != 0) return error.ActiveInstances;
+        var bytes: [receipt.encoded_size]u8 = undefined;
+        try value.encode(&bytes);
+        const write: StoreWrite = @ptrCast(GetProcAddress(self.module, "pulse_companion_receipt_write_v1") orelse return error.MissingStoreApi);
+        checkStore(write(&self.lease, @sizeOf(Lease), value.record.id, &bytes, bytes.len)) catch |err| {
+            if (err != error.StoreBusy) self.store_faulted = true;
+            return err;
+        };
     }
 
     pub fn quarantineUsage(self: *Owner, id: u64) !u64 {
