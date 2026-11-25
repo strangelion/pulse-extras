@@ -177,7 +177,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         if (!std.mem.eql(u8, candidate, name)) continue;
         switch (n) {
             0, 1, 2, 3 => {
-                instance.section = @enumFromInt(n);
+                instance.section = @fromBackingInt(@intCast(n));
                 refresh(instance);
             },
             4 => load(instance),
@@ -306,7 +306,7 @@ test "four section tree declares only real navigation and preference actions" {
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     for (0..names.len) |n| {
-        instance.section = @enumFromInt(n);
+        instance.section = @fromBackingInt(@intCast(n));
         fill(&instance, &content, &tree);
         try std.testing.expectEqual(@as(u32, commands.len), tree.command_count);
         try std.testing.expectEqual(@as(u32, 4), content.children[0].children.count);
