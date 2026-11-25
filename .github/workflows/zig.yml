@@ -270,9 +270,16 @@ jobs:
           try {
             & ./zig-out/companion-bridge-probe.exe
             if ($LASTEXITCODE -ne 0) { throw "Companion bridge probe failed: $LASTEXITCODE" }
+            python tests/companion/pet_managed_bridge_fixture.py $leaseFixture
+            if ($LASTEXITCODE -ne 0) { throw "Managed fixture generation failed: $LASTEXITCODE" }
+            $env:PULSE_BRIDGE_FIXTURE_HELPER_SHA256 = (Get-FileHash -Algorithm SHA256 ./zig-out/bin/pulse-pet-demo.exe).Hash
+            $env:PULSE_BRIDGE_FIXTURE_MANAGED = "1"
+            & ./zig-out/companion-bridge-probe.exe
+            if ($LASTEXITCODE -ne 0) { throw "Managed bridge probe failed: $LASTEXITCODE" }
           } finally {
             Remove-Item -LiteralPath $leaseFixture -Recurse -Force -ErrorAction Stop
             Remove-Item Env:PULSE_BRIDGE_FIXTURE_PRIVATE_PARENT
+            Remove-Item Env:PULSE_BRIDGE_FIXTURE_MANAGED, Env:PULSE_BRIDGE_FIXTURE_HELPER_SHA256 -ErrorAction SilentlyContinue
           }
       - name: Exercise bundled Companion DLL with actual pet lifecycle
         if: matrix.lane == 'desktop'

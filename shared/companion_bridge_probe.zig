@@ -2,12 +2,18 @@
 const std = @import("std");
 const runtime = @import("companion_group.zig");
 const loader = @import("companion_runtime_owner.zig");
+const library = @import("companion/pet_library_read.zig");
+const inventory = @import("companion/pet_inventory.zig");
+const model = @import("companion/pet_manager.zig");
 
 extern "kernel32" fn GetFullPathNameW([*:0]const u16, u32, [*]u16, ?*anyopaque) callconv(.winapi) u32;
 extern "kernel32" fn LoadLibraryExW([*:0]const u16, ?*anyopaque, u32) callconv(.winapi) usize;
 extern "kernel32" fn GetProcAddress(usize, [*:0]const u8) callconv(.winapi) ?*const anyopaque;
 extern "kernel32" fn FreeLibrary(usize) callconv(.winapi) c_int;
 extern "kernel32" fn GetEnvironmentVariableW([*:0]const u16, [*]u16, u32) callconv(.winapi) u32;
+
+extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
+extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
 
 const Query = *const fn (u32, u32, *runtime.NativeApi) callconv(.c) c_int;
 
@@ -43,6 +49,95 @@ fn checkAbi() !void {
     try group.openWithApi(api, 1, 128 * 1024 * 1024);
     try group.close();
     std.debug.print("Companion GNU/MSVC runtime bridge ABI verified\n", .{});
+}
+
+fn readDigest(name: [:0]const u16) ![32]u8 {
+    var hex: [65]u16 = undefined;
+    if (GetEnvironmentVariableW(name.ptr, &hex, hex.len) != 64) return error.MissingFixtureDigest;
+    var ascii: [64]u8 = undefined;
+    for (&ascii, hex[0..64]) |*out, ch| {
+        if (ch > 127) return error.BadFixtureDigest;
+        out.* = @intCast(ch);
+    }
+    var digest: [32]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&digest, &ascii);
+    return digest;
+}
+
+fn drain(owner: *loader.Owner) !void {
+    try owner.group.beginDrain(false);
+    const begin = GetTickCount64();
+    var rows: [runtime.max_tick_slots]runtime.TickResult = undefined;
+    while (try owner.group.remaining() != 0) {
+        const elapsed = GetTickCount64() - begin;
+        if (elapsed >= 8_000) return error.UnconfirmedShutdown;
+        if (elapsed >= 2_000) try owner.group.beginDrain(true);
+        _ = try owner.group.tick(&rows);
+        Sleep(50);
+    }
+}
+
+fn exerciseManaged(owner: *loader.Owner, private: [:0]const u16) !void {
+    const index = try std.heap.page_allocator.create(inventory.Inventory);
+    defer std.heap.page_allocator.destroy(index);
+    index.* = .{};
+    try library.readManagedIndex(private, index);
+    if (index.count != 3) return error.UnexpectedInventory;
+    var helper: [1024]u16 = undefined;
+    const len = GetFullPathNameW(std.unicode.wtf8ToWtf16LeStringLiteral("zig-out\\bin\\pulse-pet-demo.exe"), helper.len, &helper, null);
+    if (len == 0 or len >= helper.len) return error.BadFixturePath;
+    const path = helper[0..len :0];
+    const digest = try readDigest(std.unicode.wtf8ToWtf16LeStringLiteral("PULSE_BRIDGE_FIXTURE_HELPER_SHA256"));
+    // Invalid ID must not reserve capacity or start a child.
+    if (owner.group.startManagedWide(path, &digest, index, private, 99)) |_| {
+        return error.AcceptedUnknownAsset;
+    } else |err| {
+        if (err != error.UnknownAsset) return err;
+    }
+    if (try owner.group.remaining() != 0) return error.UnexpectedChildren;
+    const first = try owner.group.startManagedWide(path, &digest, index, private, 1);
+    if (first.failure) |err| return err;
+    const second = try owner.group.startManagedWide(path, &digest, index, private, 2);
+    if (second.failure) |err| return err;
+    const begin = GetTickCount64();
+    var outcomes: [runtime.max_tick_slots]runtime.TickResult = undefined;
+    var items: [3]model.Instance = undefined;
+    while (true) {
+        if (GetTickCount64() - begin >= 20_000) return error.ReadinessTimeout;
+        const count = try owner.group.tick(&outcomes);
+        for (outcomes[0..count]) |row| {
+            if (row.failure) |err| return err;
+            if (row.exit_code != null) return error.UnexpectedChildExit;
+        }
+        if (try owner.group.snapshot(0, &items) != 2) return error.UnexpectedChildren;
+        if (items[0].id != first.id or items[0].asset_id != 1 or items[1].id != second.id or items[1].asset_id != 2) return error.WrongAsset;
+        if (items[0].state == .running and items[1].state == .running) break;
+        Sleep(50);
+    }
+    // The actual helper must reject the intentionally wrong fingerprint
+    // before publishing first-frame readiness. Healthy siblings stay owned.
+    const wrong = try owner.group.startManagedWide(path, &digest, index, private, 3);
+    if (wrong.failure) |err| return err;
+    const deadline = GetTickCount64();
+    var rejected = false;
+    while (!rejected) {
+        if (GetTickCount64() - deadline >= 20_000) return error.RejectionTimeout;
+        const count = try owner.group.tick(&outcomes);
+        for (outcomes[0..count]) |row| {
+            if (row.failure) |err| return err;
+            if (row.exit_code) |code| {
+                if (row.id != wrong.id or code == 0) return error.UnexpectedChildExit;
+                rejected = true;
+            }
+        }
+        const owned = try owner.group.snapshot(0, &items);
+        for (items[0..owned]) |item| {
+            if (item.id == wrong.id and item.state == .running) return error.AcceptedWrongFingerprint;
+        }
+        Sleep(50);
+    }
+    if (try owner.group.remaining() != 2) return error.UnexpectedChildren;
+    std.debug.print("Two managed pets ready; incorrect fingerprint rejected\n", .{});
 }
 
 pub fn main() !void {
@@ -88,5 +183,18 @@ pub fn main() !void {
     try owner.open(root[0..len :0], expected, 1, 128 * 1024 * 1024);
     _ = try owner.privateRoot(fixture_parent);
     try owner.close();
+    // Second invocation after the independent fixture generator.
+    var managed: [2]u16 = undefined;
+    if (GetEnvironmentVariableW(std.unicode.wtf8ToWtf16LeStringLiteral("PULSE_BRIDGE_FIXTURE_MANAGED"), &managed, managed.len) == 1 and managed[0] == '1') {
+        try owner.open(root[0..len :0], expected, 3, 3 * model.child_commit_ceiling);
+        const approved = try owner.privateRoot(fixture_parent);
+        const outcome = exerciseManaged(&owner, approved);
+        drain(&owner) catch |err| {
+            try owner.abandon();
+            return err;
+        };
+        try owner.close();
+        try outcome;
+    }
     std.debug.print("Pinned runtime owner and private lease ABI verified\n", .{});
 }

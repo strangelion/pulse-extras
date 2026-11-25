@@ -936,3 +936,17 @@ normal capacity reclamation. The MSVC bridge probe now opens, closes and
 reopens a private-root lease through the GNU DLL, using a unique CI-only
 parent and cleaning the isolated fixture afterwards. This does not access
 actual LocalAppData or prove managed asset launch end to end.
+
+## Managed bridge end-to-end fixture
+
+The Windows bridge probe now performs a second run in its unique isolated
+private-root fixture. An independent Python generator writes PCI3 inventory
+and SHA-256/SHA-512 package fingerprints for synthetic V1 and V2 (wardrobe)
+assets and a deliberately wrong third fingerprint. MSVC opens the verified
+GNU runtime, acquires the private lease, rereads the index, rejects an unknown
+ID, launches both valid packages using the actual helper and requires both
+first-frame acknowledgments with matching asset IDs. The mismatched third
+asset must exit nonzero without readiness; the two valid siblings remain
+owned. All children drain before lease/module release. This covers the
+managed worker/native path but not real Pulse settings UI or actual user
+inventory; the generated fixtures remain offline and CI-only.
