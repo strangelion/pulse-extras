@@ -248,6 +248,7 @@ const Modules = struct {
             .imports = &.{
                 .{ .name = "pulse_abi", .module = abi },
                 .{ .name = "pulse_host", .module = host },
+                .{ .name = "pulse_context", .module = context_mod },
                 .{ .name = "pulse_async_host", .module = async_host },
                 .{ .name = "vcs_identity", .module = vcs_identity },
                 .{ .name = "vcs_provider", .module = vcs_provider },
