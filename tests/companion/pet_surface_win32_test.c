@@ -45,6 +45,9 @@ int main(void) {
 
     CHECK(pet_surface_open(&surface, FALSE, TRUE) == PET_SURFACE_OK);
     CHECK(!IsWindowVisible(surface.window));
+    HCURSOR arrow = LoadCursorW(NULL, MAKEINTRESOURCEW(32512));
+    CHECK(arrow != NULL);
+    CHECK((HCURSOR)GetClassLongPtrW(surface.window, GCLP_HCURSOR) == arrow);
     LONG_PTR styles = GetWindowLongPtrW(surface.window, GWL_EXSTYLE);
     CHECK((styles & (WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT)) ==
         (WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT));

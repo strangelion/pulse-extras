@@ -507,3 +507,16 @@ dispatch without retry. The owner must stop the failed channel; a fresh
 explicit availability signal is required. Unit tests cover activity
 coalescing, terminal expiry, idle and ambiguous failure. The actual C
 supervisor binding and Pulse event subscriptions remain separate work.
+
+## Manual artwork check and cursor regression
+
+A user-provided Windows desktop screenshot confirms the pinned Juhuali
+WebP atlas successfully loaded and appeared in the independent layered
+window. The user reported a spinning mouse cursor over the pet. The
+window class previously left hCursor null, which can preserve a prior
+busy cursor. Register the shared system arrow explicitly, check it on
+class reuse, and do not destroy the OS-owned cursor. The hidden surface
+test verifies the registered class cursor without moving the real mouse.
+Retest pointer enter/leave, click and drag on the real desktop after
+rebuilding. The screenshot does not establish resource usage,
+full animation coverage, or compatibility across Windows installations.

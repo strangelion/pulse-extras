@@ -84,12 +84,17 @@ static BOOL ensure_class(HINSTANCE module) {
     WNDCLASSW wc = {0};
     wc.lpfnWndProc = pet_window_proc;
     wc.hInstance = module;
+    // A null class cursor leaves the previous cursor (including the
+    // application-starting spinner) unchanged over this layered window.
+    // The shared system arrow is OS-owned; do not destroy it.
+    wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512)); // IDC_ARROW
+    if (!wc.hCursor) return FALSE;
     wc.lpszClassName = class_name;
     if (RegisterClassW(&wc)) return TRUE;
     if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return FALSE;
     WNDCLASSW existing = {0};
     return GetClassInfoW(module, class_name, &existing) &&
-        existing.lpfnWndProc == pet_window_proc;
+        existing.lpfnWndProc == pet_window_proc && existing.hCursor == wc.hCursor;
 }
 
 static pet_surface_result check(const pet_surface *surface) {
