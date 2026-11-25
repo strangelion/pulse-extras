@@ -484,3 +484,38 @@ document for caps, failure recovery, compatibility and remaining
 real-host evidence. The public Win32 menu backend retains system
 theme/navigation and invalidates active menus on theme/DPI changes;
 the pinned SDK does not provide native external Fluent rendering.
+
+### Deferred shared binary dependency (multi-add-on coexistence)
+
+Status: PLANNED, not implemented. Keep current source sharing and independent
+runtime ownership until existing Companion and VCS acceptance passes. The
+objective is that multiple separately installed Pulse Extras add-ons can use
+one supported, versioned runtime binary and, when in the same host process,
+one coordinated runtime instance. This is not an external-app SDK project.
+
+Before implementation, verify the pinned/current Pulse SDK and registry's
+actual dependency discovery, installation, activation, upgrade and unload
+contracts with upstream. Do not assume an arbitrary common DLL location,
+load from a writable search path, change registry dependencies, or introduce
+a background service. If the host does not support a safe shared dependency,
+retain the bundled source model; evaluate a supported alternative separately.
+
+Acceptance gates:
+
+- Specify versioned C ABI, capability negotiation, trusted canonical binary
+  identity, immutable version directories and compatible mixed-version loading.
+- Per-add-on owner tokens, quota and failure isolation; optional aggregate
+  budgets and bounded queues, no raw allocator/Zig ABI crossing the DLL.
+- Prove concurrent acquire/release, callback drain and last-consumer unload;
+  reject new work while stopping and retain outstanding resources on failure.
+- Prove install/update/uninstall of one add-on cannot replace or remove a
+  loaded or still-required runtime; rollback without forced hot replacement.
+- Explicit missing/incompatible dependency behavior; no silent unsafe fallback.
+- Same-process shared state only. Different host processes may reuse installed
+  code, but resource coordination would require separate approved IPC design.
+- Real host tests with at least two independently installed add-ons in both
+  load orders, mixed versions, partial failure, update and uninstall; measure
+  memory/handle reduction and test full CI before adopting the binary model.
+
+No shared DLL, central allocator or mandatory new dependency is introduced
+by this plan. Do not expand Companion stage C to implement it.

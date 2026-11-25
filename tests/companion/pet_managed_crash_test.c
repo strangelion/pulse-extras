@@ -4,7 +4,19 @@
 #include <wchar.h>
 #include <string.h>
 
-#define CHECK(x) do { if (!(x)) { fprintf(stderr, "managed crash test line %d (Win32 %lu)\n", __LINE__, (unsigned long)GetLastError()); goto done; } } while (0)
+#define CHECK(x) do { if (!(x)) { fprintf(stderr, "managed crash test line %d: %s (Win32 %lu)\n", __LINE__, #x, (unsigned long)GetLastError()); goto done; } } while (0)
+
+static BOOL start_approved(pet_supervisor_group *group, const wchar_t *path,
+    const uint8_t hash[32], const pet_child_options *options, uint64_t *id) {
+    pet_child_result status = pet_group_start_approved(group, path, hash, options,
+        NULL, NULL, NULL, id);
+    DWORD last = GetLastError();
+    if (status != PET_CHILD_OK || !*id)
+        fprintf(stderr, "managed startup: native_result=%d win32=%lu scale=%u retained=%d\n",
+            (int)status, (unsigned long)last, options->scale, *id != 0);
+    SetLastError(last);
+    return status == PET_CHILD_OK && *id != 0;
+}
 
 static int digit(wchar_t c) {
     if (c >= L'0' && c <= L'9') return c - L'0';
@@ -31,8 +43,8 @@ int main(void) {
     CHECK(pet_group_open(&group, 2, 4 * PET_CHILD_COMMIT_LIMIT) == PET_CHILD_OK);
     CHECK(pet_group_crash_policy(&group, TRUE) == PET_CHILD_OK);
     CHECK(pet_group_start(&group, argv[1], &normal, &denied) == PET_CHILD_INVALID && !denied);
-    CHECK(pet_group_start_approved(&group, argv[1], hash, &normal, NULL, NULL, NULL, &a) == PET_CHILD_OK && a);
-    CHECK(pet_group_start_approved(&group, argv[1], hash, &fault, NULL, NULL, NULL, &b) == PET_CHILD_OK && b > a);
+    CHECK(start_approved(&group, argv[1], hash, &normal, &a));
+    CHECK(start_approved(&group, argv[1], hash, &fault, &b) && b > a);
     CHECK(group.count == 2 && group.monitors[0].process && group.monitors[1].process);
     CHECK(pet_group_crash_policy(&group, FALSE) == PET_CHILD_INVALID);
     CHECK(pet_group_request_stop(&group, a) == PET_CHILD_OK);

@@ -3506,7 +3506,9 @@ test "market panel requires explicit admission and has no implicit install" {
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[4].enabled.value);
     try std.testing.expect(std.mem.indexOf(u8, abi.slice(content.children[5].text.value).?, library.market_gallery_url) != null);
     try std.testing.expectEqualStrings("search", abi.slice(content.children[3].glyph.value).?);
-    try std.testing.expectEqual(@as(u32, 26), tree.state_count);
+    try std.testing.expectEqual(@as(u32, 27), tree.state_count);
+    try std.testing.expectEqualStrings("policy.capture-crashes", abi.slice(tree.states[26].key).?);
+    try std.testing.expectEqualStrings("false", abi.slice(tree.states[26].value).?);
     try std.testing.expect(instance.market_selected == null);
 }
 

@@ -1951,3 +1951,16 @@ header omitted the I/O union member and misplaced output Status),
 separate synthetic managed children, normal cooperative exit, real
 second-chance fault, watcher drain, full-memory streams and six captures
 rotating to four. Keep both standalone and managed capture tests.
+
+### CI 45667721657 follow-up
+
+The standalone full-dump fixture and Companion stress benchmark passed;
+Ubuntu and Windows full unit jobs both found the stale market-panel
+26-state assertion (now 27). Managed multi-instance startup failed at
+the first approved fixture launch, with a Windows 8.3 TEMP alias in the
+path. Canonicalize the created fixture path before hashing and launch,
+retain strict path admission, and report typed startup result plus
+numeric watcher phase/Win32 error instead of losing the cause during
+handle cleanup. The short-path mismatch is a concrete likely cause;
+managed launch, rotation and subsequent Windows tests require rerun.
+The cross-add-on shared binary is deferred to the shared runtime plan.

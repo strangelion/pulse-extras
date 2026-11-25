@@ -74,6 +74,8 @@ Implement one operation at a time with risk classification, explicit plan/confir
 | strangelion.companion (candidate) | Existing pet/event bridge or small supported native character prototype | No full pet simulator or generic Agent; validate demand and SDK first |
 | strangelion.forge (conditional) | Reusable templates, constrained recipes, validation and maintenance | No generic coding Agent; separate MCP/panel only with demonstrated value |
 
+- [ ] Deferred RT2+ design gate: allow separately installed Pulse Extras add-ons to reuse a single versioned runtime binary and same-host runtime instance, only after host dependency/lifecycle support and mixed-addon acceptance are proven. Keep the current bundled source-sharing model until then. See [shared binary dependency plan](shared-runtime.md#deferred-shared-binary-dependency-multi-add-on-coexistence).
+
 RT2: all new products reuse the shared runtime contract; extend it only for proven needs, track bundled runtime revisions and rebuild/test/release affected consumers after fixes. Test independent instances and mixed-version coexistence. Recheck upstream source, roadmap, SDK and registry for overlap before implementing each extension. Pulse already has basic Git and SVN status, native lock detection, common previews and archive integration. Coordinate 3D/OCR/remote features with upstream.
 
 After P2/R, prioritize Convert, a small Companion feasibility experiment, then Inspect, Compare, Data and focused DevKit according to demonstrated demand; VCS advanced functions continue as needed. See [product scope](product-scope.md) for overlap exclusions, research references, dependency policy and low-token delivery. Do not block usable features on a complete platform.

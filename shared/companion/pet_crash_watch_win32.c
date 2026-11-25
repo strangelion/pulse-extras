@@ -48,6 +48,13 @@ static BOOL save_crash(const pulse_dump_backend *backend, HANDLE process,
     return saved;
 }
 
+/* Application-defined Win32 error: numeric startup phase + low 16 bits
+ * of the OS error. No user paths or process memory in diagnostics.
+ * This is returned only before readiness acknowledgement. */
+static int startup_error(unsigned phase, DWORD code) {
+    return (int)(0x20000000u | ((phase & 0xffu) << 16) | (code & 0xffffu));
+}
+
 int pet_crash_watch(const wchar_t *process_arg, const wchar_t *ready_arg,
     const wchar_t *capture_arg, const wchar_t *fixture_parent) {
     HANDLE process = parse_handle(process_arg), ready = parse_handle(ready_arg);
@@ -57,11 +64,32 @@ int pet_crash_watch(const wchar_t *process_arg, const wchar_t *ready_arg,
     DWORD pid = process ? GetProcessId(process) : 0;
     if (!process || !ready || !capture || process == ready || capture == process || capture == ready ||
         !pid || pid == GetCurrentProcessId() ||
-        WaitForSingleObject(process, 0) != WAIT_TIMEOUT || !same_image(process) ||
-        !pulse_dump_open(&backend)) goto done;
+        WaitForSingleObject(process, 0) != WAIT_TIMEOUT) {
+        result = startup_error(1, ERROR_INVALID_HANDLE);
+        goto done;
+    }
+    if (!same_image(process)) {
+        result = startup_error(2, ERROR_BAD_PATHNAME);
+        goto done;
+    }
+    if (!pulse_dump_open(&backend)) {
+        result = startup_error(3, GetLastError());
+        goto done;
+    }
     /* Process was created suspended by the digest-pinned native supervisor;
      * attach while its retained inherited handle prevents PID reuse. */
-    if (!DebugActiveProcess(pid) || !DebugSetProcessKillOnExit(TRUE) || !SetEvent(ready)) goto done;
+    if (!DebugActiveProcess(pid)) {
+        result = startup_error(4, GetLastError());
+        goto done;
+    }
+    if (!DebugSetProcessKillOnExit(TRUE)) {
+        result = startup_error(5, GetLastError());
+        goto done;
+    }
+    if (!SetEvent(ready)) {
+        result = startup_error(6, GetLastError());
+        goto done;
+    }
     BOOL initial_breakpoint = TRUE, fault = FALSE, saved = FALSE;
     for (;;) {
         DEBUG_EVENT event = {0};

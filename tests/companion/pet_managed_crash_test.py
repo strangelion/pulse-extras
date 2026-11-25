@@ -11,9 +11,15 @@ import tempfile
 def main():
     fixture, harness = (Path(arg).resolve() for arg in sys.argv[1:])
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
+        # Windows runners can supply TEMP via an 8.3 alias (RUNNER~1).
+        # The production supervisor deliberately requires the canonical
+        # long path returned by GetFinalPathNameByHandleW. Resolve the
+        # created fixture, rather than weakening production admission.
+        root = Path(tmp).resolve(strict=True)
         child = root / "pulse-pet-demo.exe"
         shutil.copyfile(fixture, child)
+        child = child.resolve(strict=True)
+        assert child.parent == root
         digest = hashlib.sha256(child.read_bytes()).hexdigest()
         store = root / "PulseExtras-Diagnostics"
         for index in range(6):

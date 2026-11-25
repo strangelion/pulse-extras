@@ -49,6 +49,7 @@ static HANDLE pin_image(const wchar_t *path) {
         wcsncmp(actual, L"\\\\?\\", 4) != 0 ||
         CompareStringOrdinal(actual + 4, -1, path, -1, TRUE) != CSTR_EQUAL) {
         CloseHandle(image);
+        SetLastError(ERROR_BAD_PATHNAME);
         return INVALID_HANDLE_VALUE;
     }
     return image;
@@ -221,9 +222,23 @@ static BOOL start_monitor(pet_crash_monitor *monitor, const wchar_t *image,
     if (!IsProcessInJob(child.hProcess, monitor->job, &contained) || !contained ||
         ResumeThread(child.hThread) != 1) goto done;
     HANDLE waits[] = {ready, child.hProcess};
-    success = WaitForMultipleObjects(2, waits, FALSE, 3000) == WAIT_OBJECT_0 &&
-        WaitForSingleObject(child.hProcess, 0) == WAIT_TIMEOUT;
-done:
+    DWORD wait = WaitForMultipleObjects(2, waits, FALSE, 3000);
+    if (wait == WAIT_OBJECT_0) {
+        success = WaitForSingleObject(child.hProcess, 0) == WAIT_TIMEOUT;
+        if (!success) SetLastError(ERROR_PROCESS_ABORTED);
+    } else if (wait == WAIT_TIMEOUT) {
+        SetLastError(ERROR_TIMEOUT);
+    } else if (wait == WAIT_OBJECT_0 + 1) {
+        DWORD code = 0;
+        /* Private watcher startup failures use the Win32 application
+         * error bit. Preserve the phase/error through cleanup. */
+        if (GetExitCodeProcess(child.hProcess, &code) && (code & 0x20000000u))
+            SetLastError(code);
+        else
+            SetLastError(ERROR_PROCESS_ABORTED);
+    }
+done: ;
+    DWORD startup_error = success ? ERROR_SUCCESS : GetLastError();
     if (child.hThread) CloseHandle(child.hThread);
     if (initialized) DeleteProcThreadAttributeList(attributes);
     free(attributes);
@@ -231,6 +246,7 @@ done:
     if (ready) CloseHandle(ready);
     if (capture_event) CloseHandle(capture_event);
     if (job) CloseHandle(job);
+    if (!success) SetLastError(startup_error ? startup_error : ERROR_GEN_FAILURE);
     return success;
 }
 
@@ -362,7 +378,8 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
     job = NULL; child.hProcess = NULL; stop = NULL;
     mapping = NULL; event = NULL; slot = NULL;
     result = PET_CHILD_OK;
-cleanup:
+cleanup: ;
+    DWORD launch_error = result == PET_CHILD_OK ? ERROR_SUCCESS : GetLastError();
     if (child.hProcess) {
         if (monitor && monitor->job) (void)TerminateJobObject(monitor->job, 2);
         TerminateProcess(child.hProcess, 1);
@@ -391,6 +408,7 @@ cleanup:
     if (stop) CloseHandle(stop);
     if (job) CloseHandle(job);
     if (image != INVALID_HANDLE_VALUE) CloseHandle(image);
+    if (result != PET_CHILD_OK) SetLastError(launch_error ? launch_error : ERROR_GEN_FAILURE);
     return result;
 }
 
