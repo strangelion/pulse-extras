@@ -62,15 +62,27 @@ static HANDLE package_handle(const wchar_t *path, BOOL directory) {
     HANDLE file = CreateFileW(path, directory ? FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES : GENERIC_READ,
         FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT |
         (directory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_FLAG_SEQUENTIAL_SCAN), NULL);
-    if (file == INVALID_HANDLE_VALUE) return NULL;
+    if (file == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "Package handle: open failed (Win32 %lu).\n", (unsigned long)GetLastError());
+        return NULL;
+    }
     BY_HANDLE_FILE_INFORMATION info;
     wchar_t resolved[1024];
     if (!GetFileInformationByHandle(file, &info) ||
         (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
         (!!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != !!directory) ||
-        (!directory && info.nNumberOfLinks != 1) ||
-        !fixed_path(file, resolved, 1024) ||
-        CompareStringOrdinal(resolved, -1, path, -1, TRUE) != CSTR_EQUAL) {
+        (!directory && info.nNumberOfLinks != 1)) {
+        fputs("Package handle: unsafe file attributes or link count.\n", stderr);
+        CloseHandle(file);
+        return NULL;
+    }
+    if (!fixed_path(file, resolved, 1024)) {
+        fputs("Package handle: not a normalized fixed-drive path.\n", stderr);
+        CloseHandle(file);
+        return NULL;
+    }
+    if (CompareStringOrdinal(resolved, -1, path, -1, TRUE) != CSTR_EQUAL) {
+        fputs("Package handle: normalized path mismatch.\n", stderr);
         CloseHandle(file);
         return NULL;
     }
@@ -115,10 +127,22 @@ BOOL pet_package_open(pet_package *package, const wchar_t *folder,
     if (!package || package->root || !folder || !id || !parse || !validate || !validate_activity)
         return FALSE;
     wchar_t root[1024] = L"\\\\?\\";
-    wchar_t path[1024], activity_dir[1024], leaf[80];
-    DWORD n = GetFullPathNameW(folder, 1020, root + 4, NULL);
-    if (n < 4 || n >= 1020 || root[5] != L':' || root[6] != L'\\') return FALSE;
-    if (root[n + 3] == L'\\') root[n + 3] = 0;
+    wchar_t path[1024], activity_dir[1024], leaf[80], full[1020];
+    DWORD n = GetFullPathNameW(folder, 1020, full, NULL);
+    if (n < 4 || n >= 1020 || full[1] != L':' || full[2] != L'\\') {
+        fputs("Package path: expected a bounded local DOS directory.\n", stderr);
+        return FALSE;
+    }
+    /* GetFullPathName does not expand 8.3 aliases (common in TEMP).
+     * Expand spelling before the strict normalized handle comparison.
+     * GetLongPathName does not replace final reparse-point inspection. */
+    n = GetLongPathNameW(full, root + 4, 1020);
+    if (n < 4 || n >= 1020 || root[5] != L':' || root[6] != L'\\') {
+        fputs("Package path: long-name normalization failed.\n", stderr);
+        return FALSE;
+    }
+    while (n > 3 && root[n + 3] == L'\\') root[--n + 4] = 0;
+    if (n <= 3) return FALSE;
     uint8_t id8[64];
     size_t id_len = wcslen(id);
     if (!id_len || id_len > sizeof(id8)) return FALSE;
@@ -130,19 +154,30 @@ BOOL pet_package_open(pet_package *package, const wchar_t *folder,
     HANDLE metadata = NULL, enumeration = INVALID_HANDLE_VALUE;
     DWORD length = 0;
     BOOL ok = FALSE;
+    const char *stage = "root";
     package->root = package_handle(root, TRUE);
-    if (!package->root || !join_path(path, 1024, root, L"pet.json") ||
+    if (!package->root) goto cleanup;
+    stage = "metadata-open";
+    if (!join_path(path, 1024, root, L"pet.json") ||
         !(metadata = package_handle(path, FALSE))) goto cleanup;
+    stage = "metadata-read";
     data = read_handle(metadata, 128u * 1024u, &length);
-    if (!data || parse(data, length, id8, id_len, &package->meta) ||
+    if (!data) goto cleanup;
+    stage = "metadata-parse";
+    if (parse(data, length, id8, id_len, &package->meta) ||
         package->meta.count > PET_PACKAGE_MAX ||
         (package->meta.version != 1 && package->meta.version != 2)) goto cleanup;
     free(data); data = NULL;
+    stage = "base-open";
     if (!join_path(path, 1024, root, L"spritesheet.webp") ||
         !(package->atlas = package_handle(path, FALSE))) goto cleanup;
+    stage = "base-read";
     data = read_handle(package->atlas, MAX_COMPRESSED, &length);
-    if (!data || validate(package->meta.version, data, length)) goto cleanup;
+    if (!data) goto cleanup;
+    stage = "base-header";
+    if (validate(package->meta.version, data, length)) goto cleanup;
     free(data); data = NULL;
+    stage = "activity-directory";
     if (!join_path(activity_dir, 1024, root, L"activities")) goto cleanup;
     DWORD attr = GetFileAttributesW(activity_dir);
     if (attr == INVALID_FILE_ATTRIBUTES) {
@@ -157,6 +192,7 @@ BOOL pet_package_open(pet_package *package, const wchar_t *folder,
         if (!package->meta.count && GetLastError() == ERROR_FILE_NOT_FOUND) ok = TRUE;
         goto cleanup;
     }
+    stage = "activity-inventory";
     unsigned seen = 0;
     do {
         if (wcscmp(found.cFileName, L".") == 0 || wcscmp(found.cFileName, L"..") == 0) continue;
@@ -175,9 +211,13 @@ BOOL pet_package_open(pet_package *package, const wchar_t *folder,
         seen != ((1u << package->meta.count) - 1)) goto cleanup;
     size_t total = 0;
     for (unsigned i = 0; i < package->meta.count; ++i) {
+        stage = "activity-read";
         data = read_handle(package->files[i], 2u * 1024u * 1024u, &length);
-        if (!data || length > 16u * 1024u * 1024u - total ||
-            validate_activity(package->meta.items[i].frames, data, length)) goto cleanup;
+        if (!data) goto cleanup;
+        stage = "activity-size";
+        if (length > 16u * 1024u * 1024u - total) goto cleanup;
+        stage = "activity-header";
+        if (validate_activity(package->meta.items[i].frames, data, length)) goto cleanup;
         total += length;
         free(data); data = NULL;
     }
@@ -186,7 +226,10 @@ cleanup:
     if (enumeration != INVALID_HANDLE_VALUE) FindClose(enumeration);
     if (metadata) CloseHandle(metadata);
     free(data);
-    if (!ok) pet_package_close(package);
+    if (!ok) {
+        fprintf(stderr, "Package admission failed at %s.\n", stage);
+        pet_package_close(package);
+    }
     return ok;
 }
 

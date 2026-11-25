@@ -45,6 +45,17 @@ pub fn parse(input: [*]const u8, len: usize, id: [*]const u8, id_len: usize, out
     return 0;
 }
 
+test "bounded C ABI parser accepts the Windows smoke metadata" {
+    const input = "{\"id\": \"cat\", \"displayName\": \"Cat\", \"description\": \"Fixture\", \"spritesheetPath\": \"spritesheet.webp\", \"activities\": [{\"id\": \"nap\", \"displayName\": \"Nap\", \"outfitId\": \"default\", \"spritesheetPath\": \"activities/nap.webp\", \"frameCount\": 4, \"fps\": 4}]}";
+    var out: Package = .{};
+    try std.testing.expectEqual(@as(c_int, 0), parse(input.ptr, input.len, "cat", 3, &out));
+    try std.testing.expectEqual(@as(u32, 1), out.version);
+    try std.testing.expectEqual(@as(u32, 1), out.count);
+    try std.testing.expectEqualStrings("nap.webp", std.mem.sliceTo(&out.items[0].leaf, 0));
+    try std.testing.expectEqual(@as(c_int, 1), parse(input.ptr, input.len, "other", 5, &out));
+    try std.testing.expectEqual(@as(u32, 0), out.count);
+}
+
 test "project owned names and canonical activity leaves" {
     const input = "{\"id\":\"cat\",\"displayName\":\"Cat\",\"description\":\"Test\",\"spritesheetPath\":\"spritesheet.webp\",\"spriteVersionNumber\":2,\"activities\":[{\"id\":\"nap\",\"displayName\":\"睡觉\",\"outfitId\":\"default\",\"spritesheetPath\":\"activities/nap.webp\",\"frameCount\":8,\"fps\":4}]}";
     const result = try project(std.testing.allocator, input, "cat");

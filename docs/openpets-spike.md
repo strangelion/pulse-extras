@@ -716,3 +716,17 @@ explicitly selected by the user. WIC still runs synchronously. Tests
 cover opt-in, boundary times, no consecutive repeat, cooldown, first
 frame accounting, cancellation, decode failure and disabled availability.
 No actual host automatic activity or persisted preferences are claimed.
+
+### Windows package smoke regression
+
+Run 45543662520 passed Ubuntu and Windows compilation, but the first
+valid --check-package case returned 1. Its generic diagnostic did not
+establish the exact failure stage. A plausible defect is comparing a
+GetFullPathNameW result containing 8.3 aliases (for example TEMP) with
+the normalized long path returned by the open handle. Expand existing
+DOS paths with GetLongPathNameW before the existing strict comparison;
+retain fixed-drive, final reparse, hard-link and pinned-handle checks.
+Add stage-only diagnostics without logging user paths or metadata,
+test the actual bounded ABI parser with the smoke manifest, and test
+normal/resolved/available short paths and specific rejection stages.
+The cause remains a hypothesis until Windows confirms this revision.

@@ -1,4 +1,5 @@
 """Header-only package admission fixture; no WIC codec or visible windows."""
+import ctypes
 import json
 import pathlib
 import subprocess
@@ -26,20 +27,29 @@ def main() -> None:
         strip = b"RIFF\x12\x00\x00\x00WEBPVP8L\x05\x00\x00\x00\x2f\xff\xc2\x33\x00\x00"
         (actions / "nap.webp").write_bytes(strip)
 
-        def check(expected: bool, id_: str = "cat") -> None:
-            result = subprocess.run([str(exe), "--check-package", str(root), id_],
+        def check(expected: bool, id_: str = "cat", folder: pathlib.Path = root,
+                  stage: bytes | None = None) -> None:
+            result = subprocess.run([str(exe), "--check-package", str(folder), id_],
                                     timeout=15, capture_output=True)
             assert (result.returncode == 0) == expected, (result.returncode, result.stderr)
+            if stage is not None:
+                assert stage in result.stderr, result.stderr
 
         check(True)
-        check(False, "other")
+        check(True, folder=root.resolve(strict=True))
+        # 8.3 aliases may be disabled on this volume. Exercise them if present.
+        short_name = ctypes.create_unicode_buffer(1024)
+        n = ctypes.windll.kernel32.GetShortPathNameW(str(root), short_name, len(short_name))
+        if 0 < n < len(short_name):
+            check(True, folder=pathlib.Path(short_name.value))
+        check(False, "other", stage=b"metadata-parse")
         (actions / "extra.webp").write_bytes(strip)
-        check(False)
+        check(False, stage=b"activity-inventory")
         (actions / "extra.webp").unlink()
         (actions / "nap.webp").unlink()
-        check(False)
+        check(False, stage=b"activity-inventory")
         (actions / "nap.webp").write_bytes(b"not webp")
-        check(False)
+        check(False, stage=b"activity-header")
         (actions / "nap.webp").write_bytes(strip)
         check(True)
 
