@@ -263,3 +263,30 @@ The authenticated lease owner must supply availability, serialize writes,
 recheck authorization and report completion. This pure scheduler does not
 enable live writes, start a timer or integrate with Pulse host events yet.
 Host CI includes six behavior regression tests.
+
+## Classic atlas and animation core
+
+The first native renderer asset subset is deliberately classic static WebP:
+V1 1536x1872 (9 rows) and V2 1536x2288 (11 rows), 192x208 cells,
+8 columns. pet_assets.zig validates the approved folder ID, canonical
+spritesheet.webp path, required metadata fields and explicit version.
+Unsupported metadata extensions, SVG, Motion packages and noncanonical
+paths fail closed. Metadata is bounded to 128 KiB and must be parsed with
+a bounded scratch allocator. Compressed WebP input is limited to 16 MiB.
+RIFF and VP8/VP8L header preflight validates the declared image dimensions,
+chunk bounds and static subset; animation, unrelated chunks and trailing
+data are rejected. This is NOT a compressed image decoder or proof that
+image data is safe. Before rendering, a separately vetted decoder must
+decode into a bounded allocation and return exact tightly packed RGBA8
+dimensions and stride. One decoded V1 atlas is 11,501,568 bytes, V2 is
+14,057,472 bytes; renderer/cache allocations are additional.
+
+animation.zig uses the pinned classic state rows, durations and reaction
+mapping; integer-only sampling skips missed frames without catch-up loops.
+Finite waving/jumping/failed animations fall back to idle, repeated state
+selection does not restart playback unless explicitly requested, and
+hidden windows have no frame wakeups. Reduced motion uses V2's neutral
+pose or V1's first idle frame. These are local timeline primitives, not
+an implemented Windows renderer. No image decoder, asset downloads,
+archive extraction, SVG rasterizer, Motion clips, wardrobe, gaze or host
+integration is enabled. Tests use synthetic headers rather than real art.

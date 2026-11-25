@@ -291,6 +291,8 @@ pub fn build(b: *std.Build) void {
         "shared/companion/openpets_protocol.zig",
         "shared/companion/openpets_lease.zig",
         "shared/companion/behavior.zig",
+        "shared/companion/pet_assets.zig",
+        "shared/companion/animation.zig",
     };
     const test_step = b.step("test", "Run native ABI, wrapper and lifecycle regression tests");
     for (test_sources) |source| {
