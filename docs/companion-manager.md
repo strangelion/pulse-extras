@@ -279,3 +279,22 @@ the path. Actual source import and startup reconstruction still pending.
 Added portable codec tests and real-file high-water mark reload test.
 Previous selected-package regression 45572503915 and mixed preflight
 45572503975 passed. New change awaits CI.
+
+## SHA-256 asset fingerprints
+
+Keep stable u64 local IDs for preferences and live instances, add full
+SHA-256 content identity (32 binary bytes, 64 lowercase hex digits).
+Fingerprint v1 frames sorted canonical relative paths, file lengths and
+per-file SHA-256, including raw pet.json and base/variant/activity files.
+Identical byte inventory gives identical fingerprint regardless of order;
+metadata byte changes also change identity. Bounded streaming file helper
+requires caller-pinned file handles, not a path-based security guarantee.
+PCI2 preserves optional digest and rejects duplicate verified content;
+PCI1 reads as unknown fingerprint, with no invented hashes. Verified import
+must use publishVerified; legacy publish remains unverified. A pending
+reservation is consumed once and is not resurrected after restart or delete.
+No full import integration or launch-time digest verification yet; digest
+alone is not publisher authentication. The native inventory size cap 65536
+still accommodates 512 PCI2 records (54,288 bytes maximum).
+Added canonical digest, streaming SHA vector, duplicates, migration and
+reservation tests. Latest CI pending.

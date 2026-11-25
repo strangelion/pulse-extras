@@ -101,13 +101,14 @@ test "inventory high-water mark persists independently of preferences" {
     try std.testing.expect(!try loadInventory(path, &value));
     const id = try value.reserve();
     try saveInventory(path, &value);
-    try value.publish(id, "cat");
+    try value.publishVerified(id, "cat", @splat(17));
     try saveInventory(path, &value);
     var restored: inventory.Inventory = .{};
     try std.testing.expect(try loadInventory(path, &restored));
     try std.testing.expectEqual(@as(u64, 2), restored.next_id);
     const record = try restored.get(id);
     try std.testing.expectEqualStrings("cat", record.sourceId());
+    try std.testing.expectEqual(id, restored.findDigest(@splat(17)).?);
     try restored.remove(id);
     try saveInventory(path, &restored);
     try std.testing.expectError(error.Invalid, saveInventory(path, &.{}));
