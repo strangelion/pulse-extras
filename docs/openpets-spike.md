@@ -660,3 +660,32 @@ compressed input at most 2 MiB. Actual artwork decode and interruption
 still require real Windows verification. CI synthetic surface tests
 check strip stride, alpha, bounds and return to the base atlas.
 No third-party scripts or Motion clip playback are enabled.
+
+## Explicit Classic folder admission and named activity menu
+
+Use --package DIR ID to open a user-selected unpacked Classic WebP
+package with default-outfit activities. ID must match pet.json; the
+base layout is selected automatically. A bounded Zig projection copies
+names, canonical leaf names and animation timing into a fixed ABI
+record. --check-package DIR ID performs metadata, inventory and static
+WebP header admission without WIC or a visible window. It is NOT a full
+image decode or ZIP installer. The activity directory must contain exactly
+the declared files; startup reads and preflights one compressed file at
+a time. Read-only file handles remain pinned without write/delete sharing
+during the session, and the selected strip is decoded from its original
+handle instead of reopening a manifest path. The C loader checks local
+fixed-drive canonical handle paths, rejects final reparse points and
+hard-linked files. This is not a handle-relative walk or a race-free
+security boundary against malicious same-user directory modification.
+Do not use an untrusted writable installation root. Extra files outside
+the activity directory are not opened or executed.
+
+The localized Idle activities submenu lists the author-provided names,
+escapes menu mnemonics and disables optional actions in reduced-motion
+or managed mode. Selection decodes one strip and reuses the existing
+one-shot interruption/release path; no all-activity decoded cache.
+Package admission and WIC decode are still synchronous. Wardrobe,
+Motion, SVG, ZIP installation, automatic activities and the production
+host package selection remain unsupported. The Windows CLI regression
+uses synthetic RIFF headers, so it tests admission rather than actual
+image decoding; real artwork and desktop interaction remain pending.

@@ -112,7 +112,7 @@ static HANDLE parse_inherited_handle(const wchar_t *text) {
 
 enum {
     MENU_TOPMOST = 100, MENU_REDUCED, MENU_RESET, MENU_INTERACT,
-    MENU_EXIT, MENU_SCALE_50 = 200, MENU_SCALE_75, MENU_SCALE_100,
+    MENU_EXIT, MENU_ACTIVITY_FIRST = 300, MENU_SCALE_50 = 200, MENU_SCALE_75, MENU_SCALE_100,
     MENU_SCALE_125, MENU_SCALE_150, MENU_SCALE_200
 };
 
@@ -122,7 +122,7 @@ static const unsigned menu_scales[] = {50, 75, 100, 125, 150, 200};
  * A modal menu can delay cooperative stop until dismissal; the parent
  * still owns the bounded job termination fallback. */
 static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
-    int reduced, int managed, pet_language language) {
+    int reduced, int managed, pet_language language, const pet_package *package) {
     pet_menu_strings strings = pet_menu_labels(language, GetUserDefaultUILanguage());
     HMENU menu = CreatePopupMenu();
     HMENU sizes = CreatePopupMenu();
@@ -141,6 +141,29 @@ static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
     if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)sizes, strings.size)) {
         DestroyMenu(sizes); DestroyMenu(menu); return 0;
     }
+    if (package && package->meta.count) {
+        HMENU actions = CreatePopupMenu();
+        if (!actions) { DestroyMenu(menu); return 0; }
+        for (unsigned i = 0; i < package->meta.count; ++i) {
+            wchar_t name[161], escaped[321];
+            int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                (const char *)package->meta.items[i].name, -1, name, 161);
+            if (!n) { DestroyMenu(actions); DestroyMenu(menu); return 0; }
+            size_t j = 0;
+            for (int k = 0; k < n - 1; ++k) {
+                if (name[k] == L'&') escaped[j++] = L'&';
+                escaped[j++] = name[k];
+            }
+            escaped[j] = 0;
+            if (!AppendMenuW(actions, MF_STRING | (managed || reduced ? MF_GRAYED : 0),
+                MENU_ACTIVITY_FIRST + i, escaped)) {
+                DestroyMenu(actions); DestroyMenu(menu); return 0;
+            }
+        }
+        if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)actions, strings.activities)) {
+            DestroyMenu(actions); DestroyMenu(menu); return 0;
+        }
+    }
     if (!AppendMenuW(menu, MF_STRING | (topmost ? MF_CHECKED : 0), MENU_TOPMOST, strings.topmost) ||
         !AppendMenuW(menu, MF_STRING | (reduced ? MF_CHECKED : 0), MENU_REDUCED, strings.reduced) ||
         !AppendMenuW(menu, MF_STRING, MENU_RESET, strings.reset) ||
@@ -157,12 +180,13 @@ static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
 }
 
 static void usage(void) {
-    fputs("pulse-pet-demo [--reduced-motion] [--language system|zh-CN|zh-TW|en-US] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE] [--activity FILE FRAMES FPS]\n"
+    fputs("pulse-pet-demo [--reduced-motion] [--language system|zh-CN|zh-TW|en-US] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE] [--activity FILE FRAMES FPS] [--package DIR ID | --check-package DIR ID]\n"
         "Left click: interact. Left drag: move. Right click: menu. --smoke: hidden synthetic test.\n", stderr);
 }
 
 int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
-    pet_activity_sample_fn sample_activity, pet_demo_validate_fn validate_activity) {
+    pet_activity_sample_fn sample_activity, pet_demo_validate_fn validate_activity,
+    pet_package_parse_fn parse_package) {
     int rc = 1, argc = 0, reduced = 0, smoke = 0;
     unsigned reaction = PET_STATE_IDLE;
     unsigned version = 2, scale = 100;
@@ -177,7 +201,9 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
     HKEY settings = NULL;
     pet_config saved = {0, 0, 100, 0};
     int can_save = 0;
-    const wchar_t *path = NULL;
+    const wchar_t *path = NULL, *package_dir = NULL, *package_id = NULL;
+    int check_package = 0;
+    pet_package package = {0};
     uint8_t *atlas = NULL, *activity = NULL;
     const wchar_t *activity_path = NULL;
     unsigned activity_frames = 0, activity_fps = 0;
@@ -186,7 +212,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
     int activity_displayed = 0;
     pet_surface surface = {0};
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (!argv || !sample || !validate || !sample_activity || !validate_activity) goto cleanup;
+    if (!argv || !sample || !validate || !sample_activity || !validate_activity || !parse_package) goto cleanup;
     for (int i = 1; i < argc; ++i) {
         if (wcscmp(argv[i], L"--smoke") == 0 && !smoke) smoke = 1;
         else if (!reduced_set && (wcscmp(argv[i], L"--reduced-motion") == 0 ||
@@ -213,6 +239,11 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
             parse_scale(argv[i + 1], &scale)) {
             scale_set = 1;
             ++i;
+        } else if (!package_dir && i + 2 < argc &&
+            (wcscmp(argv[i], L"--package") == 0 || wcscmp(argv[i], L"--check-package") == 0)) {
+            check_package = wcscmp(argv[i], L"--check-package") == 0;
+            package_dir = argv[++i];
+            package_id = argv[++i];
         } else if (!activity_path && i + 3 < argc &&
             wcscmp(argv[i], L"--activity") == 0 &&
             parse_activity_number(argv[i + 2], 32, &activity_frames) &&
@@ -229,7 +260,9 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
         }
     }
     pet_demo_sample activity_check = {0};
-    if ((activity_path && (smoke || state_map ||
+    if ((package_dir && (path || activity_path || smoke || state_map)) ||
+        (check_package && (stop || remember || reset_position)) ||
+        (activity_path && (smoke || state_map ||
             sample_activity(activity_frames, activity_fps, 0, &activity_check) != 0)) ||
         (smoke && (path || reduced_set || topmost_set || remember || reset_position)) ||
         (reset_position && !remember) || (!!state_map != !!state_event) ||
@@ -249,6 +282,14 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
         if (!pet_state_valid(last_word)) goto cleanup;
         reaction = last_word & 15u;
         received_testing = reaction == PET_STATE_TESTING;
+    }
+    if (package_dir) {
+        if (!pet_package_open(&package, package_dir, package_id, parse_package, validate, validate_activity)) {
+            fputs("Classic package rejected: metadata, path, inventory or WebP header.\n", stderr);
+            goto cleanup;
+        }
+        version = package.meta.version;
+        if (check_package) { rc = 0; goto cleanup; }
     }
     if (remember) {
         LSTATUS status = RegOpenKeyExW(HKEY_CURRENT_USER, PET_CONFIG_KEY, 0,
@@ -272,7 +313,8 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
      * Use the older system-aware API only if the newer context is unavailable. */
     if (!SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
         (void)SetProcessDPIAware();
-    atlas = path ? pet_demo_load_webp(path, version, validate, &bytes) : synthetic_atlas(&bytes);
+    atlas = package_dir ? pet_package_load_atlas(&package, validate, &bytes) :
+        (path ? pet_demo_load_webp(path, version, validate, &bytes) : synthetic_atlas(&bytes));
     if (!atlas) goto cleanup;
     if (pet_surface_open_scaled(&surface, topmost, FALSE, scale) != PET_SURFACE_OK) goto cleanup;
     RECT work = {0};
@@ -329,7 +371,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                         last_row = base.row; last_column = base.column;
                     }
                     unsigned command = pet_menu(surface.window, cursor, scale, topmost,
-                        reduced, state_slot != NULL, language);
+                        reduced, state_slot != NULL, language, &package);
                     /* Check the owner signal immediately after the modal menu. */
                     if (stop && WaitForSingleObject(stop, 0) == WAIT_OBJECT_0) {
                         stopped = 1; done = 1; break;
@@ -343,6 +385,14 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                         reduced = !reduced;
                         started = GetTickCount64();
                         if (!state_slot) reaction = PET_STATE_IDLE;
+                    } else if (command >= MENU_ACTIVITY_FIRST &&
+                        command - MENU_ACTIVITY_FIRST < package.meta.count && !state_slot && !reduced) {
+                        unsigned index = command - MENU_ACTIVITY_FIRST;
+                        activity_frames = package.meta.items[index].frames;
+                        activity_fps = package.meta.items[index].fps;
+                        activity = pet_package_load_activity(&package, index, validate_activity, &activity_bytes);
+                        if (activity) activity_started = GetTickCount64();
+                        else fputs("Package activity decode failed; base pose retained.\n", stderr);
                     } else if (command == MENU_INTERACT && !state_slot && !reduced) {
                         if (activity_path) {
                             activity = pet_demo_load_activity(activity_path, activity_frames,
@@ -516,6 +566,7 @@ cleanup:
     if (pet_surface_close(&surface) != PET_SURFACE_OK) rc = 1;
     free(activity);
     free(atlas);
+    pet_package_close(&package);
     if (argv) LocalFree(argv);
     return rc;
 }

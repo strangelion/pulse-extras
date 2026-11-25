@@ -152,6 +152,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/companion/pet_stop_smoke.py zig-out/pulse-pet-demo.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/companion/pet_package_smoke.py zig-out/pulse-pet-demo.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test contained companion process supervision
         if: runner.os == 'Windows'
         shell: pwsh
