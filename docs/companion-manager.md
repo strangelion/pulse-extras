@@ -964,3 +964,16 @@ inventory reload and rollback rejection, including reopen after DLL unload.
 The import coordinator adapter is ready for a typed approved helper; host
 file selection and helper invocation still need integration. No write UI
 is enabled by this change.
+
+## Managed launch CI decoder correction
+
+The managed bridge regression previously used the default WIC helper even
+though real WebP decoding is not guaranteed on Windows CI images. Both
+failing runs reported an unexpected exit before readiness, without an exit
+code; the exact decoder cause was not established. Keep the original WIC
+smoke/admission checks, then build the pinned static libwebp helper used by
+the stress benchmark for the actual managed launch regression. Independently
+preflight the expected fingerprints and full decode of both fixture packages
+with captured diagnostics before supervising them. Log child ID and numeric
+exit code on unexpected termination. No readiness or negative-case assertions
+are relaxed.

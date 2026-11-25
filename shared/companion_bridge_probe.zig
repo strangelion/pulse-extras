@@ -127,7 +127,10 @@ fn exerciseManaged(owner: *loader.Owner, private: [:0]const u16) !void {
         const count = try owner.group.tick(&outcomes);
         for (outcomes[0..count]) |row| {
             if (row.failure) |err| return err;
-            if (row.exit_code != null) return error.UnexpectedChildExit;
+            if (row.exit_code) |code| {
+                std.debug.print("Managed instance {d} exited before readiness: {d} (0x{x})\n", .{ row.id, code, code });
+                return error.UnexpectedChildExit;
+            }
         }
         if (try owner.group.snapshot(0, &items) != 2) return error.UnexpectedChildren;
         if (items[0].id != first.id or items[0].asset_id != 1 or items[1].id != second.id or items[1].asset_id != 2) return error.WrongAsset;
@@ -146,7 +149,10 @@ fn exerciseManaged(owner: *loader.Owner, private: [:0]const u16) !void {
         for (outcomes[0..count]) |row| {
             if (row.failure) |err| return err;
             if (row.exit_code) |code| {
-                if (row.id != wrong.id or code == 0) return error.UnexpectedChildExit;
+                if (row.id != wrong.id or code == 0) {
+                    std.debug.print("Unexpected managed exit: ID {d}, code {d} (0x{x})\n", .{ row.id, code, code });
+                    return error.UnexpectedChildExit;
+                }
                 rejected = true;
             }
         }

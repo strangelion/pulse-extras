@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 import shutil
 import struct
+import subprocess
 import sys
 
 from pet_stress_fixtures import main as generate_source
@@ -30,6 +31,7 @@ def fingerprint(directory: Path) -> bytes:
 
 def main() -> None:
     parent = Path(sys.argv[1]).resolve(strict=True)
+    helper = Path(sys.argv[2]).resolve(strict=True)
     root = parent / "PulseExtras-Companion"
     # The native lease probe creates/approves the fixed directory first.
     if not root.is_dir() or not (root / "owner.lock").is_file():
@@ -42,6 +44,22 @@ def main() -> None:
         dest = root / f"pet-{asset_id:016x}"
         shutil.copytree(source / name, dest)
         pair = fingerprint(dest)
+        if asset_id != 3:
+            # Distinguish header/fingerprint admission and actual full decode
+            # from supervision errors. Preserve the helper's stderr in CI.
+            expected = pair[:32].hex() + ":" + pair[32:].hex()
+            for action in ("--check-package", "--check-package-task"):
+                result = subprocess.run(
+                    [str(helper), action, str(dest), name,
+                     "--expected-fingerprint", expected],
+                    capture_output=True, timeout=25,
+                )
+                if result.returncode:
+                    sys.stderr.write(result.stderr.decode("utf-8", errors="replace"))
+                    raise RuntimeError(
+                        f"{name} {action} failed: exit {result.returncode}"
+                    )
+                print(f"{name}: {action} verified", flush=True)
         if asset_id == 3:
             # Valid distinct inventory fingerprint, deliberately wrong for bytes.
             pair = bytes([pair[0] ^ 1]) + pair[1:]
