@@ -21,6 +21,7 @@ pub const Error = error{
     Permission,
     Io,
     OutOfMemory,
+    ResourceLimit,
 };
 
 /// Why a value is missing. `empty` is a real answer; the others are not.
@@ -40,8 +41,9 @@ pub const Text = struct {
     bytes: [capacity]u8 = undefined,
     len: u16 = 0,
 
-    pub fn init(value: []const u8) error{TooLong}!Text {
+    pub fn init(value: []const u8) error{ TooLong, InvalidText }!Text {
         if (value.len > capacity) return error.TooLong;
+        if (!std.unicode.utf8ValidateSlice(value) or std.mem.indexOfScalar(u8, value, 0) != null) return error.InvalidText;
         var text: Text = .{};
         @memcpy(text.bytes[0..value.len], value);
         text.len = @intCast(value.len);
@@ -187,4 +189,9 @@ test "bounded text reports overflow instead of truncating" {
     var long: [Text.capacity + 1]u8 = undefined;
     @memset(&long, 'a');
     try std.testing.expectError(error.TooLong, Text.init(&long));
+}
+
+test "bounded text rejects invalid UTF-8 and embedded NUL" {
+    try std.testing.expectError(error.InvalidText, Text.init("bad\xff"));
+    try std.testing.expectError(error.InvalidText, Text.init("bad\x00"));
 }

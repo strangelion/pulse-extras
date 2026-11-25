@@ -27,6 +27,7 @@ The last full verified CI baseline is [c330c24 / run 45421511648](https://github
 ## P1.5 — Required hardening before background panel integration
 
 - [ ] Implement RT0 of the [Shared Runtime contract](shared-runtime.md): explicit scoped ownership, standard allocator budgets, resource cleanup, cancellation, bounded queue and process-tree teardown. Remove unsafe DLL-local process-lifetime assumptions from the existing runner; prove workers/callbacks drained before unload. Test OOM/partial init, repeated lifecycle, infinite output, cancellation and timeout. Never terminate unrelated processes. Reuse source modules across independent DLL instances, not a central GC/service.
+- [ ] RT0 candidate: caller-owned I/O, finite deadlines, bounded output reservations, earlier VCS buffer release and owner-thread cache publication. Confirm full CI and actual owner lifecycle. Next candidate adds bounded requested-byte allocator, stop admission/drain checks and deterministic OOM/resize/remap/timeout/repeated-run tests. Single owned std.Io future candidate adds bounded argument/environment copies, cancellation/join and independent-owner checks. Verify format, compilation, async cancellation, environment cleanup and repeated execution before merging. Process-tree containment, provider-wide async scheduling, trusted environment policy and actual unload remain open.
 - [ ] Resolve trusted absolute executable paths and supported CLI versions; constrain environment/config/interactive prompts. Verify passive commands' actual side effects instead of trusting names.
 - [ ] Cache key must include provider, repository and workspace. Enforce generation checks on submission, document thread/ownership rules, prevent stale results and dangling borrowed pointers.
 - [ ] Separate true zero/empty from unknown/not queried/unsupported/stale/partial/error. Resolve actual worktrees/shared metadata rather than assuming markers prove colocation.
@@ -98,3 +99,11 @@ See [Forge design](forge-architecture.md). Do not block VCS or other independent
 ## Delivery and reporting
 
 Synchronize remote main without overwriting local work. Read existing docs and code before changes. Commit logically related fixes after local tests; add CI coverage with new features. Report exact commands, results, CI scope, actual host evidence, resource measurements, remaining gaps and next work. See [testing.md](testing.md) for the reduced/full CI policy. Do not create AGENTS.md or duplicate design documents.
+
+RT0 follow-up candidate: retain only actual completed output bytes, expose safe owner-thread diagnostics, validate explicit local paths/environment and maximum deadlines. CI verification and trusted resolver adoption precede VCS panel integration. Do not add a global service or claim descendant ownership before an actual tested process-tree backend exists.
+
+RT0 latest-only task candidate provides one running future plus one replaceable queued request and a real VCS Session consumer. Full CI and existing Git/JJ/SVN fixture checks precede merge. Host-specific acceptance may be scheduled later, but process-tree implementation, trusted resolution, UI completion delivery and host lifecycle checks remain recorded gates; no shipping VCS DLL yet.
+
+RT0 non-host candidate implements Windows job-backed Runner opt-in, approved path/digest and narrow env admission, group budgets, FIFO, typed event ring, owned temporary file store. Validate full CI and follow up on failures; actual host and measured multi-plugin acceptance deferred. Persistent crash recovery/rotation, race-free trusted installation verification and product-level policy integration remain explicit follow-up, not claimed complete.
+
+Deferred real-host checks are enumerated in [shared-runtime-host-acceptance.md](shared-runtime-host-acceptance.md); retain NOT VERIFIED until actual evidence. A merge of the library foundation does not certify production VCS panel distribution.

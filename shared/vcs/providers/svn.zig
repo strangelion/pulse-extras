@@ -35,7 +35,8 @@ pub fn parseRevision(text: []const u8) ?identity.RevisionId {
 /// parser (and no external entity handling) is involved.
 pub fn countStatus(xml: []const u8, changes: *contract.Changes) void {
     changes.modified += countItem(xml, "modified");
-    changes.staged += countItem(xml, "added") + countItem(xml, "replaced");
+    // SVN schedules changes in its working copy; it has no Git staging index.
+    changes.modified += countItem(xml, "added") + countItem(xml, "replaced");
     changes.untracked += countItem(xml, "unversioned");
     changes.conflicted += countItem(xml, "conflicted") + @as(u32, @intCast(std.mem.count(u8, xml, "tree-conflicted=\"true\"")));
     changes.modified += countItem(xml, "deleted") + countItem(xml, "missing");
@@ -69,32 +70,30 @@ pub const Svn = struct {
     pub fn summarize(self: *Svn, workspace: *const identity.Workspace) contract.Error!contract.Snapshot {
         if (workspace.kind != .svn) return error.Unsupported;
 
-        var revision_outcome = try self.query(&.{
-            self.executable.slice(), "info", "--show-item", "revision", workspace.root.slice(),
-        });
-        defer revision_outcome.deinit(self.runner.allocator);
-        if (!revision_outcome.succeeded()) return mapFailure(revision_outcome.stderr);
-
-        var url_outcome = try self.query(&.{
-            self.executable.slice(), "info", "--show-item", "relative-url", workspace.root.slice(),
-        });
-        defer url_outcome.deinit(self.runner.allocator);
-
-        var status_outcome = try self.query(&.{
-            self.executable.slice(), "status", "--xml", "--no-ignore", workspace.root.slice(),
-        });
-        defer status_outcome.deinit(self.runner.allocator);
-
         var snapshot = contract.Snapshot{ .availability = .ready, .workspace = workspace.* };
-        snapshot.revision = parseRevision(revision_outcome.stdout);
-        if (url_outcome.succeeded()) {
-            snapshot.reference = contract.Text.init(std.mem.trim(u8, url_outcome.stdout, " \r\n\t")) catch .{};
+        {
+            var revision_outcome = try self.query(&.{
+                self.executable.slice(), "info", "--show-item", "revision", workspace.root.slice(),
+            });
+            defer revision_outcome.deinit();
+            if (!revision_outcome.succeeded()) return mapFailure(revision_outcome.stderr);
+            snapshot.revision = parseRevision(revision_outcome.stdout) orelse return error.Parse;
         }
-        if (status_outcome.succeeded()) {
+        {
+            var url_outcome = try self.query(&.{
+                self.executable.slice(), "info", "--show-item", "relative-url", workspace.root.slice(),
+            });
+            defer url_outcome.deinit();
+            if (!url_outcome.succeeded()) return mapFailure(url_outcome.stderr);
+            snapshot.reference = contract.Text.init(std.mem.trim(u8, url_outcome.stdout, " \r\n\t")) catch return error.Parse;
+        }
+        {
+            var status_outcome = try self.query(&.{
+                self.executable.slice(), "status", "--xml", "--no-ignore", workspace.root.slice(),
+            });
+            defer status_outcome.deinit();
+            if (!status_outcome.succeeded()) return mapFailure(status_outcome.stderr);
             countStatus(status_outcome.stdout, &snapshot.changes);
-        } else {
-            snapshot.availability = .unknown;
-            snapshot.detail = contract.Text.init("svn status failed; workspace state unknown") catch .{};
         }
         return snapshot;
     }
@@ -134,8 +133,14 @@ fn mapRunError(err: run.Error) contract.Error {
     return switch (err) {
         error.SpawnFailed => error.CliMissing,
         error.TimedOut => error.Timeout,
-        error.OutputTooLong => error.Parse,
+        error.OutputTooLong => error.ResourceLimit,
         error.OutOfMemory => error.OutOfMemory,
+        error.PermissionDenied => error.Permission,
+        error.InvalidRequest, error.Io, error.ContainmentFailed, error.ContainmentUnavailable => error.Io,
+        error.UnapprovedExecutable, error.UnapprovedEnvironment => error.Permission,
+        error.Stopped, error.Cancelled => error.Cancelled,
+        error.Busy, error.ConcurrencyUnavailable, error.NoPendingTask => error.Io,
+        error.OutputBudgetExceeded => error.ResourceLimit,
     };
 }
 
@@ -165,8 +170,8 @@ test "counts status items from svn xml" {
 
     var changes = contract.Changes{};
     countStatus(xml, &changes);
-    try std.testing.expectEqual(@as(u32, 1), changes.staged);
-    try std.testing.expectEqual(@as(u32, 2), changes.modified);
+    try std.testing.expectEqual(@as(u32, 0), changes.staged);
+    try std.testing.expectEqual(@as(u32, 3), changes.modified);
     try std.testing.expectEqual(@as(u32, 1), changes.untracked);
     try std.testing.expectEqual(@as(u32, 2), changes.conflicted);
 }
@@ -178,7 +183,7 @@ test "revision text is normalised and validated" {
 }
 
 test "provider declares only read capabilities" {
-    var runner = run.Runner.init(std.testing.allocator);
+    var runner = run.Runner.init(std.testing.allocator, std.testing.io);
     var svn = Svn.init(&runner, identity.Path.init("svn") catch unreachable, .{ .ctx = undefined, .lookup = fakeLookup });
     const api = svn.provider();
     try std.testing.expect(api.supports(.status));
@@ -187,11 +192,11 @@ test "provider declares only read capabilities" {
 }
 
 test "a plain directory is reported as not a working copy" {
-    const io = run.io();
+    const io = std.testing.io;
     const path_value = test_config.path;
     if (path_value.len == 0) return cli.integrationUnavailable(.svn);
 
-    var runner = run.Runner.init(std.testing.allocator);
+    var runner = run.Runner.init(std.testing.allocator, std.testing.io);
     var scratch: [identity.max_path_bytes + 64]u8 = undefined;
     const report = cli.detect(io, .svn, path_value, &scratch, &runner) orelse return cli.integrationUnavailable(.svn);
     if (report.version == null) return cli.integrationUnavailable(.svn);
@@ -211,16 +216,26 @@ test "reads a real local SVN working copy prepared by integration CI" {
     if (root.len == 0) return cli.integrationUnavailable(.svn);
     const path_value = test_config.path;
     if (path_value.len == 0) return cli.integrationUnavailable(.svn);
-    var runner = run.Runner.init(std.testing.allocator);
-    defer runner.deinit();
+    var runner = run.Runner.init(std.testing.allocator, std.testing.io);
     var scratch: [identity.max_path_bytes + 64]u8 = undefined;
-    const report = cli.detect(run.io(), .svn, path_value, &scratch, &runner) orelse return cli.integrationUnavailable(.svn);
+    const report = cli.detect(std.testing.io, .svn, path_value, &scratch, &runner) orelse return cli.integrationUnavailable(.svn);
     if (report.version == null) return cli.integrationUnavailable(.svn);
     const workspace = try identity.Workspace.init(.svn, root, root);
     var svn = Svn.init(&runner, report.path, .{ .ctx = undefined, .lookup = fakeLookup });
-    const snapshot = try svn.summarize(&workspace);
+    var session = @import("vcs_session").Session.init(std.testing.io, 1000, testSessionClock);
+    defer session.shutdown();
+    _ = try session.request(svn.provider(), &workspace);
+    try std.testing.expect(try session.startNext());
+    const publication = try session.awaitActive();
+    if (publication == .failed) return publication.failed;
+    try std.testing.expect(publication == .published);
+    const snapshot = session.lookup(&workspace).fresh;
     try std.testing.expectEqual(contract.Availability.ready, snapshot.availability);
     try std.testing.expect(snapshot.revision != null);
     try std.testing.expectEqual(@as(u32, 1), snapshot.changes.modified);
     try std.testing.expectEqual(@as(u32, 1), snapshot.changes.untracked);
+}
+
+fn testSessionClock() i64 {
+    return 1000;
 }

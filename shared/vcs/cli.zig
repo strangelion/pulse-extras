@@ -70,23 +70,24 @@ pub const Report = struct {
 /// Parses `git version 2.43.0.windows.1`, `jj 0.23.0`, `svn, version 1.14.2`,
 /// `Mercurial Distributed SCM (version 6.7.2)`. Returns `null` instead of a
 /// guessed version when the shape is unknown.
-pub fn parseVersion(text: []const u8) ?Version {
-    var index: usize = 0;
-    while (index < text.len and !std.ascii.isDigit(text[index])) : (index += 1) {}
-    if (index == text.len) return null;
-
+pub fn parseVersion(tool: Tool, text: []const u8) ?Version {
+    const prefix: []const u8 = switch (tool) {
+        .git => "git version ",
+        .jj => "jj ",
+        .svn => "svn, version ",
+        .hg => "Mercurial Distributed SCM (version ",
+        else => return null,
+    };
+    if (!std.mem.startsWith(u8, text, prefix)) return null;
+    var index = prefix.len;
     const major = parseNumber(text, &index) orelse return null;
     if (index >= text.len or text[index] != '.') return null;
     index += 1;
     const minor = parseNumber(text, &index) orelse return null;
-
-    var patch: u32 = 0;
-    if (index < text.len and text[index] == '.') {
-        const after = index + 1;
-        var probe = after;
-        patch = parseNumber(text, &probe) orelse 0;
-        if (patch != 0) index = probe;
-    }
+    if (index >= text.len or text[index] != '.') return null;
+    index += 1;
+    const patch = parseNumber(text, &index) orelse return null;
+    if (index < text.len and std.mem.indexOfScalar(u8, ".-+ )", text[index]) == null) return null;
     return .{ .major = major, .minor = minor, .patch = patch };
 }
 
@@ -129,7 +130,7 @@ pub fn detect(io: std.Io, tool: Tool, path_value: []const u8, scratch: []u8, run
         .stdout_limit = 4096,
         .stderr_limit = 4096,
     }) catch return report;
-    defer outcome.deinit(runner.allocator);
+    defer outcome.deinit();
     if (!outcome.succeeded()) return report;
 
     const line_end = std.mem.indexOfScalar(u8, outcome.stdout, '\n') orelse outcome.stdout.len;
@@ -137,12 +138,12 @@ pub fn detect(io: std.Io, tool: Tool, path_value: []const u8, scratch: []u8, run
     const copied = @min(line.len, report.line.len);
     @memcpy(report.line[0..copied], line[0..copied]);
     report.line_len = @intCast(copied);
-    report.version = parseVersion(line);
+    report.version = parseVersion(tool, line);
     return report;
 }
 
 test "git version strings" {
-    const version = parseVersion("git version 2.43.0.windows.1") orelse return error.TestExpectedVersion;
+    const version = parseVersion(.git, "git version 2.43.0.windows.1") orelse return error.TestExpectedVersion;
     try std.testing.expectEqual(@as(u32, 2), version.major);
     try std.testing.expectEqual(@as(u32, 43), version.minor);
     try std.testing.expectEqual(@as(u32, 0), version.patch);
@@ -151,24 +152,27 @@ test "git version strings" {
 }
 
 test "jj and svn and hg version strings" {
-    try std.testing.expectEqual(@as(u32, 23), (parseVersion("jj 0.23.0") orelse return error.TestExpectedVersion).minor);
-    const svn = parseVersion("svn, version 1.14.2 (r1886195)") orelse return error.TestExpectedVersion;
+    try std.testing.expectEqual(@as(u32, 23), (parseVersion(.jj, "jj 0.23.0") orelse return error.TestExpectedVersion).minor);
+    const svn = parseVersion(.svn, "svn, version 1.14.2 (r1886195)") orelse return error.TestExpectedVersion;
     try std.testing.expectEqual(@as(u32, 14), svn.minor);
     try std.testing.expectEqual(@as(u32, 2), svn.patch);
-    const hg = parseVersion("Mercurial Distributed SCM (version 6.7.2)") orelse return error.TestExpectedVersion;
+    const hg = parseVersion(.hg, "Mercurial Distributed SCM (version 6.7.2)") orelse return error.TestExpectedVersion;
     try std.testing.expectEqual(@as(u32, 6), hg.major);
 }
 
 test "unknown version shapes are not guessed" {
-    try std.testing.expect(parseVersion("no digits here") == null);
-    try std.testing.expect(parseVersion("version 12") == null);
-    try std.testing.expect(parseVersion("build 7.x.y") == null);
+    try std.testing.expect(parseVersion(.git, "no digits here") == null);
+    try std.testing.expect(parseVersion(.git, "version 12") == null);
+    try std.testing.expect(parseVersion(.git, "build 7.x.y") == null);
+    try std.testing.expect(parseVersion(.git, "jj 0.46.0") == null);
+    try std.testing.expect(parseVersion(.git, "git version 2.43.x") == null);
+    try std.testing.expectEqual(@as(u32, 46), (parseVersion(.jj, "jj 0.46.0-abcdef0") orelse return error.TestExpectedVersion).minor);
 }
 
 test "locate finds an executable in a PATH-like value" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const io = run.io();
+    const io = std.testing.io;
     const file = try tmp.dir.createFile(io, Tool.git.exeName(), .{});
     file.close(io);
 
@@ -180,10 +184,9 @@ test "locate finds an executable in a PATH-like value" {
         try std.testing.expect(locate(io, .git, directory, &scratch) == null);
         var fixture_buffer: [4096]u8 = undefined;
         const fixture = try std.fmt.bufPrint(&fixture_buffer, "{s}" ++ std.fs.path.sep_str ++ "{s}", .{ directory, Tool.git.exeName() });
-        var runner = run.Runner.init(std.testing.allocator);
-        defer runner.deinit();
+        var runner = run.Runner.init(std.testing.allocator, std.testing.io);
         var outcome = try runner.run(.{ .argv = &.{ "chmod", "700", fixture } });
-        defer outcome.deinit(runner.allocator);
+        defer outcome.deinit();
         try std.testing.expect(outcome.succeeded());
     }
     var path_buffer: [4096]u8 = undefined;
@@ -195,7 +198,7 @@ test "locate finds an executable in a PATH-like value" {
 test "locate returns null when the tool is absent" {
     var scratch: [identity.max_path_bytes + 64]u8 = undefined;
     const missing = "C:\\definitely-not-a-real-dir" ++ std.fs.path.sep_str ++ "nope";
-    try std.testing.expect(locate(run.io(), .jj, missing, &scratch) == null);
+    try std.testing.expect(locate(std.testing.io, .jj, missing, &scratch) == null);
 }
 
 /// Optional developer integrations must become mandatory when CI installs tools.

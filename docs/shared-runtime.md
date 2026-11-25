@@ -1,6 +1,6 @@
 # Shared Runtime / 共享内存与资源管理运行时
 
-Status: **design and implementation requirements**, not an implemented runtime.
+Status: **partial RT0 implementation on the experiment branch; remaining design and acceptance gates below**.
 This document is the common contract for every Pulse Extras product extension.
 It belongs to P1.5 and does not replace the provider contract, public SDK or
 release design. Build the minimum needed by VCS first, then evolve from measured
@@ -109,8 +109,9 @@ instead of loading an entire object. No automatic fallback to an untracked alloc
 
 Initial existing VCS limits (not a measured overall memory guarantee): process request
 defaults stdout 4 MiB, stderr 1 MiB, timeout 10 seconds; snapshot cache has 8 entries.
-Provider-specific overrides and other allocations must be audited. A zero timeout
-currently maps to no timeout; production interactive work must have a finite deadline.
+Provider-specific overrides and other allocations must be audited. The RT0 candidate
+rejects zero deadlines and caps outstanding output objects at eight per runner, including
+zero-byte reservations. Production interactive work must have a finite deadline.
 Choose actual aggregate budgets after measuring small and large workloads; do not
 promote arbitrary example thresholds to universal limits.
 
@@ -124,13 +125,38 @@ network access.
 
 ## 4. Runtime, cancellation and DLL lifecycle
 
-The current shared/process/run.zig has a DLL-local static std.Io.Threaded/shared_io,
-uses page_allocator and Runner.deinit is a no-op. This is an outstanding lifetime
-risk, not a proven leak or crash. Inspect actual Zig 0.17.1 std.Io.Threaded requirements,
-including any process-wide state, before choosing explicit ownership/injection. Do
-not create uncontrolled independent process-wide facilities just because the source
-is linked into different DLLs. No background execution after unload. Refactor with
-the real process runner, not a parallel unused module.
+RT0 candidate: shared/process/run.zig removes the DLL-local static Threaded I/O
+and injects a caller-owned std.Io. Tests use the stdlib test I/O owner.
+The serialized runner does not own the I/O lifetime. Its logical output quota
+reserves requested stdout/stderr caps during execution, then releases the
+unused capacity on completion and retains only actual output bytes until
+Outcome.deinit. Matching allocator buffers are freed on deinit; error paths
+undo reservations. The live-outcome count still bounds zero-byte results. Default quota 16 MiB; per-request finite deadline required.
+The owner must remain at a stable address until all outputs are destroyed and
+checkDrained succeeds. The next RT0 candidate wraps the Runner allocator with
+shared/runtime/allocator.zig: a separate 32 MiB requested-live-byte quota, with
+checked alloc/resize/remap/free, coherent reservation counters and OOM rollback.
+A short lock protects only accounting; the backing allocator must support its
+callers' concurrency. Peak includes in-flight/failed reservations, not RSS or
+allocator metadata. Runner remains serialized. requestStop closes admission;
+finishStop rejects live outcomes or allocations and is idempotent after drain.
+The next candidate adds a single pending std.Io.concurrent future per Runner.
+Both entry paths validate bounded argv/cwd (128 arguments, 64 KiB of input
+bytes), nonempty executable/cwd and embedded NULs, and explicit environment
+maps (256 entries, 128 KiB of key/value bytes). Start copies argv/cwd and any
+explicit environment into owned bounded allocations before submission, refuses
+simultaneous live outcomes and releases inputs only after join. Null environment
+still inherits; a copied environment is not a trusted environment policy. Await/cancel joins before freeing the input arena and consumes output
+once. A canceled I/O operation maps to Cancelled; raced completion is freed
+and reported separately. Stop closes admission, then explicit cancel/join is
+required before finishStop. No detached work or extra resident pool. This is
+one stdlib task's cooperative cancellation, not guaranteed OS process-tree
+termination. The I/O owner must outlive the task and enforce finite concurrency.
+Run/await/cancel remain unsuitable for host UI callbacks. Actual VCS provider
+summary orchestration, trusted environment policy, job-object containment and
+real host runtime ownership remain to be verified.
+Do not create uncontrolled process-wide I/O facilities or claim DLL unload
+safety before proving host callback/worker drain.
 
 State machine: uninitialized -> initialized -> active -> stopping -> inactive;
 destroy is terminal, including partially initialized and failed-activation cases.
@@ -291,3 +317,69 @@ Do not create placeholder directories or claim the above is implemented. The
 shared runtime is a continuously maintained foundation, not a separately shipped
 GC. Completion of RT0/RT1 means actual consumers and evidence, not merely
 additional files or passing mock tests.
+
+### Runtime check implementation (RT0 candidate)
+
+Unit tests cover budget overflow, exact capacity, backing OOM rollback, failed and successful resize/remap, zero-byte allocations, alignment-sized allocations, independent owners, output/error cleanup, finite single-child timeout, stop/admission/drain and 12 repeated runs. These are ordinary full CI tests; no new resident service or dependency. Do not infer process-tree cleanup, true concurrency stress, cross-DLL ownership, memory safety of arbitrary native libraries, or real-host unload from them. Extend acceptance with an owned process-tree harness and actual host lifecycle before enabling asynchronous UI. For multi-plugin coordination evaluate supported host API/IPC, independent resource domains and measured duplication only after real consumers exist; no hidden global DLL state.
+
+### Single pending job acceptance (candidate)
+
+Reuse pinned Zig's documented `std.Io.concurrent`, `Future.await` and `Future.cancel` ([0.17.1 API](https://izrino.github.io/zig-docs/en/0.17.1/std/Io/)). Tests cover stack-backed argv copy, busy/duplicate admission, one-time outcome transfer, OOM input rollback, single-child cancellation, stopping with an outstanding job, independent runners and concurrent allocator accounting. Await and cancel are serialized owner operations; no concurrent call to the same Future. A running process may finish before cancellation, in which case discard its result without claiming it was killed. `finishStop` fails while a pending task exists. Before UI integration prove cancellation on actual Windows host, bound the whole child tree from creation, test descendants retaining inherited pipes, and implement owner-thread completion delivery. Never kill by reused PID or scan/terminate unrelated processes.
+
+### Format and input ownership follow-up
+
+CI 45448198471 stopped at zig fmt on shared/process/run.zig and shared/runtime/allocator.zig (extra blank lines). Remove the identified whitespace; CI now checks formatting before installing VCS tools and, on failure, prints the exact formatter diff from its disposable checkout and fails, without committing formatting changes or running tests on an altered tree. The latest candidate also validates synchronous/asynchronous request bounds before allocation/spawn, deep-copies explicit environment maps with the same bounded allocator, and drains pending futures even on test assertion failure. Do not log environment contents. A trusted environment policy, actual process-tree containment and real host acceptance remain outstanding. Previous runtime baseline 6a9083a passed Windows/Ubuntu CI 45447221739; the async candidate requires new full CI.
+
+### RT0 resource retention and diagnostics follow-up
+
+The Runner now returns unused stdout/stderr reservation capacity immediately
+on completion (actual returned lengths remain reserved); the bounded allocator
+continues accounting separately for allocated bytes. Repeated short commands
+no longer each hold their entire requested output cap until their result is freed.
+Owner-thread diagnostics expose state, pending flag, locked allocator snapshot,
+and completed/failed admitted-execution counts and output reservations only
+when no future is pending. Worker-owned counters are unavailable (null) before
+join, not read concurrently or reported as zero. No secret, path, argv, payload,
+logging daemon, periodic sampling or new allocation is required. Completion means
+a process result was returned, not necessarily zero exit; failed counts admitted
+execution errors only, not policy rejections.
+
+Add opt-in explicit_local admission: fully qualified local executable and cwd,
+explicit environment map, no drive-relative/UNC/device paths on Windows. Both
+modes enforce configured finite maximum duration (initial default 5 minutes;
+product profiles may choose shorter or longer), input bounds and environment
+name validation. Configure only while idle. This is lexical validation, not
+trusted binary identity, ACL verification, reparse containment or environment
+allowlisting. Compatibility mode preserves current provider/test call sites;
+production VCS adoption requires actual trusted executable resolution and
+controlled environment/cwd, not automatic promotion of compatibility mode.
+Process tree containment is still not implemented. Do not claim that Future
+cancel or the output quota proves descendant cleanup.
+
+### Bounded latest-only task slot and VCS consumer (RT0 candidate)
+
+`shared/runtime/latest_task.zig` provides one running std.Io future plus one replaceable queued value. Submission replaces only the queued request; no private pool, unbounded queue, periodic timer, or inline fallback on ConcurrencyUnavailable. The caller drives start/join/cancel, owns the I/O, and keeps borrowed contexts alive until removal or join. Values must be copyable and contain no independently owned allocations/handles. Stop drops queued work; finishStop rejects active work; shutdown joins. This is deliberately latest-only, not a general conversion/write job queue. Do not drop non-idempotent operations.
+
+`shared/vcs/session.zig` consumes the slot for whole-provider read-only summaries, not just individual commands. A new request advances cache generation and marks that key's prior result stale. Outdated, cancelled, invalidated and stopping results never publish; current errors stay typed rather than becoming clean snapshots. Verify returned workspace identity before publication. Provider and Runner lifetimes are caller-owned and exclusively reserved until work drains. Do not call Runner diagnostics concurrently while it is used by an external provider worker. Existing real Git/JJ/SVN integration fixtures now exercise session execution and preserve their original assertions. Two slot tests and three session tests cover 1,000-request coalescing, stop, invalidation, failure, cancellation race and generation behavior.
+
+This is host-independent code. Real Pulse UI completion delivery, actual plugin lifecycle, resource plateau and mixed-plugin acceptance are explicitly deferred, not waived. Windows process-tree ownership and descendant/pipe containment remain implementation gates before exposing execution of untrusted repositories or commands in the host. Keep compatibility mode separate from trusted execution policy. No new dependency or workflow.
+
+### RT0 remaining non-host primitives (candidate)
+
+Optional Windows x64 tree backend: std.process.spawn with start_suspended, private unnamed Job Object with kill-on-close and 16 active-process limit, assign before ResumeThread, bounded dual-stream collection and a single monotonic deadline through descendant exit. No fallback on containment failure. Cleanup terminates and checks active-process accounting; cleanup timeout is a distinct error, not proof of cleanup. Root/descendant tests run on Windows CI. This is not a sandbox and cannot protect against arbitrary native code or job escape through external privileged services. Existing Runner direct-child mode remains the default until the new backend passes CI. Windows only; other targets reject explicit tree policy. Actual host unload remains deferred.
+
+Approved-local execution is opt-in: explicit immutable approved path/digest, bounded streaming SHA-256 verification before spawn, no PATH-based approval, narrow environment allowlist. Verification by path is not race-free against a writable or replaceable installation and does not prove ACL/ancestor reparse safety or safe VCS config. No untrusted repository execution claim. Product approval/controlled tool configuration and stronger handle-based identity remain necessary.
+
+Group composes a parent bounded allocator with child allocator limits and owner-thread aggregate queued/running quotas. LatestTask and VCS Session optionally consume it; fixed-capacity FifoTask rejects full admission, preserves order and reports queued cancellations explicitly. It does not silently discard write/convert tasks. Queue accounting is serialized on a single owner, not a cross-DLL global coordinator; child memory quotas use the existing allocator lock. Group outlives children; call checkDrained after all joined. No background scheduler or priority inversion claim.
+
+Runtime event ring holds 64 typed numeric records, redacted and automatically evicted, with on-demand read only while worker-owned state is available. Temp Store uses caller-owned private directory handle, exclusive creation, eight-file cap and byte reservation before writes. Explicit cleanup attempts all owned files, retains failed deletions for retry, never recursively deletes or scans unknown files. It does not yet implement durable crash-recovery manifests or persistent rotating log export. Caller must establish exclusive directory ownership; no claim of security against other directory writers. No real Pulse host required for these tests. Host lifecycle, actual memory/CPU measurements, multiple installed plugin coordination and UI callbacks remain deferred.
+
+A containment failure latches a fault on the Runner: further execution and clean-drain certification are refused, even if allocation counters are zero. This is a diagnostic gate, not a mechanism to force a DLL unload or a proof that surviving descendants disappeared. Windows deadline conversions use explicit checked-width arithmetic and final output lengths are checked after EOF as well as during collection.
+
+### Merge-preparation follow-up
+
+CI 45452000441 passed format and reached compilation; Ubuntu rejected the impossible OutOfMemory arm from Approval.verify's inferred error set. Remove that arm without broadening the error set. Approval path is now copied into bounded storage, explicit environment size is checked before its allowlist, typed ring can export bounded text, and Temp Store can rotate session-owned snapshots without replacing the old one before a complete write. These remain pending CI. Crash-safe cross-restart cleanup must not delete unknown or unproven files. See [deferred real-host acceptance](shared-runtime-host-acceptance.md) for the separate real-machine gate.
+
+### Windows timeout investigation
+
+Run 45453154189 on 1a62305 passed both format checks and Ubuntu (64/64 build steps, 129/131 tests, two platform skips), but the Windows aggregate test step ran about 29m40s until job cancellation. No individual failing test was identified. Source inspection found a concrete cleanup-order hazard: MultiReader.deinit calls batch.cancel before the outer catch terminates the job. Terminate/drain the job while the reader is still alive, then deinit the reader, then release the child; on failed explicit drain close the kill-on-close job and report containment failure, not success. Add test-only phase markers without user data, and separate child capture, descendant timeout and output-limit cases. CI runs these independently under a short external deadline before VCS setup and still requires the complete suite. This is a candidate fix, not confirmation of root cause; if it hangs in spawn or fill, investigate the pinned stdlib implementation rather than extend timeouts.

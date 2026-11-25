@@ -1,30 +1,25 @@
-//! Bounded snapshot cache with generation counters.
-//!
-//! The cache never hides age: `get` distinguishes `fresh`, `stale` and
-//! `missing`, and every invalidation bumps a generation so results computed
-//! before the invalidation can be discarded instead of published.
+//! Fixed-capacity snapshot cache for one serialized owner. Values must own
+//! their contents by value (no borrowed slices or independently freed handles).
+//! Workers return results to the owner; they never access this cache directly.
 
 const std = @import("std");
 const identity = @import("vcs_identity");
 
-/// `now_ms` is injected so tests do not sleep and callers can use a monotonic
-/// clock from any thread.
 pub fn Cache(comptime Value: type) type {
     return struct {
         pub const max_entries = 8;
 
-        pub const Entry = struct {
-            key: identity.Path,
+        const Entry = struct {
+            key: identity.Workspace,
             value: Value,
             stored_at_ms: i64,
-            generation: u64,
+            stale: bool = false,
         };
 
         pub const Lookup = union(enum) {
             missing,
-            /// Older than the TTL; the value is only useful as a placeholder.
-            stale: *const Value,
-            fresh: *const Value,
+            stale: Value,
+            fresh: Value,
         };
 
         const Self = @This();
@@ -44,73 +39,79 @@ pub fn Cache(comptime Value: type) type {
             return self.generation;
         }
 
-        /// A result tagged with an older generation must not be published.
         pub fn isCurrent(self: *const Self, generation: u64) bool {
             return generation == self.generation;
         }
 
-        pub fn get(self: *Self, root: []const u8) Lookup {
-            const entry = self.find(root) orelse return .missing;
-            if (self.now() - entry.stored_at_ms > self.ttl_ms) return .{ .stale = &entry.value };
-            return .{ .fresh = &entry.value };
+        /// Advance on a new request, even if no cache entry changes.
+        pub fn beginRequest(self: *Self) u64 {
+            self.generation +%= 1;
+            return self.generation;
         }
 
-        pub fn put(self: *Self, root: []const u8, value: Value) error{InvalidKey}!u64 {
-            const key = identity.Path.init(root) catch return error.InvalidKey;
-            const now_ms = self.now();
-            const generation = self.generation;
+        fn sameKey(a: *const identity.Workspace, b: *const identity.Workspace) bool {
+            return a.kind == b.kind and a.root.eql(b.root.slice()) and a.repository_root.eql(b.repository_root.slice());
+        }
 
-            if (self.find(root)) |entry| {
-                entry.* = .{ .key = key, .value = value, .stored_at_ms = now_ms, .generation = generation };
-                return generation;
+        /// Returns an owned-by-value snapshot, never a mutable cache pointer.
+        pub fn get(self: *Self, key: *const identity.Workspace) Lookup {
+            const entry = self.find(key) orelse return .missing;
+            const elapsed = @as(i128, self.now()) - @as(i128, entry.stored_at_ms);
+            if (entry.stale or elapsed < 0 or elapsed > self.ttl_ms) return .{ .stale = entry.value };
+            return .{ .fresh = entry.value };
+        }
+
+        /// The generation check and publication are one owner-thread operation.
+        pub fn put(self: *Self, key: *const identity.Workspace, generation: u64, value: Value) error{Stale}!void {
+            if (!self.isCurrent(generation)) return error.Stale;
+            const entry = Entry{ .key = key.*, .value = value, .stored_at_ms = self.now() };
+            if (self.find(key)) |existing| {
+                existing.* = entry;
+                return;
             }
             if (self.len == max_entries) {
-                const victim = self.oldest() orelse return error.InvalidKey;
-                victim.* = .{ .key = key, .value = value, .stored_at_ms = now_ms, .generation = generation };
-                return generation;
+                self.oldest().* = entry;
+                return;
             }
-            self.entries[self.len] = .{ .key = key, .value = value, .stored_at_ms = now_ms, .generation = generation };
+            self.entries[self.len] = entry;
             self.len += 1;
-            return generation;
         }
 
-        /// Drops one repository and invalidates in-flight results.
-        pub fn invalidate(self: *Self, root: []const u8) void {
-            self.generation +%= 1;
+        /// Preserve a prior value as stale while its replacement is queried.
+        pub fn markStale(self: *Self, key: *const identity.Workspace) void {
+            if (self.find(key)) |entry| entry.stale = true;
+        }
+
+        pub fn invalidate(self: *Self, key: *const identity.Workspace) void {
+            _ = self.beginRequest();
             var index: usize = 0;
-            while (index < self.len) {
-                if (self.entries[index].key.eql(root)) {
+            while (index < self.len) : (index += 1) {
+                if (sameKey(&self.entries[index].key, key)) {
                     self.entries[index] = self.entries[self.len - 1];
                     self.len -= 1;
                     return;
                 }
-                index += 1;
             }
         }
 
         pub fn invalidateAll(self: *Self) void {
-            self.generation +%= 1;
+            _ = self.beginRequest();
             self.len = 0;
         }
 
-        /// Marks every entry stale without discarding it, for "show cached
-        /// data while an external change is re-read".
         pub fn ageAll(self: *Self) void {
-            self.generation +%= 1;
-            for (self.entries[0..self.len]) |*entry| {
-                entry.stored_at_ms -= self.ttl_ms + 1;
-            }
+            _ = self.beginRequest();
+            for (self.entries[0..self.len]) |*entry| entry.stale = true;
         }
 
-        fn find(self: *Self, root: []const u8) ?*Entry {
+        fn find(self: *Self, key: *const identity.Workspace) ?*Entry {
             for (self.entries[0..self.len]) |*entry| {
-                if (entry.key.eql(root)) return entry;
+                if (sameKey(&entry.key, key)) return entry;
             }
             return null;
         }
 
-        fn oldest(self: *Self) ?*Entry {
-            if (self.len == 0) return null;
+        fn oldest(self: *Self) *Entry {
             var victim: *Entry = &self.entries[0];
             for (self.entries[1..self.len]) |*entry| {
                 if (entry.stored_at_ms < victim.stored_at_ms) victim = entry;
@@ -128,45 +129,48 @@ fn fakeClock() i64 {
 
 const TestCache = Cache(u32);
 
-test "fresh values are returned until the TTL expires" {
+test "fresh values are returned by value until TTL expires" {
     fake_now_ms = 1000;
     var cache = TestCache.init(500, fakeClock);
-    _ = try cache.put("C:\\repo", 7);
-
-    switch (cache.get("C:\\repo")) {
-        .fresh => |value| try std.testing.expectEqual(@as(u32, 7), value.*),
-        else => return error.TestExpectedFresh,
-    }
+    const key = try identity.Workspace.init(.git, "repo", "repo");
+    try cache.put(&key, cache.currentGeneration(), 7);
+    const held = cache.get(&key);
+    try cache.put(&key, cache.currentGeneration(), 8);
+    try std.testing.expectEqual(@as(u32, 7), held.fresh);
+    try std.testing.expectEqual(@as(u32, 8), cache.get(&key).fresh);
     fake_now_ms = 1600;
-    switch (cache.get("C:\\repo")) {
-        .stale => |value| try std.testing.expectEqual(@as(u32, 7), value.*),
-        else => return error.TestExpectedStale,
-    }
+    try std.testing.expectEqual(@as(u32, 8), cache.get(&key).stale);
 }
 
-test "missing entries are not fabricated" {
+test "different providers and workspaces do not collide" {
     var cache = TestCache.init(500, fakeClock);
-    try std.testing.expect(cache.get("C:\\repo") == .missing);
+    const git = try identity.Workspace.init(.git, "repo", "repo");
+    const jj = try identity.Workspace.init(.jj, "repo", "repo");
+    const worktree = try identity.Workspace.init(.git, "other", "repo");
+    const moved_store = try identity.Workspace.init(.git, "repo", "different-store");
+    try cache.put(&git, cache.currentGeneration(), 1);
+    try cache.put(&jj, cache.currentGeneration(), 2);
+    try cache.put(&worktree, cache.currentGeneration(), 3);
+    try cache.put(&moved_store, cache.currentGeneration(), 4);
+    try std.testing.expectEqual(@as(u32, 1), cache.get(&git).fresh);
+    try std.testing.expectEqual(@as(u32, 2), cache.get(&jj).fresh);
+    try std.testing.expectEqual(@as(u32, 3), cache.get(&worktree).fresh);
+    try std.testing.expectEqual(@as(u32, 4), cache.get(&moved_store).fresh);
+    cache.invalidate(&git);
+    try std.testing.expect(cache.get(&git) == .missing);
+    try std.testing.expectEqual(@as(u32, 2), cache.get(&jj).fresh);
 }
 
-test "invalidation bumps the generation and drops the entry" {
+test "older results cannot overwrite a newer request or invalidation" {
     var cache = TestCache.init(500, fakeClock);
-    const before = try cache.put("C:\\repo", 1);
-    cache.invalidate("C:\\repo");
-    try std.testing.expect(!cache.isCurrent(before));
-    try std.testing.expect(cache.get("C:\\repo") == .missing);
-    try std.testing.expect(cache.isCurrent(cache.currentGeneration()));
-}
-
-test "put replaces an existing entry and reuses its slot" {
-    var cache = TestCache.init(500, fakeClock);
-    _ = try cache.put("C:\\repo", 1);
-    _ = try cache.put("C:\\repo", 2);
-    try std.testing.expectEqual(@as(u8, 1), cache.len);
-    switch (cache.get("C:\\repo")) {
-        .fresh => |value| try std.testing.expectEqual(@as(u32, 2), value.*),
-        else => return error.TestExpectedFresh,
-    }
+    const key = try identity.Workspace.init(.svn, "repo", "repo");
+    const old = cache.beginRequest();
+    const current = cache.beginRequest();
+    try cache.put(&key, current, 2);
+    try std.testing.expectError(error.Stale, cache.put(&key, old, 1));
+    cache.invalidateAll();
+    try std.testing.expectError(error.Stale, cache.put(&key, current, 2));
+    try std.testing.expect(cache.get(&key) == .missing);
 }
 
 test "the cache stays bounded and evicts the oldest entry" {
@@ -175,25 +179,27 @@ test "the cache stays bounded and evicts the oldest entry" {
     var index: usize = 0;
     while (index < TestCache.max_entries) : (index += 1) {
         fake_now_ms = @intCast(index);
-        const key = try std.fmt.bufPrint(&buffer, "C:\\repo{d}", .{index});
-        _ = try cache.put(key, @intCast(index));
+        const path = try std.fmt.bufPrint(&buffer, "repo{d}", .{index});
+        const key = try identity.Workspace.init(.git, path, path);
+        try cache.put(&key, cache.currentGeneration(), @intCast(index));
     }
-    try std.testing.expectEqual(@as(u8, TestCache.max_entries), cache.len);
-
     fake_now_ms = 100;
-    _ = try cache.put("C:\\new", 99);
+    const new = try identity.Workspace.init(.git, "new", "new");
+    const oldest = try identity.Workspace.init(.git, "repo0", "repo0");
+    try cache.put(&new, cache.currentGeneration(), 99);
     try std.testing.expectEqual(@as(u8, TestCache.max_entries), cache.len);
-    try std.testing.expect(cache.get("C:\\repo0") == .missing);
-    try std.testing.expect(cache.get("C:\\new") != .missing);
+    try std.testing.expect(cache.get(&oldest) == .missing);
+    try std.testing.expectEqual(@as(u32, 99), cache.get(&new).fresh);
 }
 
-test "ageAll keeps data as stale instead of losing it" {
-    fake_now_ms = 1000;
-    var cache = TestCache.init(500, fakeClock);
-    _ = try cache.put("C:\\repo", 3);
+test "aging and clock extremes do not overflow" {
+    fake_now_ms = std.math.minInt(i64);
+    var cache = TestCache.init(std.math.maxInt(i64), fakeClock);
+    const key = try identity.Workspace.init(.git, "repo", "repo");
+    try cache.put(&key, cache.currentGeneration(), 3);
+    fake_now_ms = std.math.maxInt(i64);
+    try std.testing.expectEqual(@as(u32, 3), cache.get(&key).stale);
+    try cache.put(&key, cache.currentGeneration(), 4);
     cache.ageAll();
-    switch (cache.get("C:\\repo")) {
-        .stale => |value| try std.testing.expectEqual(@as(u32, 3), value.*),
-        else => return error.TestExpectedStale,
-    }
+    try std.testing.expectEqual(@as(u32, 4), cache.get(&key).stale);
 }

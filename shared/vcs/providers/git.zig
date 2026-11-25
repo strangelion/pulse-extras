@@ -31,16 +31,16 @@ const ParseError = error{ Malformed, TooManyFields };
 /// a rename record carries its original path as the next record, which this
 /// parser skips because only counts and branch data are needed.
 pub fn parseStatus(text: []const u8) ParseError!Status {
-    if (text.len != 0 and text[text.len - 1] != 0) return error.Malformed;
+    if (text.len > parse_limit or (text.len != 0 and text[text.len - 1] != 0)) return error.Malformed;
     var status = Status{};
     var records = std.mem.splitScalar(u8, text, 0);
     while (records.next()) |record| {
         if (record.len == 0) continue;
         switch (record[0]) {
-            '#' => parseHeader(record, &status) catch continue,
+            '#' => try parseHeader(record, &status),
             '1', '2' => {
                 const xy = firstField(record, 1) orelse return error.Malformed;
-                if (xy.len != 2) return error.Malformed;
+                if (xy.len != 2 or std.mem.indexOfScalar(u8, ".MADRCUT", xy[0]) == null or std.mem.indexOfScalar(u8, ".MADRCUT", xy[1]) == null) return error.Malformed;
                 if (record[0] == '2') {
                     const original = records.next() orelse return error.Malformed;
                     if (original.len == 0) return error.Malformed;
@@ -63,15 +63,21 @@ fn parseHeader(record: []const u8, status: *Status) ParseError!void {
     const value = body[split + 1 ..];
     if (std.mem.eql(u8, key, "branch.oid")) {
         if (std.mem.eql(u8, value, "(initial)")) return;
-        status.oid = identity.RevisionId.init(.git, value) catch null;
+        if (value.len != 40 and value.len != 64) return error.Malformed;
+        for (value) |byte| {
+            if (!std.ascii.isDigit(byte) and !(byte >= 'a' and byte <= 'f') and !(byte >= 'A' and byte <= 'F')) return error.Malformed;
+        }
+        status.oid = identity.RevisionId.init(.git, value) catch return error.Malformed;
     } else if (std.mem.eql(u8, key, "branch.head")) {
         if (std.mem.eql(u8, value, "(detached)")) {
             status.detached = true;
             return;
         }
-        status.branch = contract.Text.init(value) catch .{};
+        if (value.len == 0) return error.Malformed;
+        status.branch = contract.Text.init(value) catch return error.Malformed;
     } else if (std.mem.eql(u8, key, "branch.upstream")) {
-        status.upstream = contract.Text.init(value) catch .{};
+        if (value.len == 0) return error.Malformed;
+        status.upstream = contract.Text.init(value) catch return error.Malformed;
     } else if (std.mem.eql(u8, key, "branch.ab")) {
         parseAheadBehind(value, &status.changes);
     }
@@ -146,11 +152,12 @@ pub const Git = struct {
             .stdout_limit = parse_limit,
             .stderr_limit = 64 * 1024,
         }) catch |err| return mapRunError(err);
-        defer outcome.deinit(self.runner.allocator);
+        defer outcome.deinit();
 
         if (!outcome.succeeded()) return mapFailure(outcome.stderr);
 
         const status = parseStatus(outcome.stdout) catch return error.Parse;
+        if (!status.detached and status.branch.slice().len == 0) return error.Parse;
         var snapshot = contract.Snapshot{
             .availability = .ready,
             .workspace = workspace.*,
@@ -191,8 +198,14 @@ fn mapRunError(err: run.Error) contract.Error {
     return switch (err) {
         error.SpawnFailed => error.CliMissing,
         error.TimedOut => error.Timeout,
-        error.OutputTooLong => error.Parse,
+        error.OutputTooLong => error.ResourceLimit,
         error.OutOfMemory => error.OutOfMemory,
+        error.PermissionDenied => error.Permission,
+        error.InvalidRequest, error.Io, error.ContainmentFailed, error.ContainmentUnavailable => error.Io,
+        error.UnapprovedExecutable, error.UnapprovedEnvironment => error.Permission,
+        error.Stopped, error.Cancelled => error.Cancelled,
+        error.Busy, error.ConcurrencyUnavailable, error.NoPendingTask => error.Io,
+        error.OutputBudgetExceeded => error.ResourceLimit,
     };
 }
 
@@ -246,7 +259,7 @@ test "records without a known type are ignored, not counted" {
 }
 
 test "provider declares only implemented capabilities" {
-    var runner = run.Runner.init(std.testing.allocator);
+    var runner = run.Runner.init(std.testing.allocator, std.testing.io);
     var git = Git.init(&runner, identity.Path.init("git") catch unreachable, .{ .ctx = undefined, .lookup = fakeLookup });
     const api = git.provider();
     try std.testing.expect(api.supports(.status));
@@ -260,11 +273,11 @@ fn fakeLookup(_: *anyopaque, _: []const u8) detect.EntryType {
 }
 
 test "reads a real repository end to end when git is installed" {
-    const io = run.io();
+    const io = std.testing.io;
     const path_value = test_config.path;
     if (path_value.len == 0) return cli.integrationUnavailable(.git);
 
-    var runner = run.Runner.init(std.testing.allocator);
+    var runner = run.Runner.init(std.testing.allocator, std.testing.io);
     var scratch: [identity.max_path_bytes + 64]u8 = undefined;
     const report = cli.detect(io, .git, path_value, &scratch, &runner) orelse return cli.integrationUnavailable(.git);
     if (report.version == null) return cli.integrationUnavailable(.git);
@@ -298,13 +311,20 @@ test "reads a real repository end to end when git is installed" {
     try edited.writeStreamingAll(io, "changed\n");
     edited.close(io);
 
-    const dirty = try git.summarize(&workspace);
+    var session = @import("vcs_session").Session.init(std.testing.io, 1000, testSessionClock);
+    defer session.shutdown();
+    _ = try session.request(git.provider(), &workspace);
+    try std.testing.expect(try session.startNext());
+    const publication = try session.awaitActive();
+    if (publication == .failed) return publication.failed;
+    try std.testing.expect(publication == .published);
+    const dirty = session.lookup(&workspace).fresh;
     try std.testing.expectEqual(@as(u32, 1), dirty.changes.modified);
 }
 
 fn expectSuccess(runner: *run.Runner, argv: []const []const u8) !void {
     var outcome = try runner.run(.{ .argv = argv, .timeout_ns = 20 * std.time.ns_per_s });
-    defer outcome.deinit(runner.allocator);
+    defer outcome.deinit();
     if (!outcome.succeeded()) {
         std.debug.print("command failed: {s}\n{s}\n", .{ argv[0], outcome.stderr });
         return error.TestCommandFailed;
@@ -323,4 +343,15 @@ test "rename source is a filename, not a status record" {
     }
     try std.testing.expectError(error.Malformed, parseStatus(prefix));
     try std.testing.expectError(error.Malformed, parseStatus("? truncated"));
+}
+
+test "malformed known git fields are not silently accepted" {
+    try std.testing.expectError(error.Malformed, parseStatus("# branch.oid not-an-oid\x00"));
+    try std.testing.expectError(error.Malformed, parseStatus("# branch.head \x00"));
+    try std.testing.expectError(error.Malformed, parseStatus("# branch.head bad\xff\x00"));
+    try std.testing.expectError(error.Malformed, parseStatus("1 Z. ignored\x00"));
+}
+
+fn testSessionClock() i64 {
+    return 1000;
 }

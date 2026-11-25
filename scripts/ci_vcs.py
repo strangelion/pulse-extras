@@ -8,6 +8,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
+from http.client import IncompleteRead
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 JJ_VERSION = "0.46.0"
@@ -30,14 +33,35 @@ def valid_jj_version(output: str) -> bool:
     return re.fullmatch(rf"jj {re.escape(JJ_VERSION)}(?:-[0-9a-fA-F]{{7,64}})*", output.strip()) is not None
 
 
+def download_archive(url: str, archive: Path) -> None:
+    """Retry transient transport failures; never retry a failed checksum."""
+    for attempt in range(1, 4):
+        try:
+            with urlopen(url, timeout=120) as response, archive.open("wb") as out:
+                shutil.copyfileobj(response, out)
+            return
+        except HTTPError as exc:
+            archive.unlink(missing_ok=True)
+            if exc.code not in (408, 429, 500, 502, 503, 504) or attempt == 3:
+                raise
+            reason = f"HTTP {exc.code}"
+        except (URLError, TimeoutError, ConnectionError, IncompleteRead) as exc:
+            archive.unlink(missing_ok=True)
+            if attempt == 3:
+                raise
+            reason = type(exc).__name__
+        delay = 2 ** attempt
+        print(f"JJ download attempt {attempt}/3 failed ({reason}); retrying in {delay}s", flush=True)
+        time.sleep(delay)
+
+
 def install_jj():
     suffix, expected, exe = ASSETS[platform.system()]
     name = f"jj-v{JJ_VERSION}-{suffix}"
     url = f"https://github.com/jj-vcs/jj/releases/download/v{JJ_VERSION}/{name}"
     root = Path(tempfile.mkdtemp(prefix="pulse-jj-", dir=os.environ["RUNNER_TEMP"]))
     archive = root / name
-    with urlopen(url, timeout=120) as response, archive.open("wb") as out:
-        shutil.copyfileobj(response, out)
+    download_archive(url, archive)
     with archive.open("rb") as stream:
         if hashlib.file_digest(stream, "sha256").hexdigest() != expected:
             raise SystemExit("JJ archive checksum mismatch")

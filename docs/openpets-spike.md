@@ -416,3 +416,18 @@ CI tests the configuration record in an isolated volatile registry key
 and the pre-signaled inherited-event startup path with a Windows Python
 launcher. Interactive restore, live stop during rendering and crash
 behavior remain to be verified.
+
+## Main synchronization and dependency recovery
+
+Merge main at 2759b5141690d406518f4853c9e6371c4c75c7ec, preserving its
+shared runtime, process containment, VCS and phase-diagnostic CI changes.
+Retain all companion sources and regression checks. No experimental
+companion is enabled in production extensions. Run 45535341677 passed
+the full Windows matrix including the demo/config/stop tests, but Ubuntu
+failed before Zig tests when the pinned JJ release download returned
+HTTP 503. The downloader now retries transient transport errors at most
+three total attempts (2s and 4s backoff), deletes partial archives and
+retains the pinned checksum and version checks. Permanent HTTP errors
+and checksum mismatches fail closed. Offline Python regression tests
+cover retry, exhaustion, permanent failure and partial-file cleanup.
+The merged runtime and companion combination still requires CI verification.
