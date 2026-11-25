@@ -19,6 +19,7 @@ typedef struct {
     volatile LONG *state_slot;
     DWORD generation;
     unsigned reaction;
+    HANDLE ready_event;
 } pet_supervisor;
 
 typedef enum {
@@ -87,6 +88,8 @@ typedef struct {
     uint32_t handles, pid;
 } pet_group_metrics;
 SIZE_T pet_group_storage_size(void);
+/* First-frame acknowledgment, not ongoing visibility or liveness. */
+pet_child_result pet_group_ready(pet_supervisor_group *group, uint64_t id, BOOL *ready);
 /* Owned process handle only; output valid solely on success. */
 pet_child_result pet_group_sample(pet_supervisor_group *group, uint64_t id, pet_group_metrics *out);
 /* Nonblocking cooperative stop and forced termination requests. Neither

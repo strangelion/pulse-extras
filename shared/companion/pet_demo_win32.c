@@ -99,7 +99,7 @@ static int constrain(const pet_surface *surface, POINT anchor, LONG *x, LONG *y)
 /* Only use explicitly inherited wait handles from a trusted launcher.
  * The caller must not supply mutexes, auto-reset events or arbitrary handles. */
 static HANDLE parse_inherited_handle(const pet_resources *resources, const wchar_t *text,
-    HANDLE other_a, HANDLE other_b) {
+    HANDLE other_a, HANDLE other_b, HANDLE other_c) {
     uintptr_t n = 0;
     if (!text || !*text) return NULL;
     for (; *text; ++text) {
@@ -113,7 +113,7 @@ static HANDLE parse_inherited_handle(const pet_resources *resources, const wchar
     DWORD flags = 0;
     if (!GetHandleInformation(handle, &flags) || !(flags & HANDLE_FLAG_INHERIT))
         return NULL;
-    if (handle != other_a && handle != other_b && !pet_reserve(resources, PET_RESOURCE_IPC, 1)) {
+    if (handle != other_a && handle != other_b && handle != other_c && !pet_reserve(resources, PET_RESOURCE_IPC, 1)) {
         if (!CloseHandle(handle)) pet_cleanup_failed(resources, PET_RESOURCE_IPC);
         return NULL;
     }
@@ -397,7 +397,8 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     int remember = 0, reset_position = 0, stopped = 0;
     pet_language language = PET_LANGUAGE_SYSTEM;
     int language_set = 0;
-    HANDLE stop = NULL, state_map = NULL, state_event = NULL;
+    HANDLE stop = NULL, state_map = NULL, state_event = NULL, ready_event = NULL;
+    int ready_sent = 0;
     const volatile LONG *state_slot = NULL;
     DWORD last_word = 0;
     int received_testing = 0;
@@ -453,11 +454,13 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         } else if (wcscmp(argv[i], L"--remember") == 0 && !remember) remember = 1;
         else if (wcscmp(argv[i], L"--reset-position") == 0 && !reset_position) reset_position = 1;
         else if (wcscmp(argv[i], L"--stop-handle") == 0 && !stop && i + 1 < argc &&
-            (stop = parse_inherited_handle(memory->resource_bridge, argv[i + 1], state_map, state_event)) != NULL) ++i;
+            (stop = parse_inherited_handle(memory->resource_bridge, argv[i + 1], state_map, state_event, ready_event)) != NULL) ++i;
         else if (wcscmp(argv[i], L"--state-map") == 0 && !state_map && i + 1 < argc &&
-            (state_map = parse_inherited_handle(memory->resource_bridge, argv[i + 1], stop, state_event)) != NULL) ++i;
+            (state_map = parse_inherited_handle(memory->resource_bridge, argv[i + 1], stop, state_event, ready_event)) != NULL) ++i;
         else if (wcscmp(argv[i], L"--state-event") == 0 && !state_event && i + 1 < argc &&
-            (state_event = parse_inherited_handle(memory->resource_bridge, argv[i + 1], stop, state_map)) != NULL) ++i;
+            (state_event = parse_inherited_handle(memory->resource_bridge, argv[i + 1], stop, state_map, ready_event)) != NULL) ++i;
+        else if (wcscmp(argv[i], L"--ready-event") == 0 && !ready_event && i + 1 < argc &&
+            (ready_event = parse_inherited_handle(memory->resource_bridge, argv[i + 1], stop, state_map, state_event)) != NULL) ++i;
         else if (wcscmp(argv[i], L"--language") == 0 && !language_set && i + 1 < argc &&
             pet_language_parse(argv[i + 1], &language)) {
             language_set = 1;
@@ -498,6 +501,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         (stress_seconds && (stress_seconds < 10 || smoke || remember || reset_position ||
             state_map || check_package || check_task || activity_path)) ||
         (reset_position && !remember) || (!!state_map != !!state_event) ||
+        (ready_event && (!state_map || ready_event == stop || ready_event == state_map || ready_event == state_event)) ||
         (state_map && (!stop || state_map == stop || state_event == stop || state_map == state_event))) {
         usage();
         goto cleanup;
@@ -1004,6 +1008,12 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
              * a due outfit, even when reduced motion has no frame deadline. */
             if (switch_due) schedule_due = 0;
         }
+        if (ready_event && !ready_sent && frames) {
+            /* First successful surface presentation, and show for visible
+             * mode, precedes the acknowledgment. No reset or polling loop. */
+            if (!SetEvent(ready_event)) goto cleanup;
+            ready_sent = 1;
+        }
         if (stress_seconds && !stress_ready && frames) {
             fputs("Companion stress: ready\n", stderr);
             fflush(stderr);
@@ -1087,6 +1097,8 @@ cleanup:
     }
     if (state_event && state_event != stop) close_ipc(memory->resource_bridge, state_event);
     if (state_map && state_map != stop && state_map != state_event) close_ipc(memory->resource_bridge, state_map);
+    if (ready_event && ready_event != stop && ready_event != state_map && ready_event != state_event)
+        close_ipc(memory->resource_bridge, ready_event);
     close_ipc(memory->resource_bridge, stop);
     if (surface.window && GetCapture() == surface.window) ReleaseCapture();
     if (pet_surface_close(&surface) != PET_SURFACE_OK) rc = 1;

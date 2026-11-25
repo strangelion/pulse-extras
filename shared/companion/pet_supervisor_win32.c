@@ -61,6 +61,7 @@ static void release_child(pet_supervisor *owner) {
     if (owner->state_slot) UnmapViewOfFile((const void *)owner->state_slot);
     if (owner->state_mapping) CloseHandle(owner->state_mapping);
     if (owner->state_event) CloseHandle(owner->state_event);
+    if (owner->ready_event) CloseHandle(owner->ready_event);
     *owner = (pet_supervisor){0};
 }
 
@@ -77,11 +78,11 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
         (options->smoke && (options->remember || options->reduced || options->topmost)))
         return PET_CHILD_INVALID;
     if (owner->job || owner->process || owner->stop || owner->state_mapping ||
-        owner->state_event || owner->state_slot) return PET_CHILD_BUSY;
+        owner->state_event || owner->state_slot || owner->ready_event) return PET_CHILD_BUSY;
     pet_child_result result = PET_CHILD_OS_ERROR;
     HANDLE image = INVALID_HANDLE_VALUE, job = NULL, stop = NULL;
-    HANDLE mapping = NULL, event = NULL;
-    HANDLE inherited[3] = {0};
+    HANDLE mapping = NULL, event = NULL, ready = NULL;
+    HANDLE inherited[4] = {0};
     volatile LONG *slot = NULL;
     LPPROC_THREAD_ATTRIBUTE_LIST attributes = NULL;
     BOOL initialized = FALSE;
@@ -117,6 +118,9 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
         &inherited[1], SECTION_MAP_READ, TRUE, 0) ||
         !DuplicateHandle(GetCurrentProcess(), event, GetCurrentProcess(),
         &inherited[2], SYNCHRONIZE, TRUE, 0)) goto cleanup;
+    ready = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!ready || !DuplicateHandle(GetCurrentProcess(), ready, GetCurrentProcess(),
+        &inherited[3], EVENT_MODIFY_STATE, TRUE, 0)) goto cleanup;
     SIZE_T bytes = 0;
     InitializeProcThreadAttributeList(NULL, 2, 0, &bytes);
     if (!bytes || bytes > 65536) goto cleanup;
@@ -131,11 +135,12 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
     }
 
     wchar_t command[CMD_CAP];
-    int written = swprintf(command, CMD_CAP, L"\"%ls\" --stop-handle %llu --scale %u%ls%ls%ls --state-map %llu --state-event %llu",
+    int written = swprintf(command, CMD_CAP, L"\"%ls\" --stop-handle %llu --scale %u%ls%ls%ls --state-map %llu --state-event %llu --ready-event %llu",
         approved_exe, (unsigned long long)(uintptr_t)inherited[0], options->scale,
         options->smoke ? L" --smoke" : (options->reduced ? L" --reduced-motion" : L""),
         options->topmost ? L" --topmost" : L"", options->remember ? L" --remember" : L"",
-        (unsigned long long)(uintptr_t)inherited[1], (unsigned long long)(uintptr_t)inherited[2]);
+        (unsigned long long)(uintptr_t)inherited[1], (unsigned long long)(uintptr_t)inherited[2],
+        (unsigned long long)(uintptr_t)inherited[3]);
     if (written < 0 || (unsigned)written >= CMD_CAP) { result = PET_CHILD_INVALID; goto cleanup; }
     /* No inherited PATH, credentials or loader variables. Use system cwd;
      * the approved installation directory still must be trusted by caller. */
@@ -161,6 +166,7 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
     }
     owner->job = job; owner->process = child.hProcess; owner->stop = stop;
     owner->state_mapping = mapping; owner->state_event = event;
+    owner->ready_event = ready; ready = NULL;
     owner->state_slot = slot; owner->generation = 1; owner->reaction = PET_STATE_IDLE;
     job = NULL; child.hProcess = NULL; stop = NULL;
     mapping = NULL; event = NULL; slot = NULL;
@@ -181,10 +187,11 @@ cleanup:
     if (child.hThread) CloseHandle(child.hThread);
     if (initialized) DeleteProcThreadAttributeList(attributes);
     free(attributes);
-    for (unsigned i = 0; i < 3; ++i) if (inherited[i]) CloseHandle(inherited[i]);
+    for (unsigned i = 0; i < 4; ++i) if (inherited[i]) CloseHandle(inherited[i]);
     if (slot) UnmapViewOfFile((const void *)slot);
     if (mapping) CloseHandle(mapping);
     if (event) CloseHandle(event);
+    if (ready) CloseHandle(ready);
     if (stop) CloseHandle(stop);
     if (job) CloseHandle(job);
     if (image != INVALID_HANDLE_VALUE) CloseHandle(image);
@@ -198,7 +205,7 @@ pet_child_result pet_child_start(pet_supervisor *owner, const wchar_t *approved_
         (options->smoke && (options->remember || options->reduced || options->topmost)))
         return PET_CHILD_INVALID;
     if (owner->job || owner->process || owner->stop || owner->state_mapping ||
-        owner->state_event || owner->state_slot) return PET_CHILD_BUSY;
+        owner->state_event || owner->state_slot || owner->ready_event) return PET_CHILD_BUSY;
     if (InterlockedCompareExchange(&live_owner, 1, 0) != 0) return PET_CHILD_BUSY;
     pet_child_result result = start_child(owner, approved_exe, options);
     if (result != PET_CHILD_OK) {
@@ -336,6 +343,21 @@ pet_child_result pet_group_status(pet_supervisor_group *group, uint64_t id, BOOL
     pet_group_slot *slot = group_find(group, id);
     if (!slot) return PET_CHILD_INVALID;
     return pet_child_status(&slot->child, running, exit_code);
+}
+
+pet_child_result pet_group_ready(pet_supervisor_group *group, uint64_t id, BOOL *ready) {
+    pet_group_slot *slot = group_find(group, id);
+    if (!slot || !ready) return PET_CHILD_INVALID;
+    *ready = FALSE;
+    if (slot->stopping) return PET_CHILD_OK;
+    if (!slot->child.ready_event) return PET_CHILD_OS_ERROR;
+    DWORD state = WaitForSingleObject(slot->child.process, 0);
+    if (state == WAIT_OBJECT_0) return PET_CHILD_BUSY;
+    if (state != WAIT_TIMEOUT) return PET_CHILD_OS_ERROR;
+    state = WaitForSingleObject(slot->child.ready_event, 0);
+    if (state != WAIT_OBJECT_0 && state != WAIT_TIMEOUT) return PET_CHILD_OS_ERROR;
+    *ready = state == WAIT_OBJECT_0;
+    return PET_CHILD_OK;
 }
 
 SIZE_T pet_group_storage_size(void) { return sizeof(pet_supervisor_group); }

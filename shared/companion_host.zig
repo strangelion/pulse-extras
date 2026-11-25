@@ -16,6 +16,7 @@ const Owner = extern struct {
     state_slot: Handle = null,
     generation: u32 = 0,
     reaction: u32 = 0,
+    ready_event: Handle = null,
 };
 
 const Options = extern struct {
@@ -28,7 +29,7 @@ const Options = extern struct {
 
 comptime {
     if (@sizeOf(usize) != 8) @compileError("native companion host requires x64");
-    std.debug.assert(@sizeOf(Owner) == 56);
+    std.debug.assert(@sizeOf(Owner) == 64);
     std.debug.assert(@sizeOf(Options) == 20);
 }
 

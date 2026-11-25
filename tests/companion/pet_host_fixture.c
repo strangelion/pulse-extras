@@ -2,7 +2,7 @@
 #include "../../shared/companion/pet_supervisor_win32.h"
 #include <limits.h>
 
-_Static_assert(sizeof(pet_supervisor) == 56, "supervisor ABI");
+_Static_assert(sizeof(pet_supervisor) == 64, "supervisor ABI");
 _Static_assert(sizeof(pet_child_options) == 20, "options ABI");
 
 uint32_t pet_host_fixture_path(uint8_t *out, uint32_t capacity) {

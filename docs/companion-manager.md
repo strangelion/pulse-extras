@@ -179,3 +179,18 @@ Group.refresh(id) is a worker-side poll primitive: check exit/reap first,
 then sample; a sample racing exit retries reap, other errors propagate.
 It does not equate process existence with rendered readiness. No automatic
 timer, readiness channel, asset launch or real settings page in this change.
+
+## First-frame readiness checkpoint
+
+The private supervisor channel adds one unnamed manual-reset event, inherited
+with EVENT_MODIFY_STATE only. Parent retains the wait handle. Child signals
+once after successful first presentation (and visible show where applicable),
+with resource tracking and cleanup. No signal on startup failure. Group polls
+without blocking, marks ready only on acknowledgment, and retains stopping
+state on late signals. This is not continuous visibility or render health.
+Native tests check signal-only child permission, unsignaled controlled child,
+and actual hidden demo acknowledgment. The Zig smoke test now sends testing
+reaction required by the demo. Correct quoted PowerShell -M arguments: prior
+Windows group test failed at argument parsing, not a completed runtime test.
+The new two-child codec preflight run 45568884661 passed. No full benchmark
+was run by that workflow. New Windows tests and ABI changes require CI.
