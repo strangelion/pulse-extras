@@ -64,6 +64,13 @@ pub fn runControlled(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, 
 // same-user race. No deletion, restore, or receipt write occurs here.
 pub fn verifyQuarantine(io: std.Io, owner: *runtime.Owner, exe: [:0]const u16, digest: [32]u8, id: u64) !void {
     const expected = try store.cleanupReceipt(owner, id);
+    try owner.pinQuarantine(id, .{ .volume = expected.volume, .file_index = expected.file_index });
+    const outcome = verifyPinnedQuarantine(io, owner, exe, digest, id, expected);
+    try owner.releaseQuarantine();
+    return outcome;
+}
+
+fn verifyPinnedQuarantine(io: std.Io, owner: *runtime.Owner, exe: [:0]const u16, digest: [32]u8, id: u64, expected: @import("companion/pet_removal_receipt.zig").Receipt) !void {
     const private = std.mem.sliceTo(&owner.lease.path, 0);
     var exe_buf: [4096]u8 = undefined;
     const exe_len = try std.unicode.utf16LeToUtf8(&exe_buf, exe);

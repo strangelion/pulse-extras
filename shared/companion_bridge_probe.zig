@@ -309,6 +309,27 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     const sample = (try owner.readRemovalReceipt(record.id)) orelse return error.MissingReceipt;
     const identity = try owner.quarantineIdentity(record.id);
     if (!std.meta.eql(sample.record, record) or sample.volume != identity.volume or sample.file_index != identity.file_index) return error.UnexpectedReceipt;
+    // Pin the exact package and prove writes cannot open its metadata.
+    var metadata_leaf: [80]u8 = undefined;
+    const metadata_name = try std.fmt.bufPrint(&metadata_leaf, "\\pet-{x:0>16}.removed\\pet.json", .{record.id});
+    var metadata_path: [1024]u16 = undefined;
+    if (private.len + metadata_name.len >= metadata_path.len) return error.BadFixturePath;
+    @memcpy(metadata_path[0..private.len], private);
+    for (metadata_name, 0..) |ch, n_leaf| metadata_path[private.len + n_leaf] = ch;
+    const metadata_len = private.len + metadata_name.len;
+    metadata_path[metadata_len] = 0;
+    const metadata = metadata_path[0..metadata_len :0];
+    try owner.pinQuarantine(record.id, identity);
+    const writer = CreateFileW(metadata, 0x40000000, 7, null, 3, 0x80, null);
+    if (writer != std.math.maxInt(usize)) {
+        _ = CloseHandle(writer);
+        try owner.releaseQuarantine();
+        return error.PinAllowedWriter;
+    }
+    try owner.releaseQuarantine();
+    const reopened = CreateFileW(metadata, 0x40000000, 7, null, 3, 0x80, null);
+    if (reopened == std.math.maxInt(usize)) return error.PinNotReleased;
+    if (CloseHandle(reopened) == 0) return error.CleanupFailed;
     var replacement = sample;
     replacement.file_index += 1;
     if (owner.writeRemovalReceipt(replacement)) |_| {

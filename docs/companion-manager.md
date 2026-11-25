@@ -1290,3 +1290,22 @@ expects content preflight to refuse it without modification, and checks
 that preflight succeeds again after removing only the fixture-created file.
 This does not enumerate alternate data streams or pin all files across a
 future delete; no destructive production API has been added.
+
+## Retained handle verification (read-only)
+
+The native bounded pin API returns a caller-owned prefix of up to 293
+handles (package root, two known subdirectories and 290 files), including
+on partial admission failure. It checks the receipt's volume and file
+index on the actual root handle, pins every enumerated ordinary object
+with read access and read-only sharing, and rejects reparse points,
+multi-link files, foreign root files, cross-volume objects and resource
+limit violations. The owner releases handles in reverse order, retains a
+failed handle for close retry, and refuses rename while pins are owned.
+The approved helper and final receipt/namespace preflight now run while
+the pin set is held. The real bridge fixture checks that a metadata writer
+is refused during pinning and can open without changing content afterward.
+This is not a directory transaction: creation of additional entries,
+alternate data streams, mapped writes and hostile same-user races still
+require separate treatment. No file disposition or permanent deletion
+is exposed; do not treat successful verification as future authorization.
+New CI and actual host acceptance remain unverified.

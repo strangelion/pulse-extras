@@ -36,6 +36,8 @@ const StoreScan = *const fn (*const Lease, usize, [*]scan.Row, usize, *usize) ca
 const StoreQuarantine = *const fn (*const Lease, usize, u64, c_int) callconv(.c) c_int;
 const StoreQuarantineV2 = *const fn (*const Lease, usize, u64, c_int, *u32, *u64) callconv(.c) c_int;
 const StoreQuarantineIdentity = *const fn (*const Lease, usize, u64, *u32, *u64) callconv(.c) c_int;
+const quarantine_pin_max = 293;
+const StoreQuarantinePin = *const fn (*const Lease, usize, u64, u32, u64, [*]usize, usize, *usize) callconv(.c) c_int;
 const StoreQuarantineUsage = *const fn (*const Lease, usize, u64, *u64) callconv(.c) c_int;
 
 extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, ?*anyopaque) callconv(.winapi) usize;
@@ -96,6 +98,8 @@ pub const Owner = struct {
     lease_opened: bool = false,
     lease_close: ?LeaseClose = null,
     store_faulted: bool = false,
+    quarantine_pins: [quarantine_pin_max]usize = undefined,
+    quarantine_pin_count: usize = 0,
 
     /// Worker only. Root must already be independently approved; the file
     /// pin denies writes/deletes, and the module stays loaded through drain.
@@ -253,6 +257,40 @@ pub const Owner = struct {
         file_index: u64 = 0,
     };
 
+    pub fn pinQuarantine(self: *Owner, id: u64, identity: DirectoryIdentity) !void {
+        if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
+        if (id == 0 or identity.file_index == 0) return error.InvalidRecord;
+        if (self.quarantine_pin_count != 0 or try self.group.remaining() != 0) return error.StoreBusy;
+        const pin: StoreQuarantinePin = @ptrCast(GetProcAddress(self.module, "pulse_companion_quarantine_pin_v1") orelse return error.MissingStoreApi);
+        const code = pin(&self.lease, @sizeOf(Lease), id, identity.volume, identity.file_index, &self.quarantine_pins, self.quarantine_pins.len, &self.quarantine_pin_count);
+        if (self.quarantine_pin_count > self.quarantine_pins.len) {
+            self.store_faulted = true;
+            return error.CleanupFailed;
+        }
+        checkStore(code) catch |err| {
+            self.releaseQuarantine() catch return error.CleanupFailed;
+            if (err == error.CleanupFailed) self.store_faulted = true;
+            return err;
+        };
+        if (self.quarantine_pin_count < 3) {
+            self.releaseQuarantine() catch return error.CleanupFailed;
+            return error.InvalidRecord;
+        }
+    }
+
+    // Retain the failing handle on error; close() retries before unloading.
+    pub fn releaseQuarantine(self: *Owner) !void {
+        if (self.quarantine_pin_count > self.quarantine_pins.len) return error.CleanupFailed;
+        while (self.quarantine_pin_count != 0) {
+            const handle = self.quarantine_pins[self.quarantine_pin_count - 1];
+            if (CloseHandle(handle) == 0) {
+                self.store_faulted = true;
+                return error.CleanupFailed;
+            }
+            self.quarantine_pin_count -= 1;
+        }
+    }
+
     pub fn quarantineIdentity(self: *Owner, id: u64) !DirectoryIdentity {
         if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
         if (id == 0) return error.InvalidRecord;
@@ -270,6 +308,7 @@ pub const Owner = struct {
     pub fn moveQuarantineBound(self: *Owner, id: u64) !DirectoryIdentity {
         if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
         if (id == 0) return error.InvalidRecord;
+        if (self.quarantine_pin_count != 0) return error.StoreBusy;
         if (try self.group.remaining() != 0) return error.ActiveInstances;
         _ = GetProcAddress(self.module, "pulse_companion_receipt_write_v1") orelse return error.MissingStoreApi;
         const move: StoreQuarantineV2 = @ptrCast(GetProcAddress(self.module, "pulse_companion_quarantine_v2") orelse return error.MissingStoreApi);
@@ -288,6 +327,7 @@ pub const Owner = struct {
     pub fn moveQuarantine(self: *Owner, id: u64, restore: bool) !void {
         if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
         if (id == 0) return error.InvalidRecord;
+        if (self.quarantine_pin_count != 0) return error.StoreBusy;
         if (try self.group.remaining() != 0) return error.ActiveInstances;
         const move: StoreQuarantine = @ptrCast(GetProcAddress(self.module, "pulse_companion_quarantine_v1") orelse return error.MissingStoreApi);
         checkStore(move(&self.lease, @sizeOf(Lease), id, @intFromBool(restore))) catch |err| {
@@ -308,6 +348,7 @@ pub const Owner = struct {
     /// Refuses to unload while a child remains owned. Cleanup errors retain
     /// the failing handle so the serialized caller can retry close.
     pub fn close(self: *Owner) !void {
+        try self.releaseQuarantine();
         if (self.opened) {
             try self.group.close();
             self.opened = false;
