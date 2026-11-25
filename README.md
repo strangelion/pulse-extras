@@ -42,8 +42,11 @@ and exercises the Windows DLL through a C loader harness. Documentation-only cha
 use a lightweight scope check; isolated VCS code changes run both-platform regression
 and DLL builds. Isolated companion changes run companion tests and native Windows lanes;
 allowlisted Companion host changes also retain production DLL builds and Windows
-Companion C ABI tests without installing JJ or preparing SVN fixtures. Manual runs
-and mixed/shared changes run full CI. See [testing](docs/testing.md).
+Companion C ABI tests without installing JJ or preparing SVN fixtures. Manual regression runs
+and mixed/shared changes run full CI. The separate stress workflow is
+manual independent-hidden only; visible/actual Pulse-managed testing
+and release gates are tracked in [Companion D](docs/companion-manager.md#d2-real-host-functional-acceptance-matrix).
+See [testing](docs/testing.md).
 Python 3 is used only by CI and SDK verification tools.
 
 - [Architecture](docs/architecture.md)

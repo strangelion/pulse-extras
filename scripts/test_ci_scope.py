@@ -54,6 +54,7 @@ class ScopeTests(unittest.TestCase):
     def test_shared_diagnostics_and_menu_require_full(self):
         for path in ("shared/diagnostics/crash_win32.c",
                      "shared/diagnostics/crash_win32.h",
+                     "shared/diagnostics/store_win32.c", "shared/diagnostics/store_win32.h",
                      "shared/runtime/retention.zig", "shared/pulse/menu_win32.h"):
             with self.subTest(path=path):
                 self.assertEqual(classify([path]), "full")

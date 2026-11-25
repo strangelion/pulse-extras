@@ -54,31 +54,31 @@ Ordinary docs/VCS/full scopes remain unchanged. The future [release workflow](re
 
 New submodules/dependency pins, license changes and build integration are FULL scope under the existing conservative classifier. Fetch only audited dependencies needed by selected builds; reference-only repositories and docs checks must not acquire them. Use real engine/CLI/IPC tests and fixture-based authoring, pet event and recipe tests before advertising support. Keep resource/host/containment and benchmark acceptance separate from lightweight routine CI. Release source and exact dependency/license review follow [product scope](product-scope.md) and [release](release.md).
 
-RT0 candidate adds deterministic output-budget overflow/rollback/drain tests, serialized provider/workspace cache key and stale-generation checks, strict known CLI version prefixes, UTF-8 text validation, and VCS intermediate output lifetime changes. Full CI is required. No Windows real-host cancellation or unload evidence yet.
-
-RT0 allocator/stop candidate: ordinary Windows/Linux tests cover reserve/alloc failure rollback, resize/remap, zero-byte/alignment-sized allocation, independent owners, admission rejection, refusal to stop with live outcomes, real finite single-child timeout and repeated cleanup. Verify all tests against pinned Zig; tests use finite child fixtures, not an unbounded stress workload. Deeper cancellation/descendant, concurrency and mixed-plugin real-host acceptance remain required. Record tracked live bytes/reservations, not an inferred Private Bytes or working-set limit.
-
-RT0 async candidate: test owned input copies, busy guards, one-time result transfer, OOM rollback, finite direct-child cancellation, stop/drain and concurrent allocator counters on both CI platforms. A cancellation race must not leak a completed result. A single-child fixture is not process-tree or real-host proof; leave VCS panel disabled until descendant/job-object and callback/worker teardown acceptance. No new workflow or resident service.
-
-Formatting preflight runs before VCS tool acquisition, using pinned Zig. On mismatch CI prints the exact `zig fmt` patch in the disposable checkout and exits nonzero; no automatic repository mutation. Run `zig fmt build.zig shared extensions` followed by `zig fmt --check build.zig shared extensions` locally before committing. Runtime adds input validation and async environment ownership/cleanup checks. Test secrets are synthetic values only; do not print real environment maps.
-
-Runtime retention candidate: test actual-output reservations, reuse of unused caps with multiple live results, peak/drain checks, diagnostic nulls during pending work, idle-only configuration, explicit local path/environment admission and maximum deadline. Full CI remains required; no change to test gating, no resident monitoring. Strict-path checks are lexical and do not prove trusted executable or safe process-tree ownership.
-
-Latest-only slot/session candidate: two slot and three session unit tests plus real Git/JJ/SVN existing repository fixtures through Session. Check bounded coalescing across 1,000 submissions, stale generation and failed refresh, cancellation preserving the newer queued request, stop and drain. No separate workflow. Full CI is required; actual Pulse lifecycle, multi-plugin host acceptance and process resource plateau tests remain deferred with status NOT VERIFIED, not counted as passed.
-
-RT0 non-host candidate tests: Windows job ABI/layout, suspended child capture and descendant timeout, Runner opt-in tree and approved environment checks; aggregate allocation and queue caps; FIFO order/backpressure and cancellation; grouped latest-only/VCS admission; redacted ring eviction and exclusive temp-file cleanup preserving pre-existing files. Full Windows/Ubuntu CI required; Windows-only tests skip on Linux. Native host tests remain explicitly deferred. Do not treat compile-only or mock tests as verified runtime behavior.
-
-See [Shared Runtime host acceptance](shared-runtime-host-acceptance.md) for the deferred NOT VERIFIED matrix. The merge gate is current full CI on Windows/Ubuntu; a green ancestor is not sufficient. Added tests for owned approval, bounded diagnostic export and quota-aware session rotation. Crash-safe recovery remains a separate non-host gate; no automatic scan/delete on prefix.
-
-Windows CI 45453154189 was canceled in the aggregate test step after ~29m40s; Ubuntu passed 129/131 (two platform skips). Isolated Windows Job Object tests now precede the full suite with test-name and phase output and a 4-minute step deadline. The full suite remains mandatory and has its own 15-minute deadline. Do not ignore a hang or skip the backend tests to merge. Phase markers are test-only.
+Historical RT0 test additions, Windows timeout investigation and detailed
+checkpoint logs are retained in the [pre-consolidation testing document](https://github.com/strangelion/pulse-extras/blob/78a33f1a54cabb6e880687023692a07aba44163c/docs/testing.md).
+Current requirements are the ownership, timeout, quota, leak and lifecycle
+gates above; keep the isolated Windows Job diagnostics and mandatory
+aggregate test deadlines. Formatting failure prints the exact patch in
+the disposable checkout; never mutates the repository.
 
 ## Parallel native lanes and performance evidence
 
-The Windows native companion IPC and desktop jobs now run in parallel with
-Windows/Linux general checks; the stable Regression gate requires every
-applicable lane. Each desktop job builds its own test helper. The fast ZIP
-regression runs ahead of the broad Zig suite. Automatic two-child codec
-and import preflight is separate from manual heavy benchmarks. See
-[performance.md](performance.md) for historical run IDs, workloads, raw
-resource measurements, limitations and per-extension evidence. A docs-only
-commit must never be interpreted as evidence that an earlier code change passed.
+The Windows native IPC and desktop jobs run in parallel with Windows/Linux
+general checks; the stable Regression gate requires every applicable lane.
+The desktop lane owns both standalone and managed crash tests, supervisor,
+private-root/catalog, bundled C ABI, actual import and static WebP
+allocator/mixed two-child/package-admission checks. Reuse its existing
+WebP helper build, supervisor executable and fixture directory; do not
+launch an additional workflow for the same push. The mixed codec probe
+retains diagnostics on failure. The fast ZIP regression precedes the broad
+suite. No failure is converted to a skip.
+
+Only two workflows are needed now: Zig regression (automatic scoped
+correctness, manual full) and Companion stress benchmark (manual independent
+hidden, synthetic or mixed static WebP, 1–100 processes, 5–180 seconds).
+Do not add hosted-visible, WIC-only or separate release workflows merely
+for D; local harness options remain available for diagnosis. Actual
+visible, host-managed, soak, network and package acceptance belong to
+[Stage D](companion-manager.md#stage-d-official-testformal-packaging-and-real-host-acceptance).
+See [performance.md](performance.md) for historical evidence. A docs-only
+green check does not prove an earlier code change passed.

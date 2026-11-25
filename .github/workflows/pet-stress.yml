@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       count:
-        description: Independent pet processes (1-100)
+        description: Independent hidden pet processes (1-100)
         type: number
         default: 100
       seconds:
@@ -12,52 +12,18 @@ on:
         type: number
         default: 30
       profile:
-        description: Benchmark workload (visible mode needs desktop visual validation)
+        description: Independent hidden benchmark (not Pulse-managed)
         type: choice
-        options: [synthetic-hidden, mixed-hidden, mixed-visible, wic-mixed-hidden]
-        default: synthetic-hidden
-  push:
-    branches: [experiment/openpets-ipc]
-    paths:
-      - build.zig
-      # Only runtime/codec/render paths need the automatic decoder probe.
-      - 'shared/companion/pet_decode_win32.c'
-      - 'shared/companion/pet_webp_*'
-      - 'shared/companion/pet_assets.zig'
-      - 'shared/companion/pet_package.zig'
-      - 'shared/companion/pet_fingerprint.zig'
-      - tests/companion/pet_package_smoke.py
-      - 'shared/companion/pet_demo*'
-      - 'shared/companion/pet_supervisor_win32.*'
-      - tests/companion/pet_supervisor_win32_test.c
-      - 'shared/companion/pet_surface*'
-      - 'shared/companion/pet_memory.zig'
-      - 'shared/companion/pet_resources*'
-      - 'shared/companion/pet_decode_task.zig'
-      - 'shared/companion/pet_async_bridge.zig'
-      - 'shared/companion/animation.zig'
-      - 'shared/runtime/allocator.zig'
-      - 'shared/runtime/budget.zig'
-      - 'shared/runtime/group.zig'
-      - 'shared/runtime/latest_task.zig'
-      - tests/companion/pet_stress.py
-      - tests/companion/pet_stress_fixtures.py
-      - tests/companion/pet_webp_budget_test.c
-      - scripts/install_pet_webp.py
-      - scripts/test_install_pet_webp.py
-      - 'shared/companion/pet_gaze_policy.h'
-      - .github/workflows/pet-stress.yml
+        options: [synthetic-hidden, mixed-hidden]
+        default: mixed-hidden
 
 permissions:
   contents: read
 
 jobs:
   benchmark:
+    name: Independent hidden processes
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.profile) || '["mixed-hidden"]') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -72,81 +38,42 @@ jobs:
           path: ${{ runner.temp }}/pulse-zig-archives
           key: zig-archive-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.zig-version', 'scripts/zig-downloads.json') }}
       - run: python scripts/install_zig.py
-      - name: Prepare benchmark output directory
-        shell: pwsh
-        run: New-Item -ItemType Directory -Force zig-out | Out-Null
       - name: Stage pinned static WebP decoder
-        if: matrix.profile == 'mixed-hidden' || matrix.profile == 'mixed-visible'
+        if: inputs.profile == 'mixed-hidden'
         run: python scripts/install_pet_webp.py
-      - name: Exercise decoder allocator bridge
-        if: matrix.profile == 'mixed-hidden' || matrix.profile == 'mixed-visible'
-        shell: pwsh
-        run: |
-          zig cc -std=c11 -Wall -Wextra -Werror tests/companion/pet_webp_budget_test.c -o zig-out/pet-webp-budget-test.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./zig-out/pet-webp-budget-test.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build selected companion backend
         env:
-          PET_PROFILE: ${{ matrix.profile }}
+          PET_PROFILE: ${{ inputs.profile }}
         shell: pwsh
         run: |
           $buildArgs = @('build', 'pet-demo', '-Doptimize=ReleaseSafe', '--summary', 'all')
-          if ($env:PET_PROFILE -eq 'mixed-hidden' -or $env:PET_PROFILE -eq 'mixed-visible') {
+          if ($env:PET_PROFILE -eq 'mixed-hidden') {
             $buildArgs += '-Dpet-libwebp=true'
+          } elseif ($env:PET_PROFILE -ne 'synthetic-hidden') {
+            throw 'Invalid independent benchmark profile'
           }
           zig @buildArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Validate real package import and digest before runtime preflight
-        shell: pwsh
-        run: |
-          python tests/companion/pet_package_smoke.py zig-out/bin/pulse-pet-demo.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Sample independent instances (${{ matrix.profile }})
+      - name: Measure independent hidden instances
         env:
-          PET_PROFILE: ${{ matrix.profile }}
-          PET_COUNT: ${{ inputs.count || 100 }}
-          PET_SECONDS: ${{ inputs.seconds || 30 }}
-          PET_MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+          PET_PROFILE: ${{ inputs.profile }}
+          PET_COUNT: ${{ inputs.count }}
+          PET_SECONDS: ${{ inputs.seconds }}
         shell: pwsh
         run: |
           $petArgs = @('--count', $env:PET_COUNT, '--seconds', $env:PET_SECONDS, '--output', 'zig-out/pet-stress')
-          if ($env:PET_PROFILE -ne 'synthetic-hidden') {
+          if ($env:PET_PROFILE -eq 'mixed-hidden') {
             python tests/companion/pet_stress_fixtures.py zig-out/stress-fixtures
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $sourceArgs = @('--package', 'zig-out/stress-fixtures/fixture-v1', 'fixture-v1', '--webp', '2', 'zig-out/stress-fixtures/fixture-v2.webp')
-            # Automatic pushes stop after this two-child probe.
-            # Manual mixed benchmarks continue to the requested workload.
-            # Failure remains a hard failure, with bounded per-child diagnostics.
-            python tests/companion/pet_stress.py --count 2 --seconds 5 --output zig-out/pet-codec-probe @sourceArgs
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "::error::V1/V2 WebP runtime preflight failed; see companion-stress artifact for per-child decoder stages."
-              exit $LASTEXITCODE
-            }
-            $petArgs += $sourceArgs
-            if ($env:PET_PROFILE -eq 'mixed-hidden' -or $env:PET_PROFILE -eq 'mixed-visible') {
-              zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_supervisor_win32.c tests/companion/pet_supervisor_win32_test.c -lshell32 -lpsapi -o zig-out/pet-supervisor-test.exe
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-              $demo = (Resolve-Path ./zig-out/bin/pulse-pet-demo.exe).Path
-              $package = (Resolve-Path ./zig-out/stress-fixtures/fixture-v1).Path
-              & ./zig-out/pet-supervisor-test.exe $demo $package
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            }
+            $petArgs += @('--package', 'zig-out/stress-fixtures/fixture-v1', 'fixture-v1', '--webp', '2', 'zig-out/stress-fixtures/fixture-v2.webp')
           }
-          if ($env:PET_MANUAL -ne 'true') {
-            Write-Host 'Automatic codec preflight complete; full stress is manual.'
-            exit 0
-          }
-          if ($env:PET_PROFILE -eq 'mixed-visible') { $petArgs += @('--visible', '--scale', '50') }
           python tests/companion/pet_stress.py @petArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Publish measurements even on benchmark failure
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: companion-stress-${{ matrix.profile }}
-          path: |
-            zig-out/pet-stress/
-            zig-out/pet-codec-probe/
+          name: companion-stress-${{ inputs.profile }}
+          path: zig-out/pet-stress/
           if-no-files-found: warn
           retention-days: 14

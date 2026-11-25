@@ -452,10 +452,9 @@ dedicated process; no cross-DLL singleton or shared pointers.
 ordered record retention by age and count. Companion's PDH1 history
 uses it without changing record format, private lease, 16-row/30-day
 defaults or existing validation. It does not authorize filesystem
-deletion. Durable managed dump manifests, aggregate disk admission,
-retention of verified dump files and interruption recovery require a
-separate tested persistence adapter; user-selected exports stay
-user-owned and are never swept.
+deletion. The later managed diagnostic persistence consumer below is the candidate
+file adapter; actual managed startup/rotation remains unverified.
+User-selected exports stay user-owned and are never swept.
 
 `shared/pulse/menu_win32.h` provides native checked-radio styling and
 bounded UTF-8 mnemonic escaping, consumed by the actual desktop menu.

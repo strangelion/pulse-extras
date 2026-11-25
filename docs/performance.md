@@ -13,7 +13,7 @@ re-running the workload.
 | Hello Panel | Workspace/sidebar command and context panel on Pulse 1.0.61 | [Host compatibility](host-compatibility.md) | UI behavior only; no measured latency or memory baseline |
 | VCS | Read-only Git, Jujutsu and Subversion providers, temporary repository integration | [Provider status](vcs-architecture.md), [CI](testing.md) | No comparable repository-scale throughput/latency benchmark |
 | Companion | Classic V1/V2 WebP standalone runtime, event bridge, contained multi-instance model, verified staged import | [Runtime](openpets-spike.md), [Manager](companion-manager.md), [real import CI](https://github.com/strangelion/pulse-extras/actions/runs/45581496727) | 100 independent processes measured below; not 100 host-supervised instances |
-| Companion market | V3 directory parsing and strict ZIP admission; actual online install and native page runtime wiring not complete | [Manager](companion-manager.md) | Download/installation throughput not measured |
+| Companion market | V3 directory parsing, strict ZIP admission and native market/queue wiring; actual live HTTPS and parallel download acceptance pending | [Manager](companion-manager.md) | Download/installation throughput not measured |
 | Convert / Inspect / Data / DevKit / Compare | Planned | [Scope](product-scope.md), [Roadmap](roadmap.md) | Not measured |
 | Forge | Design only | [Design](forge-architecture.md) | Not measured |
 | Shared Runtime | Ownership, quota, cancellation, process and teardown primitives | [Runtime](shared-runtime.md) | Not a separate shipping extension; no cross-extension load baseline |
@@ -145,9 +145,11 @@ python tests/companion/pet_stress.py --count 100 --seconds 30 --package zig-out/
 ```
 
 Use fresh output paths, never overwrite another run's results. The separate
-Companion stress benchmark workflow allows manual profile/count/duration
-selection; push runs perform only the lightweight probe. Logs and artifacts
-contain summary JSON, sampled resource CSV and shutdown diagnostics; see
+Companion stress benchmark workflow allows manual synthetic-hidden or
+mixed-hidden profile/count/duration selection only. The lightweight
+two-child codec/package/supervisor probe now runs in required Zig
+regression, not a separate push workflow. Logs and artifacts contain
+summary JSON, sampled resource CSV and shutdown diagnostics; see
 [workflow](../.github/workflows/pet-stress.yml). Artifact retention is
 currently 14 days; this checked-in table preserves selected numerical
 results, not the full raw traces. For subsequent benchmark checkpoints,
@@ -159,7 +161,8 @@ credentials or raw logs containing private content.
 ## Next performance evidence to collect
 
 - Companion: diverse permitted WebP packages; repeated cold/warm startup,
-  actual 100-child manager workload, visible desktop frame time (p50/p95/p99),
+  100 independent visible pets and separately an actual high-count Pulse-managed
+  workload (target 100 where safe), visible desktop frame time (p50/p95/p99),
   GPU/VRAM where available, 30-minute/2-hour soak, repeated start/stop and
   import/cancel recovery. No automatic heavy CI expansion.
 - Market: bounded download throughput, cache hit rate, archive expansion

@@ -290,6 +290,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           zig build pet-demo -Doptimize=ReleaseSafe -Dpet-libwebp=true --summary all
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify WebP allocator, mixed codec and real package admission
+        if: matrix.lane == 'desktop'
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror tests/companion/pet_webp_budget_test.c -o zig-out/pet-webp-budget-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/pet-webp-budget-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/companion/pet_package_smoke.py zig-out/bin/pulse-pet-demo.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/companion/pet_stress_fixtures.py zig-out/import-fixtures
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/companion/pet_stress.py --count 2 --seconds 5 --output zig-out/pet-codec-probe --package zig-out/import-fixtures/fixture-v1 fixture-v1 --webp 2 zig-out/import-fixtures/fixture-v2.webp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $demo = (Resolve-Path ./zig-out/bin/pulse-pet-demo.exe).Path
+          $package = (Resolve-Path ./zig-out/import-fixtures/fixture-v1).Path
+          & ./zig-out/pet-supervisor-test.exe $demo $package
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exercise GNU runtime bridge from an MSVC Zig executable
         if: matrix.lane == 'desktop'
         shell: pwsh
@@ -357,12 +376,19 @@ jobs:
         shell: pwsh
         timeout-minutes: 5
         run: |
-          python tests/companion/pet_stress_fixtures.py zig-out/import-fixtures
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           zig build test-companion-import --summary all
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./zig-out/bin/pulse-pet-demo.exe --check-package "$PWD/zig-out/import-fixtures/hoodie-cat" hoodie-cat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Preserve failed mixed-codec fixture diagnostics
+        if: failure() && matrix.lane == 'desktop'
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-codec-failure
+          path: zig-out/pet-codec-probe/
+          if-no-files-found: ignore
+          retention-days: 14
 
   gate:
     name: Regression gate
