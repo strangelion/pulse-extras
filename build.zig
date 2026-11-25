@@ -385,6 +385,7 @@ pub fn build(b: *std.Build) void {
         "shared/companion/openpets_lease.zig",
         "shared/companion/behavior.zig",
         "shared/companion/pet_assets.zig",
+        "shared/companion/pet_activities.zig",
         "shared/companion/animation.zig",
         "shared/companion/native_dispatch.zig",
     };

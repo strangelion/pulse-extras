@@ -2,6 +2,7 @@
 //! Upstream: OpenPetsHQ/openpets@2f02bb04d872dec6923a47572343305235c63482.
 //! No file I/O, decoder, SVG, Motion package, archive extraction or renderer.
 const std = @import("std");
+const activities = @import("pet_activities.zig");
 
 pub const max_metadata_bytes = 128 * 1024;
 pub const max_webp_bytes = 16 * 1024 * 1024;
@@ -32,6 +33,7 @@ pub const Layout = enum {
 
 pub const Metadata = struct {
     layout: Layout,
+    activities: activities.Catalog = .{},
 };
 
 fn safePetId(id: []const u8) bool {
@@ -44,20 +46,9 @@ fn safePetId(id: []const u8) bool {
     return true;
 }
 
-fn textField(value: std.json.Value, max_bytes: usize) bool {
-    if (value != .string) return false;
-    const trimmed = std.mem.trim(u8, value.string, " \t\r\n");
-    if (trimmed.len == 0 or trimmed.len > max_bytes) return false;
-    for (trimmed) |c| {
-        if (c < 32 or c == 127) return false;
-    }
-    return true;
-}
-
-/// Owns only the layout; no reference to input or parse allocations escapes.
-/// Caller supplies a bounded scratch allocator. Byte limits are deliberately
-/// stricter than upstream UTF-16 text limits. Unsupported extensions fail
-/// closed instead of silently dropping outfits, activities or motion clips.
+/// Owns the layout and validated activity metadata. Caller supplies a
+/// bounded scratch allocator. Wardrobe, Motion and unsupported extensions
+/// still fail closed; default-outfit Classic activities are supported.
 pub fn parseMetadata(allocator: std.mem.Allocator, input: []const u8, expected_id: []const u8) error{ InvalidMetadata, UnsupportedFormat, OutOfMemory }!Metadata {
     if (!safePetId(expected_id) or input.len == 0 or input.len > max_metadata_bytes or !std.unicode.utf8ValidateSlice(input)) return error.InvalidMetadata;
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, input, .{}) catch |err| switch (err) {
@@ -69,8 +60,8 @@ pub fn parseMetadata(allocator: std.mem.Allocator, input: []const u8, expected_i
     const object = parsed.value.object;
     const id = object.get("id") orelse return error.InvalidMetadata;
     if (id != .string or !std.mem.eql(u8, id.string, expected_id)) return error.InvalidMetadata;
-    if (!textField(object.get("displayName") orelse return error.InvalidMetadata, 80 * 4)) return error.InvalidMetadata;
-    if (!textField(object.get("description") orelse return error.InvalidMetadata, 500 * 4)) return error.InvalidMetadata;
+    if (activities.checkedText(object.get("displayName") orelse return error.InvalidMetadata, 80) == null) return error.InvalidMetadata;
+    if (activities.checkedText(object.get("description") orelse return error.InvalidMetadata, 500) == null) return error.InvalidMetadata;
     const path = object.get("spritesheetPath") orelse return error.UnsupportedFormat;
     if (path != .string or !std.mem.eql(u8, path.string, "spritesheet.webp")) return error.UnsupportedFormat;
     var layout: Layout = .v1;
@@ -83,10 +74,10 @@ pub fn parseMetadata(allocator: std.mem.Allocator, input: []const u8, expected_i
         const key = entry.key_ptr.*;
         if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "displayName") or
             std.mem.eql(u8, key, "description") or std.mem.eql(u8, key, "spritesheetPath") or
-            std.mem.eql(u8, key, "spriteVersionNumber")) continue;
+            std.mem.eql(u8, key, "spriteVersionNumber") or std.mem.eql(u8, key, "activities")) continue;
         return error.UnsupportedFormat;
     }
-    return .{ .layout = layout };
+    return .{ .layout = layout, .activities = activities.parse(object.get("activities"), &.{}) catch return error.InvalidMetadata };
 }
 
 fn le16(bytes: []const u8) u32 {
@@ -113,8 +104,8 @@ fn imageSize(tag: []const u8, body: []const u8) error{InvalidAtlas}!Size {
     return .{ .width = (bits & 0x3fff) + 1, .height = ((bits >> 14) & 0x3fff) + 1 };
 }
 
-fn matches(layout: Layout, size: Size) bool {
-    return size.width == layout.width() and size.height == layout.height();
+fn matches(expected: Size, size: Size) bool {
+    return size.width == expected.width and size.height == expected.height;
 }
 
 /// Reject oversized, animated, mismatched or structurally ambiguous WebP
@@ -123,7 +114,17 @@ fn matches(layout: Layout, size: Size) bool {
 /// ICC, EXIF, XMP and animation) are unsupported. This validates the RIFF
 /// container and image headers only, never compressed image correctness.
 pub fn preflightWebp(layout: Layout, bytes: []const u8) error{ InvalidAtlas, UnsupportedAtlas }!void {
-    if (bytes.len < 12 or bytes.len > max_webp_bytes) return error.InvalidAtlas;
+    return preflightStatic(.{ .width = layout.width(), .height = layout.height() }, max_webp_bytes, bytes);
+}
+
+/// Activity strip is a distinct horizontal image, not a classic atlas.
+pub fn preflightActivity(rep: activities.Representation, bytes: []const u8) error{ InvalidAtlas, UnsupportedAtlas }!void {
+    if (!rep.valid()) return error.InvalidAtlas;
+    return preflightStatic(.{ .width = rep.width(), .height = frame_height }, activities.max_file_bytes, bytes);
+}
+
+fn preflightStatic(expected: Size, limit: usize, bytes: []const u8) error{ InvalidAtlas, UnsupportedAtlas }!void {
+    if (bytes.len < 12 or bytes.len > limit) return error.InvalidAtlas;
     if (!std.mem.eql(u8, bytes[0..4], "RIFF") or !std.mem.eql(u8, bytes[8..12], "WEBP")) return error.InvalidAtlas;
     if (le32(bytes[4..8]) != bytes.len - 8) return error.InvalidAtlas;
     var cursor: usize = 12;
@@ -144,7 +145,7 @@ pub fn preflightWebp(layout: Layout, bytes: []const u8) error{ InvalidAtlas, Uns
             if (cursor != 12 or body.len != 10) return error.InvalidAtlas;
             if (body[0] & 0xef != 0) return error.UnsupportedAtlas;
             if (body[1] != 0 or body[2] != 0 or body[3] != 0) return error.InvalidAtlas;
-            if (!matches(layout, .{ .width = le24(body[4..7]) + 1, .height = le24(body[7..10]) + 1 })) return error.InvalidAtlas;
+            if (!matches(expected, .{ .width = le24(body[4..7]) + 1, .height = le24(body[7..10]) + 1 })) return error.InvalidAtlas;
             extended = true;
             alpha = body[0] & 0x10 != 0;
         } else if (std.mem.eql(u8, tag, "ALPH")) {
@@ -154,7 +155,7 @@ pub fn preflightWebp(layout: Layout, bytes: []const u8) error{ InvalidAtlas, Uns
             const lossy = std.mem.eql(u8, tag, "VP8 ");
             if (lossy and alpha != alpha_chunk) return error.InvalidAtlas;
             if (!lossy and alpha_chunk) return error.InvalidAtlas;
-            if (!matches(layout, try imageSize(tag, body))) return error.InvalidAtlas;
+            if (!matches(expected, try imageSize(tag, body))) return error.InvalidAtlas;
             image = true;
         } else return error.UnsupportedAtlas;
         cursor = end + size % 2;
@@ -217,4 +218,16 @@ test "decoded atlas must be tightly packed and exactly bounded" {
     try t.expectError(error.InvalidAtlas, validateDecoded(.v2, 1536, 2288, 6145, 14057472));
     try t.expectError(error.InvalidAtlas, validateDecoded(.v2, 1536, 2288, 6144, 14057471));
     try t.expectError(error.InvalidAtlas, validateDecoded(.v2, 1536, 1872, 6144, 14057472));
+}
+
+test "default outfit activity metadata and strip dimensions" {
+    const data = "{\"id\":\"sample-pet\",\"displayName\":\"Sample\",\"description\":\"Test\",\"spritesheetPath\":\"spritesheet.webp\",\"activities\":[{\"id\":\"nap\",\"displayName\":\"Nap\",\"outfitId\":\"default\",\"spritesheetPath\":\"activities/nap.webp\",\"frameCount\":4,\"fps\":4}]}";
+    const meta = try parseMetadata(t.allocator, data, "sample-pet");
+    const activity = meta.activities.items[0].resolve("default").?;
+    // Synthetic VP8L header: 768x208, not a decodable image.
+    const strip = "RIFF\x12\x00\x00\x00WEBPVP8L\x05\x00\x00\x00\x2f\xff\xc2\x33\x00\x00";
+    try preflightActivity(activity.*, strip);
+    try t.expectError(error.InvalidAtlas, preflightActivity(activity.*, lossless_header));
+    try t.expectError(error.InvalidAtlas, preflightWebp(.v1, strip));
+    try t.expectEqual(@as(usize, 638976), activity.rgbaBytes());
 }

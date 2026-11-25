@@ -591,3 +591,30 @@ the selected language explicitly. The existing --remember binary record
 is unchanged and does not store the language. Regression tests verify
 language parsing, fallback and explicit override. Localized popup rendering
 still requires a real desktop retest.
+
+## Classic Idle Activities compatibility — phase 1
+
+Follow the pinned upstream activities.ts contract instead of inventing a
+new manifest format. pet_activities.zig owns up to 16 logical activities,
+each with a primary representation and up to 16 exact-outfit variants.
+IDs, canonical paths, unique outfits and activity IDs, UTF-16 display
+name limits, 4..32 frames, 1..12 integer fps and 1..12s duration are
+validated. The catalog owns all retained strings and numeric data.
+Inventory validation requires exactly one entry per declared file,
+2 MiB per file and 16 MiB aggregate, with no extra or duplicate paths.
+The actual trusted file walk and decoder are still separate.
+The one-shot timeline samples integer frame boundaries with no replay
+or timer allocation.
+
+Classic metadata now accepts default-outfit activities and returns an
+owned catalog. It still rejects wardrobe/Motion/SVG and other unsupported
+top-level features. The standalone activity validator accepts variants
+when supplied validated wardrobe IDs, but actual wardrobe parsing and
+playback remain pending. The shared static WebP preflight now admits
+exact horizontal activity strips with the same strict container subset;
+it does not establish compressed image correctness. Base metadata
+text limits count UTF-16 units rather than the former loose byte cap,
+with a stricter ASCII-control/whitespace subset. Tests cover metadata,
+inventory, variants, timing, dimensions and rejection. No activity
+files are loaded by the demo yet; no automatic scheduling, arbitrary
+scripts, new IPC commands or production package integration.
