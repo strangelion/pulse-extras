@@ -173,11 +173,7 @@ pub const Group = struct {
         path[len] = 0;
         const id = try manager.reserveStart(asset_id);
         var native_id: u64 = 0;
-        const code = pet_group_start_approved(&self.native, path[0..len :0], &approval.digest, &options,
-            if (package) |selected| selected.directory else null,
-            if (package) |selected| selected.source_id else null,
-            if (package) |selected| selected.expected_sha else null,
-            &native_id);
+        const code = pet_group_start_approved(&self.native, path[0..len :0], &approval.digest, &options, if (package) |selected| selected.directory else null, if (package) |selected| selected.source_id else null, if (package) |selected| selected.expected_sha else null, &native_id);
         if (native_id == 0) {
             // Native contract: zero ID on failure proves no retained child.
             try manager.confirmGone(id);
