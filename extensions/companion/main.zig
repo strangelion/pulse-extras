@@ -851,7 +851,7 @@ fn importClosed(user: ?*anyopaque, dialog: u64, status: abi.Status, button: abi.
         if (instance.dialog_v2_table) |table| {
             if (table.unsubscribe_command) |unsubscribe| {
                 const result = unsubscribe(table.context, subscription);
-                if (result != abi.ok and result != abi.error_state) diag.status("companion-dialog-unsubscribe", @intFromEnum(result));
+                if (result != abi.ok and result != abi.error_state) diag.status("companion-dialog-unsubscribe", @backingInt(result));
             }
         }
     }
@@ -938,7 +938,7 @@ fn pickerCompleted(user: ?*anyopaque, result: [*c]const pickers.Result) callconv
         if (status == abi.ok) {
             instance.library_status = "已填入所选目录；请确认素材 ID 后导入";
         } else {
-            diag.status("companion-dialog-set-picker-result", @intFromEnum(status));
+            diag.status("companion-dialog-set-picker-result", @backingInt(status));
             instance.library_status = "目录已选中，但表单更新失败；请手动填写";
         }
         refresh(instance);
@@ -958,7 +958,7 @@ fn importDialogCommand(user: ?*anyopaque, dialog: u64, command: abi.StringView) 
     const status = pick(table.context, &request, pickerCompleted, instance, &request_id);
     if (status != abi.ok or request_id == 0) {
         instance.picker_for_dialog = false;
-        diag.status("companion-dialog-folder-picker", @intFromEnum(status));
+        diag.status("companion-dialog-folder-picker", @backingInt(status));
         instance.library_status = "宿主未能打开文件夹选择器；可手动填写路径";
         refresh(instance);
         return;
