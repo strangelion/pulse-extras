@@ -316,7 +316,12 @@ pub const Binding = struct {
 
     pub fn openNavigationWithTable(self: *Binding, table: context.Table) host_mod.Error!void {
         if (!self.accepting) return error.State;
-        try self.navigation.open(table);
+        self.navigation.open(table) catch |err| {
+            self.controller.clear() catch {};
+            self.render() catch {};
+            self.last_error = err;
+            return err;
+        };
         try self.invalidateNavigation();
         try self.render();
     }
@@ -378,7 +383,7 @@ pub const Binding = struct {
     /// Resolved, independently authorized selection only. Never resolve a
     /// repository or spawn a CLI from this UI-thread method.
     pub fn select(self: *Binding, provider: contract.Provider, workspace: *const identity.Workspace) host_mod.Error!void {
-        if (!self.accepting or self.navigation.accepting) return error.State;
+        if (!self.accepting or self.navigation.table != null or self.navigation.accepting) return error.State;
         try self.selectAuthorized(provider, workspace);
     }
 
@@ -857,6 +862,8 @@ test "navigation tickets prevent obsolete selection and result publication" {
     binding.navigation.latest = second;
     binding.navigation.pending = true;
     try std.testing.expectError(error.State, binding.selectResolved(&ticket, mock.provider(), &workspace));
+    // The mock cancel changes state to cancelling even if work had finished.
+    mock.state = .completed;
     try binding.pump();
     try std.testing.expectEqual(panel.Phase.empty, binding.controller.view().phase);
     try std.testing.expect(binding.controller.view().snapshot == null);
