@@ -17,6 +17,17 @@ const detect = @import("vcs_detect");
 
 pub const Phase = enum { empty, queued, refreshing, ready, failed, cancelled, stopped };
 pub const Language = enum { en, zh };
+pub const command_refresh = "vcs.refresh";
+pub const command_cancel = "vcs.cancel";
+pub const command_check = "vcs.check";
+pub const Command = enum { refresh, cancel, check };
+
+pub fn parseCommand(name: []const u8) ?Command {
+    if (std.mem.eql(u8, name, command_refresh)) return .refresh;
+    if (std.mem.eql(u8, name, command_cancel)) return .cancel;
+    if (std.mem.eql(u8, name, command_check)) return .check;
+    return null;
+}
 
 pub const View = struct {
     phase: Phase,
@@ -177,14 +188,15 @@ fn failureLabel(lang: Language, err: contract.Error) []const u8 {
 /// Caller-owned buffers and nodes; do not move the Content after build until
 /// the synchronous UI model create/update call has copied its contents.
 /// All visible data is copied; no references into the View or cache remain.
-/// No buttons until host event routing is implemented.
+/// build is read-only; buildInteractive declares the fixed owner commands.
 pub const Content = struct {
-    const capacity = 16;
+    const capacity = 20;
     const line_bytes = identity.max_path_bytes + 64;
     lines: [capacity][line_bytes]u8 = undefined,
     nodes: [capacity]ui.Node = undefined,
     len: usize = 0,
     root: ui.Node = undefined,
+    commands: [3]abi.StringView = undefined,
 
     fn add(self: *Content, id: []const u8, label: []const u8, value: []const u8) void {
         std.debug.assert(self.len < capacity);
@@ -244,6 +256,34 @@ pub const Content = struct {
         tree.* = std.mem.zeroes(ui.Tree);
         tree.size = @sizeOf(ui.Tree);
         tree.root = &self.root;
+    }
+
+    fn addButton(self: *Content, id: []const u8, label: []const u8, command: []const u8) void {
+        std.debug.assert(self.len < capacity);
+        var node = ui.button(label, command);
+        node.id = abi.view(id);
+        self.nodes[self.len] = node;
+        self.len += 1;
+    }
+
+    /// Declare a stable vocabulary so subscriptions survive model updates.
+    /// The owner still validates commands against current controller state.
+    pub fn buildInteractive(self: *Content, lang: Language, view: *const View, tree: *ui.Tree) void {
+        self.build(lang, view, tree);
+        self.commands = .{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check) };
+        tree.commands = &self.commands;
+        tree.command_count = self.commands.len;
+        if (view.phase != .stopped) {
+            if (view.workspace != null) {
+                if (view.phase == .queued or view.phase == .refreshing) {
+                    self.addButton("vcs.action.cancel", loc(lang, "Cancel", "取消"), command_cancel);
+                } else {
+                    self.addButton("vcs.action.refresh", loc(lang, "Refresh", "刷新"), command_refresh);
+                }
+            }
+            self.addButton("vcs.action.check", loc(lang, "Check result", "检查结果"), command_check);
+        }
+        ui.withChildren(&self.root, self.nodes[0..self.len]);
     }
 
     pub fn textFor(self: *const Content, id: []const u8) ?[]const u8 {

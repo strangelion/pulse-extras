@@ -252,6 +252,7 @@ const Modules = struct {
                 .{ .name = "vcs_identity", .module = vcs_identity },
                 .{ .name = "vcs_provider", .module = vcs_provider },
                 .{ .name = "vcs_panel", .module = vcs_panel },
+                .{ .name = "pulse_ui_model", .module = ui_model },
                 .{ .name = "vcs_capabilities", .module = vcs_capabilities },
                 .{ .name = "vcs_detect", .module = vcs_detect },
             },
