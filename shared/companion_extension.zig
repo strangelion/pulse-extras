@@ -261,7 +261,7 @@ pub const Rejection = enum(u32) {
 
 pub fn rejectionFor(err: anyerror) Rejection {
     return switch (err) {
-        error.Capacity, error.StorageCapacity, error.BudgetExceeded => .capacity,
+        error.Capacity, error.StorageCapacity, error.BudgetExceeded, error.CountLimit, error.StorageLimit, error.BudgetLimit, error.SystemMemory => .capacity,
         error.UnverifiedAsset, error.UnapprovedExecutable => .unverified,
         error.PrivateRootBusy, error.PrivateRootRejected, error.MissingLeaseApi, error.InvalidRoot => .private_root,
         error.UnknownAsset => .unknown_asset,
@@ -557,6 +557,15 @@ test "running snapshot copies stable IDs and stop requests are bounded" {
     session.reset();
     session.copyRows(&copy);
     try std.testing.expectEqual(@as(usize, 0), copy.count);
+}
+
+test "runtime rejection distinguishes native admission from launch failure" {
+    for ([_]anyerror{ error.Capacity, error.StorageCapacity, error.BudgetExceeded, error.CountLimit, error.StorageLimit, error.BudgetLimit, error.SystemMemory }) |err| {
+        try std.testing.expectEqual(Rejection.capacity, rejectionFor(err));
+    }
+    try std.testing.expectEqual(Rejection.unverified, rejectionFor(error.UnapprovedExecutable));
+    try std.testing.expectEqual(Rejection.launch_failed, rejectionFor(error.ContainmentFailed));
+    try std.testing.expectEqual(Rejection.launch_failed, rejectionFor(error.OsError));
 }
 
 test "session retains explicit rejection and clears it on reset" {
