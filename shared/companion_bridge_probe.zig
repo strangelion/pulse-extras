@@ -171,6 +171,11 @@ fn exerciseManaged(owner: *loader.Owner, private: [:0]const u16) !void {
         Sleep(50);
     }
     if (try owner.group.remaining() != 2) return error.UnexpectedChildren;
+    if (store.quarantineRemove(owner, try index.get(1))) |_| {
+        return error.RemovedActiveAsset;
+    } else |err| {
+        if (err != error.ActiveInstances) return err;
+    }
     std.debug.print("Two managed pets ready; incorrect fingerprint rejected\n", .{});
 }
 
@@ -224,6 +229,34 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     const repeated = try store.scanRecovery(owner);
     if (!std.meta.eql(report, repeated)) return error.ScanChangedStore;
     std.debug.print("Read-only recovery classification and bounded enumeration verified\n", .{});
+    var stale = record;
+    stale.source[0] = 'x';
+    if (store.quarantineRemove(owner, stale)) |_| {
+        return error.AcceptedStaleRemoval;
+    } else |err| {
+        if (err != error.StaleSelection) return err;
+    }
+    // Simulate interruption after the durable rename but before index commit.
+    try owner.moveQuarantine(record.id, false);
+    const interrupted = try store.scanRecovery(owner);
+    if (interrupted.quarantined_registered != 1 or interrupted.missing != 2) return error.UnexpectedRecoveryScan;
+    try store.restoreInterruptedRemoval(owner, record);
+    if (!std.meta.eql(report, try store.scanRecovery(owner))) return error.RestoreFailed;
+    try store.quarantineRemove(owner, record);
+    const removed = try store.scanRecovery(owner);
+    if (removed.quarantined_removed != 1 or removed.quarantined_registered != 0 or removed.registered != 3 or removed.missing != 1) return error.UnexpectedRecoveryScan;
+    if (!try store.loadInventory(owner, index) or index.count != 4 or index.next_id != 6) return error.InventoryNotPersisted;
+    if (store.restoreInterruptedRemoval(owner, record)) |_| {
+        return error.RestoredRemovedId;
+    } else |err| {
+        if (err != error.UnknownAsset) return err;
+    }
+    // The external source remains intact and reimport gets a fresh ID.
+    const reimport = try local_import.run(io, owner, private, helper[0..len :0], digest, fresh, "fresh");
+    if (reimport != .imported or reimport.imported != 6) return error.UnexpectedImport;
+    const after_reimport = try store.scanRecovery(owner);
+    if (after_reimport.quarantined_removed != 1 or after_reimport.registered != 4) return error.UnexpectedRecoveryScan;
+    std.debug.print("Quarantine removal, interrupted recovery and fresh-ID reimport verified\n", .{});
 }
 
 pub fn main(init: std.process.Init) !void {

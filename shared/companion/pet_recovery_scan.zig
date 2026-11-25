@@ -4,7 +4,7 @@ const std = @import("std");
 const inventory = @import("pet_inventory.zig");
 
 pub const max_rows = 4096;
-pub const Kind = enum(u32) { unknown, package, pending, preference, inventory, inventory_pending, lock };
+pub const Kind = enum(u32) { unknown, package, pending, preference, inventory, inventory_pending, lock, quarantine };
 pub const Row = extern struct {
     id: u64,
     kind: u32,
@@ -20,6 +20,8 @@ pub const Report = struct {
     invalid: usize = 0,
     unknown: usize = 0,
     unreserved: usize = 0,
+    quarantined_registered: usize = 0,
+    quarantined_removed: usize = 0,
 };
 
 pub fn classify(index: *const inventory.Inventory, rows: []const Row) !Report {
@@ -27,11 +29,11 @@ pub fn classify(index: *const inventory.Inventory, rows: []const Row) !Report {
     var report: Report = .{};
     var seen: [inventory.max_entries]bool = @splat(false);
     for (rows) |row| {
-        if (row.kind > @backingInt(Kind.lock)) return error.InvalidScan;
+        if (row.kind > @backingInt(Kind.quarantine)) return error.InvalidScan;
         const kind: Kind = @fromBackingInt(row.kind);
         const directory = (row.attributes & 0x10) != 0;
         const reparse = (row.attributes & 0x400) != 0;
-        if ((kind == .package or kind == .pending or kind == .preference) != (row.id != 0)) return error.InvalidScan;
+        if ((kind == .package or kind == .pending or kind == .preference or kind == .quarantine) != (row.id != 0)) return error.InvalidScan;
         if (row.id != 0 and row.id >= index.next_id) report.unreserved += 1;
         if (reparse) {
             report.invalid += 1;
@@ -68,6 +70,17 @@ pub fn classify(index: *const inventory.Inventory, rows: []const Row) !Report {
                     report.orphan_preferences += 1;
                     continue;
                 };
+            },
+            .quarantine => {
+                if (!directory) {
+                    report.invalid += 1;
+                    continue;
+                }
+                if (index.get(row.id)) |_| {
+                    report.quarantined_registered += 1;
+                } else |_| {
+                    report.quarantined_removed += 1;
+                }
             },
             .inventory_pending => if (directory) {
                 report.invalid += 1;
@@ -111,4 +124,67 @@ test "classify top-level recovery states without modifying inventory" {
     try std.testing.expectEqual(@as(usize, 2), index.count);
     try std.testing.expectEqual(@as(u64, 3), index.next_id);
     try std.testing.expectError(error.InvalidScan, classify(&index, &.{ rows[0], rows[0] }));
+}
+
+pub const RemovalState = enum { normal, quarantined };
+
+// Inspect the exact fixed ID and reject ambiguous/interrupted states rather
+// than inferring authorization from aggregate scan counts.
+pub fn removalState(rows: []const Row, id: u64) !RemovalState {
+    if (id == 0 or rows.len > max_rows) return error.InvalidScan;
+    var normal: bool = false;
+    var quarantined: bool = false;
+    for (rows) |row| {
+        if (row.kind > @backingInt(Kind.quarantine)) return error.InvalidScan;
+        const kind: Kind = @fromBackingInt(row.kind);
+        if (kind == .inventory_pending) return error.RecoveryRequired;
+        if (row.id != id) continue;
+        if ((row.attributes & 0x400) != 0 or kind == .pending) return error.RecoveryRequired;
+        const directory = (row.attributes & 0x10) != 0;
+        switch (kind) {
+            .package => {
+                if (!directory or normal) return error.RecoveryRequired;
+                normal = true;
+            },
+            .quarantine => {
+                if (!directory or quarantined) return error.RecoveryRequired;
+                quarantined = true;
+            },
+            .preference => if (directory) return error.RecoveryRequired,
+            else => return error.InvalidScan,
+        }
+    }
+    if (normal == quarantined) return error.RecoveryRequired;
+    return if (normal) .normal else .quarantined;
+}
+
+test "removal preflight rejects conflicts pending records and reparse directories" {
+    const normal: Row = .{ .id = 1, .kind = @backingInt(Kind.package), .attributes = 0x10 };
+    const quarantine: Row = .{ .id = 1, .kind = @backingInt(Kind.quarantine), .attributes = 0x10 };
+    const pending: Row = .{ .id = 1, .kind = @backingInt(Kind.pending), .attributes = 0x80 };
+    const pending_index: Row = .{ .id = 0, .kind = @backingInt(Kind.inventory_pending), .attributes = 0x80 };
+    const link: Row = .{ .id = 1, .kind = @backingInt(Kind.package), .attributes = 0x410 };
+    try std.testing.expectEqual(RemovalState.normal, try removalState(&.{normal}, 1));
+    try std.testing.expectEqual(RemovalState.quarantined, try removalState(&.{quarantine}, 1));
+    try std.testing.expectError(error.RecoveryRequired, removalState(&.{ normal, quarantine }, 1));
+    try std.testing.expectError(error.RecoveryRequired, removalState(&.{ normal, pending }, 1));
+    try std.testing.expectError(error.RecoveryRequired, removalState(&.{ normal, pending_index }, 1));
+    try std.testing.expectError(error.RecoveryRequired, removalState(&.{link}, 1));
+    try std.testing.expectError(error.RecoveryRequired, removalState(&.{}, 1));
+    try std.testing.expectError(error.RecoveryRequired, removalState(&.{ normal, normal }, 1));
+}
+
+test "quarantine distinguishes interrupted removal from unregistered retained copies" {
+    var index: inventory.Inventory = .{};
+    try index.publish(try index.reserve(), "cat");
+    try index.publish(try index.reserve(), "dog");
+    try index.remove(2);
+    const report = try classify(&index, &.{
+        .{ .id = 1, .kind = @backingInt(Kind.quarantine), .attributes = 0x10 },
+        .{ .id = 2, .kind = @backingInt(Kind.quarantine), .attributes = 0x10 },
+    });
+    try std.testing.expectEqual(@as(usize, 1), report.missing);
+    try std.testing.expectEqual(@as(usize, 1), report.quarantined_registered);
+    try std.testing.expectEqual(@as(usize, 1), report.quarantined_removed);
+    try std.testing.expectEqual(@as(usize, 0), report.orphan_packages);
 }

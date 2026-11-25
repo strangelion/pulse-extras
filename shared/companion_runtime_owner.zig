@@ -32,6 +32,7 @@ const LeaseClose = *const fn (*Lease, usize) callconv(.c) c_int;
 const StoreRead = *const fn (*const Lease, usize, u64, [*]u8, usize, *usize) callconv(.c) c_int;
 const StoreWrite = *const fn (*const Lease, usize, u64, [*]const u8, usize) callconv(.c) c_int;
 const StoreScan = *const fn (*const Lease, usize, [*]scan.Row, usize, *usize) callconv(.c) c_int;
+const StoreQuarantine = *const fn (*const Lease, usize, u64, c_int) callconv(.c) c_int;
 
 extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, ?*anyopaque) callconv(.winapi) usize;
 extern "kernel32" fn CloseHandle(usize) callconv(.winapi) c_int;
@@ -198,6 +199,19 @@ pub const Owner = struct {
         };
         if (count > rows.len) return error.InvalidScan;
         return count;
+    }
+
+    // Internal fixed-name move; the store layer validates durable identity
+    // and recovery state. No caller-supplied path or recursive deletion.
+    pub fn moveQuarantine(self: *Owner, id: u64, restore: bool) !void {
+        if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
+        if (id == 0) return error.InvalidRecord;
+        if (try self.group.remaining() != 0) return error.ActiveInstances;
+        const move: StoreQuarantine = @ptrCast(GetProcAddress(self.module, "pulse_companion_quarantine_v1") orelse return error.MissingStoreApi);
+        checkStore(move(&self.lease, @sizeOf(Lease), id, @intFromBool(restore))) catch |err| {
+            self.store_faulted = true;
+            return err;
+        };
     }
 
     // Last-resort terminal shutdown. Caller must report unconfirmed exit.

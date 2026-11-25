@@ -39,6 +39,41 @@ pub fn scanRecovery(owner: *runtime.Owner) !recovery.Report {
     return recovery.classify(index, rows[0..count]);
 }
 
+fn checkedRemoval(owner: *runtime.Owner, index: *inventory.Inventory, expected: inventory.Record, state: recovery.RemovalState) !void {
+    if (try owner.group.remaining() != 0) return error.ActiveInstances;
+    if (!try loadInventory(owner, index)) return error.UnknownAsset;
+    const actual = try index.get(expected.id);
+    if (!std.meta.eql(actual, expected)) return error.StaleSelection;
+    if (actual.digest == null or actual.secondary == null) return error.NeedsRevalidation;
+    const rows = try std.heap.page_allocator.alloc(recovery.Row, recovery.max_rows);
+    defer std.heap.page_allocator.free(rows);
+    const count = try owner.scanStore(rows);
+    if (try recovery.removalState(rows[0..count], expected.id) != state) return error.RecoveryRequired;
+}
+
+// A same-volume no-replace rename is the durable recovery marker. The
+// inventory commit follows it; a failure leaves the copy quarantined.
+// Never recursively delete, alter original sources, or reuse the old ID.
+pub fn quarantineRemove(owner: *runtime.Owner, expected: inventory.Record) !void {
+    const index = try std.heap.page_allocator.create(inventory.Inventory);
+    defer std.heap.page_allocator.destroy(index);
+    index.* = .{};
+    try checkedRemoval(owner, index, expected, .normal);
+    try index.remove(expected.id);
+    owner.moveQuarantine(expected.id, false) catch return error.RecoveryRequired;
+    saveInventory(owner, index) catch return error.RecoveryRequired;
+}
+
+// Explicit recovery only for an interrupted removal whose registered
+// identity still exists. Completed removals cannot resurrect old IDs.
+pub fn restoreInterruptedRemoval(owner: *runtime.Owner, expected: inventory.Record) !void {
+    const index = try std.heap.page_allocator.create(inventory.Inventory);
+    defer std.heap.page_allocator.destroy(index);
+    index.* = .{};
+    try checkedRemoval(owner, index, expected, .quarantined);
+    owner.moveQuarantine(expected.id, true) catch return error.RecoveryRequired;
+}
+
 pub fn loadPreferences(owner: *runtime.Owner, entry: *catalog.Entry) !bool {
     var bytes: [catalog.max_preferences_bytes]u8 = undefined;
     const len = (try owner.readStore(entry.id, &bytes)) orelse return false;

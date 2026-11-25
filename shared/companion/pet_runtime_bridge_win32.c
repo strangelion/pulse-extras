@@ -78,7 +78,7 @@ typedef struct {
     uint32_t kind, attributes;
 } pet_scan_row;
 enum { SCAN_UNKNOWN, SCAN_PACKAGE, SCAN_PENDING, SCAN_PREFERENCE,
-    SCAN_INVENTORY, SCAN_INVENTORY_PENDING, SCAN_LOCK };
+    SCAN_INVENTORY, SCAN_INVENTORY_PENDING, SCAN_LOCK, SCAN_QUARANTINE };
 #define PET_SCAN_MAX 4096u
 
 static pet_scan_row scan_row(const WIN32_FIND_DATAW *data) {
@@ -101,6 +101,7 @@ static pet_scan_row scan_row(const WIN32_FIND_DATAW *data) {
         if (!name[20]) row.kind = SCAN_PACKAGE;
         else if (!wcscmp(name + 20, L".pending")) row.kind = SCAN_PENDING;
         else if (!wcscmp(name + 20, L".pct")) row.kind = SCAN_PREFERENCE;
+        else if (!wcscmp(name + 20, L".removed")) row.kind = SCAN_QUARANTINE;
         if (row.kind != SCAN_UNKNOWN) row.id = id;
     }
     return row;
@@ -130,5 +131,54 @@ __declspec(dllexport) pet_store_result pulse_companion_scan_v1(
         result = PET_STORE_IO;
     if (!FindClose(find)) result = PET_STORE_CLEANUP_FAILED;
     if (result == PET_STORE_OK) *written = count;
+    return result;
+}
+
+/* Reversible, no-replace rename of a single fixed managed directory.
+ * The lease pins the canonical root. This does not walk or delete content.
+ * The caller must revalidate inventory and confirm no live child owns it.
+ * A same-user process can still mutate this private namespace. */
+__declspec(dllexport) pet_store_result pulse_companion_quarantine_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id, BOOL restore) {
+    if (!live_lease(lease, size) || !id || (restore != FALSE && restore != TRUE))
+        return PET_STORE_INVALID;
+    wchar_t normal[PET_PRIVATE_PATH_CAP], removed[PET_PRIVATE_PATH_CAP];
+    int a = swprintf(normal, PET_PRIVATE_PATH_CAP, L"%ls\\pet-%016llx",
+        lease->path, (unsigned long long)id);
+    int b = swprintf(removed, PET_PRIVATE_PATH_CAP, L"%ls\\pet-%016llx.removed",
+        lease->path, (unsigned long long)id);
+    if (a <= 0 || b <= 0 || a >= (int)PET_PRIVATE_PATH_CAP ||
+        b >= (int)PET_PRIVATE_PATH_CAP) return PET_STORE_INVALID;
+    const wchar_t *source = restore ? removed : normal;
+    const wchar_t *destination = restore ? normal : removed;
+    HANDLE file = CreateFileW(source, DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (file == INVALID_HANDLE_VALUE) return PET_STORE_IO;
+    pet_store_result result = PET_STORE_INVALID;
+    BY_HANDLE_FILE_INFORMATION info;
+    wchar_t actual[PET_PRIVATE_PATH_CAP + 4];
+    DWORD n = GetFinalPathNameByHandleW(file, actual, PET_PRIVATE_PATH_CAP + 4,
+        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (GetFileInformationByHandle(file, &info) &&
+        (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+        !(info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+        n == wcslen(source) + 4 && n < PET_PRIVATE_PATH_CAP + 4 &&
+        !wcsncmp(actual, L"\\\\?\\", 4) &&
+        CompareStringOrdinal(actual + 4, -1, source, -1, TRUE) == CSTR_EQUAL) {
+        union {
+            FILE_RENAME_INFO info;
+            unsigned char bytes[sizeof(FILE_RENAME_INFO) + PET_PRIVATE_PATH_CAP * sizeof(wchar_t)];
+        } rename;
+        ZeroMemory(&rename, sizeof(rename));
+        rename.info.ReplaceIfExists = FALSE;
+        rename.info.RootDirectory = NULL;
+        rename.info.FileNameLength = (DWORD)(wcslen(destination) * sizeof(wchar_t));
+        wmemcpy(rename.info.FileName, destination, wcslen(destination) + 1);
+        result = SetFileInformationByHandle(file, FileRenameInfo, &rename.info,
+            (DWORD)(offsetof(FILE_RENAME_INFO, FileName) + rename.info.FileNameLength + sizeof(wchar_t)))
+            ? PET_STORE_OK : PET_STORE_IO;
+    }
+    if (!CloseHandle(file)) result = PET_STORE_CLEANUP_FAILED;
     return result;
 }

@@ -1105,3 +1105,26 @@ adopted, rewritten, or removed. The C ABI fixture checks command registration
 and visibility; the existing isolated bridge fixture exercises classification.
 Actual host interaction and new CI are NOT VERIFIED at this checkpoint.
 Deletion/recovery journaling remains deliberately disabled.
+
+## Reversible managed removal backend
+
+Under the verified private-root lease and with no owned children, revalidate
+the selected stable ID, source and both fingerprints against PCI3. Reject
+pending inventory writes, target pending records, reparse points, missing or
+conflicting directory names. Rename the exact managed directory by its open
+handle to the fixed sibling `pet-<id>.removed` without replacement, then
+atomically commit inventory removal without decrementing the high-water mark.
+The renamed directory itself is the recovery marker. A failed/ambiguous
+rename or commit reports RecoveryRequired; do not retry automatically.
+Recovery distinguishes a quarantined directory still registered in inventory
+(interrupted removal) from an unregistered retained copy (completed removal).
+An explicit backend restore for the former reverses the rename without
+overwriting anything; it cannot revive a successfully removed ID. Preferences
+and quarantined bytes are retained; no permanent deletion, external-source
+mutation, or automatic orphan repair is enabled. Same-user hostile mutation
+and full power-loss durability are outside this contract. The isolated
+bridge fixture covers active-child refusal, stale selection, interruption
+after rename, restoration, commit, and reimport with a new ID. The UI scan
+reports both quarantine categories; destructive/restore commands remain
+unexposed until the Windows regression passes. New CI and actual Pulse
+acceptance remain NOT VERIFIED.

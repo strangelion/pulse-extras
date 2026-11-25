@@ -141,7 +141,7 @@ fn horizontal(id: []const u8, children: []const ui.Node) ui.Node {
 }
 
 fn recoveryText(report: library.RecoveryReport, buffer: []u8) ![]const u8 {
-    return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved });
+    return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d} · 隔离待恢复 {d} · 已移除保留 {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved, report.quarantined_registered, report.quarantined_removed });
 }
 
 fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
