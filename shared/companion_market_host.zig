@@ -49,11 +49,19 @@ pub const Snapshot = struct {
     result: ?service_mod.Search = null,
     query: SearchRequest = .{},
 
+    pub fn selectIndex(self: *const Snapshot, index: usize, full: bool) !Request {
+        const result = self.result orelse return error.StaleSelection;
+        if (self.query.offline or result.stale or result.summary.written > self.rows.len or index >= result.summary.written) return error.StaleSelection;
+        const row = &self.rows[index];
+        if (!result.contains(row)) return error.StaleSelection;
+        return .{ .install = .{ .result = result, .hit = row.*, .full = full } };
+    }
+
     pub fn select(self: *const Snapshot, id: []const u8, full: bool) !Request {
         const result = self.result orelse return error.StaleSelection;
         if (self.query.offline or result.stale or result.summary.written > self.rows.len) return error.StaleSelection;
-        for (self.rows[0..result.summary.written]) |*row| {
-            if (std.mem.eql(u8, row.sourceId(), id) and result.contains(row)) return .{ .install = .{ .result = result, .hit = row.*, .full = full } };
+        for (self.rows[0..result.summary.written], 0..) |*row, n| {
+            if (std.mem.eql(u8, row.sourceId(), id)) return self.selectIndex(n, full);
         }
         return error.StaleSelection;
     }
@@ -200,4 +208,12 @@ test "market search copies bounded query and empty selection cannot install" {
     try std.testing.expectError(error.InvalidCatalog, SearchRequest.init("a\x00b", 0, false));
     const empty: Snapshot = .{};
     try std.testing.expectError(error.StaleSelection, empty.select("cat", true));
+    try std.testing.expectError(error.StaleSelection, empty.selectIndex(0, true));
+    var snapshot: Snapshot = .{};
+    snapshot.result = .{ .summary = .{ .total = 1, .written = 1 }, .revision_len = 0, .stale = false, .created_at = 1, .expires_at = 2, .row_keys = @splat(@splat(0)) };
+    snapshot.rows[0] = .{ .id = @splat('a'), .id_len = 1, .name = @splat('b'), .name_len = 1, .catalog_page = 0 };
+    try std.testing.expectError(error.StaleSelection, snapshot.selectIndex(1, false));
+    try std.testing.expectError(error.StaleSelection, snapshot.selectIndex(0, false));
+    snapshot.query.offline = true;
+    try std.testing.expectError(error.StaleSelection, snapshot.selectIndex(0, true));
 }

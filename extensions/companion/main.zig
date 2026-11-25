@@ -26,7 +26,7 @@ const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -87,6 +87,7 @@ const Instance = struct {
     market_request: ?library.MarketRequest = null,
     market_query: library.MarketSearch = .{},
     market_snapshot: library.MarketSnapshot = .{},
+    market_selected: ?usize = null,
     market_outcome: library.MarketOutcome = .{},
     market_progress: library.MarketProgress = .{},
     market_status: []const u8 = "OpenPets 市场：主动搜索后才联网",
@@ -123,8 +124,8 @@ const Content = struct {
     import_toolbar: [3]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
-    states: [8]ui.State = undefined,
-    market_actions: [3]ui.Node = undefined,
+    states: [7]ui.State = undefined,
+    market_actions: [4]ui.Node = undefined,
     market_paging: [2]ui.Node = undefined,
     market_install: [2]ui.Node = undefined,
     market_rows: [12][576]u8 = undefined,
@@ -132,6 +133,8 @@ const Content = struct {
     market_info: [256]u8 = undefined,
     market_transfer: [128]u8 = undefined,
     market_transfer_id: [64]u8 = undefined,
+    market_selection_text: [640]u8 = undefined,
+    market_selection_id: [64]u8 = undefined,
     preference_toolbar: [4]ui.Node = undefined,
     asset_toolbar: [2]ui.Node = undefined,
     stop_toolbar: [2]ui.Node = undefined,
@@ -313,15 +316,13 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
     const idle = marketIdle(instance);
     const busy = instance.market_request != null and instance.task_id != 0;
     content.children[2] = changingLabel(&content.dynamic_ids[0], "market.status", instance.market_status);
-    content.children[3] = ui.node(ui.NodeKind.text_input);
-    content.children[3].id = abi.view("market.query");
-    content.children[3].placeholder = .{ .present = 1, .value = abi.view("搜索精选、原创桌宠名称或来源 ID") };
-    content.children[3].glyph = .{ .present = 1, .value = abi.view("search") };
-    content.children[3].state = .{ .present = 1, .value = abi.view("market.query") };
+    content.children[3] = searchInput("market.query", "搜索精选、原创桌宠名称或来源 ID");
     content.children[3].enabled = .{ .present = 1, .value = @intFromBool(!busy) };
     content.market_actions[0] = action("market.search", "在线搜索", commands[31], idle);
     content.market_actions[1] = action("market.offline", "离线缓存", commands[32], idle);
     content.market_actions[2] = action("market.cancel", "取消任务", commands[37], busy and !instance.market_cancel_requested);
+    const can_clear = if (instance.panel) |panel| panel.table.set_states != null else false;
+    content.market_actions[3] = action("market.search-clear", "清空搜索", commands[39], !busy and can_clear);
     content.children[4] = horizontal("market.actions", &content.market_actions);
     content.children[5] = label("market.notice", "仅展示精选或原创条目；安装前请确认素材许可。完整包不可用时使用基础包。");
     var count: usize = 6;
@@ -343,9 +344,12 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
         content.children[count] = changingLabel(&content.dynamic_ids[1], "market.summary", info);
         count += 1;
         for (snapshot.rows[0..written], 0..) |*row, n| {
-            const body = std.fmt.bufPrint(&content.market_rows[n], "{s} · {s}", .{ row.displayName(), row.sourceId() }) catch unreachable;
+            const selected = instance.market_selected != null and instance.market_selected.? == n;
+            const body = std.fmt.bufPrint(&content.market_rows[n], "{s}{s} · {s}", .{ if (selected) "已选： " else "", row.displayName(), row.sourceId() }) catch unreachable;
             const id = std.fmt.bufPrint(&content.market_row_ids[n], "market-row-{d}-{x}", .{ n, std.hash.Wyhash.hash(0, body) }) catch unreachable;
-            content.children[count] = label(id, body);
+            const selectable = !snapshot.query.offline and !result.stale;
+            content.children[count] = if (selectable) action(id, body, commands[40 + n], idle) else label(id, body);
+            if (selectable) content.children[count].selected = .{ .present = 1, .value = @intFromBool(selected) };
             count += 1;
         }
         content.market_paging[0] = action("market.previous", "上一页", commands[33], idle and snapshot.query.offset >= snapshot.rows.len);
@@ -353,15 +357,20 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
         content.children[count] = horizontal("market.paging", &content.market_paging);
         count += 1;
         if (written != 0 and !snapshot.query.offline and !result.stale) {
-            content.children[count] = ui.node(ui.NodeKind.text_input);
-            content.children[count].id = abi.view("market.id");
-            content.children[count].placeholder = .{ .present = 1, .value = abi.view("输入当前页的素材来源 ID") };
-            content.children[count].state = .{ .present = 1, .value = abi.view("market.id") };
-            content.children[count].enabled = .{ .present = 1, .value = @intFromBool(idle) };
+            const choice = instance.market_selected;
+            const selected = if (choice) |n| n < written else false;
+            const description = if (selected) blk: {
+                const row = &snapshot.rows[choice.?];
+                break :blk std.fmt.bufPrint(&content.market_selection_text, "已选择：{s} · {s}", .{ row.displayName(), row.sourceId() }) catch unreachable;
+            } else "点击上方素材选择安装对象";
+            content.children[count] = changingLabel(&content.market_selection_id, "market.selection", description);
             count += 1;
-            content.market_install[0] = action("market.install-base", "下载并安装基础包", commands[35], idle);
-            content.market_install[1] = action("market.install-full", "下载并安装完整包", commands[36], idle);
+            content.market_install[0] = action("market.install-base", "下载并安装基础包", commands[35], idle and selected);
+            content.market_install[1] = action("market.install-full", "下载并安装完整包", commands[36], idle and selected);
             content.children[count] = horizontal("market.install", &content.market_install);
+            count += 1;
+        } else if (written == 0) {
+            content.children[count] = label("market.no-match", "没有匹配的素材，请调整搜索词。");
             count += 1;
         }
     }
@@ -575,7 +584,6 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     content.states[4] = .{ .key = abi.view("quarantine.id"), .value = abi.view("") };
     content.states[5] = .{ .key = abi.view("running.query"), .value = abi.view(instance.running_query[0..instance.running_query_len]) };
     content.states[6] = .{ .key = abi.view("market.query"), .value = abi.view(instance.market_query.query[0..instance.market_query.len]) };
-    content.states[7] = .{ .key = abi.view("market.id"), .value = abi.view("") };
     tree.states = &content.states;
     tree.state_count = content.states.len;
 }
@@ -983,6 +991,11 @@ fn pollLibrary(instance: *Instance) void {
     if (instance.market_request) |request| {
         instance.market_request = null;
         instance.market_cancel_requested = false;
+        if (request == .install) {
+            // Do not reuse the pre-install window after a terminal outcome.
+            instance.market_snapshot = .{};
+            instance.market_selected = null;
+        }
         const done = instance.work_done.load(.acquire);
         if (done and instance.market_outcome.installed != null) {
             instance.library_loaded = false;
@@ -1742,6 +1755,7 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
     if (request == .search) {
         instance.market_query = request.search;
         instance.market_snapshot = .{};
+        instance.market_selected = null;
     }
     instance.market_request = request;
     instance.market_outcome = .{};
@@ -1798,14 +1812,38 @@ fn pageMarket(instance: *Instance, next: bool) void {
     startMarket(instance, .{ .search = query });
 }
 
+fn clearMarketSearch(instance: *Instance) void {
+    if (instance.market_request != null or instance.task_id != 0) return;
+    const panel = if (instance.panel) |*value| value else return;
+    const states = [_]ui.State{.{ .key = abi.view("market.query"), .value = abi.view("") }};
+    panel.setStates(&states) catch |err| {
+        instance.market_status = @errorName(err);
+        refresh(instance);
+        return;
+    };
+    instance.market_query = .{};
+    instance.market_snapshot = .{};
+    instance.market_selected = null;
+    instance.market_status = "已清空搜索；主动搜索后才联网";
+    refresh(instance);
+}
+
+fn selectMarket(instance: *Instance, index: usize) void {
+    if (!marketIdle(instance)) return;
+    _ = instance.market_snapshot.selectIndex(index, false) catch {
+        instance.market_selected = null;
+        instance.market_status = "素材选择无效；请重新搜索";
+        refresh(instance);
+        return;
+    };
+    instance.market_selected = index;
+    refresh(instance);
+}
+
 fn installMarket(instance: *Instance, full: bool) void {
     if (!marketIdle(instance)) return;
-    const panel = instance.panel orelse return;
-    const get_state = panel.table.get_state orelse return;
-    var bytes: [65]u8 = undefined;
-    var needed: u32 = 0;
-    if (get_state(panel.table.context, panel.id, abi.view("market.id"), &bytes, bytes.len, &needed) != abi.ok or needed == 0 or needed > 64) return;
-    const request = instance.market_snapshot.select(bytes[0..needed], full) catch |err| {
+    const selected = instance.market_selected orelse return;
+    const request = instance.market_snapshot.selectIndex(selected, full) catch |err| {
         instance.market_status = @errorName(err);
         refresh(instance);
         return;
@@ -1891,6 +1929,8 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             36 => installMarket(instance, true),
             37 => cancelMarket(instance),
             38 => pollTasks(instance),
+            39 => clearMarketSearch(instance),
+            40...51 => selectMarket(instance, n - 40),
             25 => if (instance.recovery_report != null and instance.quarantine_offset >= quarantine_page_size) {
                 instance.quarantine_offset -= quarantine_page_size;
                 refresh(instance);
@@ -2379,4 +2419,9 @@ test "market panel requires explicit admission and has no implicit install" {
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[0].enabled.value);
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[1].enabled.value);
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[2].enabled.value);
+    try std.testing.expectEqualStrings(commands[39], abi.slice(content.market_actions[3].command.value).?);
+    try std.testing.expectEqual(@as(u32, 0), content.market_actions[3].enabled.value);
+    try std.testing.expectEqualStrings("search", abi.slice(content.children[3].glyph.value).?);
+    try std.testing.expectEqual(@as(u32, 7), tree.state_count);
+    try std.testing.expect(instance.market_selected == null);
 }

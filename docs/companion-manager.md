@@ -1454,3 +1454,20 @@ host integration. There are no thumbnail fetches or automatic installs.
 The native fixture checks nested lease and cache I/O, scratch creation and
 drain without live network; existing synthetic market/ZIP fixture tests
 remain. CI and live HTTPS/real-host acceptance remain required.
+
+## Market selection without copying IDs
+
+The market now shares the native full-width search constructor. Online
+search remains an explicit user action; opening a page or clearing the
+field never contacts the network. Each fresh visible result is a native
+selection button. Selecting a row only records the current page index,
+validates the bound search row and shows the exact name and source ID;
+it does not download. Base/full installation requires a second explicit
+action and resolves the selected index through the existing immutable
+search-window validation. Offline and stale results remain read-only.
+No manually copied ID or arbitrary download URL enters the install path.
+Selection is reset on search, pagination, clear and terminal installation
+outcome, including ambiguous failures. The worker still checks revision,
+expiry and detail-page identity before transfer. Tests cover out-of-range,
+unbound and offline selection, absent UI selection and scoped native
+commands. This revision does not enable concurrent host transfers.
