@@ -194,3 +194,22 @@ reaction required by the demo. Correct quoted PowerShell -M arguments: prior
 Windows group test failed at argument parsing, not a completed runtime test.
 The new two-child codec preflight run 45568884661 passed. No full benchmark
 was run by that workflow. New Windows tests and ABI changes require CI.
+
+## Catalog search and tags
+
+pet_catalog.zig is a bounded, caller-storage-owned catalog model. Local tags,
+favorite flag and search are independent of upstream package files. Search
+matches all whitespace-separated terms across name, source ID and tags;
+explicit tag filters support ALL/ANY, favorites and format. UTF-8 Chinese
+substring matching and ASCII case-insensitive matching are supported; full
+Unicode normalization/casefold, pinyin, aliases and author indexing are not
+implemented. 16 tags per entry, 64 UTF-8 bytes each, 256-byte search query.
+Stable asset IDs and paged matching IDs avoid UI pointers or full list
+rendering. Validated metadata now retains the display name; no second JSON
+parse. No persistent catalog/import/delete or actual host page yet.
+
+Fix readiness regression from Windows run 45569661110: five tracked IPC
+resources are needed (four inherited handles plus mapped state view), not
+four. Adjusted the shared quota and quota boundary test, not the child
+committed-memory limit. The actual demo readiness and group test still
+need CI rerun. Keep heavy stress manual.

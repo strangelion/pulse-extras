@@ -9,7 +9,7 @@ pub const Owner = struct {
     codecs: Budget = Budget.init(1),
     dib: Budget = Budget.init(2 * 384 * 416 * 4),
     notifications: Budget = Budget.init(1),
-    ipc: Budget = Budget.init(4),
+    ipc: Budget = Budget.init(5), // Four inherited handles plus mapped state view.
     registry: Budget = Budget.init(1),
     menus: Budget = Budget.init(5),
     argv: Budget = Budget.init(1),
@@ -154,7 +154,7 @@ test "notification event has its own bounded reservation and drain gate" {
 test "native IPC registry menu and argument quotas drain independently" {
     var owner: Owner = .{};
     const bridge = Bridge.init(&owner);
-    const limits = [_]usize{ 4, 1, 5, 1 };
+    const limits = [_]usize{ 5, 1, 5, 1 };
     for (limits, 4..) |limit, kind| {
         const code: u32 = @intCast(kind);
         try std.testing.expectEqual(@as(c_int, 1), bridge.reserve(bridge.context, code, limit));

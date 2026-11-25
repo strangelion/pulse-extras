@@ -36,6 +36,8 @@ pub const GazeAnchor = struct { x: f64 = 0.5, y: f64 = 1 };
 
 pub const Metadata = struct {
     layout: Layout,
+    display_name: [320]u8 = @splat(0),
+    display_name_len: usize = 0,
     activities: activities.Catalog = .{},
     wardrobe: wardrobe.Wardrobe = .{},
     gaze_anchor: GazeAnchor = .{},
@@ -83,7 +85,7 @@ pub fn parseMetadata(allocator: std.mem.Allocator, input: []const u8, expected_i
     const object = parsed.value.object;
     const id = object.get("id") orelse return error.InvalidMetadata;
     if (id != .string or !std.mem.eql(u8, id.string, expected_id)) return error.InvalidMetadata;
-    if (activities.checkedText(object.get("displayName") orelse return error.InvalidMetadata, 80) == null) return error.InvalidMetadata;
+    const name = activities.checkedText(object.get("displayName") orelse return error.InvalidMetadata, 80) orelse return error.InvalidMetadata;
     if (activities.checkedText(object.get("description") orelse return error.InvalidMetadata, 500) == null) return error.InvalidMetadata;
     const path = object.get("spritesheetPath") orelse return error.UnsupportedFormat;
     if (path != .string or !std.mem.eql(u8, path.string, "spritesheet.webp")) return error.UnsupportedFormat;
@@ -105,7 +107,11 @@ pub fn parseMetadata(allocator: std.mem.Allocator, input: []const u8, expected_i
     var outfit_ids: [wardrobe.max_outfits]activities.Id = undefined;
     const catalog = activities.parse(object.get("activities"), clothes.copyIds(&outfit_ids)) catch return error.InvalidMetadata;
     const anchor = if (object.get("gazeAnchor")) |value| try parseGazeAnchor(value) else GazeAnchor{};
-    return .{ .layout = layout, .activities = catalog, .wardrobe = clothes, .gaze_anchor = anchor };
+    var result: Metadata = .{ .layout = layout, .activities = catalog, .wardrobe = clothes, .gaze_anchor = anchor };
+    if (name.len > result.display_name.len) return error.InvalidMetadata;
+    @memcpy(result.display_name[0..name.len], name);
+    result.display_name_len = name.len;
+    return result;
 }
 
 fn le16(bytes: []const u8) u32 {

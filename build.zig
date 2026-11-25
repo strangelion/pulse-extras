@@ -442,6 +442,7 @@ pub fn build(b: *std.Build) void {
         "shared/companion/pet_package.zig",
         "shared/companion/pet_memory.zig",
         "shared/companion/pet_manager.zig",
+        "shared/companion/pet_catalog.zig",
         "shared/companion/pet_resources.zig",
         "shared/companion/pet_decode_task.zig",
         "shared/companion/pet_async_bridge.zig",
