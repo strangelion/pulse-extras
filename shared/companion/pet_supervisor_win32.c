@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <psapi.h>
+#include <bcrypt.h>
 
 #define PATH_CAP 1024u
 #define CMD_CAP 2600u
@@ -51,6 +52,61 @@ static HANDLE pin_image(const wchar_t *path) {
         return INVALID_HANDLE_VALUE;
     }
     return image;
+}
+
+/* Use the already pinned handle: no pathname reopen between the hash and
+ * process creation. Resolve the OS crypto provider from System32 only,
+ * keeping the existing GNU test link commands and MSVC boundary intact. */
+static pet_child_result verify_image(HANDLE image, const uint8_t expected[32]) {
+    typedef NTSTATUS (WINAPI *open_fn)(BCRYPT_ALG_HANDLE *, LPCWSTR, LPCWSTR, ULONG);
+    typedef NTSTATUS (WINAPI *property_fn)(BCRYPT_HANDLE, LPCWSTR, PUCHAR, ULONG, ULONG *, ULONG);
+    typedef NTSTATUS (WINAPI *create_fn)(BCRYPT_ALG_HANDLE, BCRYPT_HASH_HANDLE *, PUCHAR, ULONG, PUCHAR, ULONG, ULONG);
+    typedef NTSTATUS (WINAPI *data_fn)(BCRYPT_HASH_HANDLE, PUCHAR, ULONG, ULONG);
+    typedef NTSTATUS (WINAPI *finish_fn)(BCRYPT_HASH_HANDLE, PUCHAR, ULONG, ULONG);
+    typedef NTSTATUS (WINAPI *destroy_fn)(BCRYPT_HASH_HANDLE);
+    typedef NTSTATUS (WINAPI *close_fn)(BCRYPT_ALG_HANDLE, ULONG);
+    HMODULE module = LoadLibraryExW(L"bcrypt.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!module) return PET_CHILD_OS_ERROR;
+    open_fn open = (open_fn)GetProcAddress(module, "BCryptOpenAlgorithmProvider");
+    property_fn property = (property_fn)GetProcAddress(module, "BCryptGetProperty");
+    create_fn create = (create_fn)GetProcAddress(module, "BCryptCreateHash");
+    data_fn update = (data_fn)GetProcAddress(module, "BCryptHashData");
+    finish_fn finish = (finish_fn)GetProcAddress(module, "BCryptFinishHash");
+    destroy_fn destroy = (destroy_fn)GetProcAddress(module, "BCryptDestroyHash");
+    close_fn close = (close_fn)GetProcAddress(module, "BCryptCloseAlgorithmProvider");
+    pet_child_result result = PET_CHILD_OS_ERROR;
+    BCRYPT_ALG_HANDLE algorithm = NULL;
+    BCRYPT_HASH_HANDLE hash = NULL;
+    PUCHAR object = NULL;
+    DWORD object_size = 0, digest_size = 0, got = 0;
+    unsigned char buffer[16384], digest[32];
+    LARGE_INTEGER size;
+    if (!open || !property || !create || !update || !finish || !destroy || !close ||
+        !GetFileSizeEx(image, &size) || size.QuadPart <= 0 ||
+        size.QuadPart > 256ll * 1024 * 1024) goto done;
+    if (open(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0 ||
+        property(algorithm, BCRYPT_OBJECT_LENGTH, (PUCHAR)&object_size, sizeof(object_size), &got, 0) < 0 ||
+        got != sizeof(object_size) || !object_size || object_size > 65536 ||
+        property(algorithm, BCRYPT_HASH_LENGTH, (PUCHAR)&digest_size, sizeof(digest_size), &got, 0) < 0 ||
+        got != sizeof(digest_size) || digest_size != sizeof(digest)) goto done;
+    object = malloc(object_size);
+    if (!object || create(algorithm, &hash, object, object_size, NULL, 0, 0) < 0) goto done;
+    uint64_t remaining = (uint64_t)size.QuadPart;
+    while (remaining) {
+        DWORD want = remaining > sizeof(buffer) ? (DWORD)sizeof(buffer) : (DWORD)remaining;
+        if (!ReadFile(image, buffer, want, &got, NULL) || got != want ||
+            update(hash, buffer, got, 0) < 0) goto done;
+        remaining -= got;
+    }
+    if (finish(hash, digest, sizeof(digest), 0) < 0) goto done;
+    result = memcmp(digest, expected, sizeof(digest)) == 0 ?
+        PET_CHILD_OK : PET_CHILD_UNAPPROVED_IMAGE;
+done:
+    if (hash && destroy(hash) < 0) result = PET_CHILD_OS_ERROR;
+    free(object);
+    if (algorithm && close(algorithm, 0) < 0) result = PET_CHILD_OS_ERROR;
+    if (!FreeLibrary(module)) result = PET_CHILD_OS_ERROR;
+    return result;
 }
 
 static void release_child(pet_supervisor *owner) {
@@ -104,7 +160,7 @@ static BOOL package_args(const wchar_t *directory, const wchar_t *id) {
 }
 
 static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approved_exe,
-    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, const wchar_t *expected_sha) {
+    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, const wchar_t *expected_sha, const uint8_t *image_sha) {
     if (!owner || !options || options->scale < PET_MIN_SCALE ||
         options->scale > PET_MAX_SCALE ||
         (options->smoke && (options->remember || options->reduced || options->topmost)))
@@ -132,6 +188,11 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
     PROCESS_INFORMATION child = {0};
     image = pin_image(approved_exe);
     if (image == INVALID_HANDLE_VALUE) { result = PET_CHILD_INVALID; goto cleanup; }
+    if (image_sha) {
+        result = verify_image(image, image_sha);
+        if (result != PET_CHILD_OK) goto cleanup;
+        result = PET_CHILD_OS_ERROR;
+    }
     job = CreateJobObjectW(NULL, NULL);
     if (!job) goto cleanup;
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
@@ -261,7 +322,7 @@ pet_child_result pet_child_start(pet_supervisor *owner, const wchar_t *approved_
     if (owner->job || owner->process || owner->stop || owner->state_mapping ||
         owner->state_event || owner->state_slot || owner->ready_event) return PET_CHILD_BUSY;
     if (InterlockedCompareExchange(&live_owner, 1, 0) != 0) return PET_CHILD_BUSY;
-    pet_child_result result = start_child(owner, approved_exe, options, NULL, NULL, NULL);
+    pet_child_result result = start_child(owner, approved_exe, options, NULL, NULL, NULL, NULL);
     if (result != PET_CHILD_OK) {
         /* Preserve legacy last-resort cleanup semantics. Group callers use
          * start_child directly and retain ambiguous termination ownership. */
@@ -355,7 +416,7 @@ pet_child_result pet_group_admission(const pet_supervisor_group *group,
 }
 
 static pet_child_result group_start(pet_supervisor_group *group, const wchar_t *approved_exe,
-    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, const wchar_t *expected_sha, uint64_t *id) {
+    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, const wchar_t *expected_sha, const uint8_t *image_sha, uint64_t *id) {
     if (!id) return PET_CHILD_INVALID;
     *id = 0;
     if (!group || group != active_group || !options || options->remember)
@@ -374,7 +435,7 @@ static pet_child_result group_start(pet_supervisor_group *group, const wchar_t *
         if (slot->id) continue;
         slot->id = group->next_id++;
         ++group->count;
-        pet_child_result result = start_child(&slot->child, approved_exe, options, directory, package_id, expected_sha);
+        pet_child_result result = start_child(&slot->child, approved_exe, options, directory, package_id, expected_sha, image_sha);
         if (result != PET_CHILD_OK && !slot->child.process) {
             *slot = (pet_group_slot){0};
             --group->count;
@@ -389,7 +450,7 @@ static pet_child_result group_start(pet_supervisor_group *group, const wchar_t *
 
 pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *approved_exe,
     const pet_child_options *options, uint64_t *id) {
-    return group_start(group, approved_exe, options, NULL, NULL, NULL, id);
+    return group_start(group, approved_exe, options, NULL, NULL, NULL, NULL, id);
 }
 
 pet_child_result pet_group_start_package(pet_supervisor_group *group, const wchar_t *approved_exe,
@@ -398,7 +459,7 @@ pet_child_result pet_group_start_package(pet_supervisor_group *group, const wcha
     *id = 0;
     if (!package_args(directory, package_id) || !options || options->smoke || options->remember)
         return PET_CHILD_INVALID;
-    return group_start(group, approved_exe, options, directory, package_id, NULL, id);
+    return group_start(group, approved_exe, options, directory, package_id, NULL, NULL, id);
 }
 
 pet_child_result pet_group_start_verified_package(pet_supervisor_group *group, const wchar_t *approved_exe,
@@ -408,7 +469,18 @@ pet_child_result pet_group_start_verified_package(pet_supervisor_group *group, c
     *id = 0;
     if (!expected_sha || !package_args(directory, package_id) || !options || options->smoke || options->remember)
         return PET_CHILD_INVALID;
-    return group_start(group, approved_exe, options, directory, package_id, expected_sha, id);
+    return group_start(group, approved_exe, options, directory, package_id, expected_sha, NULL, id);
+}
+
+pet_child_result pet_group_start_approved(pet_supervisor_group *group, const wchar_t *approved_exe,
+    const uint8_t image_sha[32], const pet_child_options *options, const wchar_t *directory,
+    const wchar_t *package_id, const wchar_t *expected_sha, uint64_t *id) {
+    if (!id) return PET_CHILD_INVALID;
+    *id = 0;
+    if (!image_sha || !options || ((directory || package_id || expected_sha) &&
+        (!package_args(directory, package_id) || options->smoke || options->remember)))
+        return PET_CHILD_INVALID;
+    return group_start(group, approved_exe, options, directory, package_id, expected_sha, image_sha, id);
 }
 
 pet_child_result pet_group_publish(pet_supervisor_group *group, uint64_t id, unsigned reaction) {

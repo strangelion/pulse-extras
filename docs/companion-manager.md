@@ -782,3 +782,17 @@ drain, confirmed exit and reopen. This is a worker integration seam, not yet
 wired to the MSVC settings DLL, and does not establish real Pulse shutdown
 acceptance. The approved executable/root provisioning and unload callback
 contract remain prerequisites.
+
+## Pinned helper executable verification
+
+The Zig group now passes its independently approved SHA-256 to the native
+supervisor. Hash the already opened, write/delete-sharing-denied image
+handle using System32 BCrypt before CreateProcessW, and hold the handle
+through creation. A mismatch fails before creating a job or child; the
+logical reservation is reclaimed on zero native ID. The existing real-child
+adapter regression checks the wrong digest and subsequent successful starts.
+Legacy native fixture APIs and singleton remain unchanged. This narrows the
+pathname check/use gap, not a guarantee against hostile ancestors, same-user
+or admin mutation, or unsafe DLL search paths. Independently approved root
+ACLs, packaging, and host worker integration are still required. No new
+static link dependency on BCrypt; Windows regression must verify the code.

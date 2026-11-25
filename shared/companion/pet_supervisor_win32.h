@@ -26,7 +26,7 @@ typedef enum {
     PET_CHILD_OK = 0, PET_CHILD_INVALID, PET_CHILD_BUSY,
     PET_CHILD_OS_ERROR, PET_CHILD_CONTAINMENT_FAILED, PET_CHILD_TIMEOUT,
     PET_CHILD_COUNT_LIMIT, PET_CHILD_STORAGE_LIMIT, PET_CHILD_BUDGET_LIMIT,
-    PET_CHILD_SYSTEM_MEMORY
+    PET_CHILD_SYSTEM_MEMORY, PET_CHILD_UNAPPROVED_IMAGE
 } pet_child_result;
 
 typedef struct {
@@ -88,6 +88,13 @@ pet_child_result pet_group_start_package(pet_supervisor_group *group, const wcha
 pet_child_result pet_group_start_verified_package(pet_supervisor_group *group, const wchar_t *approved_exe,
     const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id,
     const wchar_t *expected_sha, uint64_t *id);
+/* Production-facing group admission: require an independently supplied
+ * executable digest and hash the pinned handle before spawning. Package
+ * arguments are all optional for a synthetic child; asset digest policy
+ * remains the caller's responsibility. Does not approve directory ACLs. */
+pet_child_result pet_group_start_approved(pet_supervisor_group *group, const wchar_t *approved_exe,
+    const uint8_t image_sha[32], const pet_child_options *options, const wchar_t *directory,
+    const wchar_t *package_id, const wchar_t *expected_sha, uint64_t *id);
 pet_child_result pet_group_publish(pet_supervisor_group *group, uint64_t id, unsigned reaction);
 pet_child_result pet_group_status(pet_supervisor_group *group, uint64_t id, BOOL *running, DWORD *exit_code);
 typedef struct {

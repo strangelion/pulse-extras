@@ -47,9 +47,7 @@ const RawMetrics = extern struct {
 };
 extern "c" fn pet_group_storage_size() usize;
 extern "c" fn pet_group_open(*Native, u32, usize) c_int;
-extern "c" fn pet_group_start(*Native, [*:0]const u16, *const Options, *u64) c_int;
-extern "c" fn pet_group_start_package(*Native, [*:0]const u16, *const Options, [*:0]const u16, [*:0]const u16, *u64) c_int;
-extern "c" fn pet_group_start_verified_package(*Native, [*:0]const u16, *const Options, [*:0]const u16, [*:0]const u16, [*:0]const u16, *u64) c_int;
+extern "c" fn pet_group_start_approved(*Native, [*:0]const u16, *const [32]u8, *const Options, ?[*:0]const u16, ?[*:0]const u16, ?[*:0]const u16, *u64) c_int;
 extern "c" fn pet_group_request_stop(*Native, u64) c_int;
 extern "c" fn pet_group_force_stop(*Native, u64) c_int;
 extern "c" fn pet_group_reap(*Native, u64, *u32) c_int;
@@ -58,7 +56,7 @@ extern "c" fn pet_group_publish(*Native, u64, u32) c_int;
 extern "c" fn pet_group_sample(*Native, u64, *RawMetrics) c_int;
 extern "c" fn pet_group_close(*Native) c_int;
 
-pub const NativeError = error{ Invalid, Busy, OsError, ContainmentFailed, Timeout, CountLimit, StorageLimit, BudgetLimit, SystemMemory };
+pub const NativeError = error{ Invalid, Busy, OsError, ContainmentFailed, Timeout, CountLimit, StorageLimit, BudgetLimit, SystemMemory, UnapprovedExecutable };
 fn check(code: c_int) NativeError!void {
     return switch (code) {
         0 => {},
@@ -71,6 +69,7 @@ fn check(code: c_int) NativeError!void {
         7 => error.StorageLimit,
         8 => error.BudgetLimit,
         9 => error.SystemMemory,
+        10 => error.UnapprovedExecutable,
         else => error.OsError,
     };
 }
@@ -165,19 +164,20 @@ pub const Group = struct {
         const manager = try self.active();
         if (self.drain != .normal) return error.Draining;
         if (options.scale < 50 or options.scale > 200) return error.Invalid;
-        try approval.verify(io, approval.path);
+        // Hash the native pinned file instead of reopening by pathname here.
+        _ = io;
+        if (!trust.localAbsolute(approval.path) or std.mem.indexOfScalar(u8, approval.path, 0) != null or
+            !std.ascii.endsWithIgnoreCase(approval.path, ".exe")) return error.UnapprovedExecutable;
         var path: [1024]u16 = undefined;
         const len = try std.unicode.utf8ToUtf16Le(path[0 .. path.len - 1], approval.path);
         path[len] = 0;
         const id = try manager.reserveStart(asset_id);
         var native_id: u64 = 0;
-        const code = if (package) |selected|
-            if (selected.expected_sha) |expected|
-                pet_group_start_verified_package(&self.native, path[0..len :0], &options, selected.directory, selected.source_id, expected, &native_id)
-            else
-                pet_group_start_package(&self.native, path[0..len :0], &options, selected.directory, selected.source_id, &native_id)
-        else
-            pet_group_start(&self.native, path[0..len :0], &options, &native_id);
+        const code = pet_group_start_approved(&self.native, path[0..len :0], &approval.digest, &options,
+            if (package) |selected| selected.directory else null,
+            if (package) |selected| selected.source_id else null,
+            if (package) |selected| selected.expected_sha else null,
+            &native_id);
         if (native_id == 0) {
             // Native contract: zero ID on failure proves no retained child.
             try manager.confirmGone(id);
@@ -368,6 +368,7 @@ test "group adapter binds two approved demo children and recovers reservations" 
     var wrong = approval;
     wrong.digest[0] ^= 1;
     try std.testing.expectError(error.UnapprovedExecutable, group.startInternal(io, wrong, 1, .{ .smoke = 1 }));
+    try std.testing.expectEqual(@as(usize, 0), try group.remaining());
     for (&ids) |*id| {
         const started = try group.startInternal(io, approval, 1, .{ .smoke = 1 });
         id.* = started.id;
