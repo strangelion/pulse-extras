@@ -5,6 +5,11 @@ const std = @import("std");
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 pub const Digest = [32]u8;
+pub const Secondary = [64]u8;
+pub const Pair = extern struct {
+    primary: Digest,
+    secondary: Secondary,
+};
 pub const max_files = 290; // metadata + atlas + 16 outfits + 16*17 activities
 pub const max_file_bytes = 16 * 1024 * 1024;
 pub const max_total_bytes = 320 * 1024 * 1024;
@@ -14,6 +19,7 @@ pub const FileDigest = struct {
     path: []const u8,
     size: u64,
     digest: Digest,
+    secondary: Secondary = @splat(0),
 };
 
 fn validPath(path: []const u8) bool {
@@ -27,7 +33,7 @@ fn validPath(path: []const u8) bool {
     return leaf[0] != '.' and std.mem.indexOf(u8, leaf, "..") == null;
 }
 
-fn updateInt(hash: *Sha256, value: u64) void {
+fn updateInt(hash: anytype, value: u64) void {
     var bytes: [8]u8 = undefined;
     for (0..8) |i| bytes[i] = @truncate(value >> @as(u6, @intCast(i * 8)));
     hash.update(&bytes);
@@ -40,6 +46,7 @@ pub fn digestFile(io: std.Io, file: std.Io.File, path: []const u8) !FileDigest {
     const stat = try file.stat(io);
     if (stat.kind != .file or stat.size == 0 or stat.size > max_file_bytes) return error.ResourceLimit;
     var hash = Sha256.init(.{});
+    var secondary = std.crypto.hash.sha2.Sha512.init(.{});
     var buffer: [16 * 1024]u8 = undefined;
     var offset: u64 = 0;
     while (offset < stat.size) {
@@ -47,13 +54,18 @@ pub fn digestFile(io: std.Io, file: std.Io.File, path: []const u8) !FileDigest {
         const n = try file.readPositionalAll(io, buffer[0..want], offset);
         if (n != want) return error.ChangedFile;
         hash.update(buffer[0..n]);
+        secondary.update(buffer[0..n]);
         offset += n;
     }
     if ((try file.stat(io)).size != stat.size) return error.ChangedFile;
-    return .{ .path = path, .size = stat.size, .digest = hash.finalResult() };
+    return .{ .path = path, .size = stat.size, .digest = hash.finalResult(), .secondary = secondary.finalResult() };
 }
 
 pub fn digest(files: []const FileDigest) Error!Digest {
+    return (try digestPair(files)).primary;
+}
+
+pub fn digestPair(files: []const FileDigest) Error!Pair {
     if (files.len < 2 or files.len > max_files) return error.InvalidInventory;
     var order: [max_files]usize = undefined;
     var total: u64 = 0;
@@ -75,6 +87,9 @@ pub fn digest(files: []const FileDigest) Error!Digest {
     var hash = Sha256.init(.{});
     hash.update("pulse-classic-package-sha256-v1\x00");
     updateInt(&hash, files.len);
+    var secondary = std.crypto.hash.sha2.Sha512.init(.{});
+    secondary.update("pulse-classic-package-sha512-v1\x00");
+    updateInt(&secondary, files.len);
     var previous: ?[]const u8 = null;
     for (order[0..files.len]) |i| {
         const file = files[i];
@@ -86,13 +101,21 @@ pub fn digest(files: []const FileDigest) Error!Digest {
         hash.update(file.path);
         updateInt(&hash, file.size);
         hash.update(&file.digest);
+        updateInt(&secondary, file.path.len);
+        secondary.update(file.path);
+        updateInt(&secondary, file.size);
+        secondary.update(&file.secondary);
     }
-    return hash.finalResult();
+    return .{ .primary = hash.finalResult(), .secondary = secondary.finalResult() };
 }
 
 pub fn hex(value: Digest) [64]u8 {
+    return hexBytes(32, value);
+}
+
+pub fn hexBytes(comptime len: usize, value: [len]u8) [len * 2]u8 {
     const alphabet = "0123456789abcdef";
-    var out: [64]u8 = undefined;
+    var out: [len * 2]u8 = undefined;
     for (value, 0..) |byte, i| {
         out[2 * i] = alphabet[byte >> 4];
         out[2 * i + 1] = alphabet[byte & 15];
@@ -135,4 +158,24 @@ test "file digest streams actual bytes" {
     try std.testing.expectEqual(@as(u64, 3), result.size);
     const text = hex(result.digest);
     try std.testing.expectEqualStrings("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", &text);
+}
+
+pub fn pairHex(value: Pair) [193]u8 {
+    var out: [193]u8 = undefined;
+    @memcpy(out[0..64], &hex(value.primary));
+    out[64] = ':';
+    @memcpy(out[65..193], &hexBytes(64, value.secondary));
+    return out;
+}
+
+test "secondary is independent of primary and preserves primary v1" {
+    var files = [_]FileDigest{
+        .{ .path = "pet.json", .size = 1, .digest = @splat(1), .secondary = @splat(2) },
+        .{ .path = "spritesheet.webp", .size = 1, .digest = @splat(3), .secondary = @splat(4) },
+    };
+    const before = try digestPair(&files);
+    files[1].secondary[0] ^= 1;
+    const after = try digestPair(&files);
+    try std.testing.expectEqualSlices(u8, &before.primary, &after.primary);
+    try std.testing.expect(!std.mem.eql(u8, &before.secondary, &after.secondary));
 }

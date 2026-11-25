@@ -351,3 +351,20 @@ UI remain pending. Fixed independent Python SHA reference: use actual NUL
 rather than four literal escape characters. Both Windows regressions
 45575428171 and 45576460968 stopped at this assertion before staging test.
 Both mixed preflights and Linux regressions passed. Latest CI pending.
+
+## Independent dual digests
+
+Use SHA-256 + SHA-512 independently over each validated file, then the
+same canonical framing with algorithm-specific domain separators. PCI3
+stores 32+64 bytes; SHA-256 remains compatible with old primary values.
+A matching primary with a different secondary is a distinct asset, not
+a duplicate; matching pairs deduplicate. PCI1/PCI2 lack the second digest
+and are not silently trusted for managed launch or matching-primary
+imports. Explicit migration/revalidation UI remains pending. V2 helper
+protocol uses 64 hex + colon + 128 hex; legacy V1 diagnostics still work.
+Both fingerprints are verified on staged copy and managed launch. No MD5
+and no claim of collision impossibility; byte-for-byte duplicate comparison
+is not implemented. Added injected primary collision and independent Python
+SHA-512 reference tests. Inventory bound increases to 131072 native bytes
+(512 records); no extra image allocation, both hash the same input bytes.
+Latest CI pending.

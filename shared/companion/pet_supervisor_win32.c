@@ -114,8 +114,10 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
     if ((directory || package_id) && (options->smoke || options->remember ||
         !package_args(directory, package_id))) return PET_CHILD_INVALID;
     if (expected_sha) {
-        if (!directory || wcslen(expected_sha) != 64) return PET_CHILD_INVALID;
-        for (unsigned i = 0; i < 64; ++i) {
+        size_t len = wcslen(expected_sha);
+        if (!directory || (len != 64 && len != 193)) return PET_CHILD_INVALID;
+        for (size_t i = 0; i < len; ++i) {
+            if (len == 193 && i == 64) { if (expected_sha[i] != L':') return PET_CHILD_INVALID; continue; }
             wchar_t ch = expected_sha[i];
             if (!((ch >= L'0' && ch <= L'9') || (ch >= L'a' && ch <= L'f'))) return PET_CHILD_INVALID;
         }
@@ -191,7 +193,7 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
     }
     if (expected_sha) {
         size_t remaining = CMD_CAP - (unsigned)written;
-        int appended = swprintf(command + written, remaining, L" --expected-sha256 %ls", expected_sha);
+        int appended = swprintf(command + written, remaining, L" %ls %ls", wcslen(expected_sha) == 193 ? L"--expected-fingerprint" : L"--expected-sha256", expected_sha);
         if (appended < 0 || (size_t)appended >= remaining) { result = PET_CHILD_INVALID; goto cleanup; }
     }
     /* No inherited PATH, credentials or loader variables. Use system cwd;

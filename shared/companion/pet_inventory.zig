@@ -4,8 +4,8 @@ const std = @import("std");
 const fingerprint = @import("pet_fingerprint.zig");
 
 pub const max_entries = 512;
-pub const max_bytes = 16 + max_entries * 106;
-pub const Error = error{ Invalid, Full, IdExhausted, UnknownAsset, InvalidRecord, BufferTooSmall, DuplicateContent };
+pub const max_bytes = 16 + max_entries * 170;
+pub const Error = error{ Invalid, Full, IdExhausted, UnknownAsset, InvalidRecord, BufferTooSmall, DuplicateContent, NeedsRevalidation };
 
 pub fn validSource(source: []const u8) bool {
     if (source.len == 0 or source.len > 64 or std.mem.eql(u8, source, "builtin")) return false;
@@ -22,6 +22,7 @@ pub const Record = struct {
     source: [64]u8 = @splat(0),
     len: u8,
     digest: ?fingerprint.Digest = null,
+    secondary: ?fingerprint.Secondary = null,
 
     pub fn init(id: u64, source: []const u8) Error!Record {
         if (id == 0 or !validSource(source)) return error.Invalid;
@@ -70,23 +71,46 @@ pub const Inventory = struct {
         return null;
     }
 
+    // Equal primary alone is not proof of identical content. Old records
+    // without a secondary must be explicitly revalidated before dedup.
+    pub fn findPair(self: *const Inventory, pair: fingerprint.Pair) Error!?u64 {
+        var unknown = false;
+        for (self.entries[0..self.count]) |entry| {
+            if (entry.digest) |primary| {
+                if (!std.mem.eql(u8, &primary, &pair.primary)) continue;
+                if (entry.secondary) |secondary| {
+                    if (std.mem.eql(u8, &secondary, &pair.secondary)) return entry.id;
+                } else unknown = true;
+            }
+        }
+        if (unknown) return error.NeedsRevalidation;
+        return null;
+    }
+
+    pub fn publishPair(self: *Inventory, id: u64, source: []const u8, pair: fingerprint.Pair) Error!void {
+        return self.publishInternal(id, source, pair.primary, pair.secondary);
+    }
+
     pub fn publish(self: *Inventory, id: u64, source: []const u8) Error!void {
-        return self.publishInternal(id, source, null);
+        return self.publishInternal(id, source, null, null);
     }
 
     pub fn publishVerified(self: *Inventory, id: u64, source: []const u8, value: fingerprint.Digest) Error!void {
-        return self.publishInternal(id, source, value);
+        return self.publishInternal(id, source, value, null);
     }
 
-    fn publishInternal(self: *Inventory, id: u64, source: []const u8, value: ?fingerprint.Digest) Error!void {
+    fn publishInternal(self: *Inventory, id: u64, source: []const u8, value: ?fingerprint.Digest, secondary: ?fingerprint.Secondary) Error!void {
         if (id == 0 or self.pending_id != id or id != self.next_id - 1) return error.Invalid;
         if (value) |hash| {
-            if (self.findDigest(hash) != null) return error.DuplicateContent;
+            if (secondary) |second| {
+                if (try self.findPair(.{ .primary = hash, .secondary = second }) != null) return error.DuplicateContent;
+            } else if (self.findDigest(hash) != null) return error.DuplicateContent;
         }
         if (self.count == max_entries) return error.Full;
         if (self.count != 0 and id <= self.entries[self.count - 1].id) return error.Invalid;
         var record = try Record.init(id, source);
         record.digest = value;
+        record.secondary = secondary;
         self.entries[self.count] = record;
         self.count += 1;
         self.pending_id = null;
@@ -121,7 +145,7 @@ fn get64(input: []const u8) u64 {
     return result;
 }
 
-// PCI2: PCI1 fields plus per-record digest presence and optional 32 bytes.
+// PCI3: PCI2 fields with digest kind 0/1/2 (none/primary/pair).
 // PCI1 is readable but its missing fingerprints are never assumed verified.
 // No mutable metadata or filesystem path in the inventory.
 pub fn encode(value: *const Inventory, out: []u8) Error![]const u8 {
@@ -131,10 +155,11 @@ pub fn encode(value: *const Inventory, out: []u8) Error![]const u8 {
     for (value.entries[0..value.count]) |*entry| {
         if (entry.len > 64 or !validSource(entry.sourceId()) or entry.id <= last or entry.id >= value.next_id) return error.InvalidRecord;
         last = entry.id;
-        needed += 10 + @as(usize, entry.len) + @as(usize, if (entry.digest != null) 32 else 0);
+        if (entry.secondary != null and entry.digest == null) return error.InvalidRecord;
+        needed += 10 + @as(usize, entry.len) + @as(usize, if (entry.digest != null) 32 else 0) + @as(usize, if (entry.secondary != null) 64 else 0);
     }
     if (out.len < needed) return error.BufferTooSmall;
-    @memcpy(out[0..4], "PCI2");
+    @memcpy(out[0..4], "PCI3");
     put64(out[4..12], value.next_id);
     const count: u32 = @intCast(value.count);
     for (0..4) |i| out[12 + i] = @truncate(count >> @as(u5, @intCast(i * 8)));
@@ -145,11 +170,15 @@ pub fn encode(value: *const Inventory, out: []u8) Error![]const u8 {
         pos += 9;
         @memcpy(out[pos .. pos + entry.len], entry.sourceId());
         pos += entry.len;
-        out[pos] = @intFromBool(entry.digest != null);
+        out[pos] = if (entry.secondary != null) 2 else @intFromBool(entry.digest != null);
         pos += 1;
         if (entry.digest) |hash| {
             @memcpy(out[pos .. pos + 32], &hash);
             pos += 32;
+        }
+        if (entry.secondary) |second| {
+            @memcpy(out[pos .. pos + 64], &second);
+            pos += 64;
         }
     }
     return out[0..pos];
@@ -159,7 +188,8 @@ pub fn encode(value: *const Inventory, out: []u8) Error![]const u8 {
 pub fn decode(value: *Inventory, input: []const u8) Error!void {
     if (input.len < 16 or input.len > max_bytes) return error.InvalidRecord;
     const legacy = std.mem.eql(u8, input[0..4], "PCI1");
-    if (!legacy and !std.mem.eql(u8, input[0..4], "PCI2")) return error.InvalidRecord;
+    const dual = std.mem.eql(u8, input[0..4], "PCI3");
+    if (!legacy and !dual and !std.mem.eql(u8, input[0..4], "PCI2")) return error.InvalidRecord;
     var candidate: Inventory = .{ .next_id = get64(input[4..12]) };
     if (candidate.next_id == 0) return error.InvalidRecord;
     var count: u32 = 0;
@@ -176,15 +206,21 @@ pub fn decode(value: *Inventory, input: []const u8) Error!void {
         var record = Record.init(id, input[pos .. pos + len]) catch return error.InvalidRecord;
         pos += len;
         if (!legacy) {
-            if (pos == input.len or input[pos] > 1) return error.InvalidRecord;
-            const present = input[pos] == 1;
+            if (pos == input.len or input[pos] > @as(u8, if (dual) 2 else 1)) return error.InvalidRecord;
+            const kind = input[pos];
             pos += 1;
-            if (present) {
+            if (kind != 0) {
                 if (input.len - pos < 32) return error.InvalidRecord;
                 const hash: fingerprint.Digest = input[pos..][0..32].*;
-                if (candidate.findDigest(hash) != null) return error.InvalidRecord;
                 record.digest = hash;
                 pos += 32;
+                if (kind == 2) {
+                    if (input.len - pos < 64) return error.InvalidRecord;
+                    const second: fingerprint.Secondary = input[pos..][0..64].*;
+                    if ((candidate.findPair(.{ .primary = hash, .secondary = second }) catch return error.InvalidRecord) != null) return error.InvalidRecord;
+                    record.secondary = second;
+                    pos += 64;
+                } else if (candidate.findDigest(hash) != null) return error.InvalidRecord;
             }
         }
         candidate.entries[candidate.count] = record;
@@ -253,7 +289,30 @@ test "PCI1 records migrate as unknown fingerprints" {
     try std.testing.expect(record.digest == null);
     var buffer: [max_bytes]u8 = undefined;
     const encoded = try encode(&value, &buffer);
-    try std.testing.expectEqualStrings("PCI2", encoded[0..4]);
+    try std.testing.expectEqualStrings("PCI3", encoded[0..4]);
     try decode(&value, encoded);
     try std.testing.expectEqual(@as(u64, 2), value.next_id);
+}
+
+test "simulated primary collision preserves both assets and rejects equal pairs" {
+    var index: Inventory = .{};
+    const first: fingerprint.Pair = .{ .primary = @splat(1), .secondary = @splat(2) };
+    const second: fingerprint.Pair = .{ .primary = @splat(1), .secondary = @splat(3) };
+    const a = try index.reserve();
+    try index.publishPair(a, "cat", first);
+    const b = try index.reserve();
+    try index.publishPair(b, "fox", second);
+    try std.testing.expectEqual(a, (try index.findPair(first)).?);
+    try std.testing.expectEqual(b, (try index.findPair(second)).?);
+    const c = try index.reserve();
+    try std.testing.expectError(error.DuplicateContent, index.publishPair(c, "cat", first));
+    var buffer: [max_bytes]u8 = undefined;
+    const encoded = try encode(&index, &buffer);
+    var restored: Inventory = .{};
+    try decode(&restored, encoded);
+    try std.testing.expectEqual(b, (try restored.findPair(second)).?);
+    var old: Inventory = .{};
+    const legacy = try old.reserve();
+    try old.publishVerified(legacy, "cat", first.primary);
+    try std.testing.expectError(error.NeedsRevalidation, old.findPair(first));
 }

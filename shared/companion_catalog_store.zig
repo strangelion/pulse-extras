@@ -76,7 +76,7 @@ pub fn importPackage(root: [*:0]const u16, owner: *importing.Coordinator, helper
         root_path: [*:0]const u16,
         validator: @TypeOf(helper),
 
-        pub fn probe(self: *@This(), path: []const u8, id: []const u8) !fingerprint.Digest {
+        pub fn probe(self: *@This(), path: []const u8, id: []const u8) !fingerprint.Pair {
             return self.validator.probe(path, id);
         }
 
@@ -84,7 +84,7 @@ pub fn importPackage(root: [*:0]const u16, owner: *importing.Coordinator, helper
             return saveInventory(self.root_path, index);
         }
 
-        pub fn stage(self: *@This(), path: []const u8, id: []const u8, local_id: u64, digest: fingerprint.Digest) !void {
+        pub fn stage(self: *@This(), path: []const u8, id: []const u8, local_id: u64, digest: fingerprint.Pair) !void {
             return self.validator.stage(path, id, local_id, digest);
         }
     };
@@ -145,11 +145,11 @@ test "inventory high-water mark persists independently of preferences" {
 
 test "import coordinator persists identity using native store" {
     const Fixture = struct {
-        pub fn probe(_: *@This(), _: []const u8, _: []const u8) !fingerprint.Digest {
-            return @splat(42);
+        pub fn probe(_: *@This(), _: []const u8, _: []const u8) !fingerprint.Pair {
+            return .{ .primary = @splat(42), .secondary = @splat(43) };
         }
 
-        pub fn stage(_: *@This(), _: []const u8, _: []const u8, _: u64, _: fingerprint.Digest) !void {}
+        pub fn stage(_: *@This(), _: []const u8, _: []const u8, _: u64, _: fingerprint.Pair) !void {}
     };
     var root: [1024]u16 = @splat(0);
     try std.testing.expect(pet_catalog_store_fixture_open(&root, root.len) != 0);

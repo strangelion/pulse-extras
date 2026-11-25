@@ -138,10 +138,11 @@ pub const Group = struct {
         var path: [4096]u8 = undefined;
         const dir = try inventory.directory(asset_root, entry.id, &path);
         const digest = record.digest orelse return error.UnverifiedAsset;
-        const hex = fingerprint.hex(digest);
-        var expected: [65]u16 = @splat(0);
+        const secondary = record.secondary orelse return error.UnverifiedAsset;
+        const hex = fingerprint.pairHex(.{ .primary = digest, .secondary = secondary });
+        var expected: [194]u16 = @splat(0);
         for (hex, 0..) |ch, i| expected[i] = ch;
-        return self.startPackageInternal(io, approval, entry, dir, scale, reduced, topmost, expected[0..64 :0]);
+        return self.startPackageInternal(io, approval, entry, dir, scale, reduced, topmost, expected[0..193 :0]);
     }
 
     fn startInternal(self: *Group, io: std.Io, approval: trust.Approval, asset_id: u64, options: Options) !Start {

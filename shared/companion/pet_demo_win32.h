@@ -79,7 +79,7 @@ typedef struct {
 typedef struct {
     uint8_t path[96];
     uint64_t size;
-    uint8_t digest[32];
+    uint8_t digest[96]; /* SHA-256 then independent SHA-512 */
 } pet_fingerprint_file;
 typedef void (*pet_hash_fn)(const uint8_t *, size_t, uint8_t *);
 typedef int (*pet_fingerprint_fn)(const pet_fingerprint_file *, size_t, uint8_t *);

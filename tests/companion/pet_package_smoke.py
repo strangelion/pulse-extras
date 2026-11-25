@@ -43,20 +43,25 @@ def main() -> None:
 
         check(True)
         # Independent canonical fingerprint reference, using actual file bytes.
-        def reference():
+        def reference(algorithm=hashlib.sha256, domain=b"pulse-classic-package-sha256-v1\x00"):
             files = sorted((p.relative_to(root).as_posix(), p.read_bytes())
                            for p in root.rglob("*") if p.is_file())
-            digest = hashlib.sha256(b"pulse-classic-package-sha256-v1\x00")
+            digest = algorithm(domain)
             digest.update(struct.pack("<Q", len(files)))
             for path, data in files:
                 name = path.encode("ascii")
                 digest.update(struct.pack("<Q", len(name)))
                 digest.update(name)
                 digest.update(struct.pack("<Q", len(data)))
-                digest.update(hashlib.sha256(data).digest())
+                digest.update(algorithm(data).digest())
             return digest.hexdigest()
 
         expected_sha = reference()
+        expected_pair = expected_sha + ':' + reference(hashlib.sha512, b"pulse-classic-package-sha512-v1\x00")
+        result = subprocess.run([str(exe), "--fingerprint-package-v2", str(root), "cat"],
+                                timeout=15, capture_output=True)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == f"PULSE_PACKAGE_FINGERPRINT_V2 {expected_pair}".encode()
         result = subprocess.run([str(exe), "--fingerprint-package", str(root), "cat"],
                                 timeout=15, capture_output=True)
         assert result.returncode == 0, result.stderr
@@ -67,18 +72,21 @@ def main() -> None:
         # Real staged copy. The independent source hash and bytes must survive.
         managed = pathlib.Path(tmp) / "managed assets"
         managed.mkdir()
-        args = [str(exe), "--fingerprint-package", str(root), "cat",
-                "--expected-sha256", expected_sha, "--stage-root", str(managed),
+        args = [str(exe), "--fingerprint-package-v2", str(root), "cat",
+                "--expected-fingerprint", expected_pair, "--stage-root", str(managed),
                 "0000000000000001"]
         result = subprocess.run(args, timeout=20, capture_output=True)
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == f"PULSE_PACKAGE_STAGED_V1 {expected_sha}".encode()
+        assert result.stdout.strip() == f"PULSE_PACKAGE_STAGED_V2 {expected_pair}".encode()
         copied = managed / "pet-0000000000000001"
         assert copied.is_dir() and not (managed / "pet-0000000000000001.pending").exists()
         for file in root.rglob("*"):
             if file.is_file():
                 assert (copied / file.relative_to(root)).read_bytes() == file.read_bytes()
         assert reference() == expected_sha
+        wrong = expected_pair[:-1] + ('0' if expected_pair[-1] != '0' else '1')
+        result = subprocess.run([str(exe), '--check-package', str(copied), 'cat', '--expected-fingerprint', wrong], timeout=15, capture_output=True)
+        assert result.returncode != 0 and b'fingerprint-mismatch' in result.stderr
         result = subprocess.run(args, timeout=20, capture_output=True)
         assert result.returncode != 0, result.stderr
         assert reference() == expected_sha and copied.is_dir()

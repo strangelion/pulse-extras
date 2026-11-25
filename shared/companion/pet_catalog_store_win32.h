@@ -8,7 +8,7 @@
  * No user-selected root, arbitrary filenames, scanning or recursive deletion.
  * Payload validation is the Zig PCT1 codec's responsibility. */
 #define PET_CATALOG_RECORD_MAX 1119u
-#define PET_INVENTORY_MAX 65536u
+#define PET_INVENTORY_MAX 131072u
 typedef enum {
     PET_STORE_OK = 0, PET_STORE_MISSING, PET_STORE_INVALID,
     PET_STORE_IO, PET_STORE_BUSY, PET_STORE_CLEANUP_FAILED

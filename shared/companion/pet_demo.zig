@@ -28,24 +28,25 @@ const ScheduleFn = *const fn (*const package.Package, u32, u32, u32, u32) callco
 const FingerprintFile = extern struct {
     path: [96]u8,
     size: u64,
-    digest: fingerprint.Digest,
+    digest: fingerprint.Pair,
 };
-const HashFn = *const fn ([*]const u8, usize, *fingerprint.Digest) callconv(.c) void;
-const FingerprintFn = *const fn ([*]const FingerprintFile, usize, *fingerprint.Digest) callconv(.c) c_int;
+const HashFn = *const fn ([*]const u8, usize, *fingerprint.Pair) callconv(.c) void;
+const FingerprintFn = *const fn ([*]const FingerprintFile, usize, *fingerprint.Pair) callconv(.c) c_int;
 
-fn hashBytes(input: [*]const u8, len: usize, out: *fingerprint.Digest) callconv(.c) void {
-    std.crypto.hash.sha2.Sha256.hash(input[0..len], out, .{});
+fn hashBytes(input: [*]const u8, len: usize, out: *fingerprint.Pair) callconv(.c) void {
+    std.crypto.hash.sha2.Sha256.hash(input[0..len], &out.primary, .{});
+    std.crypto.hash.sha2.Sha512.hash(input[0..len], &out.secondary, .{});
 }
 
-fn hashInventory(input: [*]const FingerprintFile, count: usize, out: *fingerprint.Digest) callconv(.c) c_int {
+fn hashInventory(input: [*]const FingerprintFile, count: usize, out: *fingerprint.Pair) callconv(.c) c_int {
     if (count > fingerprint.max_files) return 1;
     var files: [fingerprint.max_files]fingerprint.FileDigest = undefined;
     for (input[0..count], 0..) |*file, i| {
         const path = std.mem.sliceTo(&file.path, 0);
         if (path.len == file.path.len) return 1;
-        files[i] = .{ .path = path, .size = file.size, .digest = file.digest };
+        files[i] = .{ .path = path, .size = file.size, .digest = file.digest.primary, .secondary = file.digest.secondary };
     }
-    out.* = fingerprint.digest(files[0..count]) catch return 1;
+    out.* = fingerprint.digestPair(files[0..count]) catch return 1;
     return 0;
 }
 

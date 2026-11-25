@@ -20,7 +20,7 @@ pub const Coordinator = struct {
         if (self.fault != null) return error.RecoveryRequired;
         if (!inventory.validSource(source_id)) return error.Invalid;
         const digest = try backend.probe(source, source_id);
-        if (self.index.findDigest(digest)) |id| return .{ .existing = id };
+        if (try self.index.findPair(digest)) |id| return .{ .existing = id };
 
         var reserved = self.index;
         const id = try reserved.reserve();
@@ -39,7 +39,7 @@ pub const Coordinator = struct {
         var published = self.index;
         // Preconditions were checked before invoking the helper; a failure
         // here is still a recovery fault since the directory now exists.
-        published.publishVerified(id, source_id, digest) catch |err| {
+        published.publishPair(id, source_id, digest) catch |err| {
             self.index.pending_id = null;
             self.fault = .inventory_commit;
             self.recovery_id = id;
@@ -63,8 +63,8 @@ const Mock = struct {
     fail_stage: bool = false,
     saved: inventory.Inventory = .{},
 
-    fn probe(_: *Mock, _: []const u8, _: []const u8) !fingerprint.Digest {
-        return @splat(7);
+    fn probe(_: *Mock, _: []const u8, _: []const u8) !fingerprint.Pair {
+        return .{ .primary = @splat(7), .secondary = @splat(8) };
     }
 
     fn save(self: *Mock, value: *const inventory.Inventory) !void {
@@ -74,7 +74,7 @@ const Mock = struct {
         self.saved.pending_id = null;
     }
 
-    fn stage(self: *Mock, _: []const u8, _: []const u8, id: u64, _: fingerprint.Digest) !void {
+    fn stage(self: *Mock, _: []const u8, _: []const u8, id: u64, _: fingerprint.Pair) !void {
         self.stages += 1;
         if (self.saved.next_id != id + 1 or self.saved.count != 0) return error.NotReserved;
         if (self.fail_stage) return error.InjectedStage;
