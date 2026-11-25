@@ -543,3 +543,22 @@ duplicate detection. No external network is required. Add unknown-file
 cleanup and preexisting-directory tests. Live HTTPS end-to-end and UI,
 production root ACL provisioning, crash recovery and persistent asset
 quota remain pending. New code awaits CI.
+
+## V3 lightweight search
+
+Implement search index/page validation from OpenPets catalog-validation.ts
+and catalog-v3.ts. Require matching root revision/total, bounded page sizes,
+exact final page length, safe distinct URLs and valid detail-page references.
+Search one page at a time with a caller-bounded allocator; Scan owns only
+seen IDs and at most 128 copied result rows per requested window. Reject
+cross-page duplicates and incomplete scans before publishing results.
+Default curated filter (original or featured), optional category/version,
+original/featured and ASCII-insensitive multi-term search with exact UTF-8
+matching for non-ASCII text. Explicit ID lookup includes non-curated assets.
+Re-resolve selected hit against its detail page; no download URL comes
+from a search row. Full Unicode folding, persisted cache, live network
+or UI wiring not yet implemented. Callers must retain the same validated
+root/index for all page fetches and discard provisional rows on failure.
+Tests exercise cross-page selection, duplicate IDs and revision mismatch.
+Previous full parallel-download regression and lightweight stress passed;
+archive-install regression still in progress. New search code awaits CI.
