@@ -137,9 +137,16 @@ pub const Git = struct {
     runner: *run.Runner,
     executable: identity.Path,
     probe: detect.Probe,
+    execution: cli.Execution = .compatibility,
 
     pub fn init(runner: *run.Runner, executable: identity.Path, probe: detect.Probe) Git {
         return .{ .runner = runner, .executable = executable, .probe = probe };
+    }
+
+    /// Caller keeps approved Runner and environment alive through session join.
+    pub fn initApproved(runner: *run.Runner, executable: identity.Path, probe: detect.Probe, execution: cli.Execution) error{UnapprovedExecutable}!Git {
+        if (execution != .approved or runner.policy != .approved_local) return error.UnapprovedExecutable;
+        return .{ .runner = runner, .executable = executable, .probe = probe, .execution = execution };
     }
 
     pub fn provider(self: *Git) contract.Provider {
@@ -152,9 +159,32 @@ pub const Git = struct {
         };
     }
 
+    /// CLI-reported worktree and common metadata identity, not an OS file ID.
+    pub fn resolveWorkspace(self: *Git, directory: []const u8) contract.Error!identity.Workspace {
+        var outcome = self.execution.execute(self.runner, .{
+            .argv = &.{
+                self.executable.slice(),
+                "--no-optional-locks",
+                "-C",
+                directory,
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-common-dir",
+                "--absolute-git-dir",
+            },
+            .timeout_ns = 5 * std.time.ns_per_s,
+            .stdout_limit = 3 * (identity.max_path_bytes + 2),
+            .stderr_limit = 64 * 1024,
+        }) catch |err| return mapRunError(err);
+        defer outcome.deinit();
+        if (!outcome.succeeded()) return mapFailure(outcome.stderr);
+        return parseWorkspace(outcome.stdout);
+    }
+
     pub fn summarize(self: *Git, workspace: *const identity.Workspace) contract.Error!contract.Snapshot {
         if (workspace.kind != .git) return error.Unsupported;
-        var outcome = self.runner.run(.{
+        var outcome = self.execution.execute(self.runner, .{
             .argv = &.{
                 self.executable.slice(),
                 "--no-optional-locks",
@@ -213,6 +243,24 @@ pub const Git = struct {
         return self.summarize(workspace);
     }
 };
+
+/// Three absolute paths, no ambiguous extra records.
+fn parseWorkspace(output: []const u8) contract.Error!identity.Workspace {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    const root = std.mem.trimEnd(u8, lines.next() orelse return error.Parse, "\r");
+    const common = std.mem.trimEnd(u8, lines.next() orelse return error.Parse, "\r");
+    const metadata = std.mem.trimEnd(u8, lines.next() orelse return error.Parse, "\r");
+    if (lines.next()) |tail| {
+        if (tail.len != 0 or lines.next() != null) return error.Parse;
+    }
+    for ([_][]const u8{ root, common, metadata }) |path| {
+        if (!std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, '\r') != null) return error.Parse;
+        _ = identity.Path.init(path) catch return error.Parse;
+    }
+    var workspace = identity.Workspace.init(.git, root, common) catch return error.Parse;
+    workspace.shared_metadata = !std.mem.eql(u8, common, metadata);
+    return workspace;
+}
 
 fn declaredCapabilities() capabilities.Set {
     var set: capabilities.Set = .empty;
@@ -327,9 +375,10 @@ test "reads a real repository end to end when git is installed" {
         "-m",                              "init",
     });
 
-    const workspace = try identity.Workspace.init(.git, root, root);
-
     var git = Git.init(&runner, report.path, .{ .ctx = undefined, .lookup = fakeLookup });
+    const workspace = try git.resolveWorkspace(root);
+    try std.testing.expect(std.fs.path.isAbsolute(workspace.root.slice()));
+    try std.testing.expect(!workspace.shared_metadata);
     const clean = try git.summarize(&workspace);
     try std.testing.expectEqual(contract.Availability.ready, clean.availability);
     try std.testing.expect(clean.revision != null);
@@ -348,6 +397,16 @@ test "reads a real repository end to end when git is installed" {
     try std.testing.expect(publication == .published);
     const dirty = session.lookup(&workspace).fresh;
     try std.testing.expectEqual(@as(u32, 1), dirty.changes.modified);
+
+    try expectSuccess(&runner, &.{ report.path.slice(), "-C", root, "worktree", "add", "--detach", "linked", "HEAD" });
+    var linked_buffer: [identity.max_path_bytes]u8 = undefined;
+    const linked_path = try std.fmt.bufPrint(&linked_buffer, "{s}" ++ std.fs.path.sep_str ++ "linked", .{workspace.root.slice()});
+    const linked = try git.resolveWorkspace(linked_path);
+    try std.testing.expect(linked.shared_metadata);
+    try std.testing.expect(!linked.root.eql(workspace.root.slice()));
+    try std.testing.expect(linked.repository_root.eql(workspace.repository_root.slice()));
+    const linked_status = try git.summarize(&linked);
+    try std.testing.expect(linked_status.revision != null);
 }
 
 fn expectSuccess(runner: *run.Runner, argv: []const []const u8) !void {
@@ -400,4 +459,18 @@ test "ahead behind counts distinguish zero unknown and malformed" {
     }) |fixture| {
         try std.testing.expectError(error.Malformed, parseStatus(fixture));
     }
+}
+
+test "workspace identity rejects ambiguous path output" {
+    try std.testing.expectError(error.Parse, parseWorkspace("relative\nrelative\nrelative\n"));
+    try std.testing.expectError(error.Parse, parseWorkspace("one\ntwo\n"));
+    const valid = if (@import("builtin").os.tag == .windows)
+        "C:/work\nC:/repo/.git\nC:/repo/.git/worktrees/work\n"
+    else
+        "/work\n/repo/.git\n/repo/.git/worktrees/work\n";
+    const workspace = try parseWorkspace(valid);
+    try std.testing.expect(workspace.shared_metadata);
+    var buffer: [256]u8 = undefined;
+    const extra = try std.fmt.bufPrint(&buffer, "{s}unexpected\n", .{valid});
+    try std.testing.expectError(error.Parse, parseWorkspace(extra));
 }

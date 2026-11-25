@@ -70,9 +70,16 @@ pub const Jj = struct {
     runner: *run.Runner,
     executable: identity.Path,
     probe: detect.Probe,
+    execution: cli.Execution = .compatibility,
 
     pub fn init(runner: *run.Runner, executable: identity.Path, probe: detect.Probe) Jj {
         return .{ .runner = runner, .executable = executable, .probe = probe };
+    }
+
+    /// Caller keeps approved Runner and environment alive through session join.
+    pub fn initApproved(runner: *run.Runner, executable: identity.Path, probe: detect.Probe, execution: cli.Execution) error{UnapprovedExecutable}!Jj {
+        if (execution != .approved or runner.policy != .approved_local) return error.UnapprovedExecutable;
+        return .{ .runner = runner, .executable = executable, .probe = probe, .execution = execution };
     }
 
     pub fn provider(self: *Jj) contract.Provider {
@@ -137,7 +144,7 @@ pub const Jj = struct {
     }
 
     fn query(self: *Jj, argv: []const []const u8) contract.Error!run.Outcome {
-        return self.runner.run(.{
+        return self.execution.execute(self.runner, .{
             .argv = argv,
             .timeout_ns = 10 * std.time.ns_per_s,
             .stdout_limit = limit,
