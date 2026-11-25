@@ -542,6 +542,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
 fn close(instance: *Instance) host_mod.Error!void {
     instance.active = false;
     instance.runtime_checked = false;
+    instance.runtime_status = if (config.runtime_sha256.len == 0) "未打包运行时；无法启动桌宠" else "切换至运行管理时检查同包运行时";
     stopTimer(instance);
     if (instance.task_id != 0) {
         const tasks = instance.tasks orelse return error.State;

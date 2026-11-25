@@ -15,7 +15,6 @@ from pathlib import Path
 import subprocess
 import sys
 import stat
-import shutil
 
 REPO = Path(__file__).resolve().parent.parent
 PACKAGE = "strangelion.companion-dev"
@@ -183,15 +182,15 @@ def main() -> int:
     manifest = dll.parent / "manifest.json"
     if args.bundle_runtime:
         assert runtime_build is not None and helper_build is not None
-    members.append(stage_package_file(runtime_build / "bin" / RUNTIME_NAME,
-                                      dll.parent, RUNTIME_NAME, evidence["runtime"]["sha256"]))
-    members.append(stage_package_file(helper_build / "bin" / HELPER_NAME,
-                                      dll.parent, HELPER_NAME, evidence["helper"]["sha256"]))
-    if args.prepare_helper == "libwebp":
-        for notice in ("COPYING", "PATENTS"):
-            source = REPO / ".local" / "deps" / "libwebp-1.6.0" / notice
-            members.append(stage_package_file(source, dll.parent,
-                                              f"libwebp-{notice}.txt", sha256(source)))
+        members.append(stage_package_file(runtime_build / "bin" / RUNTIME_NAME,
+                                          dll.parent, RUNTIME_NAME, evidence["runtime"]["sha256"]))
+        members.append(stage_package_file(helper_build / "bin" / HELPER_NAME,
+                                          dll.parent, HELPER_NAME, evidence["helper"]["sha256"]))
+        if args.prepare_helper == "libwebp":
+            for notice in ("COPYING", "PATENTS"):
+                source = REPO / ".local" / "deps" / "libwebp-1.6.0" / notice
+                members.append(stage_package_file(source, dll.parent,
+                                                  f"libwebp-{notice}.txt", sha256(source)))
     manifest_args = common + ["native-manifest", str(REPO / "extensions/companion/manifest.dev.json"),
                               "--library", str(dll), "--output", str(manifest)]
     for member in members:

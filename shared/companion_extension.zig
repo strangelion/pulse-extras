@@ -43,7 +43,7 @@ pub fn checkRuntime(hex: []const u8) !void {
 
 test "runtime approval requires exactly one SHA-256 hex digest" {
     try std.testing.expectError(error.InvalidRuntimeDigest, parseDigest(""));
-    try std.testing.expectError(error.InvalidRuntimeDigest, parseDigest("z" ** 64));
-    const digest = try parseDigest("01" ** 32);
+    try std.testing.expectError(error.InvalidRuntimeDigest, parseDigest("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
+    const digest = try parseDigest("0101010101010101010101010101010101010101010101010101010101010101");
     try std.testing.expectEqual(@as(u8, 1), digest[31]);
 }

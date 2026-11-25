@@ -506,6 +506,7 @@ pub fn build(b: *std.Build) void {
         "shared/vcs/providers/git.zig",
         "shared/vcs/providers/jj.zig",
         "shared/vcs/providers/svn.zig",
+        "shared/companion_extension.zig",
         "shared/companion/openpets_protocol.zig",
         "shared/companion/openpets_lease.zig",
         "shared/companion/behavior.zig",
@@ -546,7 +547,7 @@ pub fn build(b: *std.Build) void {
         const run = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run.step);
         const runtime = std.mem.startsWith(u8, source, "shared/runtime/") or std.mem.startsWith(u8, source, "shared/process/");
-        if (runtime or std.mem.startsWith(u8, source, "shared/companion/") or std.mem.eql(u8, source, "extensions/companion/main.zig"))
+        if (runtime or std.mem.startsWith(u8, source, "shared/companion/") or std.mem.eql(u8, source, "extensions/companion/main.zig") or std.mem.eql(u8, source, "shared/companion_extension.zig"))
             companion_tests.dependOn(&run.step);
         if (runtime or std.mem.startsWith(u8, source, "shared/vcs/"))
             vcs_tests.dependOn(&run.step);
