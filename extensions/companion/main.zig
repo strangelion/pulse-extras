@@ -10,6 +10,7 @@ const diag = @import("pulse_diagnostics");
 const library = @import("companion_library");
 const config = @import("companion_config");
 const pickers = @import("pulse_pickers");
+const dialogs_v2 = @import("pulse_dialogs_v2");
 const builtin = @import("builtin");
 
 const TimerCallback = *const fn (?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.winapi) void;
@@ -66,6 +67,11 @@ const Instance = struct {
     import_result: ?library.ImportResult = null,
     import_dialog: u64 = 0,
     picker: ?pickers.Table = null,
+    picker_api: ?pickers.Table = null,
+    dialog_v2_table: ?dialogs_v2.Table = null,
+    dialog_command_subscription: u64 = 0,
+    dialog_picker_disabled: bool = false,
+    picker_for_dialog: bool = false,
     picker_request: u64 = 0,
     fallback_pick: bool = false,
     picked_folder: ?library.PickedFolder = null,
@@ -206,10 +212,18 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             }
             if (instance.dialogs != null and config.helper_sha256.len == 64 and config.runtime_sha256.len == 64) {
                 const enabled = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.import_dialog == 0 and instance.picker_request == 0;
+                const embedded_picker = instance.dialog_v2_table != null and instance.picker_api != null and !instance.dialog_picker_disabled;
                 content.import_toolbar[0] = action("library.import", "导入本地素材", commands[19], enabled);
-                content.import_toolbar[1] = action("library.browse", "浏览文件夹", commands[21], enabled);
-                content.import_toolbar[2] = action("library.import-cancel", "取消导入", commands[20], instance.import_request != null and instance.task_id != 0 and !instance.import_cancel_requested);
-                content.children[count] = horizontal("library.import-toolbar", content.import_toolbar[0..if (instance.import_request != null) @as(usize, 3) else 2]);
+                var import_count: usize = 1;
+                if (!embedded_picker) {
+                    content.import_toolbar[1] = action("library.browse", "浏览文件夹", commands[21], enabled);
+                    import_count = 2;
+                }
+                if (instance.import_request != null) {
+                    content.import_toolbar[2] = action("library.import-cancel", "取消导入", commands[20], instance.task_id != 0 and !instance.import_cancel_requested);
+                    import_count = 3;
+                }
+                content.children[count] = horizontal("library.import-toolbar", content.import_toolbar[0..import_count]);
                 count += 1;
             }
         },
@@ -831,6 +845,16 @@ const Selection = struct {
 fn importClosed(user: ?*anyopaque, dialog: u64, status: abi.Status, button: abi.StringView, states: [*c]const ui.State, count: u32) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
     if (dialog == 0 or dialog != instance.import_dialog) return;
+    if (instance.dialog_command_subscription != 0) {
+        const subscription = instance.dialog_command_subscription;
+        instance.dialog_command_subscription = 0;
+        if (instance.dialog_v2_table) |table| {
+            if (table.unsubscribe_command) |unsubscribe| {
+                const result = unsubscribe(table.context, subscription);
+                if (result != abi.ok and result != abi.error_state) diag.status("companion-dialog-unsubscribe", @intFromEnum(result));
+            }
+        }
+    }
     instance.import_dialog = 0;
     if (!instance.active) return;
     if (status != abi.ok or !std.mem.eql(u8, abi.slice(button) orelse "", "import")) {
@@ -878,9 +902,11 @@ fn pickerCompleted(user: ?*anyopaque, result: [*c]const pickers.Result) callconv
     if (result == null or result[0].size < @sizeOf(pickers.Result) or result[0].request_id != instance.picker_request or instance.picker_request == 0) return;
     instance.picker_request = 0;
     instance.picker = null;
+    const for_dialog = instance.picker_for_dialog;
+    instance.picker_for_dialog = false;
     if (!instance.active or instance.section != .library) return;
     if (result[0].outcome == pickers.cancelled) {
-        instance.library_status = "已取消文件夹选择";
+        instance.library_status = if (for_dialog) "已取消选择；导入表单保持不变" else "已取消文件夹选择";
         refresh(instance);
         return;
     }
@@ -896,17 +922,56 @@ fn pickerCompleted(user: ?*anyopaque, result: [*c]const pickers.Result) callconv
         refresh(instance);
         return;
     }
+    if (for_dialog) {
+        if (instance.import_dialog == 0) return;
+        const table = instance.dialog_v2_table orelse {
+            instance.library_status = "导入窗口已不支持更新；请重新打开";
+            refresh(instance);
+            return;
+        };
+        const set_states = table.set_states orelse return;
+        const states = [_]ui.State{
+            .{ .key = abi.view("import.path"), .value = abi.view(selection.path[0..selection.len]) },
+            .{ .key = abi.view("import.id"), .value = abi.view(selection.id[0..selection.id_len]) },
+        };
+        const status = set_states(table.context, instance.import_dialog, &states, states.len);
+        if (status == abi.ok) {
+            instance.library_status = "已填入所选目录；请确认素材 ID 后导入";
+        } else {
+            diag.status("companion-dialog-set-picker-result", @intFromEnum(status));
+            instance.library_status = "目录已选中，但表单更新失败；请手动填写";
+        }
+        refresh(instance);
+        return;
+    }
     showImportWithSelection(instance, &selection);
+}
+
+fn importDialogCommand(user: ?*anyopaque, dialog: u64, command: abi.StringView) callconv(.c) void {
+    const instance: *Instance = @ptrCast(@alignCast(user orelse return));
+    if (!instance.active or dialog == 0 or dialog != instance.import_dialog or instance.picker_request != 0 or !std.mem.eql(u8, abi.slice(command) orelse "", "browse")) return;
+    const table = instance.picker_api orelse return;
+    const pick = table.pick_folders orelse return;
+    var request_id: u64 = 0;
+    const request: pickers.Request = .{ .title = abi.view("选择桌宠素材文件夹"), .ok_label = abi.view("选择") };
+    instance.picker_for_dialog = true;
+    const status = pick(table.context, &request, pickerCompleted, instance, &request_id);
+    if (status != abi.ok or request_id == 0) {
+        instance.picker_for_dialog = false;
+        diag.status("companion-dialog-folder-picker", @intFromEnum(status));
+        instance.library_status = "宿主未能打开文件夹选择器；可手动填写路径";
+        refresh(instance);
+        return;
+    }
+    instance.picker = table;
+    instance.picker_request = request_id;
+    instance.library_status = "正在选择素材文件夹";
+    refresh(instance);
 }
 
 fn browseImport(instance: *Instance) void {
     if (!instance.active or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.dialogs == null or instance.tasks == null or instance.dispatch == null or config.helper_sha256.len != 64 or config.runtime_sha256.len != 64) return;
-    const table = instance.host.queryOptional(pickers.Table, pickers.name, pickers.version) catch {
-        instance.library_status = "宿主选择器查询失败；请手动填写";
-        refresh(instance);
-        return;
-    };
-    if (table) |picker| {
+    if (instance.picker_api) |picker| {
         if (picker.pick_folders) |pick| {
             if (picker.cancel != null) {
                 const request: pickers.Request = .{ .title = abi.view("选择桌宠素材文件夹"), .ok_label = abi.view("选择") };
@@ -914,6 +979,7 @@ fn browseImport(instance: *Instance) void {
                 const status = pick(picker.context, &request, pickerCompleted, instance, &id);
                 if (status == abi.ok and id != 0) {
                     instance.picker = picker;
+                    instance.picker_for_dialog = false;
                     instance.picker_request = id;
                     refresh(instance);
                     return;
@@ -941,7 +1007,8 @@ fn showImportWithSelection(instance: *Instance, selection: *const Selection) voi
     if (!instance.active or instance.section != .library or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0) return;
     const dialogs = instance.dialogs orelse return;
     const show = dialogs.show orelse return;
-    var fields = [_]ui.Node{ ui.node(ui.NodeKind.text_input), ui.node(ui.NodeKind.text_input) };
+    const embedded_picker = instance.dialog_v2_table != null and instance.picker_api != null and !instance.dialog_picker_disabled;
+    var fields = [_]ui.Node{ ui.node(ui.NodeKind.text_input), ui.node(ui.NodeKind.text_input), ui.node(ui.NodeKind.button) };
     fields[0].id = abi.view("import.path");
     fields[0].text = .{ .present = 1, .value = abi.view("素材文件夹") };
     fields[0].placeholder = .{ .present = 1, .value = abi.view("本地绝对路径，例如 C:\\Pets\\cat") };
@@ -953,7 +1020,8 @@ fn showImportWithSelection(instance: *Instance, selection: *const Selection) voi
     var root = ui.node(ui.NodeKind.stack);
     root.id = abi.view("import.form");
     root.gap = .{ .present = 1, .value = 8 };
-    ui.withChildren(&root, &fields);
+    if (embedded_picker) fields[2] = action("import.browse", "浏览文件夹…", "browse", instance.picker_request == 0);
+    ui.withChildren(&root, fields[0..if (embedded_picker) @as(usize, 3) else 2]);
     const states = [_]ui.State{
         .{ .key = abi.view("import.path"), .value = abi.view(selection.path[0..selection.len]) },
         .{ .key = abi.view("import.id"), .value = abi.view(selection.id[0..selection.id_len]) },
@@ -963,6 +1031,11 @@ fn showImportWithSelection(instance: *Instance, selection: *const Selection) voi
     tree.root = &root;
     tree.states = &states;
     tree.state_count = states.len;
+    const dialog_commands = [_]abi.StringView{abi.view("browse")};
+    if (embedded_picker) {
+        tree.commands = &dialog_commands;
+        tree.command_count = dialog_commands.len;
+    }
     const buttons = [_]raw.PulseDialogButton{
         .{ .size = @sizeOf(raw.PulseDialogButton), .kind = raw.PULSE_DIALOG_BUTTON_PRIMARY, .id = abi.view("import"), .text = abi.view("导入") },
         .{ .size = @sizeOf(raw.PulseDialogButton), .kind = raw.PULSE_DIALOG_BUTTON_STANDARD, .id = abi.view("cancel"), .text = abi.view("取消") },
@@ -984,6 +1057,25 @@ fn showImportWithSelection(instance: *Instance, selection: *const Selection) voi
         instance.library_status = "宿主未能打开导入确认窗口";
     } else {
         instance.import_dialog = id;
+        if (embedded_picker) {
+            const table = instance.dialog_v2_table.?;
+            const subscribe = table.subscribe_command.?;
+            var subscription: u64 = 0;
+            const status = subscribe(table.context, id, abi.view("browse"), importDialogCommand, instance, &subscription);
+            if (status == abi.ok and subscription != 0) {
+                instance.dialog_command_subscription = subscription;
+            } else {
+                // Never leave a visible command without a live callback.
+                instance.dialog_picker_disabled = true;
+                if (dialogs.close) |close_dialog| {
+                    if (close_dialog(dialogs.context, id) == abi.ok) {
+                        showImportWithSelection(instance, selection);
+                        return;
+                    }
+                }
+                instance.library_status = "宿主不支持对话框内的选择命令；请手动填写";
+            }
+        }
     }
     refresh(instance);
 }
@@ -1112,6 +1204,15 @@ fn close(instance: *Instance) host_mod.Error!void {
         instance.picker = null;
     }
     if (instance.import_dialog != 0) {
+        if (instance.dialog_command_subscription != 0) {
+            const subscription = instance.dialog_command_subscription;
+            instance.dialog_command_subscription = 0;
+            if (instance.dialog_v2_table) |table| {
+                const unsubscribe = table.unsubscribe_command orelse return error.Unavailable;
+                const status = unsubscribe(table.context, subscription);
+                if (status != abi.ok and status != abi.error_state) return error.State;
+            }
+        }
         const dialogs = instance.dialogs orelse return error.State;
         const close_dialog = dialogs.close orelse return error.Unavailable;
         host_mod.mapStatus(close_dialog(dialogs.context, instance.import_dialog)) catch |err| switch (err) {
@@ -1121,6 +1222,10 @@ fn close(instance: *Instance) host_mod.Error!void {
         instance.import_dialog = 0;
     }
     instance.dialogs = null;
+    instance.dialog_v2_table = null;
+    instance.picker_api = null;
+    instance.dialog_picker_disabled = false;
+    instance.picker_for_dialog = false;
     var cancel_error: ?host_mod.Error = null;
     for ([_]u64{ instance.runtime_task_id, instance.task_id }) |id| {
         if (id == 0) continue;
@@ -1165,6 +1270,19 @@ fn close(instance: *Instance) host_mod.Error!void {
 
 fn open(instance: *Instance) host_mod.Error!void {
     if (instance.page != 0) return error.State;
+    instance.dialog_picker_disabled = false;
+    instance.dialogs = try instance.host.queryOptional(raw.PulseDialogsV1, raw.PULSE_DIALOGS_INTERFACE_NAME, raw.PULSE_DIALOGS_VERSION_1);
+    if (instance.dialogs) |table| {
+        if (table.show == null or table.close == null) instance.dialogs = null;
+    }
+    instance.dialog_v2_table = try instance.host.queryOptional(dialogs_v2.Table, dialogs_v2.name, dialogs_v2.version);
+    if (instance.dialog_v2_table) |table| {
+        if (table.show == null or table.set_states == null or table.close == null or table.subscribe_command == null or table.unsubscribe_command == null) instance.dialog_v2_table = null;
+    }
+    instance.picker_api = try instance.host.queryOptional(pickers.Table, pickers.name, pickers.version);
+    if (instance.picker_api) |table| {
+        if (table.pick_folders == null or table.cancel == null) instance.picker_api = null;
+    }
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     fill(instance, &content, &tree);
@@ -1207,10 +1325,6 @@ fn open(instance: *Instance) host_mod.Error!void {
     instance.dispatch = try instance.host.queryOptional(raw.PulseDispatchV1, raw.PULSE_DISPATCH_INTERFACE, raw.PULSE_DISPATCH_VERSION);
     if (instance.dispatch) |dispatch| {
         if (dispatch.post == null or dispatch.cancel == null) instance.dispatch = null;
-    }
-    instance.dialogs = instance.host.queryOptional(raw.PulseDialogsV1, raw.PULSE_DIALOGS_INTERFACE_NAME, raw.PULSE_DIALOGS_VERSION_1) catch null;
-    if (instance.dialogs) |dialogs| {
-        if (dialogs.show == null or dialogs.close == null) instance.dialogs = null;
     }
     instance.active = true;
     const had_tasks = instance.task_id != 0 or instance.runtime_task_id != 0;

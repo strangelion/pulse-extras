@@ -54,7 +54,6 @@ Python 3 is used only by CI and SDK verification tools.
 - [Forge authoring architecture](docs/forge-architecture.md)
 - [Unified extension release design](docs/release.md)
 - [SDK pin](sdk/upstream.toml)
-- [Local SDK reference layout](docs/local-reference.md)
 - [CI](https://github.com/strangelion/pulse-extras/actions)
 - [Official extension registry](https://github.com/jimmgreen/pulse-extensions)
 

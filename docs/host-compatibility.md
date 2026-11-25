@@ -258,7 +258,3 @@ The only growth found is `PulseTaskProgress` (added `step`, `actions`, `note`,
 `abi.h` is not published by the host at all, so `PulseHostV1`/`PulsePluginV1`
 layout is covered by compile-time asserts and runtime validation, not by this
 check.
-
-## Local 1.0.61 SDK bundle reference
-
-See [Local SDK reference layout](local-reference.md) for the exact extraction path, optional reference materials and Agent lookup guide. This reference does not replace the public CI pin or the live host contract.
