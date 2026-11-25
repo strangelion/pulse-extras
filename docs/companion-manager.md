@@ -213,3 +213,21 @@ resources are needed (four inherited handles plus mapped state view), not
 four. Adjusted the shared quota and quota boundary test, not the child
 committed-memory limit. The actual demo readiness and group test still
 need CI rerun. Keep heavy stress manual.
+
+## Local preferences and automatic properties
+
+Added bounded PCT1 versioned binary preference encode/decode for each asset,
+including stable local asset ID, source ID, favorite flag and tags. Decoder
+stages before replacing preferences; truncated, malformed, mismatched and
+unknown-version records leave existing state unchanged. Name, source metadata
+and derived properties are not overwritten by saved preferences. This is a
+serialization seam, not disk persistence: atomic durable inventory writes,
+private root ownership and crash recovery remain to implement. Derived
+properties are activities, outfits, scheduled outfits and V2 gaze layout;
+layout is a metadata capability, not a guarantee of current eye tracking.
+Catalog removal checks the existing instance manager and removes only the
+record after all starts/stops for the asset have been confirmed gone. No
+source file deletion or ID allocator yet. Fixed the obsolete Zig array
+repetition syntax from failed run 45570423680 using a typed @splat array.
+New tests cover round trip, every truncation prefix, wrong ID, small output,
+feature filtering and removal guards. CI remains required.

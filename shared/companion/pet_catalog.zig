@@ -2,11 +2,12 @@
 //! Caller owns bounded storage and serialization. No decoding or I/O here.
 const std = @import("std");
 const assets = @import("pet_assets.zig");
+const manager = @import("pet_manager.zig");
 
 pub const max_tags = 16;
 pub const max_tag_bytes = 64;
 pub const max_query_bytes = 256;
-pub const Error = error{ Invalid, TagCapacity, DuplicateAsset, CatalogFull, UnknownAsset };
+pub const Error = error{ Invalid, TagCapacity, DuplicateAsset, CatalogFull, UnknownAsset, AssetInUse, InvalidRecord, BufferTooSmall };
 
 fn Text(comptime cap: usize) type {
     return struct {
@@ -44,12 +45,31 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
+pub const Feature = enum { activities, outfits, scheduled_outfits, gaze_layout };
+
+pub const Features = struct {
+    activities: bool = false,
+    outfits: bool = false,
+    scheduled_outfits: bool = false,
+    gaze_layout: bool = false,
+
+    pub fn has(self: Features, feature: Feature) bool {
+        return switch (feature) {
+            .activities => self.activities,
+            .outfits => self.outfits,
+            .scheduled_outfits => self.scheduled_outfits,
+            .gaze_layout => self.gaze_layout,
+        };
+    }
+};
+
 pub const Entry = struct {
     id: u64,
     source_id: Source,
     name: Name,
     layout: assets.Layout,
     favorite: bool = false,
+    features: Features = .{},
     tags: [max_tags]Tag = @splat(.{}),
     tag_count: usize = 0,
 
@@ -60,7 +80,14 @@ pub const Entry = struct {
 
     // Only validated package metadata should reach this boundary.
     pub fn fromMetadata(id: u64, source_id: []const u8, meta: *const assets.Metadata) Error!Entry {
-        return init(id, source_id, meta.display_name[0..meta.display_name_len], meta.layout);
+        var entry = try init(id, source_id, meta.display_name[0..meta.display_name_len], meta.layout);
+        entry.features = .{
+            .activities = meta.activities.count != 0,
+            .outfits = meta.wardrobe.count != 0,
+            .scheduled_outfits = meta.wardrobe.rule_count != 0,
+            .gaze_layout = meta.layout == .v2,
+        };
+        return entry;
     }
 
     pub fn displayName(self: *const Entry) []const u8 {
@@ -118,9 +145,10 @@ pub const Filter = struct {
     mode: Mode = .all,
     favorites_only: bool = false,
     layout: ?assets.Layout = null,
+    features: []const Feature = &.{},
 
     pub fn validate(self: Filter) Error!void {
-        if (self.query.len > max_query_bytes or !std.unicode.utf8ValidateSlice(self.query) or self.tags.len > max_tags) return error.Invalid;
+        if (self.query.len > max_query_bytes or !std.unicode.utf8ValidateSlice(self.query) or self.tags.len > max_tags or self.features.len > 4) return error.Invalid;
         for (self.query) |byte| {
             if (byte < 32 and byte != '\t' or byte == 127) return error.Invalid;
         }
@@ -131,6 +159,9 @@ pub const Filter = struct {
         if (self.favorites_only and !entry.favorite) return false;
         if (self.layout) |layout| {
             if (entry.layout != layout) return false;
+        }
+        for (self.features) |feature| {
+            if (!entry.features.has(feature)) return false;
         }
         var words = std.mem.tokenizeAny(u8, self.query, " \t");
         while (words.next()) |word| {
@@ -163,6 +194,21 @@ pub const Catalog = struct {
     pub fn get(self: *Catalog, id: u64) Error!*Entry {
         for (self.storage[0..self.len]) |*entry| {
             if (entry.id == id) return entry;
+        }
+        return error.UnknownAsset;
+    }
+
+    // Remove only the catalog record, never a source directory. The
+    // same serialized worker must own both manager and catalog mutations.
+    pub fn remove(self: *Catalog, instances: *const manager.Manager, id: u64) Error!void {
+        for (self.storage[0..self.len], 0..) |*entry, i| {
+            if (entry.id != id) continue;
+            if (!instances.canRemoveAsset(id)) return error.AssetInUse;
+            var j = i;
+            while (j + 1 < self.len) : (j += 1) self.storage[j] = self.storage[j + 1];
+            self.len -= 1;
+            self.storage[self.len] = undefined;
+            return;
         }
         return error.UnknownAsset;
     }
@@ -229,5 +275,110 @@ test "tag storage and search input are bounded" {
     try std.testing.expect(!try entry.addTag("TAG-0"));
     try std.testing.expect(entry.removeTag("tag-0"));
     try std.testing.expect(try entry.addTag("replacement"));
-    try std.testing.expectError(error.Invalid, (Filter{ .query = &([_]u8{'a'} ** (max_query_bytes + 1)) }).validate());
+    const oversized: [max_query_bytes + 1]u8 = @splat('a');
+    try std.testing.expectError(error.Invalid, (Filter{ .query = &oversized }).validate());
+}
+
+// Versioned local preferences record, separate from source metadata.
+// Format: magic[4], stable asset ID LE[8], source length[1], source bytes,
+// favorite[1], tag count[1], repeated length[1] + UTF-8 tag. Exact end required.
+// The durable catalog must authenticate the ID/source binding against its
+// validated inventory; this record is not authorization to launch a path.
+pub const max_preferences_bytes = 4 + 8 + 1 + 64 + 2 + max_tags * (1 + max_tag_bytes);
+
+pub fn encodePreferences(entry: *const Entry, out: []u8) Error![]const u8 {
+    const source = entry.source_id.slice();
+    var needed: usize = 15 + source.len;
+    for (entry.tags[0..entry.tag_count]) |*tag| needed += 1 + tag.len;
+    if (out.len < needed) return error.BufferTooSmall;
+    @memcpy(out[0..4], "PCT1");
+    for (0..8) |i| out[4 + i] = @truncate(entry.id >> @as(u6, @intCast(i * 8)));
+    out[12] = @intCast(source.len);
+    @memcpy(out[13 .. 13 + source.len], source);
+    var pos = 13 + source.len;
+    out[pos] = @intFromBool(entry.favorite);
+    out[pos + 1] = @intCast(entry.tag_count);
+    pos += 2;
+    for (entry.tags[0..entry.tag_count]) |*tag| {
+        out[pos] = @intCast(tag.len);
+        pos += 1;
+        @memcpy(out[pos .. pos + tag.len], tag.slice());
+        pos += tag.len;
+    }
+    return out[0..pos];
+}
+
+pub fn decodePreferences(entry: *Entry, input: []const u8) Error!void {
+    if (input.len < 15 or input.len > max_preferences_bytes or !std.mem.eql(u8, input[0..4], "PCT1")) return error.InvalidRecord;
+    var id: u64 = 0;
+    for (0..8) |i| id |= @as(u64, input[4 + i]) << @as(u6, @intCast(i * 8));
+    if (id != entry.id) return error.InvalidRecord;
+    const source_len: usize = input[12];
+    if (source_len > input.len - 15 or !std.mem.eql(u8, entry.source_id.slice(), input[13 .. 13 + source_len])) return error.InvalidRecord;
+    var pos = 13 + source_len;
+    const favorite = input[pos];
+    const count: usize = input[pos + 1];
+    pos += 2;
+    if (favorite > 1 or count > max_tags) return error.InvalidRecord;
+    // Stage the entire record before publishing, preserving existing prefs
+    // on truncation, invalid UTF-8, duplicate tags or unknown version.
+    var candidate = entry.*;
+    candidate.favorite = favorite == 1;
+    candidate.tags = @splat(.{});
+    candidate.tag_count = 0;
+    for (0..count) |_| {
+        if (pos == input.len) return error.InvalidRecord;
+        const len: usize = input[pos];
+        pos += 1;
+        if (len > input.len - pos) return error.InvalidRecord;
+        const added = candidate.addTag(input[pos .. pos + len]) catch return error.InvalidRecord;
+        if (!added) return error.InvalidRecord;
+        pos += len;
+    }
+    if (pos != input.len) return error.InvalidRecord;
+    entry.* = candidate;
+}
+
+test "preference record round trip rejects truncation and wrong asset without mutation" {
+    var original = try Entry.init(77, "cat", "猫咪", .v2);
+    original.favorite = true;
+    _ = try original.addTag("像素风");
+    _ = try original.addTag("Work");
+    var buffer: [max_preferences_bytes]u8 = undefined;
+    const bytes = try encodePreferences(&original, &buffer);
+    var restored = try Entry.init(77, "cat", "新名称", .v1);
+    try decodePreferences(&restored, bytes);
+    try std.testing.expect(restored.favorite and restored.hasTag("work"));
+    try std.testing.expectEqualStrings("新名称", restored.displayName());
+    try std.testing.expectEqual(assets.Layout.v1, restored.layout);
+    for (0..bytes.len) |len| {
+        try std.testing.expectError(error.InvalidRecord, decodePreferences(&restored, bytes[0..len]));
+        try std.testing.expect(restored.hasTag("像素风"));
+    }
+    var other = try Entry.init(78, "cat", "Other", .v2);
+    try std.testing.expectError(error.InvalidRecord, decodePreferences(&other, bytes));
+    try std.testing.expect(!other.favorite);
+    try std.testing.expectError(error.BufferTooSmall, encodePreferences(&original, buffer[0..4]));
+}
+
+test "automatic features and confirmed instance exit protect catalog removal" {
+    const meta = try assets.parseMetadata(std.testing.allocator, "{\"id\":\"cat\",\"displayName\":\"Cat\",\"description\":\"Fixture\",\"spritesheetPath\":\"spritesheet.webp\",\"spriteVersionNumber\":2}", "cat");
+    var storage: [2]Entry = undefined;
+    var catalog: Catalog = .{ .storage = &storage };
+    try catalog.insert(try Entry.fromMetadata(1, "cat", &meta));
+    try catalog.insert(try Entry.init(2, "dog", "Dog", .v1));
+    var ids: [2]u64 = undefined;
+    const result = try catalog.search(.{ .features = &.{.gaze_layout} }, 0, &ids);
+    try std.testing.expectEqual(@as(usize, 1), result.total);
+    try std.testing.expectEqual(@as(u64, 1), ids[0]);
+    var instances = try manager.Manager.init(2, manager.child_commit_ceiling * 2);
+    const id = try instances.reserveStart(1);
+    try std.testing.expectError(error.AssetInUse, catalog.remove(&instances, 1));
+    try instances.requestStop(id);
+    try std.testing.expectError(error.AssetInUse, catalog.remove(&instances, 1));
+    try instances.confirmGone(id);
+    try catalog.remove(&instances, 1);
+    try std.testing.expectEqual(@as(usize, 1), catalog.len);
+    try std.testing.expectError(error.UnknownAsset, catalog.get(1));
+    try std.testing.expectEqualStrings("Dog", (try catalog.get(2)).displayName());
 }
