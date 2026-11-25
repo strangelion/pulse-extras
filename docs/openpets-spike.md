@@ -1198,3 +1198,31 @@ frame-latency metrics yet. Actual measurements require successful run.
 The 100-process synthetic case is not a single-process multi-pet test
 or a heterogeneous visible artwork result; those need separate runs.
 Menu styling remains a separate change.
+
+
+### Measured baseline and separate mixed-source profiles
+
+Run [45558274357](https://github.com/strangelion/pulse-extras/actions/runs/45558274357),
+commit ca607d3, Windows Server 2025 (4 logical CPUs), ReleaseSafe:
+100/100 hidden synthetic instances ready in 2.797 s; 31 samples over
+30 s; 100/100 graceful exits and all required drain markers; zero forced
+terminations or failures. Peak summed working set 2,239,983,616 bytes,
+private bytes 1,584,070,656 (15.11 MiB per instance when divided by 100),
+maximum single-process private bytes 15,888,384; 399 threads, 10,806
+handles, 200 GDI and 300 USER objects; peak CPU 10.94% of one core /
+2.73% of machine capacity, cumulative CPU 3.421875 s. This does not
+establish long-term leak freedom or desktop compositor performance.
+
+Stress-harness changes now run synthetic-hidden and mixed-hidden in
+separate Windows jobs with distinct artifacts. Manual dispatch selects
+one profile, including mixed-visible (50% scale). Mixed mode alternates
+an actual fully encoded V1 WebP package and an actual V2 raw WebP;
+with 100 instances this exercises 50 of each. The embedded original
+solid-color fixtures test layout, codec, admission and per-process atlas
+ownership without fetching external resources. They do not model 100
+unique detailed artwork packages or realistic decoding complexity.
+Hosted visible mode cannot prove interactive desktop/compositor behavior.
+For actual artwork on a Windows desktop, supply repeated --package and
+--webp options and --visible; use separate output directories.
+No new performance pass threshold inferred from a single baseline.
+The new profiles require their own CI and real-desktop validation.

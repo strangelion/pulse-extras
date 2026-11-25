@@ -4,17 +4,23 @@ on:
   workflow_dispatch:
     inputs:
       count:
-        description: Independent hidden pet processes (1-100)
+        description: Independent pet processes (1-100)
         type: number
         default: 100
       seconds:
         description: Sampling duration (5-180 seconds)
         type: number
         default: 30
+      profile:
+        description: Benchmark workload (visible mode needs desktop visual validation)
+        type: choice
+        options: [synthetic-hidden, mixed-hidden, mixed-visible]
+        default: synthetic-hidden
   push:
     branches: [experiment/openpets-ipc]
     paths:
       - tests/companion/pet_stress.py
+      - tests/companion/pet_stress_fixtures.py
       - .github/workflows/pet-stress.yml
 
 permissions:
@@ -23,6 +29,10 @@ permissions:
 jobs:
   benchmark:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.profile) || '["synthetic-hidden","mixed-hidden"]') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -38,19 +48,27 @@ jobs:
           key: zig-archive-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.zig-version', 'scripts/zig-downloads.json') }}
       - run: python scripts/install_zig.py
       - run: zig build pet-demo -Doptimize=ReleaseSafe --summary all
-      - name: Sample independent hidden instances
+      - name: Sample independent instances (${{ matrix.profile }})
         env:
+          PET_PROFILE: ${{ matrix.profile }}
           PET_COUNT: ${{ inputs.count || 100 }}
           PET_SECONDS: ${{ inputs.seconds || 30 }}
         shell: pwsh
         run: |
-          python tests/companion/pet_stress.py --count $env:PET_COUNT --seconds $env:PET_SECONDS --output zig-out/pet-stress
+          $petArgs = @('--count', $env:PET_COUNT, '--seconds', $env:PET_SECONDS, '--output', 'zig-out/pet-stress')
+          if ($env:PET_PROFILE -ne 'synthetic-hidden') {
+            python tests/companion/pet_stress_fixtures.py zig-out/stress-fixtures
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $petArgs += @('--package', 'zig-out/stress-fixtures/fixture-v1', 'fixture-v1', '--webp', '2', 'zig-out/stress-fixtures/fixture-v2.webp')
+          }
+          if ($env:PET_PROFILE -eq 'mixed-visible') { $petArgs += @('--visible', '--scale', '50') }
+          python tests/companion/pet_stress.py @petArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Publish measurements even on benchmark failure
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: companion-stress
+          name: companion-stress-${{ matrix.profile }}
           path: zig-out/pet-stress/
           if-no-files-found: warn
           retention-days: 14
