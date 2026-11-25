@@ -33,6 +33,7 @@ const StoreRead = *const fn (*const Lease, usize, u64, [*]u8, usize, *usize) cal
 const StoreWrite = *const fn (*const Lease, usize, u64, [*]const u8, usize) callconv(.c) c_int;
 const StoreScan = *const fn (*const Lease, usize, [*]scan.Row, usize, *usize) callconv(.c) c_int;
 const StoreQuarantine = *const fn (*const Lease, usize, u64, c_int) callconv(.c) c_int;
+const StoreQuarantineUsage = *const fn (*const Lease, usize, u64, *u64) callconv(.c) c_int;
 
 extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, ?*anyopaque) callconv(.winapi) usize;
 extern "kernel32" fn CloseHandle(usize) callconv(.winapi) c_int;
@@ -199,6 +200,19 @@ pub const Owner = struct {
         };
         if (count > rows.len) return error.InvalidScan;
         return count;
+    }
+
+    pub fn quarantineUsage(self: *Owner, id: u64) !u64 {
+        if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
+        if (id == 0) return error.InvalidRecord;
+        const measure: StoreQuarantineUsage = @ptrCast(GetProcAddress(self.module, "pulse_companion_quarantine_usage_v1") orelse return error.MissingStoreApi);
+        var bytes: u64 = 0;
+        checkStore(measure(&self.lease, @sizeOf(Lease), id, &bytes)) catch |err| {
+            if (err == error.CleanupFailed) self.store_faulted = true;
+            return err;
+        };
+        if (bytes > 320 * 1024 * 1024) return error.InvalidRecord;
+        return bytes;
     }
 
     // Internal fixed-name move; the store layer validates durable identity

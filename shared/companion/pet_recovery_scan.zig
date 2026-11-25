@@ -22,6 +22,9 @@ pub const Report = struct {
     unreserved: usize = 0,
     quarantined_registered: usize = 0,
     quarantined_removed: usize = 0,
+    quarantine_registered_bytes: u64 = 0,
+    quarantine_removed_bytes: u64 = 0,
+    quarantine_unmeasured: usize = 0,
 };
 
 pub fn classify(index: *const inventory.Inventory, rows: []const Row) !Report {

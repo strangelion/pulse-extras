@@ -241,12 +241,16 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     const interrupted = try store.scanRecoveryDetailed(owner);
     if (interrupted.summary.quarantined_registered != 1 or interrupted.summary.missing != 2) return error.UnexpectedRecoveryScan;
     if (interrupted.stateFor(record.id) != .interrupted_removal) return error.UnexpectedRecoveryScan;
+    const measured = interrupted.summary.quarantine_registered_bytes;
+    if (measured == 0 or interrupted.summary.quarantine_removed_bytes != 0 or interrupted.summary.quarantine_unmeasured != 0) return error.UnexpectedQuarantineUsage;
+    if (try owner.quarantineUsage(record.id) != measured) return error.UnexpectedQuarantineUsage;
     try store.restoreInterruptedRemoval(owner, record);
     const restored = try store.scanRecoveryDetailed(owner);
     if (!std.meta.eql(report, restored.summary) or restored.stateFor(record.id) != .normal) return error.RestoreFailed;
     try store.quarantineRemove(owner, record);
     const removed = try store.scanRecovery(owner);
     if (removed.quarantined_removed != 1 or removed.quarantined_registered != 0 or removed.registered != 3 or removed.missing != 1) return error.UnexpectedRecoveryScan;
+    if (removed.quarantine_removed_bytes != measured or removed.quarantine_registered_bytes != 0 or removed.quarantine_unmeasured != 0) return error.UnexpectedQuarantineUsage;
     if ((try store.scanRecoveryDetailed(owner)).stateFor(record.id) != null) return error.UnexpectedRecoveryScan;
     if (!try store.loadInventory(owner, index) or index.count != 4 or index.next_id != 6) return error.InventoryNotPersisted;
     if (store.restoreInterruptedRemoval(owner, record)) |_| {

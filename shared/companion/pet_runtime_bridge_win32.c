@@ -182,3 +182,102 @@ __declspec(dllexport) pet_store_result pulse_companion_quarantine_v1(
     if (!CloseHandle(file)) result = PET_STORE_CLEANUP_FAILED;
     return result;
 }
+
+
+/* Logical bytes, not NTFS allocated bytes. Only the known Classic package
+ * directory shape is traversed. No content reads, writes or link following.
+ * All counters are private until the entire bounded directory is measured. */
+#define USAGE_MAX_FILES 290u
+#define USAGE_MAX_FILE_BYTES (16ull * 1024ull * 1024ull)
+#define USAGE_MAX_BYTES (320ull * 1024ull * 1024ull)
+typedef struct { uint64_t bytes; unsigned files, entries; } usage_count;
+
+static pet_store_result usage_open(const wchar_t *path, BOOL directory,
+    HANDLE *out, BY_HANDLE_FILE_INFORMATION *info) {
+    *out = INVALID_HANDLE_VALUE;
+    HANDLE file = CreateFileW(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+        NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT |
+        (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0), NULL);
+    if (file == INVALID_HANDLE_VALUE) return PET_STORE_IO;
+    wchar_t actual[PET_PRIVATE_PATH_CAP + 4];
+    DWORD n = GetFinalPathNameByHandleW(file, actual, PET_PRIVATE_PATH_CAP + 4,
+        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (GetFileType(file) != FILE_TYPE_DISK ||
+        !GetFileInformationByHandle(file, info) ||
+        !!(info->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != !!directory ||
+        (info->dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+        (!directory && info->nNumberOfLinks != 1) ||
+        n != wcslen(path) + 4 || n >= PET_PRIVATE_PATH_CAP + 4 ||
+        wcsncmp(actual, L"\\\\?\\", 4) ||
+        CompareStringOrdinal(actual + 4, -1, path, -1, TRUE) != CSTR_EQUAL) {
+        return CloseHandle(file) ? PET_STORE_INVALID : PET_STORE_CLEANUP_FAILED;
+    }
+    *out = file;
+    return PET_STORE_OK;
+}
+
+static pet_store_result usage_directory(const wchar_t *path, unsigned depth,
+    usage_count *count) {
+    HANDLE pinned;
+    BY_HANDLE_FILE_INFORMATION info;
+    pet_store_result result = usage_open(path, TRUE, &pinned, &info);
+    if (result != PET_STORE_OK) return result;
+    wchar_t pattern[PET_PRIVATE_PATH_CAP], child[PET_PRIVATE_PATH_CAP];
+    int n = swprintf(pattern, PET_PRIVATE_PATH_CAP, L"%ls\\*", path);
+    HANDLE find = INVALID_HANDLE_VALUE;
+    WIN32_FIND_DATAW data;
+    if (n <= 0 || n >= (int)PET_PRIVATE_PATH_CAP) result = PET_STORE_INVALID;
+    else {
+        find = FindFirstFileW(pattern, &data);
+        if (find == INVALID_HANDLE_VALUE && GetLastError() != ERROR_FILE_NOT_FOUND)
+            result = PET_STORE_IO;
+    }
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            const wchar_t *name = data.cFileName;
+            if (!wcscmp(name, L".") || !wcscmp(name, L"..")) continue;
+            if (++count->entries > USAGE_MAX_FILES + 2u ||
+                (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+                wcspbrk(name, L"\\/:")) { result = PET_STORE_INVALID; break; }
+            n = swprintf(child, PET_PRIVATE_PATH_CAP, L"%ls\\%ls", path, name);
+            if (n <= 0 || n >= (int)PET_PRIVATE_PATH_CAP) { result = PET_STORE_INVALID; break; }
+            if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (depth || (wcscmp(name, L"outfits") && wcscmp(name, L"activities"))) {
+                    result = PET_STORE_INVALID; break;
+                }
+                result = usage_directory(child, depth + 1u, count);
+            } else {
+                HANDLE file;
+                result = usage_open(child, FALSE, &file, &info);
+                if (result == PET_STORE_OK) {
+                    uint64_t bytes = ((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow;
+                    if (++count->files > USAGE_MAX_FILES || bytes > USAGE_MAX_FILE_BYTES ||
+                        bytes > USAGE_MAX_BYTES - count->bytes) result = PET_STORE_INVALID;
+                    else count->bytes += bytes;
+                    if (!CloseHandle(file)) result = PET_STORE_CLEANUP_FAILED;
+                }
+            }
+            if (result != PET_STORE_OK) break;
+        } while (FindNextFileW(find, &data));
+        if (result == PET_STORE_OK && GetLastError() != ERROR_NO_MORE_FILES)
+            result = PET_STORE_IO;
+        if (!FindClose(find)) result = PET_STORE_CLEANUP_FAILED;
+    }
+    if (!CloseHandle(pinned)) result = PET_STORE_CLEANUP_FAILED;
+    return result;
+}
+
+__declspec(dllexport) pet_store_result pulse_companion_quarantine_usage_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id, uint64_t *bytes) {
+    if (!bytes) return PET_STORE_INVALID;
+    *bytes = 0;
+    if (!live_lease(lease, size) || !id) return PET_STORE_INVALID;
+    wchar_t path[PET_PRIVATE_PATH_CAP];
+    int n = swprintf(path, PET_PRIVATE_PATH_CAP, L"%ls\\pet-%016llx.removed",
+        lease->path, (unsigned long long)id);
+    if (n <= 0 || n >= (int)PET_PRIVATE_PATH_CAP) return PET_STORE_INVALID;
+    usage_count count = {0};
+    pet_store_result result = usage_directory(path, 0, &count);
+    if (result == PET_STORE_OK) *bytes = count.bytes;
+    return result;
+}

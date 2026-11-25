@@ -110,7 +110,7 @@ const Content = struct {
     row_ids: [16][64]u8 = undefined,
     dynamic_ids: [4][64]u8 = undefined,
     library_count: [160]u8 = undefined,
-    recovery_text: [512]u8 = undefined,
+    recovery_text: [768]u8 = undefined,
     root: ui.Node = undefined,
     value: [256]u8 = undefined,
 };
@@ -161,7 +161,7 @@ fn fillImportToolbar(nodes: *[3]ui.Node, embedded_picker: bool, enabled: bool, i
 }
 
 fn recoveryText(report: library.RecoveryReport, buffer: []u8) ![]const u8 {
-    return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d} · 隔离待恢复 {d} · 已移除保留 {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved, report.quarantined_registered, report.quarantined_removed });
+    return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d} · 隔离待恢复 {d} · 已移除保留 {d}。隔离逻辑字节：待恢复 {d} B · 已移除 {d} B · 未统计目录 {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved, report.quarantined_registered, report.quarantined_removed, report.quarantine_registered_bytes, report.quarantine_removed_bytes, report.quarantine_unmeasured });
 }
 
 fn recoverySuffix(snapshot: *const library.RecoverySnapshot, id: u64) []const u8 {
@@ -1710,8 +1710,10 @@ test "empty library hides pagination and manual poll unless needed" {
 }
 
 test "recovery summary reports anomalies without promising repair" {
-    var buffer: [512]u8 = undefined;
-    const body = try recoveryText(.{ .registered = 2, .missing = 1, .orphan_packages = 3, .invalid = 4 }, &buffer);
+    var buffer: [768]u8 = undefined;
+    const body = try recoveryText(.{ .registered = 2, .missing = 1, .orphan_packages = 3, .invalid = 4, .quarantine_removed_bytes = 1024, .quarantine_unmeasured = 1 }, &buffer);
+    try std.testing.expect(std.mem.indexOf(u8, body, "已移除 1024 B") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "未统计目录 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "已登记 2") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "缺失 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "孤立目录 3") != null);

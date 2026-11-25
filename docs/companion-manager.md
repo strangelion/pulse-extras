@@ -1182,3 +1182,21 @@ Unit tests exercise confirmation/cancellation and stale dialog IDs; the C
 ABI fixture verifies command registration and refuses direct actions without
 a scan. Actual confirmed UI interaction and Windows acceptance remain NOT
 VERIFIED; the existing isolated bridge fixture covers the mutation itself.
+
+## Bounded quarantine logical-byte accounting
+
+Recovery diagnostics additionally measure ordinary files within fixed-name
+quarantines, separating registered interrupted removals from retained copies
+of completed removals. The native scanner pins each opened directory and
+checks canonical paths, rejects reparse points, multi-link files and unknown
+subdirectories, and traverses only the package root plus outfits/activities.
+It reads metadata, not artwork or file contents. Limits: 290 files, 292
+entries, 16 MiB per file, 320 MiB per package and 64 attempted packages per
+scan. Unreserved IDs, ambiguous namespace, unavailable APIs, refused scans
+and packages outside the budget are explicitly counted as unmeasured. The
+reported sum is logical regular-file bytes, not actual NTFS allocation,
+not a consistent snapshot against hostile same-user mutation, and not an
+estimate of reclaimable disk space. I/O itself is not guaranteed to return
+within a fixed deadline. Nothing is removed; no cleanup authorization is
+inferred. The bridge fixture checks equal measured bytes before and after
+committing a removal. New CI and real-host UI remain unverified.
