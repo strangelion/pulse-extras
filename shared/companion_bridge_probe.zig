@@ -7,6 +7,7 @@ const inventory = @import("companion/pet_inventory.zig");
 const model = @import("companion/pet_manager.zig");
 const store = @import("companion_runtime_store.zig");
 const catalog = @import("companion/pet_catalog.zig");
+const local_import = @import("companion_local_import.zig");
 
 extern "kernel32" fn GetFullPathNameW([*:0]const u16, u32, [*]u16, ?*anyopaque) callconv(.winapi) u32;
 extern "kernel32" fn LoadLibraryExW([*:0]const u16, ?*anyopaque, u32) callconv(.winapi) usize;
@@ -173,7 +174,29 @@ fn exerciseManaged(owner: *loader.Owner, private: [:0]const u16) !void {
     std.debug.print("Two managed pets ready; incorrect fingerprint rejected\n", .{});
 }
 
-pub fn main() !void {
+fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, private: [:0]const u16) !void {
+    var path: [4096]u8 = undefined;
+    const n = try std.unicode.utf16LeToUtf8(&path, parent);
+    var source: [4096]u8 = undefined;
+    const fresh = try std.fmt.bufPrint(&source, "{s}\\source\\fresh", .{path[0..n]});
+    var helper: [1024]u16 = undefined;
+    const len = GetFullPathNameW(std.unicode.wtf8ToWtf16LeStringLiteral("zig-out\\bin\\pulse-pet-demo.exe"), helper.len, &helper, null);
+    if (len == 0 or len >= helper.len) return error.BadFixturePath;
+    const digest = try readDigest(std.unicode.wtf8ToWtf16LeStringLiteral("PULSE_BRIDGE_FIXTURE_HELPER_SHA256"));
+    const first = try local_import.run(io, owner, private, helper[0..len :0], digest, fresh, "fresh");
+    if (first != .imported or first.imported != 4) return error.UnexpectedImport;
+    const second = try local_import.run(io, owner, private, helper[0..len :0], digest, fresh, "fresh");
+    if (second != .existing or second.existing != 4) return error.DuplicateImport;
+    const index = try std.heap.page_allocator.create(inventory.Inventory);
+    defer std.heap.page_allocator.destroy(index);
+    index.* = .{};
+    if (!try store.loadInventory(owner, index) or index.count != 4 or index.next_id != 5) return error.InventoryNotPersisted;
+    const record = try index.get(4);
+    if (!std.mem.eql(u8, record.sourceId(), "fresh") or record.digest == null or record.secondary == null) return error.UnexpectedImport;
+    std.debug.print("Local import and duplicate detection verified through durable bridge\n", .{});
+}
+
+pub fn main(init: std.process.Init) !void {
     try checkAbi();
     var hex: [65]u16 = undefined;
     if (GetEnvironmentVariableW(std.unicode.wtf8ToWtf16LeStringLiteral("PULSE_BRIDGE_FIXTURE_SHA256"), &hex, hex.len) != 64) return error.MissingFixtureDigest;
@@ -229,7 +252,8 @@ pub fn main() !void {
         try owner.close();
         try outcome;
         try owner.open(root[0..len :0], expected, 1, 128 * 1024 * 1024);
-        _ = try owner.privateRoot(fixture_parent);
+        const import_root = try owner.privateRoot(fixture_parent);
+        try exerciseImport(init.io, &owner, fixture_parent, import_root);
         var reopened = try catalog.Entry.init(1, "fixture-v1", "Fixture V1", .v1);
         if (!try store.loadPreferences(&owner, &reopened) or !reopened.favorite or !reopened.hasTag("bridge-test")) return error.PreferenceNotPersisted;
         try owner.close();

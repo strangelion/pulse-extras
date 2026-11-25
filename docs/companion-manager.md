@@ -990,3 +990,18 @@ new runtime tasks cannot begin during a preference edit. Cancellation
 cannot imply rollback of an already committed atomic write: refresh to
 confirm disk state. The bridge fixture now verifies version conflicts as
 well as persistence. Actual host UI acceptance remains separate.
+
+## Local directory import backend and integration
+
+The MSVC bridge probe is now built as a dedicated Zig build step so it
+can reuse the existing approved, job-contained process Runner and typed
+Helper. The local import adapter accepts only a bounded absolute local
+source directory and valid source ID. It loads the durable index under
+the verified private lease, invokes the existing reserve/stage/publish
+coordinator, checks Runner drain, and reports ambiguous commits as
+RecoveryRequired instead of automatic retry. The isolated fixture imports
+a new real package through this path, reimports it to verify deduplication,
+and rereads the inventory high-water mark and both fingerprints. This
+iteration does not yet expose host directory selection or import UI; it
+also does not support cancellation inside the bounded synchronous helper
+call (each call has the existing 60-second limit).

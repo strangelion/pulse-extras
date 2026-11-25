@@ -454,6 +454,17 @@ pub fn build(b: *std.Build) void {
     const runtime_step = b.step("companion-runtime-bridge", "Build the experimental versioned native supervisor bridge");
     runtime_step.dependOn(&b.addInstallArtifact(runtime_bridge, .{}).step);
 
+    const bridge_probe = b.addExecutable(.{
+        .name = "companion-bridge-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("shared/companion_bridge_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = dll_modules.imports(),
+        }),
+    });
+    b.step("companion-bridge-probe", "Build the isolated MSVC runtime integration probe").dependOn(&b.addInstallArtifact(bridge_probe, .{}).step);
+
     // Every module also runs its own tests on the host target, so the wrappers
     // are checked even when the probe does not use them yet.
     var host_modules = Modules.add(b, b.graph.host, .Debug, vcs_test_config, companion_config);

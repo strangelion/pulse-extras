@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 import shutil
 import struct
@@ -39,6 +40,14 @@ def main() -> None:
     source = parent / "source"
     sys.argv = [sys.argv[0], str(source)]
     generate_source()
+    # A distinct valid package that is not yet present in the inventory.
+    fresh = source / "fresh"
+    shutil.copytree(source / "fixture-v1", fresh)
+    meta = fresh / "pet.json"
+    manifest = json.loads(meta.read_text(encoding="utf-8"))
+    manifest["id"] = "fresh"
+    manifest["description"] = "Independent local import fixture"
+    meta.write_text(json.dumps(manifest), encoding="utf-8")
     data = bytearray(b"PCI3" + struct.pack("<QI", 4, 3))
     for asset_id, name in ((1, "fixture-v1"), (2, "hoodie-cat"), (3, "fixture-v1")):
         dest = root / f"pet-{asset_id:016x}"
