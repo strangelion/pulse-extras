@@ -218,3 +218,222 @@ test "subscription id must be non-zero" {
     var id: SubscriptionId = 0;
     try testing.expectError(error.State, t.subscribe(null, null, &id));
 }
+
+/// One owner-thread navigation mailbox. The capacity is a hard byte limit:
+/// malformed, loading or oversized directories invalidate the previous
+/// selection instead of being truncated into an unrelated filesystem path.
+/// This adapter never resolves repositories, checks trust or runs a command.
+/// Keep its address stable from subscription until checkDrained succeeds.
+pub fn Navigation(comptime capacity: usize) type {
+    return struct {
+        const Self = @This();
+
+        pub const Ticket = struct {
+            generation: u64,
+            bytes: [capacity]u8 = undefined,
+            len: usize = 0,
+
+            pub fn directory(self: *const Ticket) ?[]const u8 {
+                if (self.len == 0) return null;
+                return self.bytes[0..self.len];
+            }
+        };
+
+        table: ?Table = null,
+        id: SubscriptionId = 0,
+        accepting: bool = false,
+        poisoned: bool = false,
+        latest: ?Ticket = null,
+        pending: bool = false,
+        generation: u64 = 0,
+
+        pub fn open(self: *Self, table: Table) Error!void {
+            if (self.table != null or self.poisoned) return error.State;
+            if (table.raw.size < @sizeOf(TableV1) or table.raw.version < version_1) return error.Abi;
+            const subscribe_fn = table.raw.subscribe orelse return error.Unavailable;
+            if (table.raw.get == null or table.raw.unsubscribe == null) return error.Unavailable;
+            self.table = table;
+            self.latest = null;
+            self.pending = false;
+            self.accepting = true;
+            var id: SubscriptionId = 0;
+            host_mod.mapStatus(subscribe_fn(table.raw.context, &receive, self, &id)) catch |err| {
+                self.accepting = false;
+                self.table = null;
+                self.latest = null;
+                self.pending = false;
+                return err;
+            };
+            if (id == 0) {
+                // Host reported success without a usable unsubscribe handle.
+                self.accepting = false;
+                self.poisoned = true;
+                return error.State;
+            }
+            self.id = id;
+            table.get(&receive, self) catch |err| {
+                self.close() catch |cleanup_err| return cleanup_err;
+                return err;
+            };
+            if (self.latest == null) {
+                try self.close();
+                return error.Abi;
+            }
+        }
+
+        fn receive(user: ?*anyopaque, snapshot: [*c]const Snapshot) callconv(.c) void {
+            const self: *Self = @ptrCast(@alignCast(user orelse return));
+            if (!self.accepting) return;
+            var source: []const u8 = "";
+            if (snapshot != null and validSnapshot(&snapshot.*) and snapshot.*.loading == 0) {
+                const value = abi.slice(snapshot.*.directory) orelse "";
+                if (value.len <= capacity and std.unicode.utf8ValidateSlice(value) and std.mem.indexOfScalar(u8, value, 0) == null) source = value;
+            }
+            if (self.latest) |*previous| {
+                if (std.mem.eql(u8, previous.bytes[0..previous.len], source)) return;
+            }
+            self.generation +%= 1;
+            var ticket: Ticket = .{ .generation = self.generation };
+            @memcpy(ticket.bytes[0..source.len], source);
+            ticket.len = source.len;
+            self.latest = ticket;
+            self.pending = true;
+        }
+
+        /// Consume at most one latest directory; older events are replaced.
+        /// A ticket with no directory explicitly instructs the owner to clear.
+        pub fn take(self: *Self) ?Ticket {
+            if (!self.accepting or !self.pending) return null;
+            self.pending = false;
+            return self.latest;
+        }
+
+        /// Recheck on the owner thread before applying a resolution result.
+        /// A ticket is not an authorization or proof of repository identity.
+        pub fn isCurrent(self: *const Self, ticket: *const Ticket) bool {
+            if (!self.accepting) return false;
+            const latest = if (self.latest) |*value| value else return false;
+            return latest.generation == ticket.generation and std.mem.eql(u8, latest.bytes[0..latest.len], ticket.bytes[0..ticket.len]);
+        }
+
+        pub fn close(self: *Self) Error!void {
+            self.accepting = false;
+            self.pending = false;
+            if (self.poisoned) return error.State;
+            if (self.table) |table| {
+                try table.unsubscribe(self.id);
+                self.id = 0;
+                self.table = null;
+            }
+        }
+
+        pub fn checkDrained(self: *const Self) error{Busy}!void {
+            if (self.table != null or self.poisoned) return error.Busy;
+        }
+    };
+}
+
+const NavigationMock = struct {
+    callback: ChangeFn = null,
+    user: ?*anyopaque = null,
+    fail_close: bool = false,
+    zero_id: bool = false,
+
+    fn get(_: ?*anyopaque, callback: ChangeFn, user: ?*anyopaque) callconv(.c) abi.Status {
+        var initial: Snapshot = .{ .size = @sizeOf(Snapshot), .directory = abi.view("initial") };
+        (callback orelse return abi.error_argument)(user, &initial);
+        return abi.ok;
+    }
+
+    fn subscribe(user: ?*anyopaque, callback: ChangeFn, data: ?*anyopaque, out: [*c]SubscriptionId) callconv(.c) abi.Status {
+        const self: *NavigationMock = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        self.callback = callback;
+        self.user = data;
+        out.* = if (self.zero_id) 0 else 1;
+        return abi.ok;
+    }
+
+    fn unsubscribe(user: ?*anyopaque, id: SubscriptionId) callconv(.c) abi.Status {
+        const self: *NavigationMock = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        if (id != 1) return abi.error_argument;
+        if (self.fail_close) return abi.error_permission;
+        self.callback = null;
+        self.user = null;
+        return abi.ok;
+    }
+
+    fn table(self: *NavigationMock) Table {
+        return .{ .raw = .{
+            .size = @sizeOf(TableV1),
+            .version = version_1,
+            .context = self,
+            .get = &get,
+            .subscribe = &subscribe,
+            .unsubscribe = &unsubscribe,
+        } };
+    }
+
+    fn emit(self: *NavigationMock, path: []const u8, loading: u32) void {
+        var snapshot: Snapshot = .{ .size = @sizeOf(Snapshot), .directory = abi.view(path), .loading = loading };
+        if (self.callback) |callback| callback(self.user, &snapshot);
+    }
+};
+
+test "navigation owns latest borrowed path and rejects stale resolution" {
+    var mock: NavigationMock = .{};
+    var nav: Navigation(16) = .{};
+    try nav.open(mock.table());
+    const initial = nav.take().?;
+    try testing.expectEqualStrings("initial", initial.directory().?);
+    var borrowed = [_]u8{ 'n', 'e', 'w' };
+    mock.emit(&borrowed, 0);
+    borrowed[0] = 'x';
+    const copied = nav.take().?;
+    try testing.expectEqualStrings("new", copied.directory().?);
+    try testing.expect(!nav.isCurrent(&initial));
+    try testing.expect(nav.isCurrent(&copied));
+    mock.emit("new", 0);
+    try testing.expect(nav.take() == null);
+    mock.emit("another", 0);
+    mock.emit("latest", 0);
+    const latest = nav.take().?;
+    try testing.expectEqualStrings("latest", latest.directory().?);
+    mock.emit("latest", 1);
+    const clear = nav.take().?;
+    try testing.expect(clear.directory() == null);
+    try testing.expect(!nav.isCurrent(&latest));
+    mock.emit("01234567890123456", 0);
+    try testing.expect(nav.take() == null);
+    mock.emit("latest", 0);
+    _ = nav.take().?;
+    mock.emit("bad\x00path", 0);
+    const invalid = nav.take().?;
+    try testing.expect(invalid.directory() == null);
+    try nav.close();
+    try nav.checkDrained();
+}
+
+test "navigation failed unsubscribe keeps userdata alive and disables admission" {
+    var mock: NavigationMock = .{};
+    var nav: Navigation(16) = .{};
+    try nav.open(mock.table());
+    const initial = nav.take().?;
+    mock.fail_close = true;
+    try testing.expectError(error.Permission, nav.close());
+    try testing.expectError(error.Busy, nav.checkDrained());
+    mock.emit("late", 0);
+    try testing.expect(nav.take() == null);
+    try testing.expect(!nav.isCurrent(&initial));
+    mock.fail_close = false;
+    try nav.close();
+    try nav.checkDrained();
+    try testing.expect(mock.callback == null);
+}
+
+test "navigation successful zero subscription id never certifies drain" {
+    var mock: NavigationMock = .{ .zero_id = true };
+    var nav: Navigation(16) = .{};
+    try testing.expectError(error.State, nav.open(mock.table()));
+    try testing.expectError(error.Busy, nav.checkDrained());
+    try testing.expectError(error.State, nav.close());
+}
