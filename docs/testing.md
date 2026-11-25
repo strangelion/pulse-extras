@@ -93,3 +93,7 @@ Wake candidate adds mock tests for inline-before-post-return, coalescing, queue 
 Ordinary Git approval tests cover grant path rejection, incomplete/changed evidence, revocation, exact command and cwd admission, unrelated navigation, worktree marker refusal and metadata matching. Fake evidence is not real approval or positive approved-tool execution. Resolver revision a143792 passed both platform jobs and regression gate in CI 45522520423. This candidate needs independent platform CI.
 
 Additional tests cover Windows reported separator normalization (not case or other aliases) and the actual Execution gate rejecting a request before Runner spawn/accounting.
+
+Windows evidence tests cover the restricted config grammar, composition without upgrading flags, and actual Win32 identity observation on the current local directory (Windows only). The test does not certify reparse/ACL attack fixtures or real approved Git execution. Dispatch revision f040ea1 passed full CI 45523125690. This candidate requires independent platform CI.
+
+Additional Windows-only fixture checks actual config handle reads and changed content, distinguishes missing from existing marker, and rejects both names of a hard-linked regular file. Junction/reparse and ACL attack fixtures remain pending.

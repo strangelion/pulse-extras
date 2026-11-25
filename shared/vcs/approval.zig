@@ -15,7 +15,7 @@ const run = @import("pulse_process");
 
 pub const Digest = [32]u8;
 
-fn strictPath(path: []const u8) bool {
+pub fn strictPath(path: []const u8) bool {
     if (!cli.candidatePath(path) or !std.unicode.utf8ValidateSlice(path) or path[path.len - 1] == std.fs.path.sep) return false;
     for (path) |byte| {
         if (byte < 0x20 or byte == 0x7f) return false;

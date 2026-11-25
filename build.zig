@@ -21,7 +21,7 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
-    all: [35]std.Build.Module.Import = undefined,
+    all: [36]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
@@ -319,6 +319,16 @@ const Modules = struct {
                 .{ .name = "pulse_process", .module = process_mod },
             },
         });
+        const vcs_windows_evidence = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/windows_evidence.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_approval", .module = vcs_approval },
+                .{ .name = "vcs_provider", .module = vcs_provider },
+            },
+        });
         var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod, .vcs_capabilities = vcs_capabilities, .vcs_identity = vcs_identity, .vcs_risk = vcs_risk, .vcs_detect = vcs_detect, .vcs_provider = vcs_provider, .vcs_cli = vcs_cli, .vcs_snapshot = vcs_snapshot, .vcs_git = vcs_git, .vcs_jj = vcs_jj, .vcs_svn = vcs_svn };
         modules.all = .{
             .{ .name = "pulse_raw", .module = raw },
@@ -353,6 +363,7 @@ const Modules = struct {
             .{ .name = "vcs_host_query", .module = vcs_host_query },
             .{ .name = "vcs_git", .module = vcs_git },
             .{ .name = "vcs_approval", .module = vcs_approval },
+            .{ .name = "vcs_windows_evidence", .module = vcs_windows_evidence },
             .{ .name = "vcs_jj", .module = vcs_jj },
             .{ .name = "vcs_svn", .module = vcs_svn },
             .{ .name = "vcs_test_config", .module = vcs_test_config },
@@ -443,6 +454,7 @@ pub fn build(b: *std.Build) void {
         "shared/vcs/panel.zig",
         "shared/vcs/host_query.zig",
         "shared/vcs/approval.zig",
+        "shared/vcs/windows_evidence.zig",
         "shared/vcs/providers/git.zig",
         "shared/vcs/providers/jj.zig",
         "shared/vcs/providers/svn.zig",
