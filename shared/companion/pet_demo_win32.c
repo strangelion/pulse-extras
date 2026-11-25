@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <wchar.h>
+#include <limits.h>
 
 #define ATLAS_WIDTH 1536u
 
@@ -42,14 +43,48 @@ static uint8_t *synthetic_atlas(size_t *bytes) {
     return atlas;
 }
 
+static LONG clamp_long(int64_t value) {
+    if (value < LONG_MIN) return LONG_MIN;
+    if (value > LONG_MAX) return LONG_MAX;
+    return (LONG)value;
+}
+
+static int parse_scale(const wchar_t *text, unsigned *value) {
+    unsigned n = 0;
+    if (!text || !*text) return 0;
+    for (; *text; ++text) {
+        if (*text < L'0' || *text > L'9' || n > PET_MAX_SCALE) return 0;
+        n = n * 10 + (unsigned)(*text - L'0');
+    }
+    if (n < PET_MIN_SCALE || n > PET_MAX_SCALE) return 0;
+    *value = n;
+    return 1;
+}
+
+static int work_area(POINT point, RECT *work) {
+    HMONITOR monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info = {0};
+    info.cbSize = sizeof(info);
+    if (!monitor || !GetMonitorInfoW(monitor, &info)) return 0;
+    *work = info.rcWork;
+    return 1;
+}
+
+static int constrain(const pet_surface *surface, POINT anchor, LONG *x, LONG *y) {
+    RECT work;
+    return work_area(anchor, &work) &&
+        pet_clamp_position(&work, surface->width, surface->height, x, y) == PET_SURFACE_OK;
+}
+
 static void usage(void) {
-    fputs("pulse-pet-demo [--reduced-motion] [--webp-v1 FILE | --webp-v2 FILE]\n"
-        "Left click: wave. Right click: exit. --smoke: hidden synthetic test.\n", stderr);
+    fputs("pulse-pet-demo [--reduced-motion] [--scale 50..200] [--topmost] [--webp-v1 FILE | --webp-v2 FILE]\n"
+        "Left click: wave. Left drag: move. Right click: exit. --smoke: hidden synthetic test.\n", stderr);
 }
 
 int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
     int rc = 1, argc = 0, reduced = 0, smoke = 0, waving = 0;
-    unsigned version = 2;
+    unsigned version = 2, scale = 100;
+    int topmost = 0, scale_set = 0;
     const wchar_t *path = NULL;
     uint8_t *atlas = NULL;
     size_t bytes = 0;
@@ -59,7 +94,12 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
     for (int i = 1; i < argc; ++i) {
         if (wcscmp(argv[i], L"--smoke") == 0 && !smoke) smoke = 1;
         else if (wcscmp(argv[i], L"--reduced-motion") == 0 && !reduced) reduced = 1;
-        else if (!path && i + 1 < argc &&
+        else if (wcscmp(argv[i], L"--topmost") == 0 && !topmost) topmost = 1;
+        else if (wcscmp(argv[i], L"--scale") == 0 && !scale_set && i + 1 < argc &&
+            parse_scale(argv[i + 1], &scale)) {
+            scale_set = 1;
+            ++i;
+        } else if (!path && i + 1 < argc &&
             (wcscmp(argv[i], L"--webp-v1") == 0 || wcscmp(argv[i], L"--webp-v2") == 0)) {
             version = wcscmp(argv[i], L"--webp-v1") == 0 ? 1u : 2u;
             path = argv[++i];
@@ -68,21 +108,27 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
             goto cleanup;
         }
     }
-    if (smoke && (path || reduced)) {
+    if (smoke && (path || reduced || topmost)) {
         usage();
         goto cleanup;
     }
     /* Process-local DPI policy before window creation. No host mutation. */
-    (void)SetProcessDPIAware();
+    /* Per-monitor awareness keeps the explicit physical pixel scale stable.
+     * Use the older system-aware API only if the newer context is unavailable. */
+    if (!SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+        (void)SetProcessDPIAware();
     atlas = path ? pet_demo_load_webp(path, version, validate, &bytes) : synthetic_atlas(&bytes);
     if (!atlas) goto cleanup;
-    if (pet_surface_open(&surface, FALSE, FALSE) != PET_SURFACE_OK) goto cleanup;
+    if (pet_surface_open_scaled(&surface, topmost, FALSE, scale) != PET_SURFACE_OK) goto cleanup;
     RECT work = {0};
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) goto cleanup;
-    LONG x = work.right - (LONG)PET_FRAME_WIDTH - 24;
-    LONG y = work.bottom - (LONG)PET_FRAME_HEIGHT - 24;
-    if (x < work.left) x = work.left;
-    if (y < work.top) y = work.top;
+    LONG x = clamp_long((int64_t)work.right - surface.width - 24);
+    LONG y = clamp_long((int64_t)work.bottom - surface.height - 24);
+    if (pet_clamp_position(&work, surface.width, surface.height, &x, &y) != PET_SURFACE_OK)
+        goto cleanup;
+    POINT press = {0}, cursor = {0};
+    LONG press_x = 0, press_y = 0;
+    int pressed = 0, dragged = 0;
     uint64_t started = GetTickCount64(), smoke_end = started + 500;
     unsigned last_row = UINT32_MAX, last_column = UINT32_MAX, frames = 0;
     int shown = 0, done = 0;
@@ -98,14 +144,55 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
                 done = 1;
                 break;
             }
-            if (message.hwnd == surface.window && message.message == WM_LBUTTONUP) {
-                waving = 1;
-                started = GetTickCount64();
+            if (message.hwnd == surface.window) {
+                if (message.message == WM_LBUTTONDOWN && GetCursorPos(&press)) {
+                    press_x = x;
+                    press_y = y;
+                    dragged = 0;
+                    SetCapture(surface.window);
+                    pressed = GetCapture() == surface.window;
+                } else if (message.message == WM_MOUSEMOVE && pressed &&
+                    GetCapture() == surface.window && GetCursorPos(&cursor)) {
+                    int64_t dx = (int64_t)cursor.x - press.x;
+                    int64_t dy = (int64_t)cursor.y - press.y;
+                    if (dragged || dx > 4 || dx < -4 || dy > 4 || dy < -4) {
+                        dragged = 1;
+                        LONG nx = clamp_long((int64_t)press_x + dx);
+                        LONG ny = clamp_long((int64_t)press_y + dy);
+                        if (!constrain(&surface, cursor, &nx, &ny)) goto cleanup;
+                        if (nx != x || ny != y) {
+                            if (pet_surface_move(&surface, nx, ny) != PET_SURFACE_OK) goto cleanup;
+                            x = nx; y = ny;
+                        }
+                    }
+                } else if (message.message == WM_LBUTTONUP && pressed) {
+                    if (GetCapture() == surface.window) {
+                        ReleaseCapture();
+                        if (!dragged) {
+                            waving = 1;
+                            started = GetTickCount64();
+                        }
+                    }
+                    pressed = 0;
+                }
             }
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
         if (done || (shown && !IsWindowVisible(surface.window))) break;
+        if (pressed && GetCapture() != surface.window) pressed = 0;
+        if (surface.placement_dirty) {
+            surface.placement_dirty = FALSE;
+            POINT center = {clamp_long((int64_t)x + surface.width / 2),
+                clamp_long((int64_t)y + surface.height / 2)};
+            LONG nx = x, ny = y;
+            if (!constrain(&surface, center, &nx, &ny)) goto cleanup;
+            if (nx != x || ny != y) {
+                if (surface.primed && pet_surface_move(&surface, nx, ny) != PET_SURFACE_OK)
+                    goto cleanup;
+                x = nx; y = ny;
+            }
+        }
         uint64_t now = GetTickCount64();
         if (smoke && now >= smoke_end) break;
         pet_demo_sample point = {0};
@@ -132,6 +219,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate) {
     }
     rc = 0;
 cleanup:
+    if (surface.window && GetCapture() == surface.window) ReleaseCapture();
     if (pet_surface_close(&surface) != PET_SURFACE_OK) rc = 1;
     free(atlas);
     if (argv) LocalFree(argv);

@@ -11,6 +11,8 @@
 #define PET_FRAME_WIDTH 192u
 #define PET_FRAME_HEIGHT 208u
 #define PET_FRAME_BYTES (PET_FRAME_WIDTH * PET_FRAME_HEIGHT * 4u)
+#define PET_MIN_SCALE 50u
+#define PET_MAX_SCALE 200u
 
 typedef enum {
     PET_SURFACE_OK = 0,
@@ -29,7 +31,7 @@ pet_surface_result pet_frame_bgra(const uint8_t *atlas, size_t atlas_bytes,
  * Do not copy while open. Caller owns its dedicated message loop, animation
  * deadlines and process lifetime. No global hooks, renderer thread or timers.
  * Window is initially hidden, nonactivating and absent from the taskbar.
- * The surface is fixed at one 192x208 cell (physical pixels). */
+ * Default size is one 192x208 cell; scaled sizes are bounded physical pixels. */
 typedef struct {
     HWND window;
     HDC memory_dc;
@@ -38,9 +40,18 @@ typedef struct {
     uint8_t *pixels;
     DWORD owner_thread;
     BOOL primed;
+    unsigned width, height;
+    BOOL placement_dirty;
 } pet_surface;
 
 pet_surface_result pet_surface_open(pet_surface *surface, BOOL topmost, BOOL click_through);
+pet_surface_result pet_surface_open_scaled(pet_surface *surface, BOOL topmost,
+    BOOL click_through, unsigned percent);
+pet_surface_result pet_surface_move(pet_surface *surface, LONG x, LONG y);
+/* Clamp a top-left point to a work area, including negative monitor
+ * coordinates. If the window exceeds the work area, anchor at its origin. */
+pet_surface_result pet_clamp_position(const RECT *work, unsigned width,
+    unsigned height, LONG *x, LONG *y);
 pet_surface_result pet_surface_present(pet_surface *surface, const uint8_t *atlas,
     size_t atlas_bytes, unsigned version, unsigned row, unsigned column,
     LONG x, LONG y, BYTE opacity);

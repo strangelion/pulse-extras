@@ -66,7 +66,26 @@ int main(void) {
     CHECK(pet_surface_show(&surface, FALSE) == PET_SURFACE_OK);
     CHECK(pet_surface_close(&surface) == PET_SURFACE_OK);
     CHECK(pet_surface_close(&surface) == PET_SURFACE_OK);
-    CHECK(pet_surface_open(&surface, FALSE, FALSE) == PET_SURFACE_OK);
+    RECT work = {-1920, -100, 0, 900};
+    LONG x = 100, y = -500;
+    CHECK(pet_clamp_position(&work, 192, 208, &x, &y) == PET_SURFACE_OK);
+    CHECK(x == -192 && y == -100);
+    RECT tiny = {-10, -20, 10, 20};
+    CHECK(pet_clamp_position(&tiny, 384, 416, &x, &y) == PET_SURFACE_OK);
+    CHECK(x == -10 && y == -20);
+    CHECK(pet_surface_open_scaled(&surface, FALSE, FALSE, 49) == PET_SURFACE_INVALID);
+    CHECK(pet_surface_open_scaled(&surface, FALSE, FALSE, 201) == PET_SURFACE_INVALID);
+    CHECK(pet_surface_open_scaled(&surface, FALSE, FALSE, 200) == PET_SURFACE_OK);
+    CHECK(surface.width == 384 && surface.height == 416);
+    CHECK(pet_surface_present(&surface, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OK);
+    CHECK(surface.pixels[0] == 25 && surface.pixels[3] == 128);
+    CHECK(surface.pixels[4] == 25 && surface.pixels[7] == 128);
+    CHECK(pet_surface_move(&surface, 30, 40) == PET_SURFACE_OK);
+    RECT actual;
+    CHECK(GetWindowRect(surface.window, &actual) && actual.left == 30 && actual.top == 40);
+    CHECK(pet_surface_close(&surface) == PET_SURFACE_OK);
+    CHECK(pet_surface_open_scaled(&surface, FALSE, FALSE, 50) == PET_SURFACE_OK);
+    CHECK(surface.width == 96 && surface.height == 104);
     CHECK(pet_surface_close(&surface) == PET_SURFACE_OK);
     rc = 0;
 cleanup:

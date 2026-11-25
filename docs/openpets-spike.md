@@ -326,7 +326,7 @@ changed; the sample pixels are not distributable pet artwork.
 Build on Windows from repository root with the pinned Zig:
 
 ```powershell
-zig build-exe shared/companion/pet_demo.zig shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c -target x86_64-windows-gnu -O ReleaseSafe -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -femit-bin=pulse-pet-demo.exe
+zig build-exe shared/companion/pet_demo.zig shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c -target x86_64-windows-gnu -O ReleaseSafe -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid '-femit-bin=pulse-pet-demo.exe'
 .\pulse-pet-demo.exe
 .\pulse-pet-demo.exe --reduced-motion
 .\pulse-pet-demo.exe --webp-v2 C:\path\to\spritesheet.webp
@@ -355,3 +355,28 @@ No pet.json file loading, signed asset trust, DPI scaling, dragging,
 multimonitor persistence, Pulse supervision or release packaging yet.
 This executable remains a standalone experiment, not a default startup
 item or production DLL.
+
+## Desktop movement and bounded scaling
+
+Run 45534257173 failed before compilation with PowerShell passing a separate
+".exe" parameter to Zig. Quote the entire -femit-bin argument in CI and the
+documented PowerShell build command. The previous layered surface regression
+passed in run 45533855889; the standalone build still needs confirmation.
+
+The demo now supports left-button drag with a 4px threshold, capture loss
+handling, click-to-wave and right-click exit. Position-only layered-window
+updates avoid re-converting pixels during a drag. The monitor nearest the
+cursor is used during dragging, and the nearest monitor to the window center
+on display/work-area/DPI change. Clamp to rcWork, including negative screen
+coordinates and small work areas. The process requests per-monitor V2 DPI
+awareness, with system awareness fallback. This is explicit physical-pixel
+scaling, not automatic DPI-dependent sizing.
+
+Use --scale 50..200 (default 100) and --topmost to choose initial size and
+z-order. Nearest-neighbor sampling converts only the chosen cell into a
+single bounded DIB (maximum 384x416, 638,976 bytes). The atlas is unchanged.
+No resampling allocation or bitmap growth per frame. CI exercises scaled
+pixel conversion, position-only updates, clamp bounds and two hidden smoke
+sizes. Real drag/capture behavior, display topology changes, DPI transitions
+and actual visual quality still need interactive testing. No disk/registry
+position persistence, automatic DPI-dependent size or Pulse supervision yet.
