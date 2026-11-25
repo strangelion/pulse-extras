@@ -3,6 +3,7 @@
 //! No file I/O, decoder, SVG, Motion package, archive extraction or renderer.
 const std = @import("std");
 const activities = @import("pet_activities.zig");
+const wardrobe = @import("pet_wardrobe.zig");
 
 pub const max_metadata_bytes = 128 * 1024;
 pub const max_webp_bytes = 16 * 1024 * 1024;
@@ -34,6 +35,7 @@ pub const Layout = enum {
 pub const Metadata = struct {
     layout: Layout,
     activities: activities.Catalog = .{},
+    wardrobe: wardrobe.Wardrobe = .{},
 };
 
 fn safePetId(id: []const u8) bool {
@@ -47,8 +49,8 @@ fn safePetId(id: []const u8) bool {
 }
 
 /// Owns the layout and validated activity metadata. Caller supplies a
-/// bounded scratch allocator. Wardrobe, Motion and unsupported extensions
-/// still fail closed; default-outfit Classic activities are supported.
+/// bounded scratch allocator. Wardrobe metadata and activity variants are
+/// validated; actual wardrobe rendering is a separate capability gate.
 pub fn parseMetadata(allocator: std.mem.Allocator, input: []const u8, expected_id: []const u8) error{ InvalidMetadata, UnsupportedFormat, OutOfMemory }!Metadata {
     if (!safePetId(expected_id) or input.len == 0 or input.len > max_metadata_bytes or !std.unicode.utf8ValidateSlice(input)) return error.InvalidMetadata;
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, input, .{}) catch |err| switch (err) {
@@ -74,10 +76,14 @@ pub fn parseMetadata(allocator: std.mem.Allocator, input: []const u8, expected_i
         const key = entry.key_ptr.*;
         if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "displayName") or
             std.mem.eql(u8, key, "description") or std.mem.eql(u8, key, "spritesheetPath") or
-            std.mem.eql(u8, key, "spriteVersionNumber") or std.mem.eql(u8, key, "activities")) continue;
+            std.mem.eql(u8, key, "spriteVersionNumber") or std.mem.eql(u8, key, "activities") or
+            std.mem.eql(u8, key, "wardrobe")) continue;
         return error.UnsupportedFormat;
     }
-    return .{ .layout = layout, .activities = activities.parse(object.get("activities"), &.{}) catch return error.InvalidMetadata };
+    const clothes = wardrobe.parse(object.get("wardrobe")) catch return error.InvalidMetadata;
+    var outfit_ids: [wardrobe.max_outfits]activities.Id = undefined;
+    const catalog = activities.parse(object.get("activities"), clothes.copyIds(&outfit_ids)) catch return error.InvalidMetadata;
+    return .{ .layout = layout, .activities = catalog, .wardrobe = clothes };
 }
 
 fn le16(bytes: []const u8) u32 {
@@ -190,7 +196,7 @@ test "metadata rejects mismatches unsupported formats and duplicate keys" {
     try t.expectError(error.InvalidMetadata, parseMetadata(t.allocator, "{\"id\":\"a\",\"id\":\"a\"}", "a"));
     try t.expectError(error.UnsupportedFormat, parseMetadata(t.allocator, "{\"id\":\"a\",\"displayName\":\"A\",\"description\":\"A\",\"spritesheetPath\":\"spritesheet.svg\"}", "a"));
     try t.expectError(error.UnsupportedFormat, parseMetadata(t.allocator, "{\"id\":\"a\",\"displayName\":\"A\",\"description\":\"A\",\"spritesheetPath\":\"spritesheet.webp\",\"spriteVersionNumber\":null}", "a"));
-    try t.expectError(error.UnsupportedFormat, parseMetadata(t.allocator, "{\"id\":\"a\",\"displayName\":\"A\",\"description\":\"A\",\"spritesheetPath\":\"spritesheet.webp\",\"wardrobe\":{}}", "a"));
+    try t.expectError(error.InvalidMetadata, parseMetadata(t.allocator, "{\"id\":\"a\",\"displayName\":\"A\",\"description\":\"A\",\"spritesheetPath\":\"spritesheet.webp\",\"wardrobe\":{}}", "a"));
 }
 
 // Synthetic headers, deliberately not decodable compressed images.
@@ -230,4 +236,12 @@ test "default outfit activity metadata and strip dimensions" {
     try t.expectError(error.InvalidAtlas, preflightActivity(activity.*, lossless_header));
     try t.expectError(error.InvalidAtlas, preflightWebp(.v1, strip));
     try t.expectEqual(@as(usize, 638976), activity.rgbaBytes());
+}
+
+test "wardrobe-aware activity metadata resolves declared outfit only" {
+    const data = "{\"id\":\"a\",\"displayName\":\"A\",\"description\":\"A\",\"spritesheetPath\":\"spritesheet.webp\",\"wardrobe\":{\"outfits\":[{\"id\":\"night\",\"displayName\":\"Night\",\"spritesheetPath\":\"outfits/night.webp\"}]},\"activities\":[{\"id\":\"nap\",\"displayName\":\"Nap\",\"outfitId\":\"night\",\"spritesheetPath\":\"activities/nap.webp\",\"frameCount\":4,\"fps\":4}]}";
+    const meta = try parseMetadata(t.allocator, data, "a");
+    try t.expectEqual(@as(u8, 1), meta.wardrobe.count);
+    try t.expect(meta.activities.items[0].resolve("night") != null);
+    try t.expect(meta.activities.items[0].resolve("default") == null);
 }

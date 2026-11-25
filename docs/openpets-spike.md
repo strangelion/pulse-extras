@@ -730,3 +730,24 @@ Add stage-only diagnostics without logging user paths or metadata,
 test the actual bounded ABI parser with the smoke manifest, and test
 normal/resolved/available short paths and specific rejection stages.
 The cause remains a hypothesis until Windows confirms this revision.
+
+## Classic Wardrobe contract — data layer
+
+Run 45544460112 passed Windows, Ubuntu and regression gate after the
+long-path admission correction. Keep the existing runtime baseline.
+The pinned upstream wardrobe.ts contract now has a bounded pure Zig
+implementation: up to 16 distinct named outfits, canonical WebP/SVG
+paths, reserved default/auto IDs, 32 ordered schedule rules, local
+clock ranges with exclusive ends and midnight wrapping, weekday masks,
+annual inclusive date ranges with year wrapping and leap-day support.
+All supplied conditions must match; disabled rules do not match.
+Known explicit outfit choice wins; an unknown choice follows the
+creator schedule; no match selects default. The caller supplies local
+civil time. No timer, filesystem operations or script evaluation.
+Classic metadata validates declared outfit IDs before activity
+representations, preserving exact outfit matching. The old default-only
+native package ABI explicitly rejects any nonempty wardrobe rather
+than silently discarding it. SVG metadata is recognized, not decoded.
+Actual outfit inventory admission, WebP rendering, transactional
+switching, user schedule editing/persistence and SVG support remain
+pending. Added focused and integration regressions; CI must confirm.

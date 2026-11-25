@@ -17,6 +17,8 @@ pub const Package = extern struct {
 
 pub fn project(allocator: std.mem.Allocator, input: []const u8, id: []const u8) !Package {
     const meta = try assets.parseMetadata(allocator, input, id);
+    // Do not silently drop validated wardrobe data in the old native ABI.
+    if (meta.wardrobe.count != 0) return error.UnsupportedFormat;
     var result: Package = .{ .version = if (meta.layout == .v1) 1 else 2 };
     for (meta.activities.items[0..meta.activities.count]) |*activity| {
         const repr = activity.resolve("default") orelse return error.InvalidMetadata;
@@ -65,4 +67,9 @@ test "project owned names and canonical activity leaves" {
     try std.testing.expectEqualStrings("nap.webp", std.mem.sliceTo(&result.items[0].leaf, 0));
     try std.testing.expectEqual(@as(u32, 8), result.items[0].frames);
     try std.testing.expectError(error.InvalidMetadata, project(std.testing.allocator, input, "other"));
+}
+
+test "native package gate rejects wardrobe until renderer is ready" {
+    const input = "{\"id\":\"a\",\"displayName\":\"A\",\"description\":\"A\",\"spritesheetPath\":\"spritesheet.webp\",\"wardrobe\":{\"outfits\":[{\"id\":\"night\",\"displayName\":\"Night\",\"spritesheetPath\":\"outfits/night.webp\"}]}}";
+    try std.testing.expectError(error.UnsupportedFormat, project(std.testing.allocator, input, "a"));
 }
