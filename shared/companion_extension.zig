@@ -104,6 +104,47 @@ pub const RecoveryReport = recovery.Report;
 pub const RecoverySnapshot = recovery.Snapshot;
 pub const RecoveryState = recovery.RegisteredState;
 
+pub const RemovalAction = enum { quarantine, restore_interrupted };
+pub const RemovalRequest = struct {
+    expected: inventory.Record,
+    action: RemovalAction,
+
+    pub fn init(row: *const library.Row, snapshot: *const RecoverySnapshot, action: RemovalAction) !RemovalRequest {
+        const expected = try row.removalRecord();
+        const state = snapshot.stateFor(expected.id) orelse return error.RecoveryRequired;
+        const required: RecoveryState = switch (action) {
+            .quarantine => .normal,
+            .restore_interrupted => .interrupted_removal,
+        };
+        if (state != required) return error.RecoveryRequired;
+        return .{ .expected = expected, .action = action };
+    }
+};
+
+// Called only after explicit host confirmation. The earlier diagnostic
+// snapshot is an admission hint, never authorization: store rechecks
+// the copied record and exact directory state under the private lease.
+pub fn applyRemovalDefault(hex: []const u8, request: *const RemovalRequest) !void {
+    if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
+    const digest = try parseDigest(hex);
+    var path: [1024]u16 = undefined;
+    const root = try packageRoot(&path);
+    const owner = try std.heap.page_allocator.create(runtime.Owner);
+    owner.* = .{};
+    const outcome = blk: {
+        owner.open(root, digest, 1, 128 * 1024 * 1024) catch |err| break :blk @as(anyerror!void, err);
+        _ = openPrivateDefault(owner) catch |err| break :blk @as(anyerror!void, err);
+        break :blk switch (request.action) {
+            .quarantine => store.quarantineRemove(owner, request.expected),
+            .restore_interrupted => store.restoreInterruptedRemoval(owner, request.expected),
+        };
+    };
+    owner.close() catch return error.CleanupFailed;
+    std.heap.page_allocator.destroy(owner);
+    return outcome;
+}
+
+
 // Use the same verified module and private-root lease as other maintenance
 // operations. The scan never adopts or deletes any asset or preference.
 pub fn scanRecoveryDefault(hex: []const u8) !RecoverySnapshot {
@@ -587,4 +628,22 @@ test "runtime approval requires exactly one SHA-256 hex digest" {
     try std.testing.expectError(error.InvalidRuntimeDigest, parseDigest("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
     const digest = try parseDigest("0101010101010101010101010101010101010101010101010101010101010101");
     try std.testing.expectEqual(@as(u8, 1), digest[31]);
+}
+
+test "removal request binds selected identity and requires matching diagnostic state" {
+    var row: library.Row = .{ .id = 1, .source = @splat(0), .len = 3, .paired = true, .digest = @splat(7), .secondary = @splat(9) };
+    @memcpy(row.source[0..3], "cat");
+    var snapshot: RecoverySnapshot = .{};
+    try std.testing.expectError(error.RecoveryRequired, RemovalRequest.init(&row, &snapshot, .quarantine));
+    snapshot.count = 1;
+    snapshot.details[0] = .{ .id = 1, .state = .normal };
+    const request = try RemovalRequest.init(&row, &snapshot, .quarantine);
+    try std.testing.expectError(error.RecoveryRequired, RemovalRequest.init(&row, &snapshot, .restore_interrupted));
+    snapshot.details[0].state = .interrupted_removal;
+    _ = try RemovalRequest.init(&row, &snapshot, .restore_interrupted);
+    row.digest = @splat(8);
+    try std.testing.expectEqual(@as(u8, 7), request.expected.digest.?[0]);
+    try std.testing.expectEqual(@as(u8, 9), request.expected.secondary.?[0]);
+    row.paired = false;
+    try std.testing.expectError(error.NeedsRevalidation, RemovalRequest.init(&row, &snapshot, .restore_interrupted));
 }

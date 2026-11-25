@@ -5,12 +5,15 @@ const std = @import("std");
 const builtin = @import("builtin");
 const inventory = @import("pet_inventory.zig");
 const catalog = @import("pet_catalog.zig");
+const fingerprint = @import("pet_fingerprint.zig");
 
 pub const Row = struct {
     id: u64,
     source: [64]u8,
     len: u8,
     paired: bool,
+    digest: ?fingerprint.Digest = null,
+    secondary: ?fingerprint.Secondary = null,
     favorite: bool = false,
     preference_version: catalog.PreferenceVersion = .{},
     tag_count: usize = 0,
@@ -19,6 +22,17 @@ pub const Row = struct {
 
     pub fn sourceId(self: *const Row) []const u8 {
         return self.source[0..self.len];
+    }
+
+    // Preserve the actual read identity, not a newly resolved record for
+    // the same numeric ID. The write worker must compare it under lease.
+    pub fn removalRecord(self: *const Row) !inventory.Record {
+        if (!self.paired or self.digest == null or self.secondary == null) return error.NeedsRevalidation;
+        if (self.len == 0 or self.len > self.source.len) return error.InvalidRecord;
+        var record = try inventory.Record.init(self.id, self.sourceId());
+        record.digest = self.digest;
+        record.secondary = self.secondary;
+        return record;
     }
 };
 
@@ -267,7 +281,7 @@ pub fn decode(bytes: []const u8, out: *Snapshot) !void {
     try inventory.decode(&index, bytes);
     var result: Snapshot = .{ .count = index.count, .total = index.count };
     for (index.entries[0..index.count], 0..) |record, n| {
-        result.rows[n] = .{ .id = record.id, .source = record.source, .len = record.len, .paired = record.digest != null and record.secondary != null };
+        result.rows[n] = .{ .id = record.id, .source = record.source, .len = record.len, .paired = record.digest != null and record.secondary != null, .digest = record.digest, .secondary = record.secondary };
     }
     out.* = result;
 }
@@ -289,4 +303,22 @@ test "library matching searches every tag and respects favorite filter" {
     entry.favorite = true;
     try std.testing.expect(matches(&entry, .{ .query = "work", .favorites_only = true }));
     try std.testing.expect(!matches(&entry, .{ .query = "unknown" }));
+}
+
+test "library removal selection retains both durable fingerprints" {
+    const index = try std.testing.allocator.create(inventory.Inventory);
+    defer std.testing.allocator.destroy(index);
+    index.* = .{};
+    try index.publishPair(try index.reserve(), "cat", .{ .primary = @splat(7), .secondary = @splat(9) });
+    try index.publish(try index.reserve(), "legacy");
+    const bytes = try std.testing.allocator.alloc(u8, inventory.max_bytes);
+    defer std.testing.allocator.free(bytes);
+    const snapshot = try std.testing.allocator.create(Snapshot);
+    defer std.testing.allocator.destroy(snapshot);
+    try decode(try inventory.encode(index, bytes), snapshot);
+    const selected = try snapshot.rows[0].removalRecord();
+    try std.testing.expectEqualDeep(try index.get(1), selected);
+    try std.testing.expectError(error.NeedsRevalidation, snapshot.rows[1].removalRecord());
+    snapshot.rows[0].digest = null;
+    try std.testing.expectError(error.NeedsRevalidation, snapshot.rows[0].removalRecord());
 }

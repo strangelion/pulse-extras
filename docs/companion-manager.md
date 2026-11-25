@@ -1149,3 +1149,16 @@ legacy records, missing IDs and pending inventory; the isolated bridge
 fixture checks the state before restoration, after restoration and after
 committed removal. No new host SDK interface or destructive UI command is
 introduced while the preceding native removal regression is pending.
+
+## Confirmation-to-worker removal identity
+
+The read-only library snapshot retains both recorded fingerprints in each
+row. RemovalRequest copies the selected durable record only when the
+latest diagnostic snapshot reports the appropriate state for the requested
+operation. The isolated maintenance worker can then apply the request
+using the same approved module and exclusive private-root lease. It
+revalidates the copied identity and namespace via the existing removal
+backend; the diagnostic state is not authority to mutate. Portable tests
+cover legacy, missing, mismatched and copied selection identity. The
+confirmation window and command registration remain unexposed until the
+current regression and subsequent UI fixture are validated.
