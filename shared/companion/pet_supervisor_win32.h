@@ -51,4 +51,35 @@ pet_child_result pet_child_stop(pet_supervisor *owner, DWORD grace_ms,
  * No claim of confirmed termination. Safe on a zero owner. */
 void pet_child_abandon(pet_supervisor *owner);
 
+/* One process-wide owner mode: legacy singleton OR one worker-owned group.
+ * The group is noncopyable and must remain alive until close succeeds.
+ * Count includes unconfirmed startup failures and stopping children. */
+#define PET_GROUP_MAX 100u
+typedef struct {
+    uint64_t id;
+    pet_supervisor child;
+    BOOL stopping;
+} pet_group_slot;
+typedef struct {
+    unsigned limit, count;
+    uint64_t next_id;
+    SIZE_T commit_budget;
+    pet_group_slot slots[PET_GROUP_MAX];
+} pet_supervisor_group;
+
+pet_child_result pet_group_open(pet_supervisor_group *group, unsigned limit, SIZE_T commit_budget);
+/* On an error, nonzero id means a possibly live child remains owned;
+ * reap or stop it before reclaiming the reservation. */
+pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *approved_exe,
+    const pet_child_options *options, uint64_t *id);
+pet_child_result pet_group_publish(pet_supervisor_group *group, uint64_t id, unsigned reaction);
+pet_child_result pet_group_status(pet_supervisor_group *group, uint64_t id, BOOL *running, DWORD *exit_code);
+/* Nonblocking cooperative stop and forced termination requests. Neither
+ * releases the slot. Reap only after the process handle signals. */
+pet_child_result pet_group_request_stop(pet_supervisor_group *group, uint64_t id);
+pet_child_result pet_group_force_stop(pet_supervisor_group *group, uint64_t id);
+pet_child_result pet_group_reap(pet_supervisor_group *group, uint64_t id, DWORD *exit_code);
+/* Close rejects any outstanding children; never silently drops ownership. */
+pet_child_result pet_group_close(pet_supervisor_group *group);
+
 #endif

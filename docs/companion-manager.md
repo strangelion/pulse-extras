@@ -94,3 +94,27 @@ children. Mixed heap peak max 15,932,243 bytes, V1 peak 13,056,823,
 zero budget denials, all 100 drained. Run 45564689293 passed the native
 job memory-limit regression. These are independent-process benchmarks,
 not proof that the settings manager currently runs multiple pets.
+
+## Native group checkpoint
+
+The native supervisor now exposes an experimental worker-serialized group
+API in pet_supervisor_win32.h. A process may own either the legacy singleton
+or one group, not both. Up to 100 slots; configured count and total committed
+ceiling are checked before creation. Reuse the existing job creation,
+private state channel, memory limits and executable pinning. The caller must
+still independently verify executable digest and root ACLs. No shared
+registry writes in the group until per-instance persistence exists.
+
+Cooperative stop and force requests are nonblocking and keep ownership.
+Only a signaled process handle and successful exit-code query allow reap.
+An ambiguous partial-start cleanup retains job/process/stop and a nonzero
+ID even on error. Close rejects nonempty groups. The native limit is a
+defensive backstop; the Zig manager is not yet connected to it. IDs are
+group-session scoped; UI adapters must discard stale sessions. No readiness
+acknowledgment, asset-path launch, process sampling or settings page wiring
+in this change. Native regression adds two simultaneous controlled fixture
+children, budget denial, singleton exclusion, independent state, stop
+without early release, force isolation, stale ID rejection and confirmed
+reap. Local Windows execution is unavailable; CI must verify these cases.
+Previous manager model Ubuntu regression passed; Windows was in progress
+when checked. Prior full regression and stress runs at 17a5642 passed.

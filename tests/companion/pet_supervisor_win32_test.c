@@ -58,6 +58,8 @@ int main(void) {
     DWORD length = GetModuleFileNameW(NULL, path, 1024), code = 99;
     BOOL running = FALSE, forced = FALSE;
     HANDLE observed = NULL;
+    pet_supervisor_group group = {0};
+    uint64_t a = 0, b = 0, rejected = 0;
     CHECK(length && length < 1024);
     CHECK(pet_child_start(&owner, L"relative.exe", &options) == PET_CHILD_INVALID);
     CHECK(pet_child_start(&owner, path, &options) == PET_CHILD_OK);
@@ -101,8 +103,49 @@ int main(void) {
         CHECK(pet_child_status(&owner, &running, &code) == PET_CHILD_OK && !running && code == 0);
         CHECK(pet_child_stop(&owner, 5000, &forced, &code) == PET_CHILD_OK && !forced && code == 0);
     }
+    /* Two live children, one group, distinct state channels. Limit by
+     * conservative memory ceiling even though count cap permits three. */
+    options.smoke = TRUE;
+    CHECK(pet_group_open(&group, 3, PET_CHILD_COMMIT_LIMIT * 2) == PET_CHILD_OK);
+    CHECK(pet_child_start(&other, path, &options) == PET_CHILD_BUSY);
+    CHECK(pet_group_start(&group, L"relative.exe", &options, &rejected) == PET_CHILD_INVALID);
+    CHECK(!rejected && !group.count);
+    CHECK(pet_group_start(&group, path, &options, &a) == PET_CHILD_OK && a);
+    CHECK(pet_group_start(&group, path, &options, &b) == PET_CHILD_OK && b > a);
+    CHECK(group.count == 2);
+    CHECK(pet_group_start(&group, path, &options, &rejected) == PET_CHILD_BUSY && !rejected);
+    CHECK(pet_group_close(&group) == PET_CHILD_BUSY);
+    CHECK(pet_group_publish(&group, a, PET_STATE_THINKING) == PET_CHILD_OK);
+    CHECK(pet_group_publish(&group, b, PET_STATE_TESTING) == PET_CHILD_OK);
+    CHECK(group.slots[0].child.reaction == PET_STATE_THINKING);
+    CHECK(group.slots[1].child.reaction == PET_STATE_TESTING);
+    CHECK(pet_group_request_stop(&group, a) == PET_CHILD_OK);
+    CHECK(pet_group_reap(&group, a, &code) == PET_CHILD_BUSY && group.count == 2);
+    CHECK(pet_group_force_stop(&group, a) == PET_CHILD_OK);
+    CHECK(group.count == 2);
+    CHECK(WaitForSingleObject(group.slots[0].child.process, 5000) == WAIT_OBJECT_0);
+    CHECK(pet_group_reap(&group, a, &code) == PET_CHILD_OK && code == 1 && group.count == 1);
+    CHECK(pet_group_publish(&group, a, PET_STATE_IDLE) == PET_CHILD_INVALID);
+    CHECK(pet_group_status(&group, b, &running, &code) == PET_CHILD_OK && running);
+    CHECK(pet_group_force_stop(&group, b) == PET_CHILD_OK);
+    CHECK(WaitForSingleObject(group.slots[1].child.process, 5000) == WAIT_OBJECT_0);
+    CHECK(pet_group_reap(&group, b, &code) == PET_CHILD_OK && group.count == 0);
+    CHECK(pet_group_close(&group) == PET_CHILD_OK);
+    CHECK(pet_child_start(&owner, path, &options) == PET_CHILD_OK);
+    CHECK(pet_child_stop(&owner, 0, &forced, &code) == PET_CHILD_OK);
     rc = 0;
 cleanup:
+    /* Fixture only: bounded cleanup on assertion failure; OS closes job
+     * handles at test process exit if a wait fails. */
+    for (unsigned i = 0; i < PET_GROUP_MAX; ++i) {
+        uint64_t id = group.slots[i].id;
+        if (id) {
+            pet_group_force_stop(&group, id);
+            if (WaitForSingleObject(group.slots[i].child.process, 5000) == WAIT_OBJECT_0)
+                pet_group_reap(&group, id, &code);
+        }
+    }
+    if (group.limit) pet_group_close(&group);
     pet_child_abandon(&owner);
     pet_child_abandon(&other);
     if (observed) CloseHandle(observed);

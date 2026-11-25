@@ -6,7 +6,9 @@
 #define CMD_CAP 1400u
 #define STOP_MAX_MS 5000u
 
+/* 0 = none, 1 = legacy singleton, 2 = group. Group identity is worker-owned. */
 static LONG live_owner = 0;
+static pet_supervisor_group *active_group = NULL;
 
 static HANDLE pin_image(const wchar_t *path) {
     if (!path) return INVALID_HANDLE_VALUE;
@@ -49,7 +51,7 @@ static HANDLE pin_image(const wchar_t *path) {
     return image;
 }
 
-void pet_child_abandon(pet_supervisor *owner) {
+static void release_child(pet_supervisor *owner) {
     if (!owner || !owner->job) return;
     CloseHandle(owner->job); /* KILL_ON_JOB_CLOSE; never inherited */
     if (owner->process) CloseHandle(owner->process);
@@ -58,10 +60,15 @@ void pet_child_abandon(pet_supervisor *owner) {
     if (owner->state_mapping) CloseHandle(owner->state_mapping);
     if (owner->state_event) CloseHandle(owner->state_event);
     *owner = (pet_supervisor){0};
+}
+
+void pet_child_abandon(pet_supervisor *owner) {
+    if (!owner || !owner->job) return;
+    release_child(owner);
     InterlockedExchange(&live_owner, 0);
 }
 
-pet_child_result pet_child_start(pet_supervisor *owner, const wchar_t *approved_exe,
+static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approved_exe,
     const pet_child_options *options) {
     if (!owner || !options || options->scale < PET_MIN_SCALE ||
         options->scale > PET_MAX_SCALE ||
@@ -69,8 +76,6 @@ pet_child_result pet_child_start(pet_supervisor *owner, const wchar_t *approved_
         return PET_CHILD_INVALID;
     if (owner->job || owner->process || owner->stop || owner->state_mapping ||
         owner->state_event || owner->state_slot) return PET_CHILD_BUSY;
-    if (InterlockedCompareExchange(&live_owner, 1, 0) != 0) return PET_CHILD_BUSY;
-
     pet_child_result result = PET_CHILD_OS_ERROR;
     HANDLE image = INVALID_HANDLE_VALUE, job = NULL, stop = NULL;
     HANDLE mapping = NULL, event = NULL;
@@ -161,8 +166,15 @@ pet_child_result pet_child_start(pet_supervisor *owner, const wchar_t *approved_
 cleanup:
     if (child.hProcess) {
         TerminateProcess(child.hProcess, 1);
-        WaitForSingleObject(child.hProcess, STOP_MAX_MS);
-        CloseHandle(child.hProcess);
+        if (WaitForSingleObject(child.hProcess, STOP_MAX_MS) == WAIT_OBJECT_0) {
+            CloseHandle(child.hProcess);
+        } else {
+            /* Never claim a failed creation is gone on an ambiguous wait.
+             * The group keeps this reservation and owned handles to reap. */
+            owner->job = job; job = NULL;
+            owner->process = child.hProcess;
+            owner->stop = stop; stop = NULL;
+        }
     }
     if (child.hThread) CloseHandle(child.hThread);
     if (initialized) DeleteProcThreadAttributeList(attributes);
@@ -174,7 +186,25 @@ cleanup:
     if (stop) CloseHandle(stop);
     if (job) CloseHandle(job);
     if (image != INVALID_HANDLE_VALUE) CloseHandle(image);
-    if (result != PET_CHILD_OK) InterlockedExchange(&live_owner, 0);
+    return result;
+}
+
+pet_child_result pet_child_start(pet_supervisor *owner, const wchar_t *approved_exe,
+    const pet_child_options *options) {
+    if (!owner || !options || options->scale < PET_MIN_SCALE ||
+        options->scale > PET_MAX_SCALE ||
+        (options->smoke && (options->remember || options->reduced || options->topmost)))
+        return PET_CHILD_INVALID;
+    if (owner->job || owner->process || owner->stop || owner->state_mapping ||
+        owner->state_event || owner->state_slot) return PET_CHILD_BUSY;
+    if (InterlockedCompareExchange(&live_owner, 1, 0) != 0) return PET_CHILD_BUSY;
+    pet_child_result result = start_child(owner, approved_exe, options);
+    if (result != PET_CHILD_OK) {
+        /* Preserve legacy last-resort cleanup semantics. Group callers use
+         * start_child directly and retain ambiguous termination ownership. */
+        if (owner->job) release_child(owner);
+        InterlockedExchange(&live_owner, 0);
+    }
     return result;
 }
 
@@ -226,5 +256,100 @@ pet_child_result pet_child_stop(pet_supervisor *owner, DWORD grace_ms,
         return PET_CHILD_OS_ERROR;
     *forced = killed;
     pet_child_abandon(owner);
+    return PET_CHILD_OK;
+}
+
+/* All group operations are serialized by one worker. The native admission
+ * check is a hard safety backstop, not physical memory allocation. */
+static pet_group_slot *group_find(pet_supervisor_group *group, uint64_t id) {
+    if (!group || group != active_group || !id) return NULL;
+    for (unsigned i = 0; i < PET_GROUP_MAX; ++i)
+        if (group->slots[i].id == id) return &group->slots[i];
+    return NULL;
+}
+
+pet_child_result pet_group_open(pet_supervisor_group *group, unsigned limit, SIZE_T commit_budget) {
+    if (!group || !limit || limit > PET_GROUP_MAX || commit_budget < PET_CHILD_COMMIT_LIMIT)
+        return PET_CHILD_INVALID;
+    if (InterlockedCompareExchange(&live_owner, 2, 0) != 0) return PET_CHILD_BUSY;
+    *group = (pet_supervisor_group){0};
+    group->limit = limit; group->commit_budget = commit_budget; group->next_id = 1;
+    active_group = group;
+    return PET_CHILD_OK;
+}
+
+pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *approved_exe,
+    const pet_child_options *options, uint64_t *id) {
+    if (!id) return PET_CHILD_INVALID;
+    *id = 0;
+    if (!group || group != active_group || !options || options->remember)
+        return PET_CHILD_INVALID;
+    /* Until per-instance persistence exists, reject shared registry writes. */
+    if (group->count >= group->limit ||
+        group->count >= group->commit_budget / PET_CHILD_COMMIT_LIMIT) return PET_CHILD_BUSY;
+    if (group->next_id == UINT64_MAX) return PET_CHILD_INVALID;
+    for (unsigned i = 0; i < PET_GROUP_MAX; ++i) {
+        pet_group_slot *slot = &group->slots[i];
+        if (slot->id) continue;
+        slot->id = group->next_id++;
+        ++group->count;
+        pet_child_result result = start_child(&slot->child, approved_exe, options);
+        if (result != PET_CHILD_OK && !slot->child.process) {
+            *slot = (pet_group_slot){0};
+            --group->count;
+            return result;
+        }
+        slot->stopping = result != PET_CHILD_OK;
+        *id = slot->id;
+        return result;
+    }
+    return PET_CHILD_BUSY;
+}
+
+pet_child_result pet_group_publish(pet_supervisor_group *group, uint64_t id, unsigned reaction) {
+    pet_group_slot *slot = group_find(group, id);
+    if (!slot || slot->stopping) return PET_CHILD_INVALID;
+    return pet_child_publish(&slot->child, reaction);
+}
+
+pet_child_result pet_group_status(pet_supervisor_group *group, uint64_t id, BOOL *running, DWORD *exit_code) {
+    pet_group_slot *slot = group_find(group, id);
+    if (!slot) return PET_CHILD_INVALID;
+    return pet_child_status(&slot->child, running, exit_code);
+}
+
+pet_child_result pet_group_request_stop(pet_supervisor_group *group, uint64_t id) {
+    pet_group_slot *slot = group_find(group, id);
+    if (!slot || !slot->child.stop) return PET_CHILD_INVALID;
+    slot->stopping = TRUE;
+    return SetEvent(slot->child.stop) ? PET_CHILD_OK : PET_CHILD_OS_ERROR;
+}
+
+pet_child_result pet_group_force_stop(pet_supervisor_group *group, uint64_t id) {
+    pet_group_slot *slot = group_find(group, id);
+    if (!slot || !slot->child.job) return PET_CHILD_INVALID;
+    slot->stopping = TRUE;
+    return TerminateJobObject(slot->child.job, 1) ? PET_CHILD_OK : PET_CHILD_CONTAINMENT_FAILED;
+}
+
+pet_child_result pet_group_reap(pet_supervisor_group *group, uint64_t id, DWORD *exit_code) {
+    pet_group_slot *slot = group_find(group, id);
+    if (!slot || !exit_code) return PET_CHILD_INVALID;
+    BOOL running = FALSE;
+    pet_child_result status = pet_child_status(&slot->child, &running, exit_code);
+    if (status != PET_CHILD_OK) return status;
+    if (running) return PET_CHILD_BUSY;
+    release_child(&slot->child);
+    *slot = (pet_group_slot){0};
+    --group->count;
+    return PET_CHILD_OK;
+}
+
+pet_child_result pet_group_close(pet_supervisor_group *group) {
+    if (!group || group != active_group) return PET_CHILD_INVALID;
+    if (group->count) return PET_CHILD_BUSY;
+    active_group = NULL;
+    *group = (pet_supervisor_group){0};
+    InterlockedExchange(&live_owner, 0);
     return PET_CHILD_OK;
 }
