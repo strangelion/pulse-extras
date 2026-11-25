@@ -144,6 +144,22 @@ fn horizontal(id: []const u8, children: []const ui.Node) ui.Node {
     return node;
 }
 
+// Build a contiguous prefix: the nested-picker route omits the standalone
+// Browse button, so Cancel must occupy the next initialized slot.
+fn fillImportToolbar(nodes: *[3]ui.Node, embedded_picker: bool, enabled: bool, importing: bool, can_cancel: bool) []const ui.Node {
+    nodes[0] = action("library.import", "导入本地素材", commands[19], enabled);
+    var count: usize = 1;
+    if (!embedded_picker) {
+        nodes[count] = action("library.browse", "浏览文件夹", commands[21], enabled);
+        count += 1;
+    }
+    if (importing) {
+        nodes[count] = action("library.import-cancel", "取消导入", commands[20], can_cancel);
+        count += 1;
+    }
+    return nodes[0..count];
+}
+
 fn recoveryText(report: library.RecoveryReport, buffer: []u8) ![]const u8 {
     return std.fmt.bufPrint(buffer, "最近一次只读扫描：已登记 {d} · 缺失 {d} · 孤立目录 {d} · 待处理目录 {d} · 待处理记录 {d} · 孤立偏好 {d} · 无效项 {d} · 未知项 {d} · 未预留 ID {d} · 隔离待恢复 {d} · 已移除保留 {d}。未验证文件内容，未执行清理。", .{ report.registered, report.missing, report.orphan_packages, report.pending_directories, report.pending_records, report.orphan_preferences, report.invalid, report.unknown, report.unreserved, report.quarantined_registered, report.quarantined_removed });
 }
@@ -235,17 +251,8 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             if (instance.dialogs != null and config.helper_sha256.len == 64 and config.runtime_sha256.len == 64) {
                 const enabled = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.import_dialog == 0 and instance.picker_request == 0;
                 const embedded_picker = instance.dialog_v2_table != null and instance.picker_api != null and !instance.dialog_picker_disabled;
-                content.import_toolbar[0] = action("library.import", "导入本地素材", commands[19], enabled);
-                var import_count: usize = 1;
-                if (!embedded_picker) {
-                    content.import_toolbar[1] = action("library.browse", "浏览文件夹", commands[21], enabled);
-                    import_count = 2;
-                }
-                if (instance.import_request != null) {
-                    content.import_toolbar[2] = action("library.import-cancel", "取消导入", commands[20], instance.task_id != 0 and !instance.import_cancel_requested);
-                    import_count = 3;
-                }
-                content.children[count] = horizontal("library.import-toolbar", content.import_toolbar[0..import_count]);
+                const buttons = fillImportToolbar(&content.import_toolbar, embedded_picker, enabled, instance.import_request != null, instance.task_id != 0 and !instance.import_cancel_requested);
+                content.children[count] = horizontal("library.import-toolbar", buttons);
                 count += 1;
             }
             if (config.runtime_sha256.len == 64) {
@@ -1737,4 +1744,22 @@ test "removal confirmation is explicit and cancellation clears copied request" {
     try std.testing.expect(instance.removal_request == null);
     try std.testing.expectEqual(@as(u64, 0), instance.task_id);
     try std.testing.expect(!canMaintain(instance));
+}
+
+test "import toolbar initializes every visible node for both picker modes" {
+    var nodes: [3]ui.Node = undefined;
+    for ([_]bool{ false, true }) |embedded| {
+        const idle = fillImportToolbar(&nodes, embedded, true, false, false);
+        try std.testing.expectEqual(@as(usize, if (embedded) 1 else 2), idle.len);
+        try std.testing.expectEqualStrings(commands[19], abi.slice(idle[0].command.value).?);
+        if (!embedded) try std.testing.expectEqualStrings(commands[21], abi.slice(idle[1].command.value).?);
+        const busy = fillImportToolbar(&nodes, embedded, false, true, true);
+        try std.testing.expectEqual(@as(usize, if (embedded) 2 else 3), busy.len);
+        try std.testing.expectEqualStrings(commands[19], abi.slice(busy[0].command.value).?);
+        if (!embedded) try std.testing.expectEqualStrings(commands[21], abi.slice(busy[1].command.value).?);
+        try std.testing.expectEqualStrings(commands[20], abi.slice(busy[busy.len - 1].command.value).?);
+        try std.testing.expectEqual(@as(u32, 1), busy[busy.len - 1].enabled.value);
+        const canceling = fillImportToolbar(&nodes, embedded, false, true, false);
+        try std.testing.expectEqual(@as(u32, 0), canceling[canceling.len - 1].enabled.value);
+    }
 }
