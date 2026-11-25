@@ -38,6 +38,7 @@ const StoreQuarantineV2 = *const fn (*const Lease, usize, u64, c_int, *u32, *u64
 const StoreQuarantineIdentity = *const fn (*const Lease, usize, u64, *u32, *u64) callconv(.c) c_int;
 const quarantine_pin_max = 293;
 const StoreQuarantinePin = *const fn (*const Lease, usize, u64, u32, u64, [*]usize, usize, *usize) callconv(.c) c_int;
+const StoreQuarantineRecheck = *const fn (*const Lease, usize, u64, u32, u64, [*]const usize, usize) callconv(.c) c_int;
 const StoreQuarantineUsage = *const fn (*const Lease, usize, u64, *u64) callconv(.c) c_int;
 
 extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, ?*anyopaque) callconv(.winapi) usize;
@@ -276,6 +277,17 @@ pub const Owner = struct {
             self.releaseQuarantine() catch return error.CleanupFailed;
             return error.InvalidRecord;
         }
+    }
+
+    pub fn recheckQuarantine(self: *Owner, id: u64, identity: DirectoryIdentity) !void {
+        if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
+        if (id == 0 or identity.file_index == 0) return error.InvalidRecord;
+        if (self.quarantine_pin_count < 3 or self.quarantine_pin_count > self.quarantine_pins.len) return error.StoreBusy;
+        const recheck: StoreQuarantineRecheck = @ptrCast(GetProcAddress(self.module, "pulse_companion_quarantine_recheck_v1") orelse return error.MissingStoreApi);
+        checkStore(recheck(&self.lease, @sizeOf(Lease), id, identity.volume, identity.file_index, &self.quarantine_pins, self.quarantine_pin_count)) catch |err| {
+            if (err == error.CleanupFailed) self.store_faulted = true;
+            return err;
+        };
     }
 
     // Retain the failing handle on error; close() retries before unloading.

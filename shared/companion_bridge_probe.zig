@@ -319,7 +319,15 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     const metadata_len = private.len + metadata_name.len;
     metadata_path[metadata_len] = 0;
     const metadata = metadata_path[0..metadata_len :0];
+    var wrong_identity = identity;
+    wrong_identity.file_index ^= 1;
+    if (owner.pinQuarantine(record.id, wrong_identity)) |_| {
+        return error.AcceptedWrongPinIdentity;
+    } else |err| {
+        if (err != error.InvalidRecord) return err;
+    }
     try owner.pinQuarantine(record.id, identity);
+    try owner.recheckQuarantine(record.id, identity);
     const writer = CreateFileW(metadata, 0x40000000, 7, null, 3, 0x80, null);
     if (writer != std.math.maxInt(usize)) {
         _ = CloseHandle(writer);
@@ -330,6 +338,9 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     const reopened = CreateFileW(metadata, 0x40000000, 7, null, 3, 0x80, null);
     if (reopened == std.math.maxInt(usize)) return error.PinNotReleased;
     if (CloseHandle(reopened) == 0) return error.CleanupFailed;
+    const directory = metadata[0 .. metadata.len - "\\pet.json".len];
+    try exerciseForeignStream(io, owner, helper[0..len :0], digest, record.id, metadata);
+    try exerciseForeignStream(io, owner, helper[0..len :0], digest, record.id, directory);
     var replacement = sample;
     replacement.file_index += 1;
     if (owner.writeRemovalReceipt(replacement)) |_| {
@@ -339,6 +350,31 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     }
     if (!std.meta.eql(sample, (try owner.readRemovalReceipt(record.id)) orelse return error.MissingReceipt)) return error.UnexpectedReceipt;
     std.debug.print("Immutable receipt storage, overwrite refusal and read-only content preflight verified\n", .{});
+}
+
+// Isolated test only: create and remove just the named stream.
+fn exerciseForeignStream(io: std.Io, owner: *loader.Owner, helper: [:0]const u16, digest: [32]u8, id: u64, base: []const u16) !void {
+    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral(":pulse-fixture-foreign:$DATA");
+    var path: [1024]u16 = undefined;
+    if (base.len + suffix.len >= path.len) return error.BadFixturePath;
+    @memcpy(path[0..base.len], base);
+    @memcpy(path[base.len..][0..suffix.len], suffix);
+    const n = base.len + suffix.len;
+    path[n] = 0;
+    const stream = path[0..n :0];
+    const created = CreateFileW(stream, 0x40000000, 0, null, 1, 0x80, null);
+    if (created == std.math.maxInt(usize)) return error.BadFixturePath;
+    if (CloseHandle(created) == 0) return error.CleanupFailed;
+    if (local_import.verifyQuarantine(io, owner, helper, digest, id)) |_| {
+        return error.AcceptedForeignStream;
+    } else |err| {
+        if (err != error.InvalidRecord) return err;
+    }
+    const existing = CreateFileW(stream, 0x80000000, 7, null, 3, 0x80, null);
+    if (existing == std.math.maxInt(usize)) return error.PreflightModifiedFixture;
+    if (CloseHandle(existing) == 0) return error.CleanupFailed;
+    if (DeleteFileW(stream) == 0) return error.CleanupFailed;
+    try local_import.verifyQuarantine(io, owner, helper, digest, id);
 }
 
 pub fn main(init: std.process.Init) !void {

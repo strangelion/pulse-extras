@@ -104,4 +104,5 @@ fn verifyPinnedQuarantine(io: std.Io, owner: *runtime.Owner, exe: [:0]const u16,
     try expected.verifyPair(try outcome);
     const current = try store.cleanupReceipt(owner, id);
     if (!std.meta.eql(expected, current)) return error.StaleSelection;
+    try owner.recheckQuarantine(id, .{ .volume = expected.volume, .file_index = expected.file_index });
 }

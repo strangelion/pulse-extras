@@ -247,6 +247,32 @@ static pet_store_result usage_open(const wchar_t *path, BOOL directory,
     return usage_open_mode(path, directory, FALSE, out, info);
 }
 
+/* Check the opened object rather than a reopened path. Reject named
+ * streams, truncated responses and unsupported enumeration. */
+static pet_store_result usage_streams(HANDLE file, BOOL directory) {
+    union {
+        FILE_STREAM_INFO info;
+        BYTE bytes[1024];
+    } buffer = {0};
+    if (!GetFileInformationByHandleEx(file, FileStreamInfo, &buffer, sizeof(buffer))) {
+        DWORD error = GetLastError();
+        if (error == ERROR_HANDLE_EOF && directory) return PET_STORE_OK;
+        if (error == ERROR_MORE_DATA || error == ERROR_INSUFFICIENT_BUFFER)
+            return PET_STORE_INVALID;
+        return PET_STORE_IO;
+    }
+    const FILE_STREAM_INFO *stream = &buffer.info;
+    const wchar_t default_name[] = L"::$DATA";
+    if (stream->NextEntryOffset ||
+        stream->StreamNameLength > sizeof(buffer.bytes) - FIELD_OFFSET(FILE_STREAM_INFO, StreamName) ||
+        (stream->StreamNameLength != 0 &&
+         (stream->StreamNameLength != sizeof(default_name) - sizeof(wchar_t) ||
+          wmemcmp(stream->StreamName, default_name, (sizeof(default_name) / sizeof(wchar_t)) - 1))) ||
+        (directory && stream->StreamSize.QuadPart != 0))
+        return PET_STORE_INVALID;
+    return PET_STORE_OK;
+}
+
 /* Caller owns every returned handle even when a later admission check
  * fails. Keeping the original opens avoids a close/reopen race. */
 static pet_store_result usage_retain(usage_pins *pins, HANDLE file) {
@@ -268,6 +294,12 @@ static pet_store_result usage_directory(const wchar_t *path, unsigned depth,
         uint64_t actual_id = ((uint64_t)info.nFileIndexHigh << 32) | info.nFileIndexLow;
         if (info.dwVolumeSerialNumber != volume || (!depth && actual_id != file_index))
             return PET_STORE_INVALID;
+        result = usage_streams(pinned, TRUE);
+        if (result != PET_STORE_OK) return result;
+    } else if (!depth && file_index) {
+        uint64_t actual_id = ((uint64_t)info.nFileIndexHigh << 32) | info.nFileIndexLow;
+        if (info.dwVolumeSerialNumber != volume || actual_id != file_index)
+            return CloseHandle(pinned) ? PET_STORE_INVALID : PET_STORE_CLEANUP_FAILED;
     }
     wchar_t pattern[PET_PRIVATE_PATH_CAP], child[PET_PRIVATE_PATH_CAP];
     int n = swprintf(pattern, PET_PRIVATE_PATH_CAP, L"%ls\\*", path);
@@ -314,6 +346,7 @@ static pet_store_result usage_directory(const wchar_t *path, unsigned depth,
                     if (pins) {
                         pet_store_result retained = usage_retain(pins, file);
                         if (retained != PET_STORE_OK) result = retained;
+                        else if (result == PET_STORE_OK) result = usage_streams(file, FALSE);
                     } else if (!CloseHandle(file)) result = PET_STORE_CLEANUP_FAILED;
                 }
             }
@@ -365,6 +398,38 @@ __declspec(dllexport) pet_store_result pulse_companion_quarantine_pin_v1(
     pet_store_result result = usage_directory(path, 0, &count, &pins, volume, file_index);
     *written = pins.count;
     return result;
+}
+
+/* Recheck the bounded namespace against the retained handles. Existing
+ * objects cannot be replaced while their sharing pins remain open.
+ * This detects additions during the scan, not later same-user insertion.
+ * No handle ownership transfer or deletion. */
+__declspec(dllexport) pet_store_result pulse_companion_quarantine_recheck_v1(
+    const pet_private_root *lease, SIZE_T size, uint64_t id,
+    uint32_t volume, uint64_t file_index, const HANDLE *handles, SIZE_T count) {
+    if (!live_lease(lease, size) || !id || !file_index || !handles ||
+        count < 3 || count > QUARANTINE_PIN_MAX) return PET_STORE_INVALID;
+    wchar_t path[PET_PRIVATE_PATH_CAP];
+    int n = swprintf(path, PET_PRIVATE_PATH_CAP, L"%ls\\pet-%016llx.removed",
+        lease->path, (unsigned long long)id);
+    if (n <= 0 || n >= (int)PET_PRIVATE_PATH_CAP) return PET_STORE_INVALID;
+    usage_count usage = {0};
+    pet_store_result result = usage_directory(path, 0, &usage, NULL, volume, file_index);
+    if (result != PET_STORE_OK) return result;
+    if ((SIZE_T)usage.entries + 1 != count) return PET_STORE_INVALID;
+    for (SIZE_T index = 0; index < count; ++index) {
+        BY_HANDLE_FILE_INFORMATION info;
+        if (!GetFileInformationByHandle(handles[index], &info)) return PET_STORE_IO;
+        BOOL directory = !!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+        uint64_t actual_id = ((uint64_t)info.nFileIndexHigh << 32) | info.nFileIndexLow;
+        if (info.dwVolumeSerialNumber != volume ||
+            (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+            (!directory && info.nNumberOfLinks != 1) ||
+            (!index && (!directory || actual_id != file_index))) return PET_STORE_INVALID;
+        result = usage_streams(handles[index], directory);
+        if (result != PET_STORE_OK) return result;
+    }
+    return PET_STORE_OK;
 }
 
 /* Read-only current directory identity; not deletion authorization. */

@@ -1309,3 +1309,25 @@ alternate data streams, mapped writes and hostile same-user races still
 require separate treatment. No file disposition or permanent deletion
 is exposed; do not treat successful verification as future authorization.
 New CI and actual host acceptance remain unverified.
+
+## Stream and post-helper namespace verification
+
+Pin admission queries the actual file and directory handles with
+GetFileInformationByHandleEx(FileStreamInfo). Named streams, oversized
+responses and unavailable enumeration fail closed. Only an unnamed data
+stream (or no directory streams) is accepted. Usage accounting still measures
+unnamed content, not total allocated storage. After the approved helper and
+final receipt checks, a versioned native recheck validates the retained root
+identity, enumerates the bounded namespace again, compares its entry count to
+the retained handle prefix and rechecks every handle's volume, attributes,
+link count and streams. All checks run before releasing the pins. Reference:
+https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getfileinformationbyhandleex
+
+The isolated Windows fixture tests wrong identity and partial-handle unwind,
+successful recheck, rejection of empty named streams on a file and directory,
+preservation of those streams, and successful verification after removing
+only the fixture-created streams. Unsupported stream enumeration blocks
+preflight. This is still a point-in-time read-only check: later additions,
+mapped writes and adversarial same-user activity are not transactional.
+No permanent deletion or user-directory mutation is enabled. CI and actual
+host acceptance remain pending for this revision.
