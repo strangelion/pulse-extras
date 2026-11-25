@@ -89,3 +89,7 @@ Worker resolver candidate: tests cover release failure before handoff, A/B/C nav
 The combined candidate also covers the visible discovery/cancel state and explicit refresh after permission denial, requiring a new policy decision before the next summary.
 
 Wake candidate adds mock tests for inline-before-post-return, coalescing, queue rejection, successful zero token, failed cancellation, late delivery after stop, navigation-to-resolver-to-summary dispatch, premature worker-return delivery, and explicit owner fallback. The latest resolver revision a143792 was separately submitted; its platform CI must be checked independently. This combined revision requires its own full CI. Mock callback delivery does not certify actual host scheduling or unloading.
+
+Ordinary Git approval tests cover grant path rejection, incomplete/changed evidence, revocation, exact command and cwd admission, unrelated navigation, worktree marker refusal and metadata matching. Fake evidence is not real approval or positive approved-tool execution. Resolver revision a143792 passed both platform jobs and regression gate in CI 45522520423. This candidate needs independent platform CI.
+
+Additional tests cover Windows reported separator normalization (not case or other aliases) and the actual Execution gate rejecting a request before Runner spawn/accounting.

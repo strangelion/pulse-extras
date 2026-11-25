@@ -38,12 +38,20 @@ pub const Tool = enum {
     }
 };
 
+/// Independent command admission before process spawn. Keep context stable
+/// through worker terminal release.
+pub const Gate = struct {
+    ctx: *anyopaque,
+    check: *const fn (*anyopaque, *run.Runner, run.Request) run.Error!void,
+};
+
 /// Borrowed profile, alive until session joins. Never downgrade approval.
 pub const Execution = union(enum) {
     compatibility,
     approved: struct {
         cwd: identity.Path,
         environment: *const std.process.Environ.Map,
+        gate: ?Gate = null,
     },
 
     pub fn execute(self: *const Execution, runner: *run.Runner, request: run.Request) run.Error!run.Outcome {
@@ -55,6 +63,7 @@ pub const Execution = union(enum) {
                 var controlled = request;
                 controlled.cwd = profile.cwd.slice();
                 controlled.environ_map = profile.environment;
+                if (profile.gate) |gate| try gate.check(gate.ctx, runner, controlled);
                 return runner.run(controlled);
             },
         }
@@ -62,7 +71,7 @@ pub const Execution = union(enum) {
 };
 
 /// Lexical check only, not ACL or canonical identity verification.
-fn candidatePath(path: []const u8) bool {
+pub fn candidatePath(path: []const u8) bool {
     if (path.len == 0 or path.len > identity.max_path_bytes or std.mem.indexOfScalar(u8, path, 0) != null) return false;
     if (builtin.os.tag == .windows) {
         if (path.len < 3 or !std.ascii.isAlphabetic(path[0]) or path[1] != ':' or (path[2] != '\\' and path[2] != '/')) return false;
