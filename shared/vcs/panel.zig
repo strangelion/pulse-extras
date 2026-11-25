@@ -39,6 +39,9 @@ pub const View = struct {
     discovery_available: bool = false,
     approval_required: bool = false,
     revocation_configured: bool = false,
+    approved_root: ?identity.Path = null,
+    persistent_revocation: bool = false,
+    revocation_failed: bool = false,
 };
 
 const Selection = struct {
@@ -194,7 +197,7 @@ fn failureLabel(lang: Language, err: contract.Error) []const u8 {
 /// All visible data is copied; no references into the View or cache remain.
 /// build is read-only; buildInteractive declares the fixed owner commands.
 pub const Content = struct {
-    const capacity = 20;
+    const capacity = 24;
     const line_bytes = identity.max_path_bytes + 64;
     lines: [capacity][line_bytes]u8 = undefined,
     nodes: [capacity]ui.Node = undefined,
@@ -244,6 +247,8 @@ pub const Content = struct {
             else
                 loc(lang, "Execution locked: production approval unavailable", "执行已锁定：尚未提供生产授权"));
         }
+        if (view.approved_root) |root| self.add("vcs.approved-root", loc(lang, "Approved root: ", "授权根目录："), root.slice());
+        if (view.revocation_failed) self.add("vcs.revocation-error", "", loc(lang, "Session locked; permanent revocation failed. Use approval tool to revoke.", "会话已锁定；永久撤销失败，请使用授权工具撤销。"));
         if (view.failure) |err| self.add("vcs.error", "", failureLabel(lang, err));
         if (view.workspace) |workspace| {
             self.add("vcs.provider", loc(lang, "Provider: ", "类型："), workspace.kind.displayName());
@@ -297,7 +302,7 @@ pub const Content = struct {
                 }
             }
             self.addButton("vcs.action.check", loc(lang, "Check result", "检查结果"), command_check);
-            if (view.revocation_configured and !view.approval_required) self.addButton("vcs.action.revoke", loc(lang, "Revoke session approval", "撤销本次授权"), command_revoke);
+            if (view.revocation_configured and !view.approval_required) self.addButton("vcs.action.revoke", if (view.persistent_revocation) loc(lang, "Revoke saved approval", "永久撤销授权") else loc(lang, "Revoke session approval", "撤销本次授权"), command_revoke);
         }
         ui.withChildren(&self.root, self.nodes[0..self.len]);
     }

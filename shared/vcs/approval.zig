@@ -178,7 +178,7 @@ pub const Review = struct {
         var hash = std.crypto.hash.sha2.Sha256.init(.{});
         hash.update("pulse-git-review-environment-v1");
         // The exact admitted vocabulary is finite; hash in stable order.
-        for ([_][]const u8{ "SystemRoot", "WINDIR", "TEMP", "TMP", "LANG", "LC_ALL", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL" }) |key| {
+        for ([_][]const u8{ "SystemRoot", "WINDIR", "TEMP", "TMP", "LANG", "LC_ALL", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "HOME", "XDG_CONFIG_HOME", "GIT_ATTR_NOSYSTEM" }) |key| {
             hash.update(key);
             if (environment.get(key)) |value| {
                 if (value.len > 32768 or std.mem.indexOfScalar(u8, value, 0) != null) return error.ResourceLimit;
@@ -310,6 +310,7 @@ pub const NativeInput = struct {
     io: std.Io,
     release_ctx: *anyopaque,
     release: *const fn (*anyopaque) void,
+    revoke_persistent: ?*const fn (*anyopaque) contract.Error!void = null,
 };
 
 /// Native session retains every input until Binding drain / final destroy.
@@ -332,12 +333,15 @@ pub const NativeSession = struct {
         self.configured = true;
         self.policy.reviewed_environment = self.input.review.environment_digest;
         try binding.configureResolver(self.policy.resolver());
+        binding.approved_root = self.input.review.grant.root;
+        binding.persistent_revocation = self.input.revoke_persistent != null;
         try binding.configureRevocation(.{ .ctx = self, .revoke = &revoke });
     }
 
-    fn revoke(user: *anyopaque) void {
+    fn revoke(user: *anyopaque) host_query.HostError!void {
         const self: *NativeSession = @ptrCast(@alignCast(user));
         self.policy.revoke();
+        if (self.input.revoke_persistent) |persist| persist(self.input.release_ctx) catch return error.Permission;
     }
 
     /// Owner-safe atomic gate: do not touch worker-owned runner state.

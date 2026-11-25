@@ -412,7 +412,7 @@ pub const Controller = struct {
 /// Tool/repository approval and provider lifetime belong to the caller.
 pub const Binding = struct {
     pub const Navigation = context_mod.Navigation(identity.max_path_bytes);
-    pub const Revocation = struct { ctx: *anyopaque, revoke: *const fn (*anyopaque) void };
+    pub const Revocation = struct { ctx: *anyopaque, revoke: *const fn (*anyopaque) host_mod.Error!void };
 
     controller: Controller,
     resolution: Resolution,
@@ -425,6 +425,9 @@ pub const Binding = struct {
     language: panel.Language,
     approval_locked: bool = false,
     revocation: ?Revocation = null,
+    approved_root: ?identity.Path = null,
+    persistent_revocation: bool = false,
+    revocation_failed: bool = false,
     destroyed: bool = false,
     accepting: bool = false,
     poisoned: bool = false,
@@ -452,7 +455,12 @@ pub const Binding = struct {
         if (!self.accepting or self.approval_locked) return error.State;
         const action = self.revocation orelse return error.Permission;
         self.approval_locked = true;
-        action.revoke(action.ctx);
+        action.revoke(action.ctx) catch {
+            self.revocation_failed = true;
+            self.navigation.pending = false;
+            self.clear() catch {};
+            return error.Permission;
+        };
         self.navigation.pending = false;
         try self.clear();
     }
@@ -473,6 +481,9 @@ pub const Binding = struct {
         var current = self.controller.view();
         current.approval_required = self.approval_locked;
         current.revocation_configured = self.revocation != null;
+        current.approved_root = self.approved_root;
+        current.persistent_revocation = self.persistent_revocation;
+        current.revocation_failed = self.revocation_failed;
         content.buildInteractive(self.language, &current, &tree);
         var id: u64 = 0;
         try host_mod.mapStatus(create(table.context, abi.view("VCS"), &tree, &id));
@@ -815,6 +826,9 @@ pub const Binding = struct {
         var current = self.controller.view();
         current.approval_required = self.approval_locked;
         current.revocation_configured = self.revocation != null;
+        current.approved_root = self.approved_root;
+        current.persistent_revocation = self.persistent_revocation;
+        current.revocation_failed = self.revocation_failed;
         if (!self.approval_locked and self.resolver != null and self.navigation.accepting) {
             if (self.navigation.latest) |*latest| current.discovery_available = latest.directory() != null;
         }
@@ -1758,7 +1772,7 @@ test "destroy boundary discards completed summary that could not be released" {
 const RevocationFixture = struct {
     calls: usize = 0,
 
-    fn revoke(user: *anyopaque) void {
+    fn revoke(user: *anyopaque) host_mod.Error!void {
         const self: *RevocationFixture = @ptrCast(@alignCast(user));
         self.calls += 1;
     }

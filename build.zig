@@ -425,7 +425,7 @@ pub fn build(b: *std.Build) void {
 
     // Optional trusted provisioning implementation compiled into the DLL.
     // The default is always locked. Never load an arbitrary runtime source.
-    const source_path = b.option([]const u8, "vcs-approval-source", "Trusted reviewed approval provisioning Zig source (relative to repository)") orelse "extensions/vcs-panel/locked_source.zig";
+    const source_path = b.option([]const u8, "vcs-approval-source", "Trusted reviewed approval provisioning Zig source (relative to repository)") orelse "extensions/vcs-panel/default_source.zig";
     const native_source = b.createModule(.{
         .root_source_file = b.path(source_path),
         .target = target,
@@ -458,6 +458,7 @@ pub fn build(b: *std.Build) void {
         "extensions/abi-probe/main.zig",
         "extensions/hello-panel/main.zig",
         "extensions/vcs-panel/main.zig",
+        "extensions/vcs-panel/default_source.zig",
         "shared/diagnostics/probe_log.zig",
         "shared/process/run.zig",
         "shared/runtime/budget.zig",

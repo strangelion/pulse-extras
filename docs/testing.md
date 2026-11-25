@@ -113,3 +113,7 @@ C ABI locked candidate test now runs 16 full successful model/context attachment
 New regressions cover failed ordinary cancel with pending wake, documented host-final retirement without SDK release calls, unpublished summary discard, permanent stop and two-step grant review drift/incomplete evidence. Prior native candidate 682eaca passed full CI 45528486318; lifecycle C-loader revision 1e23264 passed Ubuntu and Windows was still running at review time. This revision requires its own CI; real-host execution intentionally deferred.
 
 Regression candidate includes versioned review encoding/decoding and staging tool failure paths. Native reviewed session integrates explicit provisioning, revocation and Runner drain. The default test build uses the locked source; positive product source/host lifecycle remain to be validated. See docs/vcs-acceptance-runbook.md.
+
+New tests cover strict stored-record parsing, restricted Git index/name rejection and approval CLI payload/error handling. Default DLL source now uses the actual Windows manager, while Zig unit tests of the entry explicitly import the locked source. The C loader assumes a clean candidate slot on its disposable CI Windows user. The positive real-host and protected storage acceptance matrix is deferred. No real registry grant is written by unit tests.
+
+Additional tests exercise ancestor-only create rights, target write rejection, inherit-only versus inherited ACEs, and DPAPI round-trip/tamper refusal without modifying the registry. The package remains an isolated acceptance candidate.

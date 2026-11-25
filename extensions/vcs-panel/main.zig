@@ -1,5 +1,5 @@
-//! Native VCS candidate. The default build is locked; an explicitly compiled
-//! trusted provisioning source may supply one independently reviewed session.
+//! Native VCS candidate. The default source loads one explicitly reviewed
+//! Windows user grant; absent grant locks execution.
 //! Real-host acceptance and production auditor certification are release gates.
 
 const std = @import("std");
@@ -169,4 +169,36 @@ test "native entry refuses incompatible host and missing task interface without 
     out.deactivate.?(out.instance);
     try std.testing.expectEqual(abi.error_unavailable, out.activate.?(out.instance));
     try std.testing.expect(self.binding == null and !self.active);
+}
+
+/// Standalone approval-tool ABI. These calls are not host callbacks. The
+/// caller loads this exact reviewed DLL and invokes them explicitly.
+export fn PulseVcsInspectV1(input: ?[*]const u8, length: u32, output: ?[*]u8, capacity: u32, written: ?*u32) callconv(.c) abi.Status {
+    const count = written orelse return abi.error_argument;
+    count.* = 0;
+    if (length == 0 or length > 128 * 1024 or capacity > approval.Review.record_max_bytes) return abi.error_argument;
+    const bytes = input orelse return abi.error_argument;
+    const result = output orelse return abi.error_argument;
+    if (comptime @hasDecl(source, "inspect")) {
+        const size = source.inspect(bytes[0..length], result[0..capacity]) catch |err| return statusOf(err);
+        count.* = @intCast(size);
+        return abi.ok;
+    } else return abi.error_unavailable;
+}
+
+export fn PulseVcsConfirmV1(input: ?[*]const u8, length: u32, review: ?[*]const u8, review_length: u32) callconv(.c) abi.Status {
+    if (length == 0 or length > 128 * 1024 or review_length == 0 or review_length > approval.Review.record_max_bytes) return abi.error_argument;
+    const bytes = input orelse return abi.error_argument;
+    const record = review orelse return abi.error_argument;
+    if (comptime @hasDecl(source, "confirm")) {
+        source.confirm(bytes[0..length], record[0..review_length]) catch |err| return statusOf(err);
+        return abi.ok;
+    } else return abi.error_unavailable;
+}
+
+export fn PulseVcsRevokeV1() callconv(.c) abi.Status {
+    if (comptime @hasDecl(source, "revokeSaved")) {
+        source.revokeSaved() catch |err| return statusOf(err);
+        return abi.ok;
+    } else return abi.error_unavailable;
 }

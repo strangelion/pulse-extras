@@ -97,6 +97,11 @@ pub fn validateGitEnvironment(map: *const std.process.Environ.Map, cwd: []const 
     var buffer: [max_git_config_path_bytes]u8 = undefined;
     const expected = try gitGlobalConfigPath(cwd, &buffer);
     try validateEnvironmentInternal(map, expected);
+    for ([_][]const u8{ "HOME", "XDG_CONFIG_HOME" }) |key| {
+        if (map.get(key)) |value| {
+            if (!std.mem.eql(u8, value, cwd)) return error.UnapprovedEnvironment;
+        }
+    }
     for ([_][]const u8{ "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_CONFIG_GLOBAL" }, [_][]const u8{ "1", "0", "0", expected }) |key, value| {
         if (!std.mem.eql(u8, map.get(key) orelse return error.UnapprovedEnvironment, value)) return error.UnapprovedEnvironment;
     }
@@ -125,7 +130,9 @@ fn validateEnvironmentInternal(map: *const std.process.Environ.Map, git_global: 
             (std.mem.eql(u8, key, "GIT_TERMINAL_PROMPT") and std.mem.eql(u8, value, "0")) or
             (std.mem.eql(u8, key, "GIT_OPTIONAL_LOCKS") and std.mem.eql(u8, value, "0")) or
             (std.mem.eql(u8, key, "GIT_CONFIG_NOSYSTEM") and std.mem.eql(u8, value, "1")) or
-            (std.mem.eql(u8, key, "GIT_CONFIG_GLOBAL") and git_global != null and std.mem.eql(u8, value, git_global.?));
+            (std.mem.eql(u8, key, "GIT_CONFIG_GLOBAL") and git_global != null and std.mem.eql(u8, value, git_global.?)) or
+            (git_global != null and (std.mem.eql(u8, key, "HOME") or std.mem.eql(u8, key, "XDG_CONFIG_HOME"))) or
+            (git_global != null and std.mem.eql(u8, key, "GIT_ATTR_NOSYSTEM") and std.mem.eql(u8, value, "1"));
         if (!allowed) return error.UnapprovedEnvironment;
         if (std.mem.eql(u8, key, "SystemRoot") or std.mem.eql(u8, key, "WINDIR") or std.mem.eql(u8, key, "TEMP") or std.mem.eql(u8, key, "TMP")) {
             if (!localAbsolute(value)) return error.UnapprovedEnvironment;
