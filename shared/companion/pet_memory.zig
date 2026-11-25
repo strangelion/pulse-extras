@@ -1,6 +1,7 @@
 //! One companion-owned memory domain, reusing the shared runtime allocator.
 //! C receives callbacks and an opaque owner, never a Zig allocator ABI.
 const std = @import("std");
+const resources = @import("pet_resources.zig");
 pub const BoundedAllocator = @import("runtime_allocator").BoundedAllocator;
 
 pub const limit = 48 * 1024 * 1024;
@@ -9,9 +10,10 @@ pub const Bridge = extern struct {
     context: *BoundedAllocator,
     allocate: *const fn (*BoundedAllocator, usize) callconv(.c) ?[*]u8,
     release: *const fn (*BoundedAllocator, [*]u8, usize) callconv(.c) void,
+    resource_bridge: *const resources.Bridge,
 
-    pub fn init(owner: *BoundedAllocator) Bridge {
-        return .{ .context = owner, .allocate = alloc, .release = free };
+    pub fn init(owner: *BoundedAllocator, resource_bridge: *const resources.Bridge) Bridge {
+        return .{ .context = owner, .allocate = alloc, .release = free, .resource_bridge = resource_bridge };
     }
 
     pub fn allocator(self: *const Bridge) std.mem.Allocator {
@@ -33,7 +35,9 @@ fn free(owner: *BoundedAllocator, ptr: [*]u8, len: usize) callconv(.c) void {
 
 test "C bridge and Zig scratch share one budget and drain" {
     var owner = BoundedAllocator.init(std.testing.allocator, 64);
-    const bridge = Bridge.init(&owner);
+    var resource_owner: resources.Owner = .{};
+    const resource_bridge = resources.Bridge.init(&resource_owner);
+    const bridge = Bridge.init(&owner, &resource_bridge);
     const first = bridge.allocate(bridge.context, 48).?;
     const second = try bridge.allocator().alloc(u8, 16);
     try std.testing.expect(bridge.allocate(bridge.context, 1) == null);
@@ -50,7 +54,9 @@ test "C bridge and Zig scratch share one budget and drain" {
 test "backing allocation failure rolls back C bridge reservation" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     var owner = BoundedAllocator.init(failing.allocator(), 64);
-    const bridge = Bridge.init(&owner);
+    var resource_owner: resources.Owner = .{};
+    const resource_bridge = resources.Bridge.init(&resource_owner);
+    const bridge = Bridge.init(&owner, &resource_bridge);
     try std.testing.expect(bridge.allocate(bridge.context, 32) == null);
     try owner.checkDrained();
 }

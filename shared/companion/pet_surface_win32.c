@@ -112,17 +112,31 @@ pet_surface_result pet_surface_close(pet_surface *surface) {
     if (!surface->owner_thread) return PET_SURFACE_OK;
     if (GetCurrentThreadId() != surface->owner_thread) return PET_SURFACE_WRONG_THREAD;
     if (surface->window && IsWindow(surface->window)) {
-        if (!DestroyWindow(surface->window)) return PET_SURFACE_OS_ERROR;
+        if (!DestroyWindow(surface->window)) {
+            pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
+            return PET_SURFACE_OS_ERROR;
+        }
     }
     surface->window = NULL;
     if (surface->memory_dc && surface->previous)
         SelectObject(surface->memory_dc, surface->previous);
     /* Deleting the DC first also releases a selected bitmap if restoration
      * failed. Never delete the previous stock bitmap. */
-    if (surface->memory_dc) DeleteDC(surface->memory_dc);
-    if (surface->bitmap) DeleteObject(surface->bitmap);
+    BOOL ok = TRUE;
+    if (surface->memory_dc && !DeleteDC(surface->memory_dc)) {
+        pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
+        ok = FALSE;
+    }
+    if (surface->bitmap) {
+        if (DeleteObject(surface->bitmap))
+            pet_release(surface->resources, PET_RESOURCE_DIB, (size_t)surface->width * surface->height * 4u);
+        else {
+            pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
+            ok = FALSE;
+        }
+    }
     *surface = (pet_surface){0};
-    return PET_SURFACE_OK;
+    return ok ? PET_SURFACE_OK : PET_SURFACE_OS_ERROR;
 }
 
 pet_surface_result pet_surface_open(pet_surface *surface, BOOL topmost, BOOL click_through) {
@@ -157,9 +171,15 @@ pet_surface_result pet_surface_open_scaled(pet_surface *surface, BOOL topmost,
     info.bmiHeader.biBitCount = 32;
     info.bmiHeader.biCompression = BI_RGB;
     void *pixels = NULL;
+    size_t dib_bytes = (size_t)surface->width * surface->height * 4u;
+    if (!pet_reserve(surface->resources, PET_RESOURCE_DIB, dib_bytes)) goto fail;
     surface->bitmap = CreateDIBSection(surface->memory_dc, &info, DIB_RGB_COLORS,
         &pixels, NULL, 0);
-    if (!surface->bitmap || !pixels) goto fail;
+    if (!surface->bitmap) {
+        pet_release(surface->resources, PET_RESOURCE_DIB, dib_bytes);
+        goto fail;
+    }
+    if (!pixels) goto fail;
     surface->pixels = pixels;
     surface->previous = SelectObject(surface->memory_dc, surface->bitmap);
     if (!surface->previous || surface->previous == HGDI_ERROR) {
@@ -190,7 +210,7 @@ static pet_surface_result present_grid(pet_surface *surface, const uint8_t *atla
     if (!desktop) return PET_SURFACE_OS_ERROR;
     BOOL ok = UpdateLayeredWindow(surface->window, desktop, &position, &size,
         surface->memory_dc, &origin, 0, &blend, ULW_ALPHA);
-    ReleaseDC(NULL, desktop);
+    if (!ReleaseDC(NULL, desktop)) pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
     if (!ok) return PET_SURFACE_OS_ERROR;
     surface->primed = TRUE;
     return PET_SURFACE_OK;
@@ -241,8 +261,14 @@ pet_surface_result pet_surface_resize(pet_surface *surface, unsigned percent,
     info.bmiHeader.biBitCount = 32;
     info.bmiHeader.biCompression = BI_RGB;
     result = PET_SURFACE_OS_ERROR;
+    size_t dib_bytes = (size_t)width * height * 4u;
+    if (!pet_reserve(surface->resources, PET_RESOURCE_DIB, dib_bytes)) goto cleanup;
     bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, NULL, 0);
-    if (!bitmap || !pixels) goto cleanup;
+    if (!bitmap) {
+        pet_release(surface->resources, PET_RESOURCE_DIB, dib_bytes);
+        goto cleanup;
+    }
+    if (!pixels) goto cleanup;
     previous = SelectObject(dc, bitmap);
     if (!previous || previous == HGDI_ERROR) { previous = NULL; goto cleanup; }
     result = frame_scaled(atlas, atlas_bytes, 8,
@@ -257,12 +283,14 @@ pet_surface_result pet_surface_resize(pet_surface *surface, unsigned percent,
     if (!desktop) goto cleanup;
     BOOL ok = UpdateLayeredWindow(surface->window, desktop, &position, &size,
         dc, &origin, 0, &blend, ULW_ALPHA);
-    ReleaseDC(NULL, desktop);
+    if (!ReleaseDC(NULL, desktop)) pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
     if (!ok) goto cleanup;
 
     SelectObject(surface->memory_dc, surface->previous);
-    DeleteDC(surface->memory_dc);
-    DeleteObject(surface->bitmap);
+    if (!DeleteDC(surface->memory_dc)) pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
+    if (DeleteObject(surface->bitmap))
+        pet_release(surface->resources, PET_RESOURCE_DIB, (size_t)surface->width * surface->height * 4u);
+    else pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
     surface->memory_dc = dc;
     surface->bitmap = bitmap;
     surface->previous = previous;
@@ -272,8 +300,11 @@ pet_surface_result pet_surface_resize(pet_surface *surface, unsigned percent,
     return PET_SURFACE_OK;
 cleanup:
     if (previous) SelectObject(dc, previous);
-    DeleteDC(dc);
-    if (bitmap) DeleteObject(bitmap);
+    if (!DeleteDC(dc)) pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
+    if (bitmap) {
+        if (DeleteObject(bitmap)) pet_release(surface->resources, PET_RESOURCE_DIB, dib_bytes);
+        else pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
+    }
     return result;
 }
 

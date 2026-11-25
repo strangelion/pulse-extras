@@ -246,7 +246,7 @@ static void usage(void) {
 int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_validate_fn validate,
     pet_activity_sample_fn sample_activity, pet_demo_validate_fn validate_activity,
     pet_package_parse_fn parse_package) {
-    if (!memory || !memory->context || !memory->allocate || !memory->release) return 1;
+    if (!memory || !memory->context || !memory->allocate || !memory->release || !memory->resource_bridge) return 1;
     int rc = 1, argc = 0, reduced = 0, smoke = 0;
     unsigned reaction = PET_STATE_IDLE;
     unsigned version = 2, scale = 100;
@@ -276,6 +276,7 @@ int pet_demo_run(const pet_memory *memory, pet_demo_sample_fn sample, pet_demo_v
     unsigned active_index = PET_IDLE_NONE;
     uint32_t rng = (uint32_t)GetTickCount64() ^ GetCurrentProcessId();
     pet_surface surface = {0};
+    surface.resources = memory->resource_bridge;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv || !sample || !validate || !sample_activity || !validate_activity || !parse_package) goto cleanup;
     for (int i = 1; i < argc; ++i) {
@@ -703,7 +704,7 @@ cleanup:
     if (pet_surface_close(&surface) != PET_SURFACE_OK) rc = 1;
     pet_free(memory, activity, activity_bytes);
     pet_free(memory, atlas, bytes);
-    pet_package_close(&package);
+    pet_package_close(memory, &package);
     if (argv) LocalFree(argv);
     return rc;
 }

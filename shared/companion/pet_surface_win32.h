@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "pet_resources.h"
 
 #define PET_FRAME_WIDTH 192u
 #define PET_FRAME_HEIGHT 208u
@@ -42,6 +43,7 @@ typedef struct {
     BOOL primed;
     unsigned width, height;
     BOOL placement_dirty;
+    const pet_resources *resources;
 } pet_surface;
 
 pet_surface_result pet_surface_open(pet_surface *surface, BOOL topmost, BOOL click_through);

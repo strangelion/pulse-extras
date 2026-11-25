@@ -144,7 +144,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          zig build-exe -target x86_64-windows-gnu -O ReleaseSafe shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 --dep runtime_allocator -Mroot=shared/companion/pet_demo.zig -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_budget -Mruntime_allocator=shared/runtime/allocator.zig -target x86_64-windows-gnu -O ReleaseSafe -Mruntime_budget=shared/runtime/budget.zig '-femit-bin=zig-out/pulse-pet-demo.exe'
+          zig build-exe -target x86_64-windows-gnu -O ReleaseSafe shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 --dep runtime_allocator --dep runtime_budget --dep runtime_event_log -Mroot=shared/companion/pet_demo.zig -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_budget -Mruntime_allocator=shared/runtime/allocator.zig -target x86_64-windows-gnu -O ReleaseSafe -Mruntime_budget=shared/runtime/budget.zig -target x86_64-windows-gnu -O ReleaseSafe -Mruntime_event_log=shared/runtime/event_log.zig '-femit-bin=zig-out/pulse-pet-demo.exe'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./zig-out/pulse-pet-demo.exe --smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

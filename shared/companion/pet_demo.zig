@@ -1,6 +1,7 @@
 //! Standalone experimental desktop companion executable, not a Pulse plugin.
 const std = @import("std");
 const memory = @import("pet_memory.zig");
+const resources = @import("pet_resources.zig");
 const animation = @import("animation.zig");
 const assets = @import("pet_assets.zig");
 const activities = @import("pet_activities.zig");
@@ -82,11 +83,21 @@ fn parsePackage(bridge: *const memory.Bridge, input: [*]const u8, len: usize, id
 
 pub fn main() !void {
     var owner = memory.BoundedAllocator.init(std.heap.page_allocator, memory.limit);
-    const bridge = memory.Bridge.init(&owner);
+    var resource_owner: resources.Owner = .{};
+    const resource_bridge = resources.Bridge.init(&resource_owner);
+    const bridge = memory.Bridge.init(&owner, &resource_bridge);
     const result = pet_demo_run(&bridge, sampleFrame, validateWebp, sampleActivity, validateActivity, parsePackage);
     const stats = owner.stats();
     // A single bounded shutdown diagnostic; no per-frame logging.
     std.debug.print("Companion heap: live={d} allocations={d} peak={d} denied={d}\n", .{ stats.live_bytes, stats.live_allocations, stats.reserved_peak, stats.denied });
+    std.debug.print("Companion resources: files={d} codec={d} dib={d} cleanup_failures={d} peaks={d}/{d}/{d}\n", .{ resource_owner.files.used, resource_owner.codecs.used, resource_owner.dib.used, resource_owner.cleanup_failures, resource_owner.files.peak, resource_owner.codecs.peak, resource_owner.dib.peak });
+    if (stats.denied != 0) resource_owner.log.add(.{ .kind = .allocation_limit, .count = stats.denied });
+    if (result != 0) resource_owner.log.add(.{ .kind = .io_failure, .count = 1 });
+    resource_owner.log.add(.{ .kind = .stopped, .count = 1 });
+    var log_buffer: [4096]u8 = undefined;
+    const report = try resource_owner.log.encode(&log_buffer);
+    std.debug.print("{s}", .{report});
     try owner.checkDrained();
+    try resource_owner.checkDrained();
     if (result != 0) return error.CompanionDemoFailed;
 }

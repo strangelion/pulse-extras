@@ -394,3 +394,11 @@ cleanup precedes checkDrained. This does not count WIC/GDI/OS resources,
 stack memory or handles, and is not a host-wide quota. See the companion
 spike for the switch-peak rationale, remaining handle/log/task gates
 and native verification requirements.
+
+Companion phase 2 adds independent shared Budget quotas for asset and
+enumeration handles, synchronous decode scopes and DIB pixel bytes.
+It uses the existing bounded event_log for quota/cleanup events and
+requires all accounted resources to drain at native exit. Scope counters
+are not measurements of WIC internals, GDI overhead, registry/menu/IPC
+resources or total process memory. See companion spike for limits and
+remaining lifecycle/diagnostic integration.

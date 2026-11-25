@@ -326,7 +326,7 @@ changed; the sample pixels are not distributable pet artwork.
 Build on Windows from repository root with the pinned Zig:
 
 ```powershell
-zig build-exe -target x86_64-windows-gnu -O ReleaseSafe shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 --dep runtime_allocator -Mroot=shared/companion/pet_demo.zig -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_budget -Mruntime_allocator=shared/runtime/allocator.zig -target x86_64-windows-gnu -O ReleaseSafe -Mruntime_budget=shared/runtime/budget.zig '-femit-bin=pulse-pet-demo.exe'
+zig build-exe -target x86_64-windows-gnu -O ReleaseSafe shared/companion/pet_demo_win32.c shared/companion/pet_decode_win32.c shared/companion/pet_surface_win32.c shared/companion/pet_config_win32.c -lc -luser32 -lgdi32 -lshell32 -lole32 -lwindowscodecs -luuid -ladvapi32 --dep runtime_allocator --dep runtime_budget --dep runtime_event_log -Mroot=shared/companion/pet_demo.zig -target x86_64-windows-gnu -O ReleaseSafe --dep runtime_budget -Mruntime_allocator=shared/runtime/allocator.zig -target x86_64-windows-gnu -O ReleaseSafe -Mruntime_budget=shared/runtime/budget.zig -target x86_64-windows-gnu -O ReleaseSafe -Mruntime_event_log=shared/runtime/event_log.zig '-femit-bin=pulse-pet-demo.exe'
 .\pulse-pet-demo.exe
 .\pulse-pet-demo.exe --reduced-motion
 .\pulse-pet-demo.exe --webp-v2 C:\path\to\spritesheet.webp
@@ -801,3 +801,25 @@ allocation failure, not permission to fall back to an untracked heap.
 Tests exercise shared C/Zig quota, denial, backing allocation failure
 and final drain; the existing Windows executable smoke tests also
 require main to drain after native cleanup.
+
+## Shared runtime external resource profile — phase 2
+
+Use the shared Budget implementation in one serialized companion-owned
+resource domain. Reserve before local asset and enumeration handle opens
+(320 slots; worst declared inventory 272 strips, 16 outfits, base,
+three directories, metadata and one enumerator), one synchronous WIC
+decode scope, and DIB pixel storage (two 384x416 BGRA buffers, 1,277,952
+bytes). Failed opens and allocations roll back; successful closes release
+reservations. Failed file/DIB close keeps its reservation and records
+cleanup failure; the exit drain gate fails. WIC counts one active
+decode scope, NOT the internal COM object graph or its memory. GDI
+device contexts and borrowed desktop DC release failures are recorded,
+but their OS allocations are not measured. Inherited IPC, registry,
+menu/window, argv and other OS resources are still outside the quotas.
+The existing bounded runtime event_log stores typed numeric budget
+denials and cleanup failures; shutdown includes aggregate resource
+peaks and bounded redacted log export. Existing fixed-stage errors are
+retained for CI diagnostics; not all diagnostics have been migrated.
+Tests cover quotas, denial/rollback, invalid release, failed cleanup and
+zero-resource drain even on rejected package fixtures. No asynchronous
+decode or host-global quota. Windows CI and desktop stress still required.

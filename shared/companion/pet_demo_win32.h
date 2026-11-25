@@ -8,6 +8,7 @@ typedef struct {
     void *context;
     uint8_t *(*allocate)(void *, size_t);
     void (*release)(void *, uint8_t *, size_t);
+    const pet_resources *resource_bridge;
 } pet_memory;
 
 static inline uint8_t *pet_alloc(const pet_memory *memory, size_t bytes) {
@@ -68,7 +69,7 @@ typedef struct {
 BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wchar_t *folder,
     const wchar_t *id, pet_package_parse_fn parse,
     pet_demo_validate_fn validate, pet_demo_validate_fn validate_activity);
-void pet_package_close(pet_package *package);
+void pet_package_close(const pet_memory *memory, pet_package *package);
 uint8_t *pet_package_load_atlas(const pet_memory *memory, const pet_package *package, unsigned outfit,
     pet_demo_validate_fn validate, size_t *decoded_bytes);
 uint8_t *pet_package_load_activity(const pet_memory *memory, const pet_package *package, unsigned index, unsigned outfit,

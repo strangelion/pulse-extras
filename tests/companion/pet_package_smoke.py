@@ -32,6 +32,9 @@ def main() -> None:
             result = subprocess.run([str(exe), "--check-package", str(folder), id_],
                                     timeout=15, capture_output=True)
             assert (result.returncode == 0) == expected, (result.returncode, result.stderr)
+            # Expected rejection must not hide a failed cleanup.
+            assert b"Companion heap: live=0 allocations=0" in result.stderr, result.stderr
+            assert b"Companion resources: files=0 codec=0 dib=0 cleanup_failures=0" in result.stderr, result.stderr
             if stage is not None:
                 assert stage in result.stderr, result.stderr
 

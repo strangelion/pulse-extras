@@ -46,22 +46,41 @@ static BOOL fixed_path(HANDLE file, wchar_t *resolved, DWORD capacity) {
     return GetDriveTypeW(root) == DRIVE_FIXED;
 }
 
+static HANDLE tracked_open(const pet_memory *memory, const wchar_t *path, DWORD access, DWORD flags) {
+    const pet_resources *r = memory->resource_bridge;
+    if (!pet_reserve(r, PET_RESOURCE_FILE, 1)) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return INVALID_HANDLE_VALUE;
+    }
+    HANDLE file = CreateFileW(path, access, FILE_SHARE_READ, NULL, OPEN_EXISTING, flags, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        DWORD error = GetLastError();
+        pet_release(r, PET_RESOURCE_FILE, 1);
+        SetLastError(error);
+    }
+    return file;
+}
+
+static void tracked_close(const pet_memory *memory, HANDLE file) {
+    if (CloseHandle(file)) pet_release(memory->resource_bridge, PET_RESOURCE_FILE, 1);
+    else pet_cleanup_failed(memory->resource_bridge, PET_RESOURCE_FILE);
+}
+
 static uint8_t *read_local(const pet_memory *memory, const wchar_t *path, DWORD limit, DWORD *length) {
     *length = 0;
-    HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL,
-        OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+    HANDLE file = tracked_open(memory, path, GENERIC_READ,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN);
     if (file == INVALID_HANDLE_VALUE) return NULL;
     wchar_t resolved[32768];
     uint8_t *data = fixed_path(file, resolved, 32768) ? read_handle(memory, file, limit, length) : NULL;
-    CloseHandle(file);
+    tracked_close(memory, file);
     return data;
 }
 
 /* Canonical local paths with pinned handles, not a race-free directory walk. */
-static HANDLE package_handle(const wchar_t *path, BOOL directory) {
-    HANDLE file = CreateFileW(path, directory ? FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES : GENERIC_READ,
-        FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT |
-        (directory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_FLAG_SEQUENTIAL_SCAN), NULL);
+static HANDLE package_handle(const pet_memory *memory, const wchar_t *path, BOOL directory) {
+    HANDLE file = tracked_open(memory, path, directory ? FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES : GENERIC_READ,
+        FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_FLAG_SEQUENTIAL_SCAN));
     if (file == INVALID_HANDLE_VALUE) {
         fprintf(stderr, "Package handle: open failed (Win32 %lu).\n", (unsigned long)GetLastError());
         return NULL;
@@ -73,17 +92,17 @@ static HANDLE package_handle(const wchar_t *path, BOOL directory) {
         (!!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != !!directory) ||
         (!directory && info.nNumberOfLinks != 1)) {
         fputs("Package handle: unsafe file attributes or link count.\n", stderr);
-        CloseHandle(file);
+        tracked_close(memory, file);
         return NULL;
     }
     if (!fixed_path(file, resolved, 1024)) {
         fputs("Package handle: not a normalized fixed-drive path.\n", stderr);
-        CloseHandle(file);
+        tracked_close(memory, file);
         return NULL;
     }
     if (CompareStringOrdinal(resolved, -1, path, -1, TRUE) != CSTR_EQUAL) {
         fputs("Package handle: normalized path mismatch.\n", stderr);
-        CloseHandle(file);
+        tracked_close(memory, file);
         return NULL;
     }
     return file;
@@ -111,17 +130,17 @@ static BOOL leaf_wide(const uint8_t *leaf, wchar_t *out, size_t capacity) {
     return TRUE;
 }
 
-void pet_package_close(pet_package *package) {
+void pet_package_close(const pet_memory *memory, pet_package *package) {
     if (!package) return;
     for (unsigned i = 0; i < PET_PACKAGE_MAX; ++i) {
-        if (package->outfit_files[i]) CloseHandle(package->outfit_files[i]);
+        if (package->outfit_files[i]) tracked_close(memory, package->outfit_files[i]);
         for (unsigned j = 0; j < PET_OUTFIT_SLOTS; ++j)
-            if (package->files[i][j]) CloseHandle(package->files[i][j]);
+            if (package->files[i][j]) tracked_close(memory, package->files[i][j]);
     }
-    if (package->wardrobe) CloseHandle(package->wardrobe);
-    if (package->atlas) CloseHandle(package->atlas);
-    if (package->activities) CloseHandle(package->activities);
-    if (package->root) CloseHandle(package->root);
+    if (package->wardrobe) tracked_close(memory, package->wardrobe);
+    if (package->atlas) tracked_close(memory, package->atlas);
+    if (package->activities) tracked_close(memory, package->activities);
+    if (package->root) tracked_close(memory, package->root);
     ZeroMemory(package, sizeof(*package));
 }
 
@@ -132,19 +151,23 @@ typedef struct {
 
 /* Exact case-sensitive inventory of one declared flat directory. Each
  * successful open remains owned by the package, including partial failure. */
-static BOOL pin_inventory(const wchar_t *root, const wchar_t *directory,
+static BOOL pin_inventory(const pet_memory *memory, const wchar_t *root, const wchar_t *directory,
     HANDLE *dir_handle, inventory_file *files, unsigned count) {
     wchar_t folder[1024], path[1024], leaf[80];
     if (!join_path(folder, 1024, root, directory)) return FALSE;
     DWORD attr = GetFileAttributesW(folder);
     if (attr == INVALID_FILE_ATTRIBUTES)
         return !count && GetLastError() == ERROR_FILE_NOT_FOUND;
-    *dir_handle = package_handle(folder, TRUE);
+    *dir_handle = package_handle(memory, folder, TRUE);
     if (!*dir_handle || !join_path(path, 1024, folder, L"*")) return FALSE;
     WIN32_FIND_DATAW found;
+    if (!pet_reserve(memory->resource_bridge, PET_RESOURCE_FILE, 1)) return FALSE;
     HANDLE enumeration = FindFirstFileW(path, &found);
-    if (enumeration == INVALID_HANDLE_VALUE)
-        return !count && GetLastError() == ERROR_FILE_NOT_FOUND;
+    if (enumeration == INVALID_HANDLE_VALUE) {
+        DWORD error = GetLastError();
+        pet_release(memory->resource_bridge, PET_RESOURCE_FILE, 1);
+        return !count && error == ERROR_FILE_NOT_FOUND;
+    }
     BOOL ok = FALSE;
     unsigned seen = 0;
     do {
@@ -156,12 +179,13 @@ static BOOL pin_inventory(const wchar_t *root, const wchar_t *directory,
             if (wcscmp(found.cFileName, leaf) == 0) break;
         }
         if (i == count || *files[i].handle || !join_path(path, 1024, folder, leaf) ||
-            !(*files[i].handle = package_handle(path, FALSE))) goto cleanup;
+            !(*files[i].handle = package_handle(memory, path, FALSE))) goto cleanup;
         ++seen;
     } while (FindNextFileW(enumeration, &found));
     ok = GetLastError() == ERROR_NO_MORE_FILES && seen == count;
 cleanup:
-    FindClose(enumeration);
+    if (FindClose(enumeration)) pet_release(memory->resource_bridge, PET_RESOURCE_FILE, 1);
+    else { pet_cleanup_failed(memory->resource_bridge, PET_RESOURCE_FILE); ok = FALSE; }
     return ok;
 }
 
@@ -199,11 +223,11 @@ BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wcha
     DWORD length = 0;
     BOOL ok = FALSE;
     const char *stage = "root";
-    package->root = package_handle(root, TRUE);
+    package->root = package_handle(memory, root, TRUE);
     if (!package->root) goto cleanup;
     stage = "metadata-open";
     if (!join_path(path, 1024, root, L"pet.json") ||
-        !(metadata = package_handle(path, FALSE))) goto cleanup;
+        !(metadata = package_handle(memory, path, FALSE))) goto cleanup;
     stage = "metadata-read";
     data = read_handle(memory, metadata, 128u * 1024u, &length);
     if (!data) goto cleanup;
@@ -214,7 +238,7 @@ BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wcha
     pet_free(memory, data, length); data = NULL;
     stage = "base-open";
     if (!join_path(path, 1024, root, L"spritesheet.webp") ||
-        !(package->atlas = package_handle(path, FALSE))) goto cleanup;
+        !(package->atlas = package_handle(memory, path, FALSE))) goto cleanup;
     stage = "base-read";
     data = read_handle(memory, package->atlas, MAX_COMPRESSED, &length);
     if (!data) goto cleanup;
@@ -226,7 +250,7 @@ BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wcha
     for (unsigned i = 0; i < package->meta.outfit_count; ++i)
         files[count++] = (inventory_file){package->meta.outfits[i].leaf, &package->outfit_files[i]};
     stage = "outfit-inventory";
-    if (!pin_inventory(root, L"outfits", &package->wardrobe, files, count)) goto cleanup;
+    if (!pin_inventory(memory, root, L"outfits", &package->wardrobe, files, count)) goto cleanup;
     for (unsigned i = 0; i < count; ++i) {
         stage = "outfit-read";
         data = read_handle(memory, package->outfit_files[i], MAX_COMPRESSED, &length);
@@ -243,7 +267,7 @@ BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wcha
                 files[count++] = (inventory_file){rep->leaf, &package->files[i][j]};
         }
     stage = "activity-inventory";
-    if (!pin_inventory(root, L"activities", &package->activities, files, count)) goto cleanup;
+    if (!pin_inventory(memory, root, L"activities", &package->activities, files, count)) goto cleanup;
     size_t total = 0;
     for (unsigned i = 0; i < package->meta.count; ++i)
         for (unsigned j = 0; j <= package->meta.outfit_count; ++j) {
@@ -261,11 +285,11 @@ BOOL pet_package_open(const pet_memory *memory, pet_package *package, const wcha
         }
     ok = TRUE;
 cleanup:
-    if (metadata) CloseHandle(metadata);
+    if (metadata) tracked_close(memory, metadata);
     pet_free(memory, data, length);
     if (!ok) {
         fprintf(stderr, "Package admission failed at %s.\n", stage);
-        pet_package_close(package);
+        pet_package_close(memory, package);
     }
     return ok;
 }
@@ -276,6 +300,7 @@ static uint8_t *decode_static(const pet_memory *memory, const wchar_t *path, HAN
     if (!decoded_bytes) return NULL;
     *decoded_bytes = 0;
     if ((!path && !pinned) || !validate) return NULL;
+    if (!pet_reserve(memory->resource_bridge, PET_RESOURCE_CODEC, 1)) return NULL;
     const UINT stride = width * 4, bytes = stride * height;
     DWORD length = 0;
     uint8_t *input = pinned ? read_handle(memory, pinned, limit, &length) : read_local(memory, path, limit, &length);
@@ -326,6 +351,7 @@ cleanup:
     if (stream) IWICStream_Release(stream);
     if (factory) IWICImagingFactory_Release(factory);
     if (com) CoUninitialize();
+    pet_release(memory->resource_bridge, PET_RESOURCE_CODEC, 1);
     pet_free(memory, input, length);
     if (!*decoded_bytes) {
         pet_free(memory, pixels, bytes);
