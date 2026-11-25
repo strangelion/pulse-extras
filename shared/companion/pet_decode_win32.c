@@ -7,6 +7,9 @@
 #include <string.h>
 #ifdef PULSE_PET_LIBWEBP
 #include "src/webp/decode.h"
+#include "pet_webp_budget.h"
+int pet_webp_budget_begin(pet_webp_budget *budget);
+int pet_webp_budget_end(void);
 static SRWLOCK webp_decode_lock = SRWLOCK_INIT;
 #endif
 
@@ -324,9 +327,20 @@ static uint8_t *decode_static(const pet_memory *memory, const wchar_t *path, HAN
     pixels = pet_alloc(memory, bytes);
     if (!pixels) goto portable_cleanup;
     stage = "libwebp-decode";
+    pet_webp_budget budget = {memory->context, memory->allocate, memory->release, 0};
     AcquireSRWLockExclusive(&webp_decode_lock);
+    if (!pet_webp_budget_begin(&budget)) {
+        ReleaseSRWLockExclusive(&webp_decode_lock);
+        stage = "libwebp-budget-scope";
+        goto portable_cleanup;
+    }
     uint8_t *decoded = WebPDecodeRGBAInto(input, length, pixels, bytes, (int)stride);
+    int drained = pet_webp_budget_end();
     ReleaseSRWLockExclusive(&webp_decode_lock);
+    if (!drained) {
+        stage = "libwebp-budget-not-drained";
+        goto portable_cleanup;
+    }
     if (decoded != pixels) goto portable_cleanup;
     *decoded_bytes = bytes;
 portable_cleanup:

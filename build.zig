@@ -388,10 +388,11 @@ pub fn build(b: *std.Build) void {
                 "src/dsp/yuv_sse41.c",           "src/dsp/lossless_avx2.c",            "src/utils/bit_reader_utils.c",
                 "src/utils/color_cache_utils.c", "src/utils/filters_utils.c",          "src/utils/huffman_utils.c",
                 "src/utils/palette.c",           "src/utils/quant_levels_dec_utils.c", "src/utils/rescaler_utils.c",
-                "src/utils/random_utils.c",      "src/utils/thread_utils.c",           "src/utils/utils.c",
+                "src/utils/random_utils.c",      "src/utils/thread_utils.c",
             },
             .flags = &.{"-DWEBP_DSP_OMIT_C_CODE=0"},
         });
+        pet_root.addCSourceFile(.{ .file = b.path("shared/companion/pet_webp_utils.c"), .flags = &.{"-DWEBP_DSP_OMIT_C_CODE=0"} });
     }
     const pet = b.addExecutable(.{ .name = "pulse-pet-demo", .root_module = pet_root });
     const pet_step = b.step("pet-demo", "Build and install the experimental standalone Windows companion");

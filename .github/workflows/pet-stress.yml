@@ -23,6 +23,7 @@ on:
       - 'shared/companion/**'
       - tests/companion/pet_stress.py
       - tests/companion/pet_stress_fixtures.py
+      - tests/companion/pet_webp_budget_test.c
       - scripts/install_pet_webp.py
       - .github/workflows/pet-stress.yml
 
@@ -53,6 +54,14 @@ jobs:
       - name: Stage pinned static WebP decoder
         if: matrix.profile == 'mixed-hidden' || matrix.profile == 'mixed-visible'
         run: python scripts/install_pet_webp.py
+      - name: Exercise decoder allocator bridge
+        if: matrix.profile == 'mixed-hidden' || matrix.profile == 'mixed-visible'
+        shell: pwsh
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror tests/companion/pet_webp_budget_test.c -o zig-out/pet-webp-budget-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/pet-webp-budget-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build selected companion backend
         env:
           PET_PROFILE: ${{ matrix.profile }}

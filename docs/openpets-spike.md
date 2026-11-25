@@ -1336,3 +1336,33 @@ Include build.zig and shared/companion/** in the benchmark's push paths:
 a decoder or renderer change must trigger its own stress verification,
 not just a harness change. Unrelated extension changes remain excluded.
 Static decoder compilation and mixed readiness are still acceptance gates.
+
+### Static decoder: mixed benchmark baseline and scratch allocation routing
+
+Run 45562943899 passed both benchmarks. Mixed 50 V1 / 50 V2 processes:
+100/100 ready and graceful, no forced exits or budget denials; 30 s / 31
+samples; ready in 2.781 s; peak private bytes 1,463,508,992; machine CPU
+peak 1.5394%; CPU time 3.203125 s; handles 10,650, GDI 200, USER 300.
+Synthetic also passed 100/100. Hidden simple fixtures are not desktop
+or diverse production art validation.
+
+Route malloc/calloc/free inside the pinned upstream utils.c translation
+unit (WebPSafeMalloc/Calloc/Free) through the existing companion-owned
+allocator callbacks. Keep the upstream checked arithmetic; explicitly
+align the returned allocation, include bookkeeping/padding in the shared
+budget, check multiplication/addition overflow, and return exact raw
+allocation lengths on free. No global CRT override, no new allocator,
+no runtime changes to WIC. The serialized decode establishes a scoped
+budget pointer; a non-drained scope fails and poisons subsequent scopes;
+the outer runtime's shutdown drain still catches unreleased allocations.
+Libwebp threading remains disabled. GetInfo is header-only. Only this
+known upstream allocation path is instrumented; this is not a proof that
+all library/OS allocations are covered or an OS-wide private memory cap.
+48 MiB is unchanged; legitimate complex images may now encounter budget
+rejection and need explicit testing rather than an automatic limit raise.
+
+Portable C bridge fixture (deliberately misaligned backing, zeroing,
+overflow, zero size, quota denial and exact drain) passed local GCC with
+AddressSanitizer and UndefinedBehaviorSanitizer. Windows compile and
+full real decoder integration require the new CI. No shared atlas or
+cross-process supervisor budget change in this commit.
