@@ -10,7 +10,7 @@
 #define PET_IDLE_COOLDOWN UINT64_C(300000)
 
 typedef struct {
-    uint32_t enabled, failed, played;
+    uint32_t enabled, failed, played, unavailable;
     uint64_t played_at[PET_IDLE_MAX];
     unsigned last; /* index + 1, zero = no history */
     uint64_t opportunity; /* zero = unscheduled */
@@ -54,7 +54,7 @@ static inline uint64_t pet_idle_delay(uint32_t random) {
  * wake. A delayed wake admits at most one action, never a catch-up burst. */
 static inline unsigned pet_idle_choose(pet_idle_policy *p, unsigned count,
     int available, uint64_t now, uint32_t delay_random, uint32_t choice_random) {
-    uint32_t enabled = p->enabled & ~p->failed & pet_idle_mask(count);
+    uint32_t enabled = p->enabled & ~p->failed & ~p->unavailable & pet_idle_mask(count);
     if (!available || !enabled) {
         pet_idle_interrupt(p);
         return PET_IDLE_NONE;

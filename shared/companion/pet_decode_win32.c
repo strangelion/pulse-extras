@@ -113,12 +113,56 @@ static BOOL leaf_wide(const uint8_t *leaf, wchar_t *out, size_t capacity) {
 
 void pet_package_close(pet_package *package) {
     if (!package) return;
-    for (unsigned i = 0; i < PET_PACKAGE_MAX; ++i)
-        if (package->files[i]) CloseHandle(package->files[i]);
+    for (unsigned i = 0; i < PET_PACKAGE_MAX; ++i) {
+        if (package->outfit_files[i]) CloseHandle(package->outfit_files[i]);
+        for (unsigned j = 0; j < PET_OUTFIT_SLOTS; ++j)
+            if (package->files[i][j]) CloseHandle(package->files[i][j]);
+    }
+    if (package->wardrobe) CloseHandle(package->wardrobe);
     if (package->atlas) CloseHandle(package->atlas);
     if (package->activities) CloseHandle(package->activities);
     if (package->root) CloseHandle(package->root);
     ZeroMemory(package, sizeof(*package));
+}
+
+typedef struct {
+    const uint8_t *leaf;
+    HANDLE *handle;
+} inventory_file;
+
+/* Exact case-sensitive inventory of one declared flat directory. Each
+ * successful open remains owned by the package, including partial failure. */
+static BOOL pin_inventory(const wchar_t *root, const wchar_t *directory,
+    HANDLE *dir_handle, inventory_file *files, unsigned count) {
+    wchar_t folder[1024], path[1024], leaf[80];
+    if (!join_path(folder, 1024, root, directory)) return FALSE;
+    DWORD attr = GetFileAttributesW(folder);
+    if (attr == INVALID_FILE_ATTRIBUTES)
+        return !count && GetLastError() == ERROR_FILE_NOT_FOUND;
+    *dir_handle = package_handle(folder, TRUE);
+    if (!*dir_handle || !join_path(path, 1024, folder, L"*")) return FALSE;
+    WIN32_FIND_DATAW found;
+    HANDLE enumeration = FindFirstFileW(path, &found);
+    if (enumeration == INVALID_HANDLE_VALUE)
+        return !count && GetLastError() == ERROR_FILE_NOT_FOUND;
+    BOOL ok = FALSE;
+    unsigned seen = 0;
+    do {
+        if (wcscmp(found.cFileName, L".") == 0 || wcscmp(found.cFileName, L"..") == 0) continue;
+        if (found.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) goto cleanup;
+        unsigned i = 0;
+        for (; i < count; ++i) {
+            if (!leaf_wide(files[i].leaf, leaf, 80)) goto cleanup;
+            if (wcscmp(found.cFileName, leaf) == 0) break;
+        }
+        if (i == count || *files[i].handle || !join_path(path, 1024, folder, leaf) ||
+            !(*files[i].handle = package_handle(path, FALSE))) goto cleanup;
+        ++seen;
+    } while (FindNextFileW(enumeration, &found));
+    ok = GetLastError() == ERROR_NO_MORE_FILES && seen == count;
+cleanup:
+    FindClose(enumeration);
+    return ok;
 }
 
 BOOL pet_package_open(pet_package *package, const wchar_t *folder,
@@ -127,7 +171,7 @@ BOOL pet_package_open(pet_package *package, const wchar_t *folder,
     if (!package || package->root || !folder || !id || !parse || !validate || !validate_activity)
         return FALSE;
     wchar_t root[1024] = L"\\\\?\\";
-    wchar_t path[1024], activity_dir[1024], leaf[80], full[1020];
+    wchar_t path[1024], full[1020];
     DWORD n = GetFullPathNameW(folder, 1020, full, NULL);
     if (n < 4 || n >= 1020 || full[1] != L':' || full[2] != L'\\') {
         fputs("Package path: expected a bounded local DOS directory.\n", stderr);
@@ -151,7 +195,7 @@ BOOL pet_package_open(pet_package *package, const wchar_t *folder,
         id8[i] = (uint8_t)id[i];
     }
     uint8_t *data = NULL;
-    HANDLE metadata = NULL, enumeration = INVALID_HANDLE_VALUE;
+    HANDLE metadata = NULL;
     DWORD length = 0;
     BOOL ok = FALSE;
     const char *stage = "root";
@@ -165,7 +209,7 @@ BOOL pet_package_open(pet_package *package, const wchar_t *folder,
     if (!data) goto cleanup;
     stage = "metadata-parse";
     if (parse(data, length, id8, id_len, &package->meta) ||
-        package->meta.count > PET_PACKAGE_MAX ||
+        package->meta.count > PET_PACKAGE_MAX || package->meta.outfit_count > PET_PACKAGE_MAX ||
         (package->meta.version != 1 && package->meta.version != 2)) goto cleanup;
     free(data); data = NULL;
     stage = "base-open";
@@ -177,53 +221,46 @@ BOOL pet_package_open(pet_package *package, const wchar_t *folder,
     stage = "base-header";
     if (validate(package->meta.version, data, length)) goto cleanup;
     free(data); data = NULL;
-    stage = "activity-directory";
-    if (!join_path(activity_dir, 1024, root, L"activities")) goto cleanup;
-    DWORD attr = GetFileAttributesW(activity_dir);
-    if (attr == INVALID_FILE_ATTRIBUTES) {
-        if (package->meta.count || GetLastError() != ERROR_FILE_NOT_FOUND) goto cleanup;
-        ok = TRUE; goto cleanup;
-    }
-    package->activities = package_handle(activity_dir, TRUE);
-    if (!package->activities || !join_path(path, 1024, activity_dir, L"*")) goto cleanup;
-    WIN32_FIND_DATAW found;
-    enumeration = FindFirstFileW(path, &found);
-    if (enumeration == INVALID_HANDLE_VALUE) {
-        if (!package->meta.count && GetLastError() == ERROR_FILE_NOT_FOUND) ok = TRUE;
-        goto cleanup;
-    }
-    stage = "activity-inventory";
-    unsigned seen = 0;
-    do {
-        if (wcscmp(found.cFileName, L".") == 0 || wcscmp(found.cFileName, L"..") == 0) continue;
-        if (found.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) goto cleanup;
-        unsigned i = 0;
-        for (; i < package->meta.count; ++i) {
-            if (!leaf_wide(package->meta.items[i].leaf, leaf, 80)) goto cleanup;
-            if (wcscmp(found.cFileName, leaf) == 0) break;
-        }
-        if (i == package->meta.count || (seen & (1u << i)) ||
-            !join_path(path, 1024, activity_dir, leaf) ||
-            !(package->files[i] = package_handle(path, FALSE))) goto cleanup;
-        seen |= 1u << i;
-    } while (FindNextFileW(enumeration, &found));
-    if (GetLastError() != ERROR_NO_MORE_FILES ||
-        seen != ((1u << package->meta.count) - 1)) goto cleanup;
-    size_t total = 0;
-    for (unsigned i = 0; i < package->meta.count; ++i) {
-        stage = "activity-read";
-        data = read_handle(package->files[i], 2u * 1024u * 1024u, &length);
+    inventory_file files[PET_PACKAGE_MAX * PET_OUTFIT_SLOTS];
+    unsigned count = 0;
+    for (unsigned i = 0; i < package->meta.outfit_count; ++i)
+        files[count++] = (inventory_file){package->meta.outfits[i].leaf, &package->outfit_files[i]};
+    stage = "outfit-inventory";
+    if (!pin_inventory(root, L"outfits", &package->wardrobe, files, count)) goto cleanup;
+    for (unsigned i = 0; i < count; ++i) {
+        stage = "outfit-read";
+        data = read_handle(package->outfit_files[i], MAX_COMPRESSED, &length);
         if (!data) goto cleanup;
-        stage = "activity-size";
-        if (length > 16u * 1024u * 1024u - total) goto cleanup;
-        stage = "activity-header";
-        if (validate_activity(package->meta.items[i].frames, data, length)) goto cleanup;
-        total += length;
+        stage = "outfit-header";
+        if (validate(package->meta.version, data, length)) goto cleanup;
         free(data); data = NULL;
     }
+    count = 0;
+    for (unsigned i = 0; i < package->meta.count; ++i)
+        for (unsigned j = 0; j <= package->meta.outfit_count; ++j) {
+            const pet_package_rep *rep = &package->meta.items[i].reps[j];
+            if (rep->frames)
+                files[count++] = (inventory_file){rep->leaf, &package->files[i][j]};
+        }
+    stage = "activity-inventory";
+    if (!pin_inventory(root, L"activities", &package->activities, files, count)) goto cleanup;
+    size_t total = 0;
+    for (unsigned i = 0; i < package->meta.count; ++i)
+        for (unsigned j = 0; j <= package->meta.outfit_count; ++j) {
+            const pet_package_rep *rep = &package->meta.items[i].reps[j];
+            if (!rep->frames) continue;
+            stage = "activity-read";
+            data = read_handle(package->files[i][j], 2u * 1024u * 1024u, &length);
+            if (!data) goto cleanup;
+            stage = "activity-size";
+            if (length > 16u * 1024u * 1024u - total) goto cleanup;
+            stage = "activity-header";
+            if (validate_activity(rep->frames, data, length)) goto cleanup;
+            total += length;
+            free(data); data = NULL;
+        }
     ok = TRUE;
 cleanup:
-    if (enumeration != INVALID_HANDLE_VALUE) FindClose(enumeration);
     if (metadata) CloseHandle(metadata);
     free(data);
     if (!ok) {
@@ -315,21 +352,25 @@ uint8_t *pet_demo_load_activity(const wchar_t *path, unsigned frames,
         2u * 1024u * 1024u, validate, decoded_bytes);
 }
 
-uint8_t *pet_package_load_atlas(const pet_package *package,
+uint8_t *pet_package_load_atlas(const pet_package *package, unsigned outfit,
     pet_demo_validate_fn validate, size_t *decoded_bytes) {
     if (decoded_bytes) *decoded_bytes = 0;
-    if (!package || !package->atlas || (package->meta.version != 1 && package->meta.version != 2)) return NULL;
+    if (!package || outfit > PET_PACKAGE_MAX || outfit > package->meta.outfit_count ||
+        (package->meta.version != 1 && package->meta.version != 2)) return NULL;
+    HANDLE file = outfit ? package->outfit_files[outfit - 1] : package->atlas;
+    if (!file) return NULL;
     unsigned version = package->meta.version;
-    return decode_static(NULL, package->atlas, version, 1536,
+    return decode_static(NULL, file, version, 1536,
         version == 1 ? 1872 : 2288, MAX_COMPRESSED, validate, decoded_bytes);
 }
 
-uint8_t *pet_package_load_activity(const pet_package *package, unsigned index,
+uint8_t *pet_package_load_activity(const pet_package *package, unsigned index, unsigned outfit,
     pet_demo_validate_fn validate, size_t *decoded_bytes) {
     if (decoded_bytes) *decoded_bytes = 0;
-    if (!package || index >= PET_PACKAGE_MAX || index >= package->meta.count || !package->files[index]) return NULL;
-    unsigned frames = package->meta.items[index].frames;
+    if (!package || index >= PET_PACKAGE_MAX || index >= package->meta.count ||
+        outfit >= PET_OUTFIT_SLOTS || outfit > package->meta.outfit_count || !package->files[index][outfit]) return NULL;
+    unsigned frames = package->meta.items[index].reps[outfit].frames;
     if (frames < 4 || frames > 32) return NULL;
-    return decode_static(NULL, package->files[index], frames, PET_FRAME_WIDTH * frames,
+    return decode_static(NULL, package->files[index][outfit], frames, PET_FRAME_WIDTH * frames,
         PET_FRAME_HEIGHT, 2u * 1024u * 1024u, validate, decoded_bytes);
 }

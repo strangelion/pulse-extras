@@ -52,6 +52,25 @@ def main() -> None:
         check(False, stage=b"activity-header")
         (actions / "nap.webp").write_bytes(strip)
         check(True)
+        outfits = root / "outfits"
+        outfits.mkdir()
+        manifest["wardrobe"] = {"outfits": [{"id": "night", "displayName": "Night",
+                                             "spritesheetPath": "outfits/night.webp"}]}
+        manifest["activities"][0]["outfitId"] = "night"
+        manifest["activities"][0]["outfitVariants"] = [
+            {"outfitId": "default", "spritesheetPath": "activities/nap.default.webp",
+             "frameCount": 4, "fps": 4}]
+        (root / "pet.json").write_text(json.dumps(manifest), encoding="utf-8")
+        check(False, stage=b"outfit-inventory")
+        (outfits / "night.webp").write_bytes((root / "spritesheet.webp").read_bytes())
+        check(False, stage=b"activity-inventory")
+        (actions / "nap.default.webp").write_bytes(strip)
+        check(True)
+        (outfits / "extra.webp").write_bytes(strip)
+        check(False, stage=b"outfit-inventory")
+        (outfits / "extra.webp").unlink()
+        (outfits / "night.webp").write_bytes(strip)
+        check(False, stage=b"outfit-header")
 
 
 if __name__ == "__main__":

@@ -228,8 +228,6 @@ pet_surface_result pet_surface_resize(pet_surface *surface, unsigned percent,
         return PET_SURFACE_INVALID;
     unsigned width = PET_FRAME_WIDTH * percent / 100;
     unsigned height = PET_FRAME_HEIGHT * percent / 100;
-    if (width == surface->width && height == surface->height)
-        return pet_surface_present(surface, atlas, atlas_bytes, version, row, column, x, y, opacity);
     HDC dc = CreateCompatibleDC(NULL);
     if (!dc) return PET_SURFACE_OS_ERROR;
     HBITMAP bitmap = NULL;

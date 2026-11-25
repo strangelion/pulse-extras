@@ -751,3 +751,26 @@ than silently discarding it. SVG metadata is recognized, not decoded.
 Actual outfit inventory admission, WebP rendering, transactional
 switching, user schedule editing/persistence and SVG support remain
 pending. Added focused and integration regressions; CI must confirm.
+
+## Classic Wardrobe manual switching — runtime layer
+
+The native package projection now owns up to 16 outfit names and leaves,
+plus a 17-slot representation table per logical activity (default and
+declared outfits). SVG still fails closed. The two flat asset directories
+are admitted against exact inventories with pinned read-only handles;
+each outfit must match the base dimensions, and the activity aggregate
+limit spans every representation. Headers are preflighted sequentially
+without decoding every outfit. The menu exposes the default and declared
+WebP outfits. A manual change decodes the replacement and presents a
+fresh DIB even when scale is unchanged; only after success does the
+current atlas and committed outfit change. Failure keeps the old atlas.
+Only current and candidate outfit pixels coexist during a switch.
+Missing representations are unavailable rather than borrowing another
+outfit's artwork. Automatic opt-ins and cooldown history remain logical
+activity-level; failures are scoped to the committed outfit. Preferences
+can be toggled even when a representation is absent. No automatic
+wardrobe schedule runtime or persisted outfit choice yet; the session
+starts with default. Synchronous WIC and explicitly selected trusted
+folder limitations remain. Regression cases cover missing/extra outfit
+and variant files, dimensions, exact projection and same-size DIB
+replacement. Real visual verification and CI remain required.

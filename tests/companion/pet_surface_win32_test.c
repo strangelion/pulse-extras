@@ -135,6 +135,11 @@ int main(void) {
     CHECK(surface.pixels[0] == 25 && surface.pixels[3] == 128);
     CHECK(pet_surface_resize(&surface, 200, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OK);
     CHECK(surface.width == 384 && surface.height == 416);
+    old_bitmap = surface.bitmap;
+    CHECK(pet_surface_resize(&surface, 200, atlas, bytes - 1, 2, 10, 7, 20, 20, 255) == PET_SURFACE_INVALID);
+    CHECK(surface.bitmap == old_bitmap && surface.pixels[0] == 25);
+    CHECK(pet_surface_resize(&surface, 200, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OK);
+    CHECK(surface.bitmap != old_bitmap && surface.pixels[0] == 25);
     CHECK(!IsWindowVisible(surface.window));
     /* Use the existing large allocation as a synthetic four-cell strip.
      * First pixel of the last cell must use strip, not atlas row stride. */

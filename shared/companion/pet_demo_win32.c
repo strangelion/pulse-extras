@@ -113,7 +113,7 @@ static HANDLE parse_inherited_handle(const wchar_t *text) {
 
 enum {
     MENU_TOPMOST = 100, MENU_REDUCED, MENU_RESET, MENU_INTERACT,
-    MENU_EXIT, MENU_ACTIVITY_FIRST = 300, MENU_AUTO_FIRST = 400, MENU_SCALE_50 = 200, MENU_SCALE_75, MENU_SCALE_100,
+    MENU_EXIT, MENU_ACTIVITY_FIRST = 300, MENU_AUTO_FIRST = 400, MENU_OUTFIT_FIRST = 500, MENU_SCALE_50 = 200, MENU_SCALE_75, MENU_SCALE_100,
     MENU_SCALE_125, MENU_SCALE_150, MENU_SCALE_200
 };
 
@@ -124,7 +124,7 @@ static const unsigned menu_scales[] = {50, 75, 100, 125, 150, 200};
  * still owns the bounded job termination fallback. */
 static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
     int reduced, int managed, pet_language language, const pet_package *package,
-    const pet_idle_policy *idle) {
+    const pet_idle_policy *idle, unsigned outfit) {
     pet_menu_strings strings = pet_menu_labels(language, GetUserDefaultUILanguage());
     HMENU menu = CreatePopupMenu();
     HMENU sizes = CreatePopupMenu();
@@ -142,6 +142,33 @@ static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
     }
     if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)sizes, strings.size)) {
         DestroyMenu(sizes); DestroyMenu(menu); return 0;
+    }
+    if (package && package->meta.outfit_count) {
+        HMENU outfits = CreatePopupMenu();
+        if (!outfits) { DestroyMenu(menu); return 0; }
+        if (!AppendMenuW(outfits, MF_STRING | (!outfit ? MF_CHECKED : 0),
+            MENU_OUTFIT_FIRST, strings.default_outfit)) {
+            DestroyMenu(outfits); DestroyMenu(menu); return 0;
+        }
+        for (unsigned i = 0; i < package->meta.outfit_count; ++i) {
+            wchar_t name[161], escaped[321];
+            int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                (const char *)package->meta.outfits[i].name, -1, name, 161);
+            if (!n) { DestroyMenu(outfits); DestroyMenu(menu); return 0; }
+            size_t j = 0;
+            for (int k = 0; k < n - 1; ++k) {
+                if (name[k] == L'&') escaped[j++] = L'&';
+                escaped[j++] = name[k];
+            }
+            escaped[j] = 0;
+            if (!AppendMenuW(outfits, MF_STRING | (outfit == i + 1 ? MF_CHECKED : 0),
+                MENU_OUTFIT_FIRST + i + 1, escaped)) {
+                DestroyMenu(outfits); DestroyMenu(menu); return 0;
+            }
+        }
+        if (!AppendMenuW(menu, MF_POPUP, (UINT_PTR)outfits, strings.outfit)) {
+            DestroyMenu(outfits); DestroyMenu(menu); return 0;
+        }
     }
     if (package && package->meta.count) {
         HMENU actions = CreatePopupMenu();
@@ -161,11 +188,11 @@ static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
             escaped[j] = 0;
             uint32_t bit = pet_idle_bit(i);
             if (!AppendMenuW(actions, MF_STRING |
-                    (managed || reduced || (idle->failed & bit) ? MF_GRAYED : 0),
+                    (managed || reduced || ((idle->failed | idle->unavailable) & bit) ? MF_GRAYED : 0),
                     MENU_ACTIVITY_FIRST + i, escaped) ||
                 !AppendMenuW(automatic, MF_STRING |
                     (idle->enabled & bit ? MF_CHECKED : 0) |
-                    (managed || (idle->failed & bit) ? MF_GRAYED : 0),
+                    (managed ? MF_GRAYED : 0),
                     MENU_AUTO_FIRST + i, escaped)) {
                 DestroyMenu(automatic); DestroyMenu(actions); DestroyMenu(menu); return 0;
             }
@@ -193,6 +220,13 @@ static unsigned pet_menu(HWND window, POINT at, unsigned scale, int topmost,
 }
 
 /* Non-cryptographic variation only; no security decisions use this RNG. */
+static uint32_t unavailable_activities(const pet_package *package, unsigned outfit) {
+    uint32_t mask = 0;
+    for (unsigned i = 0; i < package->meta.count; ++i)
+        if (!package->meta.items[i].reps[outfit].frames) mask |= pet_idle_bit(i);
+    return mask;
+}
+
 static uint32_t activity_random(uint32_t *state) {
     uint32_t x = *state ? *state : UINT32_C(0x9e3779b9);
     x ^= x << 13;
@@ -234,6 +268,8 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
     uint64_t activity_started = 0;
     int activity_displayed = 0;
     pet_idle_policy idle = {0};
+    unsigned outfit = 0;
+    uint32_t outfit_failures[PET_OUTFIT_SLOTS] = {0};
     unsigned active_index = PET_IDLE_NONE;
     uint32_t rng = (uint32_t)GetTickCount64() ^ GetCurrentProcessId();
     pet_surface surface = {0};
@@ -315,6 +351,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
             goto cleanup;
         }
         version = package.meta.version;
+        idle.unavailable = unavailable_activities(&package, outfit);
         if (check_package) { rc = 0; goto cleanup; }
     }
     if (remember) {
@@ -339,7 +376,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
      * Use the older system-aware API only if the newer context is unavailable. */
     if (!SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
         (void)SetProcessDPIAware();
-    atlas = package_dir ? pet_package_load_atlas(&package, validate, &bytes) :
+    atlas = package_dir ? pet_package_load_atlas(&package, outfit, validate, &bytes) :
         (path ? pet_demo_load_webp(path, version, validate, &bytes) : synthetic_atlas(&bytes));
     if (!atlas) goto cleanup;
     if (pet_surface_open_scaled(&surface, topmost, FALSE, scale) != PET_SURFACE_OK) goto cleanup;
@@ -399,7 +436,7 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                         last_row = base.row; last_column = base.column;
                     }
                     unsigned command = pet_menu(surface.window, cursor, scale, topmost,
-                        reduced, state_slot != NULL, language, &package, &idle);
+                        reduced, state_slot != NULL, language, &package, &idle, outfit);
                     /* Check the owner signal immediately after the modal menu. */
                     if (stop && WaitForSingleObject(stop, 0) == WAIT_OBJECT_0) {
                         stopped = 1; done = 1; break;
@@ -413,17 +450,42 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
                         reduced = !reduced;
                         started = GetTickCount64();
                         if (!state_slot) reaction = PET_STATE_IDLE;
+                    } else if (command >= MENU_OUTFIT_FIRST &&
+                        command - MENU_OUTFIT_FIRST <= package.meta.outfit_count && package.meta.outfit_count) {
+                        unsigned next = command - MENU_OUTFIT_FIRST;
+                        if (next != outfit) {
+                            size_t next_bytes = 0;
+                            uint8_t *replacement = pet_package_load_atlas(&package, next, validate, &next_bytes);
+                            pet_demo_sample base = {0};
+                            if (replacement && !sample(version, PET_STATE_IDLE, 0, reduced, &base) &&
+                                pet_surface_resize(&surface, scale, replacement, next_bytes, version,
+                                    base.row, base.column, x, y, 255) == PET_SURFACE_OK) {
+                                free(atlas);
+                                atlas = replacement; bytes = next_bytes;
+                                outfit_failures[outfit] = idle.failed;
+                                outfit = next;
+                                idle.failed = outfit_failures[outfit];
+                                idle.unavailable = unavailable_activities(&package, outfit);
+                                pet_idle_interrupt(&idle);
+                                reaction = PET_STATE_IDLE;
+                                started = GetTickCount64();
+                                last_row = base.row; last_column = base.column;
+                            } else {
+                                free(replacement);
+                                fputs("Outfit switch failed; previous appearance retained.\n", stderr);
+                            }
+                        }
                     } else if (command >= MENU_AUTO_FIRST &&
                         command - MENU_AUTO_FIRST < package.meta.count && !state_slot) {
                         unsigned index = command - MENU_AUTO_FIRST;
-                        if (!(idle.failed & pet_idle_bit(index))) pet_idle_toggle(&idle, index);
+                        pet_idle_toggle(&idle, index);
                     } else if (command >= MENU_ACTIVITY_FIRST &&
                         command - MENU_ACTIVITY_FIRST < package.meta.count && !state_slot && !reduced &&
-                        !(idle.failed & pet_idle_bit(command - MENU_ACTIVITY_FIRST))) {
+                        !((idle.failed | idle.unavailable) & pet_idle_bit(command - MENU_ACTIVITY_FIRST))) {
                         unsigned index = command - MENU_ACTIVITY_FIRST;
-                        activity_frames = package.meta.items[index].frames;
-                        activity_fps = package.meta.items[index].fps;
-                        activity = pet_package_load_activity(&package, index, validate_activity, &activity_bytes);
+                        activity_frames = package.meta.items[index].reps[outfit].frames;
+                        activity_fps = package.meta.items[index].reps[outfit].fps;
+                        activity = pet_package_load_activity(&package, index, outfit, validate_activity, &activity_bytes);
                         if (activity) {
                             active_index = index;
                             activity_started = GetTickCount64();
@@ -551,9 +613,9 @@ int pet_demo_run(pet_demo_sample_fn sample, pet_demo_validate_fn validate,
         unsigned choice = pet_idle_choose(&idle, package.meta.count, available,
             now, delay_random, choice_random);
         if (choice != PET_IDLE_NONE) {
-            activity_frames = package.meta.items[choice].frames;
-            activity_fps = package.meta.items[choice].fps;
-            activity = pet_package_load_activity(&package, choice, validate_activity, &activity_bytes);
+            activity_frames = package.meta.items[choice].reps[outfit].frames;
+            activity_fps = package.meta.items[choice].reps[outfit].fps;
+            activity = pet_package_load_activity(&package, choice, outfit, validate_activity, &activity_bytes);
             now = GetTickCount64();
             if (activity) {
                 active_index = choice;
