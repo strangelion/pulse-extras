@@ -1649,3 +1649,32 @@ CI #246 failed in all applicable compile lanes at the same optional
 error comparison in market queue cleanup; this revision unwraps it before
 comparing. No test is removed or skipped. New pinned compiler, Windows
 native fixture and installed-host checks remain unverified locally.
+
+## Preview 3 native IMAGE adapter and isolated acceptance
+
+Use the verified local 1.0.61 Preview 3 SDK (20261124), not an inferred
+property name or changed public build pin. The entire bundle's manifest
+hashes match. The adapter implements IMAGE=44 with source in glyph,
+fit in kind, alt in text and minimum height in min_height, exactly as
+ModelNode::Image. The local SDK ui_model.h SHA-256 is
+a07f8449a6cd6801877813d30c0b7a6a3755a659c0f0154e093540fde140e792.
+Static Zig and independent pinned C assertions check x64 node size
+1296/alignment 8 and relevant field offsets, plus V1 table size 72.
+
+The market exposes an explicit session-only SDK image test. It submits
+one internally generated 24x24 RGB PNG (129 bytes) as a bounded data URI,
+without any download, file access, external artwork or arbitrary input.
+Default is text-only. The public model V1 may reject the new enum;
+on update error the adapter disables the image test for that activation
+and immediately retries the text-only model. Leaving market clears the
+test; teardown resets the diagnostic. A successful update does not prove
+the actual renderer supports the source scheme. The C fixture simulates
+both acceptance and rejection; the unit test asserts the exact field
+mapping. No host-only source bundle or new ABI symbols are linked.
+
+This is the renderer acceptance gate, not completed market thumbnails:
+the SDK does not specify accepted source URI schemes. Do not send
+untrusted compressed catalog images or arbitrary URL/path strings to
+the host until a bounded decode/re-encode pipeline and actual renderer
+test are confirmed. See companion-host-smoke.md for the explicit isolated
+host procedure, and keep the fixture source as the known-good control.

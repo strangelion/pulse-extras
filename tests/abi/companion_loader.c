@@ -3,6 +3,11 @@
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
+#include <stddef.h>
+
+/* Verified against local Preview 3 ABI measurements, without replacing
+ * the public pinned build header. The host may still reject enum 44. */
+
 #include "pulse/settings_pages.h"
 #include "pulse/resources.h"
 #include "pulse/tasks.h"
@@ -11,13 +16,21 @@
 #include "pulse/dialogs.h"
 #include "pulse/context.h"
 
+typedef char preview3_node_size[(sizeof(PulseUiModelNode) == 1296) ? 1 : -1];
+typedef char preview3_node_type[(offsetof(PulseUiModelNode, type) == 4) ? 1 : -1];
+typedef char preview3_node_text[(offsetof(PulseUiModelNode, text) == 24) ? 1 : -1];
+typedef char preview3_node_glyph[(offsetof(PulseUiModelNode, glyph) == 168) ? 1 : -1];
+typedef char preview3_node_kind[(offsetof(PulseUiModelNode, kind) == 768) ? 1 : -1];
+typedef char preview3_node_height[(offsetof(PulseUiModelNode, min_height) == 952) ? 1 : -1];
+typedef char preview3_table_size[(sizeof(PulseUiModelV1) == 72) ? 1 : -1];
+
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); return 1; } } while (0)
 #define REQUIRE(x) do { if (!(x)) { fprintf(stderr, "ABI fixture line %d: %s\n", __LINE__, #x); return PULSE_ERROR_ARGUMENT; } } while (0)
 
 static const char *commands[] = {
     "companion.library", "companion.running", "companion.market", "companion.global",
     "companion.settings.refresh", "companion.download.less", "companion.download.more",
-    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version", "companion.market.queue-base", "companion.market.queue-full", "companion.market.queue-start", "companion.market.queue-clear", "companion.market.queue-item-1", "companion.market.queue-item-2", "companion.market.queue-item-3", "companion.market.queue-item-4", "companion.market.queue-item-5", "companion.market.queue-item-6", "companion.market.queue-item-7", "companion.market.queue-item-8", "companion.library.profile-default", "companion.library.profile-alternate", "companion.library.profile-reset", "companion.library.profile-clear", "companion.library.start-alternate", "companion.library.start-custom", "companion.library.detail"
+    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version", "companion.market.queue-base", "companion.market.queue-full", "companion.market.queue-start", "companion.market.queue-clear", "companion.market.queue-item-1", "companion.market.queue-item-2", "companion.market.queue-item-3", "companion.market.queue-item-4", "companion.market.queue-item-5", "companion.market.queue-item-6", "companion.market.queue-item-7", "companion.market.queue-item-8", "companion.library.profile-default", "companion.library.profile-alternate", "companion.library.profile-reset", "companion.library.profile-clear", "companion.library.start-alternate", "companion.library.start-custom", "companion.library.detail", "companion.market.image-test"
 };
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 /* Optional 1.0.61 picker ABI: independent C layout matching the supplied
@@ -64,6 +77,7 @@ typedef struct {
     int fallback, fail_remove, enabled_more, enabled_less, global, saved_present;
     int auto_dispatch, bundled, dialogs_v2, start_enabled, stop_enabled, first_frame, two_ready, only_second;
     unsigned running_rows;
+    unsigned image_seen, reject_image, image_rejected;
     HANDLE worker;
     volatile LONG cancel_flag;
     CRITICAL_SECTION dispatch_lock;
@@ -165,7 +179,22 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
         }
     }
     if (same(root->children.data[1].id, "market")) {
-        REQUIRE(root->children.count >= 7);
+        REQUIRE(root->children.count >= 8);
+        REQUIRE(same(root->children.data[7].command.value, commands[77]));
+        f->image_seen = 0;
+        for (unsigned n = 8; n < root->children.count; ++n) {
+            const PulseUiModelNode *image = root->children.data + n;
+            if (image->type != 44) continue;
+            REQUIRE(same(image->id, "market.image-fixture"));
+            REQUIRE(image->glyph.present && same(image->glyph.value, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAASElEQVR42mN88fkPAzUACwMDg37pAfyKrBzX4Fcw3WsKEwOVwKhBowYNKoNYGBgYsh8SyG75T0/hV/B9NLBHDRquBjFSqzoCAFBxDz4y6Mz0AAAAAElFTkSuQmCC"));
+            REQUIRE(image->kind.present && same(image->kind.value, "contain"));
+            REQUIRE(image->text.present && image->min_height.present && image->min_height.value == 64);
+            ++f->image_seen;
+            if (f->reject_image) {
+                ++f->image_rejected;
+                return PULSE_ERROR_ARGUMENT;
+            }
+        }
         const PulseUiModelNode *search = root->children.data + 3;
         REQUIRE(search->type == PULSE_UI_MODEL_TEXT_INPUT && same(search->state.value, "market.query"));
         REQUIRE(search->glyph.present && same(search->glyph.value, "search"));
@@ -666,7 +695,13 @@ static int cycle(PulsePluginEntryV1Fn entry, int fallback) {
     CHECK(click(&f, 6) == 0 && f.pending && f.requested == '5' && !f.enabled_more);
     CHECK(click(&f, 6) == 0 && f.requested == '5');
     CHECK(deliver(&f, PULSE_OK, 0) == 0 && f.saved == '5' && f.version == 4 && f.enabled_more);
-    CHECK(click(&f, 2) == 0 && !f.global);
+    CHECK(click(&f, 2) == 0 && !f.global && !f.image_seen);
+    CHECK(click(&f, 77) == 0 && f.image_seen == 1);
+    CHECK(click(&f, 77) == 0 && !f.image_seen);
+    f.reject_image = 1;
+    CHECK(click(&f, 77) == 0 && f.image_rejected == 1 && !f.image_seen);
+    CHECK(click(&f, 77) == 0 && f.image_rejected == 1 && !f.image_seen);
+    f.reject_image = 0;
     CHECK(click(&f, 40) == 0 && f.task); /* no market row: no new task */
     CHECK(click(&f, 35) == 0 && f.task);
     CHECK(click(&f, 58) == 0 && f.task); /* no selection: cannot queue */

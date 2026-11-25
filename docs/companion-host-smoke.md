@@ -105,3 +105,33 @@ No persistent worker or child is launched yet. This tests the installed
 package path and ABI in the host, without risking live children on unload.
 The caller still relies on Pulse's verified immutable package installation;
 independent ACL policy and actual real-host acceptance remain to verify.
+
+## Preview 3 native image renderer acceptance (market)
+
+Use a fresh isolated store/profile, never the normal Pulse installation's
+extension store. Build and stage the runtime bundle using the existing
+smoke command with --prepare-helper wic --bundle-runtime --launch (or the
+pinned libwebp variant). Record the exact host executable version/digest,
+SDK contract identity and package source SHA. Verify Zig 0.17.1 formatting
+and required CI separately.
+
+In the real settings page, open Market without searching. Click
+"SDK 图片测试（不联网）". The expected image is a 24x24 PNG of four
+colored squares (blue/green on top, purple/orange below) displayed using
+contain with minimum height 64. Record whether the model is accepted AND
+whether the image actually renders. If the host rejects the node, the
+text-only model should return with the disabled diagnostic button; if
+the host accepts but renders blank, record unsupported data URI rather
+than success. Click close-test, navigate away/back and repeat. Test
+disable/reenable and normal host exit. Confirm no unexpected network
+requests, persistent preview files, stale image or crash. Record
+screenshots plus companion-lifecycle.log (including update/fallback
+failure if present). Older pinned-host rejection is an expected
+compatibility outcome, not proof that the current host renders.
+
+This fixture is deliberately generated locally and never uses market
+artwork. After verifying supported source syntax, test actual selected
+thumbnail only with a bounded transfer and isolated decode/re-encode
+implementation. Do not classify live previews, cache or license
+provenance as accepted based solely on this fixture. No real-host
+result is recorded until someone runs the isolated test.

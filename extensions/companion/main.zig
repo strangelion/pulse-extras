@@ -28,7 +28,7 @@ const running_page_size: usize = 12;
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version", "companion.market.queue-base", "companion.market.queue-full", "companion.market.queue-start", "companion.market.queue-clear", "companion.market.queue-item-1", "companion.market.queue-item-2", "companion.market.queue-item-3", "companion.market.queue-item-4", "companion.market.queue-item-5", "companion.market.queue-item-6", "companion.market.queue-item-7", "companion.market.queue-item-8", "companion.library.profile-default", "companion.library.profile-alternate", "companion.library.profile-reset", "companion.library.profile-clear", "companion.library.start-alternate", "companion.library.start-custom", "companion.library.detail" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version", "companion.market.queue-base", "companion.market.queue-full", "companion.market.queue-start", "companion.market.queue-clear", "companion.market.queue-item-1", "companion.market.queue-item-2", "companion.market.queue-item-3", "companion.market.queue-item-4", "companion.market.queue-item-5", "companion.market.queue-item-6", "companion.market.queue-item-7", "companion.market.queue-item-8", "companion.library.profile-default", "companion.library.profile-alternate", "companion.library.profile-reset", "companion.library.profile-clear", "companion.library.start-alternate", "companion.library.start-custom", "companion.library.detail", "companion.market.image-test" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -96,6 +96,9 @@ const Instance = struct {
     market_selected: ?usize = null,
     market_filters: library.MarketFilters = .{},
     market_detail: ?library.MarketDetail = null,
+    // Session-only diagnostic. Never submit unknown remote content to the host.
+    market_image_test: bool = false,
+    market_image_rejected: bool = false,
     market_outcome: library.MarketOutcome = .{},
     market_progress: library.MarketProgress = .{},
     market_queue: library.MarketBatch = .{},
@@ -395,6 +398,36 @@ fn fillMarketQueue(instance: *const Instance, content: *Content) ui.Node {
     return node;
 }
 
+// Preview 3 (1.0.61, local reference 20261124) ui_model.h SHA-256:
+// a07f8449a6cd6801877813d30c0b7a6a3755a659c0f0154e093540fde140e792
+// The public pinned build has COUNT=41. The later SDK adds IMAGE=44
+// without changing the node layout. Keep this opt-in adapter local until
+// the newer SDK becomes the public baseline.
+const preview3_image_type: u32 = 44;
+const preview3_fixture = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAASElEQVR42mN88fkPAzUACwMDg37pAfyKrBzX4Fcw3WsKEwOVwKhBowYNKoNYGBgYsh8SyG75T0/hV/B9NLBHDRquBjFSqzoCAFBxDz4y6Mz0AAAAAElFTkSuQmCC";
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(ui.Node) != 1296 or @alignOf(ui.Node) != 8 or
+            @offsetOf(ui.Node, "type") != 4 or @offsetOf(ui.Node, "text") != 24 or
+            @offsetOf(ui.Node, "glyph") != 168 or @offsetOf(ui.Node, "kind") != 768 or
+            @offsetOf(ui.Node, "min_height") != 952 or @sizeOf(ui.TableV1) != 72)
+            @compileError("Preview 3 image adapter ABI mismatch");
+    }
+}
+
+// Matches ModelNode::Image in the verified SDK. Source syntax is a host
+// acceptance question, not implied by this field mapping.
+fn preview3Image(id: []const u8, source: []const u8, alt: []const u8) ui.Node {
+    var node = ui.node(preview3_image_type);
+    node.id = abi.view(id);
+    node.glyph = .{ .present = 1, .value = abi.view(source) };
+    node.kind = .{ .present = 1, .value = abi.view("contain") };
+    node.text = .{ .present = 1, .value = abi.view(alt) };
+    node.min_height = .{ .present = 1, .value = 64 };
+    return node;
+}
+
 fn fillMarket(instance: *const Instance, content: *Content) usize {
     const idle = marketIdle(instance);
     const busy = instance.market_request != null and instance.task_id != 0;
@@ -428,6 +461,12 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
     }, commands[57], idle and filters.mode != .exact_id);
     content.children[6] = horizontal("market.filters", &content.market_filter_actions);
     var count: usize = 7;
+    content.children[count] = action("market.image-test", if (instance.market_image_rejected) "图片接口不支持；本次已回退" else if (instance.market_image_test) "关闭 SDK 图片测试" else "SDK 图片测试（不联网）", commands[77], !busy and !instance.market_image_rejected);
+    count += 1;
+    if (instance.market_image_test) {
+        content.children[count] = preview3Image("market.image-fixture", preview3_fixture, "SDK 测试图：蓝绿紫橙四格");
+        count += 1;
+    }
     if (instance.market_queue.count != 0) {
         content.children[count] = fillMarketQueue(instance, content);
         count += 1;
@@ -808,7 +847,15 @@ fn refresh(instance: *Instance) void {
         var content: Content = undefined;
         var tree: ui.Tree = undefined;
         fill(instance, &content, &tree);
-        panel.update(&tree) catch |err| diag.status("companion-update-failed", @intFromError(err));
+        panel.update(&tree) catch |err| {
+            diag.status("companion-update-failed", @intFromError(err));
+            if (instance.section == .market and instance.market_image_test) {
+                instance.market_image_test = false;
+                instance.market_image_rejected = true;
+                fill(instance, &content, &tree);
+                panel.update(&tree) catch |fallback_err| diag.status("companion-image-fallback-failed", @intFromError(fallback_err));
+            }
+        };
     }
 }
 
@@ -2378,10 +2425,12 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         if (n == 52 and instance.section != .global) return;
         if (n >= 53 and n <= 54 and instance.section != .running) return;
         if (n >= 55 and n <= 69 and instance.section != .market) return;
-        if (n >= 70 and instance.section != .library) return;
+        if (n >= 70 and n <= 76 and instance.section != .library) return;
+        if (n == 77 and instance.section != .market) return;
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
+                if (instance.section != .market) instance.market_image_test = false;
                 if ((instance.task_id != 0 or instance.runtime_task_id != 0) and instance.timer == null) pollTasks(instance);
                 if (instance.section == .library) {
                     if (instance.search_pending) armTimer(instance);
@@ -2442,6 +2491,11 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             74 => startLibraryProfile(instance, .alternate),
             75 => startCustomProfile(instance),
             76 => startLocalDetail(instance),
+            77 => {
+                if (instance.market_request != null or instance.market_image_rejected) return;
+                instance.market_image_test = !instance.market_image_test;
+                refresh(instance);
+            },
             55...57 => changeMarketFilter(instance, n - 55),
             58 => queueMarket(instance, false),
             59 => queueMarket(instance, true),
@@ -2472,6 +2526,8 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
 
 fn close(instance: *Instance) host_mod.Error!void {
     instance.active = false;
+    instance.market_image_test = false;
+    instance.market_image_rejected = false;
     instance.runtime_checked = false;
     instance.runtime_status = if (config.runtime_sha256.len == 0) "未打包运行时；无法启动桌宠" else "切换至运行管理时检查同包运行时";
     stopTimer(instance);
@@ -2738,7 +2794,7 @@ test "four section tree declares only real navigation and preference actions" {
             .library => 5,
             .global => 8,
             .running => 6,
-            .market => 7,
+            .market => 8,
         };
         try std.testing.expectEqual(expected, content.root.children.count);
     }
@@ -2952,7 +3008,7 @@ test "market panel requires explicit admission and has no implicit install" {
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     fill(instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 7), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 8), content.root.children.count);
     try std.testing.expectEqual(@as(u32, 3), content.children[6].children.count);
     try std.testing.expectEqualStrings(commands[55], abi.slice(content.market_filter_actions[0].command.value).?);
     try std.testing.expectEqualStrings("market.query", abi.slice(content.children[3].id).?);
@@ -3016,4 +3072,29 @@ test "verified local detail is copied into bounded native text nodes" {
     const node = fillLocalDetail(&content, 7, &detail);
     try std.testing.expectEqual(@as(u32, 4), node.children.count);
     try std.testing.expectEqualStrings("Fixture", abi.slice(content.local_detail_nodes[2].text.value).?);
+}
+
+test "preview 3 image diagnostic is opt-in and uses verified field mapping" {
+    const instance = try std.testing.allocator.create(Instance);
+    defer std.testing.allocator.destroy(instance);
+    instance.* = .{ .host = undefined, .section = .market };
+    var content: Content = undefined;
+    var tree: ui.Tree = undefined;
+    fill(instance, &content, &tree);
+    try std.testing.expectEqual(@as(u32, 8), content.root.children.count);
+    instance.market_image_test = true;
+    fill(instance, &content, &tree);
+    try std.testing.expectEqual(@as(u32, 9), content.root.children.count);
+    const image = &content.children[8];
+    try std.testing.expectEqual(@as(u32, 44), image.type);
+    try std.testing.expectEqual(@as(u32, @sizeOf(ui.Node)), image.size);
+    try std.testing.expectEqualStrings(preview3_fixture, abi.slice(image.glyph.value).?);
+    try std.testing.expectEqualStrings("contain", abi.slice(image.kind.value).?);
+    try std.testing.expectEqual(@as(i64, 64), image.min_height.value);
+    try std.testing.expectEqual(@as(u32, 1), image.text.present);
+    instance.market_image_test = false;
+    instance.market_image_rejected = true;
+    fill(instance, &content, &tree);
+    try std.testing.expectEqual(@as(u32, 8), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 0), content.children[7].enabled.value);
 }
