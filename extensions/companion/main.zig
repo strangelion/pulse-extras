@@ -28,7 +28,7 @@ const running_page_size: usize = 12;
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -91,6 +91,8 @@ const Instance = struct {
     market_query: library.MarketSearch = .{},
     market_snapshot: library.MarketSnapshot = .{},
     market_selected: ?usize = null,
+    market_filters: library.MarketFilters = .{},
+    market_detail: ?library.MarketDetail = null,
     market_outcome: library.MarketOutcome = .{},
     market_progress: library.MarketProgress = .{},
     market_status: []const u8 = "OpenPets 市场：主动搜索后才联网",
@@ -132,6 +134,10 @@ const Content = struct {
     market_actions: [4]ui.Node = undefined,
     market_paging: [2]ui.Node = undefined,
     market_install: [2]ui.Node = undefined,
+    market_filter_actions: [3]ui.Node = undefined,
+    market_detail_text: [640]u8 = undefined,
+    market_detail_id: [64]u8 = undefined,
+    market_description_id: [64]u8 = undefined,
     market_rows: [12][576]u8 = undefined,
     market_row_ids: [12][64]u8 = undefined,
     market_info: [256]u8 = undefined,
@@ -347,8 +353,27 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
     const can_clear = if (instance.panel) |panel| panel.table.set_states != null else false;
     content.market_actions[3] = action("market.search-clear", "清空搜索", commands[39], !busy and can_clear);
     content.children[4] = horizontal("market.actions", &content.market_actions);
-    content.children[5] = label("market.notice", "仅展示精选或原创条目；安装前请确认素材许可。完整包不可用时使用基础包。");
-    var count: usize = 6;
+    content.children[5] = label("market.notice", "选择素材读取详情；来源目录未提供明确许可时不得推定授权。");
+    const filters = instance.market_filters;
+    content.market_filter_actions[0] = action("market.filter-mode", switch (filters.mode) {
+        .curated => "范围：精选或原创",
+        .all => "范围：全部",
+        .original => "范围：原创",
+        .featured => "范围：精选",
+        .exact_id => "范围：精确来源 ID",
+    }, commands[55], idle);
+    content.market_filter_actions[1] = action("market.filter-category", switch (filters.category) {
+        .any => "类别：不限",
+        .asian => "类别：亚洲",
+        .western => "类别：欧美",
+    }, commands[56], idle and filters.mode != .exact_id);
+    content.market_filter_actions[2] = action("market.filter-version", switch (filters.version) {
+        .any => "版本：不限",
+        .v1 => "版本：V1",
+        .v2 => "版本：V2",
+    }, commands[57], idle and filters.mode != .exact_id);
+    content.children[6] = horizontal("market.filters", &content.market_filter_actions);
+    var count: usize = 7;
     if (busy) {
         const received = instance.market_progress.received.load(.acquire);
         const expected = instance.market_progress.expected.load(.acquire);
@@ -370,28 +395,47 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
             const selected = instance.market_selected != null and instance.market_selected.? == n;
             const body = std.fmt.bufPrint(&content.market_rows[n], "{s}{s} · {s}", .{ if (selected) "已选： " else "", row.displayName(), row.sourceId() }) catch unreachable;
             const id = std.fmt.bufPrint(&content.market_row_ids[n], "market-row-{d}-{x}", .{ n, std.hash.Wyhash.hash(0, body) }) catch unreachable;
-            const selectable = !snapshot.query.offline and !result.stale;
-            content.children[count] = if (selectable) action(id, body, commands[40 + n], idle) else label(id, body);
-            if (selectable) content.children[count].selected = .{ .present = 1, .value = @intFromBool(selected) };
+            content.children[count] = action(id, body, commands[40 + n], idle);
+            content.children[count].selected = .{ .present = 1, .value = @intFromBool(selected) };
             count += 1;
         }
         content.market_paging[0] = action("market.previous", "上一页", commands[33], idle and snapshot.query.offset >= snapshot.rows.len);
         content.market_paging[1] = action("market.next", "下一页", commands[34], idle and snapshot.query.offset + written < result.summary.total and written != 0);
         content.children[count] = horizontal("market.paging", &content.market_paging);
         count += 1;
-        if (written != 0 and !snapshot.query.offline and !result.stale) {
+        if (written != 0) {
             const choice = instance.market_selected;
             const selected = if (choice) |n| n < written else false;
             const description = if (selected) blk: {
                 const row = &snapshot.rows[choice.?];
                 break :blk std.fmt.bufPrint(&content.market_selection_text, "已选择：{s} · {s}", .{ row.displayName(), row.sourceId() }) catch unreachable;
-            } else "点击上方素材选择安装对象";
+            } else "点击上方素材查看详情";
             content.children[count] = changingLabel(&content.market_selection_id, "market.selection", description);
             count += 1;
-            content.market_install[0] = action("market.install-base", "下载并安装基础包", commands[35], idle and selected);
-            content.market_install[1] = action("market.install-full", "下载并安装完整包", commands[36], idle and selected);
-            content.children[count] = horizontal("market.install", &content.market_install);
-            count += 1;
+            if (selected) {
+                if (instance.market_detail) |*detail| {
+                    const minimum = if (detail.minimum_len == 0) "未声明" else detail.minimum[0..detail.minimum_len];
+                    const info_line = std.fmt.bufPrint(&content.market_detail_text, "{s} · V{d} · {s} · {s} · 最低 OpenPets 版本：{s} · {s} · {s}", .{ if (detail.category == .asian) "亚洲" else "欧美", detail.version, if (detail.original) "标记原创" else "未标记原创", if (detail.featured) "精选" else "非精选", minimum, if (detail.compatible) "格式初步兼容" else "暂不兼容", if (detail.stale) "过期详情" else if (!detail.installable) "仅查看" else "可申请安装" }) catch unreachable;
+                    content.children[count] = changingLabel(&content.market_detail_id, "market.detail", info_line);
+                    count += 1;
+                    content.children[count] = changingLabel(&content.market_description_id, "market.description", detail.description[0..detail.description_len]);
+                    count += 1;
+                    content.children[count] = label("market.license", "作者与许可：当前协议未提供经过验证的字段，请自行确认。");
+                    count += 1;
+                    if (detail.subcategory_len != 0) {
+                        content.children[count] = label("market.subcategory", detail.subcategory[0..detail.subcategory_len]);
+                        count += 1;
+                    }
+                    const can_install = idle and !snapshot.query.offline and !result.stale and detail.installable;
+                    content.market_install[0] = action("market.install-base", "下载并安装基础包", commands[35], can_install);
+                    content.market_install[1] = action("market.install-full", if (detail.wardrobe) "下载并安装完整包" else "没有独立完整包", commands[36], can_install and detail.wardrobe);
+                    content.children[count] = horizontal("market.install", &content.market_install);
+                    count += 1;
+                } else {
+                    content.children[count] = label("market.detail-pending", "详情尚未读取或读取失败；可重新选择该素材。");
+                    count += 1;
+                }
+            }
         } else if (written == 0) {
             content.children[count] = label("market.no-match", "没有匹配的素材，请调整搜索词。");
             count += 1;
@@ -1100,6 +1144,7 @@ fn pollLibrary(instance: *Instance) void {
             // Do not reuse the pre-install window after a terminal outcome.
             instance.market_snapshot = .{};
             instance.market_selected = null;
+            instance.market_detail = null;
         }
         const done = instance.work_done.load(.acquire);
         if (done and instance.market_outcome.installed != null) {
@@ -1112,8 +1157,11 @@ fn pollLibrary(instance: *Instance) void {
         } else if (done and instance.task_state == raw.PULSE_TASK_COMPLETED and instance.work_error == null and request == .search) {
             instance.market_snapshot = instance.market_outcome.snapshot;
             instance.market_status = "市场搜索完成";
+        } else if (done and instance.task_state == raw.PULSE_TASK_COMPLETED and instance.work_error == null and request == .detail and instance.market_outcome.detail != null) {
+            instance.market_detail = instance.market_outcome.detail;
+            instance.market_status = "素材详情已读取；安装时仍会重新验证";
         } else {
-            instance.market_status = if (instance.task_state == raw.PULSE_TASK_CANCELLED) "市场任务已取消；未确认写入请检查本地素材库" else if (done) if (instance.work_error) |err| @errorName(err) else "市场任务未返回有效结果" else "市场任务未完成";
+            instance.market_status = if (instance.task_state == raw.PULSE_TASK_CANCELLED) (if (request == .install) "市场任务已取消；未确认写入请检查本地素材库" else "读取市场信息已取消") else if (done) if (instance.work_error) |err| @errorName(err) else "市场任务未返回有效结果" else "市场任务未完成";
             if (request == .install) {
                 instance.library_loaded = false;
                 instance.recovery_report = null;
@@ -1863,7 +1911,9 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
         instance.market_query = request.search;
         instance.market_snapshot = .{};
         instance.market_selected = null;
+        instance.market_detail = null;
     }
+    if (request == .detail) instance.market_detail = null;
     instance.market_request = request;
     instance.market_outcome = .{};
     instance.market_progress.reset();
@@ -1872,7 +1922,11 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
     instance.work_error = null;
     const descriptor: raw.PulseTaskDescriptor = .{
         .size = @sizeOf(raw.PulseTaskDescriptor),
-        .title = abi.view(if (request == .search) "搜索 OpenPets 市场" else "下载并安装桌宠"),
+        .title = abi.view(switch (request) {
+            .search => "搜索 OpenPets 市场",
+            .detail => "读取素材详情",
+            .install => "下载并安装桌宠",
+        }),
         .type = abi.view("companion.market"),
         .work = readLibrary,
         .user = instance,
@@ -1880,7 +1934,11 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
     var id: u64 = 0;
     if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
         instance.task_id = id;
-        instance.market_status = if (request == .search) "正在读取市场目录" else "正在下载、校验并安装素材";
+        instance.market_status = switch (request) {
+            .search => "正在读取市场目录",
+            .detail => "正在读取素材详情",
+            .install => "正在下载、校验并安装素材",
+        };
         armTimer(instance);
     } else {
         instance.market_request = null;
@@ -1896,11 +1954,17 @@ fn searchMarket(instance: *Instance, offline: bool) void {
     var bytes: [257]u8 = undefined;
     var needed: u32 = 0;
     if (get_state(panel.table.context, panel.id, abi.view("market.query"), &bytes, bytes.len, &needed) != abi.ok or needed > 256) return;
-    const query = library.MarketSearch.init(bytes[0..needed], 0, offline) catch |err| {
+    var query = library.MarketSearch.init(bytes[0..needed], 0, offline) catch |err| {
         instance.market_status = @errorName(err);
         refresh(instance);
         return;
     };
+    query.filters = instance.market_filters;
+    if (query.filters.mode == .exact_id and !library.validSourceId(query.query[0..query.len])) {
+        instance.market_status = "精确搜索需要有效来源 ID";
+        refresh(instance);
+        return;
+    }
     startMarket(instance, .{ .search = query });
 }
 
@@ -1929,27 +1993,32 @@ fn clearMarketSearch(instance: *Instance) void {
         return;
     };
     instance.market_query = .{};
+    instance.market_filters = .{};
     instance.market_snapshot = .{};
     instance.market_selected = null;
+    instance.market_detail = null;
     instance.market_status = "已清空搜索；主动搜索后才联网";
     refresh(instance);
 }
 
 fn selectMarket(instance: *Instance, index: usize) void {
     if (!marketIdle(instance)) return;
-    _ = instance.market_snapshot.selectIndex(index, false) catch {
+    const request = instance.market_snapshot.detailIndex(index) catch {
         instance.market_selected = null;
+        instance.market_detail = null;
         instance.market_status = "素材选择无效；请重新搜索";
         refresh(instance);
         return;
     };
     instance.market_selected = index;
-    refresh(instance);
+    startMarket(instance, request);
 }
 
 fn installMarket(instance: *Instance, full: bool) void {
     if (!marketIdle(instance)) return;
     const selected = instance.market_selected orelse return;
+    const detail = instance.market_detail orelse return;
+    if (!detail.installable or (full and !detail.wardrobe)) return;
     const request = instance.market_snapshot.selectIndex(selected, full) catch |err| {
         instance.market_status = @errorName(err);
         refresh(instance);
@@ -1971,6 +2040,48 @@ fn cancelMarket(instance: *Instance) void {
     refresh(instance);
 }
 
+fn changeMarketFilter(instance: *Instance, which: usize) void {
+    if (!marketIdle(instance)) return;
+    const filters = &instance.market_filters;
+    switch (which) {
+        0 => {
+            filters.mode = switch (filters.mode) {
+                .curated => .all,
+                .all => .original,
+                .original => .featured,
+                .featured => .exact_id,
+                .exact_id => .curated,
+            };
+            if (filters.mode == .exact_id) {
+                filters.category = .any;
+                filters.version = .any;
+            }
+        },
+        1 => {
+            if (filters.mode == .exact_id) return;
+            filters.category = switch (filters.category) {
+                .any => .asian,
+                .asian => .western,
+                .western => .any,
+            };
+        },
+        2 => {
+            if (filters.mode == .exact_id) return;
+            filters.version = switch (filters.version) {
+                .any => .v1,
+                .v1 => .v2,
+                .v2 => .any,
+            };
+        },
+        else => return,
+    }
+    instance.market_snapshot = .{};
+    instance.market_selected = null;
+    instance.market_detail = null;
+    instance.market_status = "筛选条件已变更；请主动搜索";
+    refresh(instance);
+}
+
 fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
     if (!instance.active or panel != instance.page or instance.removal_dialog != 0) return;
@@ -1984,7 +2095,8 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         if (n >= 29 and n <= 30 and instance.section != .running) return;
         if (n >= 31 and n <= 51 and instance.section != .market) return;
         if (n == 52 and instance.section != .global) return;
-        if (n >= 53 and instance.section != .running) return;
+        if (n >= 53 and n <= 54 and instance.section != .running) return;
+        if (n >= 55 and instance.section != .market) return;
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
@@ -2041,6 +2153,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             39 => clearMarketSearch(instance),
             40...51 => selectMarket(instance, n - 40),
             52 => saveLimits(instance),
+            55...57 => changeMarketFilter(instance, n - 55),
             53, 54 => {
                 const total = runningMatchCount(instance);
                 const offset = runningPageStart(instance.running_offset, total);
@@ -2331,7 +2444,7 @@ test "four section tree declares only real navigation and preference actions" {
             .library => 5,
             .global => 8,
             .running => 6,
-            .market => 6,
+            .market => 7,
         };
         try std.testing.expectEqual(expected, content.root.children.count);
     }
@@ -2545,7 +2658,9 @@ test "market panel requires explicit admission and has no implicit install" {
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     fill(instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 6), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 7), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 3), content.children[6].children.count);
+    try std.testing.expectEqualStrings(commands[55], abi.slice(content.market_filter_actions[0].command.value).?);
     try std.testing.expectEqualStrings("market.query", abi.slice(content.children[3].id).?);
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[0].enabled.value);
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[1].enabled.value);
@@ -2560,7 +2675,8 @@ test "market panel requires explicit admission and has no implicit install" {
 test "running page bounds rendered controls at full storage capacity" {
     const instance = try std.testing.allocator.create(Instance);
     defer std.testing.allocator.destroy(instance);
-    instance.* = .{ .host = undefined, .section = .running, .runtime_task_id = 1 };
+    instance.* = .{ .host = undefined, .section = .running, .runtime_task_id = 1, .task_kind = .builtin_session };
+    instance.session.set(.running);
     instance.running_rows.count = library.session_limit;
     for (instance.running_rows.rows[0..library.session_limit], 0..) |*row, n| {
         row.* = .{ .id = n + 1, .asset_id = 1 };

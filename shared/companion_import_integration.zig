@@ -139,6 +139,9 @@ test "real approved helper imports package and reload deduplicates" {
     var hits: [1]market.Hit = undefined;
     const selection = try service.search(&market_root, .{ .query = "fixture" }, 0, &hits);
     try std.testing.expectEqual(@as(usize, 1), selection.summary.written);
+    const details = try service.detail(&market_root, &selection, &hits[0]);
+    try std.testing.expect(details.compatible and details.installable and details.original and !details.wardrobe);
+    try std.testing.expectEqualStrings("Fixture", details.description[0..details.description_len]);
     var stage: installer.Install = .{};
     var disk = Budget.init(2 * 1024 * 1024 * 1024);
     defer stage.cleanup(io, scratch, &disk) catch @panic("ZIP fixture cleanup failed");

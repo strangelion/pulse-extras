@@ -1,8 +1,10 @@
 # Pulse 桌宠管理器 / Companion Manager
 
-Status: UI design and worker-side admission model only. No settings page has
-been registered and the native host remains single-child. Do not present a
-mockup as real host acceptance.
+Status: experimental native settings contribution, multi-instance runtime,
+managed import/removal/cleanup and serialized market installation are wired.
+This document retains chronological checkpoints; older statements about
+missing wiring are historical. CI and isolated ABI fixtures are not real
+installed-host acceptance. See the current completion matrix at the end.
 
 ## SDK boundary
 
@@ -1495,3 +1497,43 @@ processes; host ABI fixture validates persisted settings, existing stress
 tests remain distinct. Large-scale real-host CPU/memory and exit timing
 must be measured before claiming acceptance. Market download concurrency
 is still not enabled by this change.
+
+## Market filters and selected-item details
+
+Explicit searches preserve a copied filter: curated/all/original/featured/
+exact-source-ID, Asian/Western/all and V1/V2/all. Exact ID ignores category
+and version and requires a valid ID. Changing filters invalidates previous
+results and details without network traffic; pagination preserves the frozen
+filter. A selected result starts a read-only detail worker, including
+cache-only lookup for offline/stale search windows. No package download
+starts on selection. The detail is resolved against the original row hash,
+root revision and validated detail page; the UI copies only bounded metadata,
+description, category, sprite version, original/featured flags, minimum
+OpenPets version and wardrobe availability. It does not invent author or
+license data. Stale/cache-only and incompatible details disable installation;
+a valid detail and a second explicit action are required. The worker still
+revalidates selection and package URL before transfer. A requested full
+package that is no longer available fails closed instead of silently
+substituting the base archive. Search/detail/cancel,
+fixture and native command coverage remain independent of live HTTPS.
+
+## Current completion matrix (experimental branch)
+
+| Module | Status / remaining work |
+| --- | --- |
+| Desktop runtime and multi-instance lifecycle | Wired; first-frame readiness, sampled CPU/working set/private bytes/handles, targeted stop, paged search, persisted limits. Visible high-count and long-session acceptance outstanding. |
+| Local library | Managed import, tags/favorites, search, start, quarantine/recovery and explicit cleanup wired. Rich metadata, safe external source reveal, archive import UI and stable asset profiles remain. |
+| Market | Search, filters, detail/compatibility, cache, base/full install, cancel and progress wired; actual live HTTPS and installed-host verification outstanding. |
+| Market queue | Transfer pool exists but host is serialized; implement owner-bound batch queue, concurrency setting, aggregate budget and per-job cancel/commit reporting as one module. |
+| Previews | Host image capability requires verified local Preview 3 ABI; no arbitrary WebView, SVG rendering or unverified SDK layout. Implement visible-page bounded decoding/cache only after contract confirmed. |
+| Settings and lifecycle | Count/commit limits persist. Independent asset/instance profiles, auto-start allowlist, visibility acknowledgments, reduced motion, startup batching and shutdown policy remain. |
+| Recovery/diagnostics | Read-only recovery, receipts and cleanup intent exist. Market interrupted scratch/cache management and diagnostic export need separate safe ownership protocol. |
+| Release | Run full regression and actual isolated Pulse host acceptance, real catalog/download checks, visible varied-art stress and release/package/license review. |
+
+The checked-in document is not evidence that every historical checkbox is
+done. Do not claim a passing current build until CI finishes. No local pinned
+compiler or installed host was available for this revision.
+
+CI #243's full-capacity rendering test was also corrected to construct an
+actual running session instead of a runtime-check task. The expected 12-row
+page and four-row final page assertions remain intact.

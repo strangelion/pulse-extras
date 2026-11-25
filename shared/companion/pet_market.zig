@@ -212,10 +212,13 @@ pub fn parseSearchPage(allocator: std.mem.Allocator, input: []const u8, root: In
     return parsed;
 }
 
+pub const Category = enum { any, asian, western };
+pub const SpriteVersion = enum { any, v1, v2 };
+
 pub const Filter = struct {
     query: []const u8 = "",
-    category: enum { any, asian, western } = .any,
-    version: enum { any, v1, v2 } = .any,
+    category: Category = .any,
+    version: SpriteVersion = .any,
     curated: bool = true,
     exact_id: bool = false,
     original_only: bool = false,

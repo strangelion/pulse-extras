@@ -22,7 +22,7 @@ explicit non-claims. Registry acceptance and shipping extensions are still open.
 | Data | Database and scientific data preview | Planned |
 | DevKit | Project and toolchain management | Planned |
 | Compare | Recursive directory comparison | Planned |
-| Companion | Optional lightweight desktop pets / OpenPets event bridge | Standalone runtime, managed import and two 100-process hidden benchmarks verified at recorded revisions; experimental native settings contribution with persisted download preference; live runtime wiring and online installation pending ([manager](docs/companion-manager.md), [measurements](docs/performance.md)) |
+| Companion | Optional lightweight desktop pets / OpenPets event bridge | Standalone runtime, managed import and two 100-process hidden benchmarks verified at recorded revisions; experimental native settings contribution, managed multi-instance runtime, recovery/cleanup and serialized online market installation; real-host and live market acceptance pending ([manager](docs/companion-manager.md), [measurements](docs/performance.md)) |
 | Forge | Reusable authoring components, bounded recipes and maintenance tooling | Design only; external Agents first, independent product conditional ([design](docs/forge-architecture.md)) |
 
 ## Build and test

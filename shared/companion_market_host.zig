@@ -19,11 +19,33 @@ extern "kernel32" fn GetSystemTimeAsFileTime(*[2]u32) callconv(.winapi) void;
 pub const page_size = 12;
 pub const Progress = http.Progress;
 
+pub const FilterMode = enum { curated, all, original, featured, exact_id };
+pub const Filters = struct {
+    mode: FilterMode = .curated,
+    category: market.Category = .any,
+    version: market.SpriteVersion = .any,
+
+    pub fn apply(self: Filters, query: []const u8) market.Filter {
+        return .{
+            .query = query,
+            .category = self.category,
+            .version = self.version,
+            .curated = self.mode == .curated,
+            .original_only = self.mode == .original,
+            .featured_only = self.mode == .featured,
+            .exact_id = self.mode == .exact_id,
+        };
+    }
+};
+
+pub const Detail = service_mod.Detail;
+
 pub const SearchRequest = struct {
     query: [256]u8 = @splat(0),
     len: usize = 0,
     offset: usize = 0,
     offline: bool = false,
+    filters: Filters = .{},
 
     pub fn init(query: []const u8, offset: usize, offline: bool) !SearchRequest {
         if (query.len > 256 or offset > market.max_total or !std.unicode.utf8ValidateSlice(query) or std.mem.indexOfScalar(u8, query, 0) != null) return error.InvalidCatalog;
@@ -39,8 +61,15 @@ pub const Selection = struct {
     full: bool,
 };
 
+pub const DetailRequest = struct {
+    result: service_mod.Search,
+    hit: market.Hit,
+    offline: bool,
+};
+
 pub const Request = union(enum) {
     search: SearchRequest,
+    detail: DetailRequest,
     install: Selection,
 };
 
@@ -48,6 +77,14 @@ pub const Snapshot = struct {
     rows: [page_size]market.Hit = undefined,
     result: ?service_mod.Search = null,
     query: SearchRequest = .{},
+
+    pub fn detailIndex(self: *const Snapshot, index: usize) !Request {
+        const result = self.result orelse return error.StaleSelection;
+        if (result.summary.written > self.rows.len or index >= result.summary.written) return error.StaleSelection;
+        const row = &self.rows[index];
+        if (!result.contains(row)) return error.StaleSelection;
+        return .{ .detail = .{ .result = result, .hit = row.*, .offline = self.query.offline or result.stale } };
+    }
 
     pub fn selectIndex(self: *const Snapshot, index: usize, full: bool) !Request {
         const result = self.result orelse return error.StaleSelection;
@@ -70,6 +107,7 @@ pub const Snapshot = struct {
 pub const Outcome = struct {
     snapshot: Snapshot = .{},
     installed: ?importing.Result = null,
+    detail: ?Detail = null,
 };
 
 const Access = struct {
@@ -131,13 +169,16 @@ fn execute(service: *Service, consumer: *Consumer, request: *const Request, out:
     switch (request.*) {
         .search => |search| {
             out.snapshot.query = search;
-            out.snapshot.result = try service.search(&root, .{ .query = search.query[0..search.len] }, search.offset, &out.snapshot.rows);
+            out.snapshot.result = try service.search(&root, search.filters.apply(search.query[0..search.len]), search.offset, &out.snapshot.rows);
             try service.cancel.check();
+        },
+        .detail => |selected| {
+            out.detail = try service.detail(&root, &selected.result, &selected.hit);
         },
         .install => |selected| {
             // A new operation obtains current UTC and reopens the root;
             // stale revisions, copied-row mismatches and expiry are refused.
-            const id = try service.startPackage(&root, &selected.result, &selected.hit, selected.full);
+            const id = try service.startPackageStrict(&root, &selected.result, &selected.hit, selected.full);
             const finish = try service.finishPackageUsing(id, consumer);
             if (finish.result) |installed| {
                 out.installed = installed;
@@ -177,6 +218,7 @@ fn runWork(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]c
         .transport = .{ .call = @ptrCast(try owner.marketSymbol("pet_market_http_get")), .cancel = cancel, .progress = progress },
         .policy = switch (request.*) {
             .search => |search| if (search.offline) .offline_only else .stale_on_network_failure,
+            .detail => |selected| if (selected.offline) .offline_only else .stale_on_network_failure,
             .install => .online,
         },
         .cancel = cancel,
@@ -216,4 +258,16 @@ test "market search copies bounded query and empty selection cannot install" {
     try std.testing.expectError(error.StaleSelection, snapshot.selectIndex(0, false));
     snapshot.query.offline = true;
     try std.testing.expectError(error.StaleSelection, snapshot.selectIndex(0, true));
+}
+
+test "filter projection preserves explicit mode and bounded search" {
+    const filters: Filters = .{ .mode = .original, .category = .asian, .version = .v2 };
+    const projected = filters.apply("cat");
+    try std.testing.expect(projected.original_only and !projected.curated and !projected.featured_only);
+    try std.testing.expectEqual(market.Category.asian, projected.category);
+    try std.testing.expectEqual(market.SpriteVersion.v2, projected.version);
+    const exact = (Filters{ .mode = .exact_id }).apply("cat");
+    try std.testing.expect(exact.exact_id and !exact.curated);
+    const empty: Snapshot = .{};
+    try std.testing.expectError(error.StaleSelection, empty.detailIndex(0));
 }

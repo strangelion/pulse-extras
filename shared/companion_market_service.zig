@@ -66,6 +66,49 @@ pub const Search = struct {
     }
 };
 
+// A copied, bounded projection. Do not expose arbitrary upstream URLs or
+// treat an absent author/license field as permission to use the artwork.
+pub const Detail = struct {
+    description: [2000]u8 = @splat(0),
+    description_len: usize = 0,
+    subcategory: [320]u8 = @splat(0),
+    subcategory_len: usize = 0,
+    minimum: [32]u8 = @splat(0),
+    minimum_len: usize = 0,
+    category: market.Category = .any,
+    version: u32 = 1,
+    original: bool = false,
+    featured: bool = false,
+    wardrobe: bool = false,
+    compatible: bool = false,
+    stale: bool = true,
+    installable: bool = false,
+
+    fn copy(pet: market.Pet, stale: bool, offline: bool) Detail {
+        var value: Detail = .{
+            .description_len = pet.description.len,
+            .category = if (std.mem.eql(u8, pet.category, "asian")) .asian else .western,
+            .version = pet.spriteVersionNumber orelse 1,
+            .original = pet.original,
+            .featured = pet.featured,
+            .wardrobe = pet.wardrobeZip != null,
+            .compatible = pet.compatible(),
+            .stale = stale,
+            .installable = !offline and !stale and pet.compatible(),
+        };
+        @memcpy(value.description[0..value.description_len], pet.description);
+        if (pet.subcategory) |subcategory| {
+            value.subcategory_len = subcategory.len;
+            @memcpy(value.subcategory[0..subcategory.len], subcategory);
+        }
+        if (pet.minOpenPetsVersion) |minimum| {
+            value.minimum_len = minimum.len;
+            @memcpy(value.minimum[0..minimum.len], minimum);
+        }
+        return value;
+    }
+};
+
 pub fn Service(comptime Transport: type) type {
     return ServiceFor(Transport, cache_mod.Cache, false);
 }
@@ -203,7 +246,35 @@ pub fn ServiceFor(comptime Transport: type, comptime CacheType: type, comptime i
         /// Rehydrate the selected ID from its validated detail page. Stale
         /// or offline results are browsable but cannot initiate installation.
         /// Return a task ID: dispatcher later joins it and calls Install.run.
+        // Details are read-only, including offline or stale views. A new
+        // root revision or tampered hit is never silently substituted.
+        pub fn detail(self: *Self, root: *const Root, result: *const Search, hit: *const market.Hit) !Detail {
+            try self.cancel.check();
+            if (!result.matches(root) or !result.contains(hit) or self.now < result.created_at) return error.StaleSelection;
+            const index = root.parsed.value;
+            const body = try self.get(.{ .detail = .{ .root = index, .number = hit.catalog_page } });
+            defer body.deinit(self.allocator);
+            const parsed = try market.parsePage(self.allocator, body.payload, hit.catalog_page, index.pageSize);
+            defer parsed.deinit();
+            const pet = try market.resolveHit(hit, parsed.value);
+            if (!std.mem.eql(u8, pet.displayName, hit.displayName())) return error.StaleSelection;
+            try self.cancel.check();
+            const stale = result.stale or !root.fresh(self.now) or body.stale or self.now >= result.expires_at;
+            return Detail.copy(pet, stale, self.policy == .offline_only);
+        }
+
         pub fn startPackage(self: *Self, root: *const Root, result: *const Search, hit: *const market.Hit, full: bool) !u64 {
+            return self.startPackageMode(root, result, hit, full, false);
+        }
+
+        // The host explicitly advertises wardrobe availability. If it
+        // disappears between detail and download, do not silently install
+        // the base archive instead of the selected package.
+        pub fn startPackageStrict(self: *Self, root: *const Root, result: *const Search, hit: *const market.Hit, full: bool) !u64 {
+            return self.startPackageMode(root, result, hit, full, true);
+        }
+
+        fn startPackageMode(self: *Self, root: *const Root, result: *const Search, hit: *const market.Hit, full: bool, strict: bool) !u64 {
             try self.cancel.check();
             if (!result.matches(root) or !result.contains(hit)) return error.StaleSelection;
             var free_slot: ?usize = null;
@@ -222,6 +293,7 @@ pub fn ServiceFor(comptime Transport: type, comptime CacheType: type, comptime i
             defer parsed.deinit();
             const pet = try market.resolveHit(hit, parsed.value);
             if (!std.mem.eql(u8, pet.displayName, hit.displayName())) return error.StaleSelection;
+            if (strict and full and pet.wardrobeZip == null) return error.UnsupportedPackage;
             const url = pet.download(full) orelse return error.UnsupportedPackage;
             const id = try self.tasks.start(.zip, url, self.transport);
             var pending: Pending = .{ .id = id, .source_len = pet.id.len };
@@ -391,7 +463,14 @@ test "market service connects real persistent cache, futures, search and package
         var wrong = hits[0];
         wrong.name[0] = 'X';
         try std.testing.expectError(error.StaleSelection, service.startPackage(&root, &result, &wrong, false));
-        const id = try service.startPackage(&root, &result, &hits[0], false);
+        try std.testing.expectError(error.StaleSelection, service.detail(&root, &result, &wrong));
+        const details = try service.detail(&root, &result, &hits[0]);
+        try std.testing.expectEqualStrings("Fixture", details.description[0..details.description_len]);
+        try std.testing.expect(details.compatible and details.installable and details.original and !details.wardrobe);
+        try std.testing.expectEqual(@as(usize, 4), calls);
+        try std.testing.expectError(error.UnsupportedPackage, service.startPackageStrict(&root, &result, &hits[0], true));
+        try std.testing.expectEqual(@as(usize, 4), calls);
+        const id = try service.startPackageStrict(&root, &result, &hits[0], false);
         try std.testing.expectError(error.AlreadyQueued, service.startPackage(&root, &result, &hits[0], false));
         const archive = try tasks.join(id);
         try std.testing.expectEqual(@as(usize, "fixture archive".len), archive.bytes);
@@ -404,6 +483,8 @@ test "market service connects real persistent cache, futures, search and package
         var offline = try service.openRoot();
         defer offline.deinit();
         try std.testing.expect(!offline.stale);
+        const cached_detail = try service.detail(&offline, &result, &hits[0]);
+        try std.testing.expect(cached_detail.compatible and !cached_detail.installable);
         try std.testing.expectEqual(@as(usize, 5), calls);
         service.now = 1900;
         service.policy = .stale_on_network_failure;
