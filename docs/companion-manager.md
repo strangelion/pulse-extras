@@ -869,3 +869,21 @@ built-in helper is running, collects a simulated canceled library read
 without touching real user files, then returns to Running and stops the
 same session. This is still one live pet per attachment; managed asset
 start and multi-instance command admission are not implemented here.
+
+## Bounded multi-instance built-in session
+
+The existing host runtime worker now opens a pilot group of eight instances
+with an aggregate 1 GiB committed-memory admission budget (128 MiB reserved
+per child, not an allocation or measured working set). Additional built-in
+launches use a single atomic pending request, accepted only when all existing
+instances are ready and below the pilot limit. The worker rechecks native
+admission, keeps existing pets on rolled-back launch refusal, and aggregates
+owned/ready counts and sampled memory from the existing manager. A retained
+ambiguous launch or supervision failure drains the session. Stop All cancels
+the single host task and drains all owned jobs. Pending requests are cleared
+on terminal shutdown, not automatically retried. No additional host worker
+per pet. Native stable IDs are retained in Group; per-instance UI and managed
+asset selection are not connected yet. The bundled fixture now starts a
+second real pet in the same task, checks two ready instances, switches to the
+library, and stops the entire group. Pilot limit is not the final configured
+limit; 100-pet host testing remains separate.

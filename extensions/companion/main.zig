@@ -82,7 +82,7 @@ const Content = struct {
     dynamic_ids: [4][64]u8 = undefined,
     library_count: [160]u8 = undefined,
     root: ui.Node = undefined,
-    value: [128]u8 = undefined,
+    value: [256]u8 = undefined,
 };
 
 fn label(id: []const u8, body: []const u8) ui.Node {
@@ -172,18 +172,19 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
         .running => {
             content.children[2] = changingLabel(&content.dynamic_ids[0], "running.status", instance.runtime_status);
             const live = instance.runtime_task_id != 0 and instance.task_kind == .builtin_session;
-            content.toolbar[0] = action("running.start", "启动内置桌宠", commands[12], instance.runtime_checked and config.helper_sha256.len == 64 and instance.runtime_task_id == 0);
-            content.toolbar[1] = action("running.stop", "停止桌宠", commands[13], live and !instance.stop_requested);
+            const can_start = instance.runtime_checked and config.helper_sha256.len == 64 and !instance.stop_requested and (instance.runtime_task_id == 0 or (live and instance.session.canStart()));
+            content.toolbar[0] = action("running.start", if (live) "再启动一个桌宠" else "启动内置桌宠", commands[12], can_start);
+            content.toolbar[1] = action("running.stop", "停止全部桌宠", commands[13], live and !instance.stop_requested);
             content.children[3] = horizontal("running.toolbar", content.toolbar[0..2]);
             count = 4;
             if (live) {
                 const phase: library.Phase = @fromBackingInt(@intCast(instance.session.phase.load(.acquire)));
-                const status = std.fmt.bufPrint(&content.value, "{s} · 工作集 {d} KiB · 私有内存 {d} KiB", .{ switch (phase) {
+                const status = std.fmt.bufPrint(&content.value, "{s} · 运行 {d}/{d} · 拒绝 {d} · 工作集 {d} KiB · 私有内存 {d} KiB", .{ switch (phase) {
                     .idle => "等待任务",
                     .starting => "启动中",
                     .running => "首帧已确认",
                     .stopping => "正在退出",
-                }, instance.session.working_set.load(.acquire) / 1024, instance.session.private_bytes.load(.acquire) / 1024 }) catch unreachable;
+                }, instance.session.ready.load(.acquire), instance.session.owned.load(.acquire), instance.session.denied.load(.acquire), instance.session.working_set.load(.acquire) / 1024, instance.session.private_bytes.load(.acquire) / 1024 }) catch unreachable;
                 content.children[4] = changingLabel(&content.dynamic_ids[1], "running.metrics", status);
                 count = 5;
             }
@@ -482,7 +483,7 @@ fn pollRuntime(instance: *Instance) void {
     const done = instance.runtime_done.load(.acquire);
     if (instance.task_kind == .builtin_session) {
         instance.stop_requested = false;
-        instance.runtime_status = if (done and instance.runtime_error != null) @errorName(instance.runtime_error.?) else if (instance.runtime_task_state == raw.PULSE_TASK_COMPLETED or instance.runtime_task_state == raw.PULSE_TASK_CANCELLED) "内置桌宠已退出" else "运行任务未完成";
+        instance.runtime_status = if (done and instance.runtime_error != null) @errorName(instance.runtime_error.?) else if (instance.runtime_task_state == raw.PULSE_TASK_COMPLETED or instance.runtime_task_state == raw.PULSE_TASK_CANCELLED) "全部内置桌宠已退出" else "运行任务未完成";
         if (done and instance.runtime_error != null) instance.runtime_checked = false;
     } else {
         instance.runtime_checked = instance.runtime_task_state == raw.PULSE_TASK_COMPLETED and done and instance.runtime_error == null;
@@ -523,7 +524,13 @@ fn startRuntimeCheck(instance: *Instance) void {
 }
 
 fn startBuiltin(instance: *Instance) void {
-    if (!instance.active or !instance.runtime_checked or config.helper_sha256.len != 64 or instance.runtime_task_id != 0 or instance.dispatch == null) return;
+    if (!instance.active or !instance.runtime_checked or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested) return;
+    if (instance.runtime_task_id != 0) {
+        if (instance.task_kind != .builtin_session) return;
+        instance.runtime_status = if (instance.session.requestStart()) "已提交新增实例请求" else "暂不可新增实例；请等待或停止";
+        refresh(instance);
+        return;
+    }
     const tasks = instance.tasks orelse return;
     const create = tasks.create orelse return;
     instance.runtime_done.store(false, .release);
@@ -556,7 +563,7 @@ fn stopBuiltin(instance: *Instance) void {
     const cancel = tasks.cancel orelse return;
     if (cancel(tasks.context, instance.runtime_task_id) == abi.ok) {
         instance.stop_requested = true;
-        instance.runtime_status = "已请求停止；等待实际退出";
+        instance.runtime_status = "已请求停止全部桌宠；等待实际退出";
     } else {
         instance.runtime_status = "停止请求未确认";
     }

@@ -20,7 +20,7 @@ typedef struct {
     uint64_t page, next, pending, version;
     unsigned created, removed, canceled, updates, subscribed, fail_subscribe;
     int fallback, fail_remove, enabled_more, enabled_less, global, saved_present;
-    int auto_dispatch, bundled, start_enabled, stop_enabled, first_frame;
+    int auto_dispatch, bundled, start_enabled, stop_enabled, first_frame, two_ready;
     HANDLE worker;
     volatile LONG cancel_flag;
     CRITICAL_SECTION dispatch_lock;
@@ -80,11 +80,15 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
         f->start_enabled = (int)toolbar->children.data[0].enabled.value;
         f->stop_enabled = (int)toolbar->children.data[1].enabled.value;
         f->first_frame = 0;
+        f->two_ready = 0;
         if (root->children.count == 5) {
             const PulseStringView text = root->children.data[4].text.value;
             const char *prefix = "首帧已确认";
+            const char *two = "首帧已确认 · 运行 2/2";
             f->first_frame = text.data && text.length >= strlen(prefix) &&
                 memcmp(text.data, prefix, strlen(prefix)) == 0;
+            f->two_ready = text.data && text.length >= strlen(two) &&
+                memcmp(text.data, two, strlen(two)) == 0;
         }
     }
     if (same(root->children.data[1].id, "library")) {
@@ -440,8 +444,11 @@ static int bundled_session(PulsePluginEntryV1Fn entry) {
     for (unsigned cycle = 0; cycle < 2; ++cycle) {
         CHECK(click(&f, 12) == 0 && f.task && f.worker && !f.start_enabled);
         for (unsigned i = 0; i < 900 && f.task && !f.first_frame; ++i) { Sleep(20); pump(&f); }
-        CHECK(f.task && f.first_frame && f.stop_enabled);
+        CHECK(f.task && f.first_frame && f.stop_enabled && f.start_enabled);
         if (!cycle) {
+            CHECK(click(&f, 12) == 0 && f.task && !f.start_enabled);
+            for (unsigned i = 0; i < 900 && f.task && !f.two_ready; ++i) { Sleep(20); pump(&f); }
+            CHECK(f.task && f.two_ready && f.stop_enabled);
             const uint64_t session = f.task;
             CHECK(click(&f, 0) == 0 && f.aux_task && f.task == session);
             for (unsigned i = 0; i < 100 && f.aux_task; ++i) { Sleep(20); pump(&f); }
