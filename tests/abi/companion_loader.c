@@ -487,16 +487,20 @@ static PulseStatus PULSE_CALL query(void *ctx, PulseStringView name, uint32_t ve
         FolderTable t = {.size=sizeof(t), .version=1, .context=f, .pick_folders=pick_folders, .cancel=cancel_picker};
         memcpy(out, &t, sizeof(t)); return PULSE_OK;
     }
-    if (f->bundled && same(name, PULSE_DIALOGS_INTERFACE_NAME)) {
+    if (same(name, PULSE_DIALOGS_INTERFACE_NAME)) {
         if (version == 2) {
-            if (!f->dialogs_v2) return PULSE_ERROR_UNAVAILABLE;
+            if (!f->bundled || !f->dialogs_v2) return PULSE_ERROR_UNAVAILABLE;
             REQUIRE(size >= sizeof(DialogsV2Compat));
             DialogsV2Compat t = {.size=sizeof(t), .version=2, .context=f, .show=show_dialog, .set_states=set_dialog_states, .close=close_dialog, .subscribe_command=subscribe_dialog_command, .unsubscribe_command=unsubscribe_dialog_command, .update_model=update_dialog_model, .get_state=get_dialog_state};
             memcpy(out, &t, sizeof(t)); return PULSE_OK;
         }
-        REQUIRE(version == 1 && size >= sizeof(PulseDialogsV1));
-        PulseDialogsV1 t = {.size=sizeof(t), .version=1, .context=f, .show=show_dialog, .close=close_dialog};
-        memcpy(out, &t, sizeof(t)); return PULSE_OK;
+        if (version == 1) {
+            if (!f->bundled) return PULSE_ERROR_UNAVAILABLE;
+            REQUIRE(size >= sizeof(PulseDialogsV1));
+            PulseDialogsV1 t = {.size=sizeof(t), .version=1, .context=f, .show=show_dialog, .close=close_dialog};
+            memcpy(out, &t, sizeof(t)); return PULSE_OK;
+        }
+        return PULSE_ERROR_UNAVAILABLE;
     }
     REQUIRE(version == 1);
     if (f->bundled && same(name, PULSE_CONTEXT_INTERFACE_NAME)) {
