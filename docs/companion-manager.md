@@ -917,3 +917,12 @@ separate from managed IDs. A single pending start carries the selected ID.
 The UI switches to Running for results. This is not a sandbox against
 same-user programs. Managed launch is implemented but full isolated-host
 fixture and actual imported asset acceptance are still required.
+
+## Managed launch error handling correction
+
+Allow built-in additions to an already-running verified managed session
+without requiring a second runtime-check task. Report bounded rejection
+categories in Running instead of just a counter; a native cleanup failure
+still drains the group. A nonzero child exit with confirmed reap does not
+stop unrelated healthy instances; a failing last child retains the terminal
+error. Native supervision failures and unconfirmed stops remain fail-closed.

@@ -57,6 +57,28 @@ pub const session_limit: usize = 8;
 
 // One pending built-in start; all native operations remain worker-owned.
 pub const Phase = enum(u32) { idle, starting, running, stopping };
+pub const Rejection = enum(u32) {
+    none,
+    capacity,
+    unverified,
+    private_root,
+    unknown_asset,
+    launch_failed,
+    unknown_instance,
+    child_exit,
+};
+
+pub fn rejectionFor(err: anyerror) Rejection {
+    return switch (err) {
+        error.Capacity, error.StorageCapacity, error.BudgetExceeded => .capacity,
+        error.UnverifiedAsset, error.UnapprovedExecutable => .unverified,
+        error.PrivateRootBusy, error.PrivateRootRejected, error.MissingLeaseApi, error.InvalidRoot => .private_root,
+        error.UnknownAsset => .unknown_asset,
+        error.UnknownInstance => .unknown_instance,
+        else => .launch_failed,
+    };
+}
+
 pub const RunningRow = model.Instance;
 pub const RunningSnapshot = struct {
     count: usize = 0,
@@ -70,6 +92,7 @@ pub const Session = struct {
     owned: std.atomic.Value(usize) = .init(0),
     ready: std.atomic.Value(usize) = .init(0),
     denied: std.atomic.Value(usize) = .init(0),
+    last_rejection: std.atomic.Value(u32) = .init(@backingInt(Rejection.none)),
     pending_start: std.atomic.Value(bool) = .init(false),
     start_asset: std.atomic.Value(u64) = .init(builtin_asset_id),
     pending_stop: std.atomic.Value(u64) = .init(0),
@@ -123,6 +146,11 @@ pub const Session = struct {
         @memcpy(out.rows[0..out.count], self.snapshot.rows[0..out.count]);
     }
 
+    pub fn reject(self: *Session, reason: Rejection) void {
+        self.last_rejection.store(@backingInt(reason), .release);
+        _ = self.denied.fetchAdd(1, .monotonic);
+    }
+
     pub fn reset(self: *Session) void {
         self.pending_stop.store(0, .release);
         self.stopping_id.store(0, .release);
@@ -132,6 +160,7 @@ pub const Session = struct {
         self.owned.store(0, .release);
         self.ready.store(0, .release);
         self.denied.store(0, .release);
+        self.last_rejection.store(@backingInt(Rejection.none), .release);
         self.working_set.store(0, .release);
         self.private_bytes.store(0, .release);
         self.set(.idle);
@@ -203,10 +232,13 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
                 if (launchAsset(owner, helper, helper_digest, session.start_asset.load(.acquire))) |next| {
                     if (next.failure) |err| failure = err;
                     begin = GetTickCount64();
-                } else |_| {
-                    // Admission or a fully rolled-back launch failure does
-                    // not terminate already running pets.
-                    _ = session.denied.fetchAdd(1, .monotonic);
+                } else |err| {
+                    // A native cleanup failure is not an ordinary refusal.
+                    if (err == error.CleanupFailed) {
+                        failure = err;
+                    } else {
+                        session.reject(rejectionFor(err));
+                    }
                 }
             }
             session.pending_start.store(false, .release);
@@ -220,7 +252,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
             } else |err| {
                 session.stopping_id.store(0, .release);
                 if (err == error.UnknownInstance) {
-                    _ = session.denied.fetchAdd(1, .monotonic);
+                    session.reject(.unknown_instance);
                 } else {
                     failure = err;
                 }
@@ -234,13 +266,17 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
             };
         }
         const count = try owner.group.tick(&rows);
+        var child_failed = false;
         for (rows[0..count]) |row| {
             if (row.failure) |err| failure = err;
             if (row.exit_code) |code| {
                 if (row.id == stopping) {
                     session.stopping_id.store(0, .release);
                 } else if (code != 0) {
-                    failure = error.ChildExited;
+                    // Confirmed reap proves this child no longer owns a
+                    // process. Do not drain unrelated healthy instances.
+                    session.reject(.child_exit);
+                    child_failed = true;
                 }
             }
         }
@@ -265,6 +301,7 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
         session.working_set.store(working_set, .release);
         session.private_bytes.store(private_bytes, .release);
         if (owned == 0) {
+            if (child_failed and failure == null) failure = error.ChildExited;
             session.set(.stopping);
             break;
         }
@@ -330,6 +367,17 @@ test "running snapshot copies stable IDs and stop requests are bounded" {
     session.reset();
     session.copyRows(&copy);
     try std.testing.expectEqual(@as(usize, 0), copy.count);
+}
+
+test "session retains explicit rejection and clears it on reset" {
+    var session: Session = .{};
+    session.reject(rejectionFor(error.UnknownAsset));
+    try std.testing.expectEqual(@as(usize, 1), session.denied.load(.acquire));
+    try std.testing.expectEqual(@as(u32, @backingInt(Rejection.unknown_asset)), session.last_rejection.load(.acquire));
+    session.reject(.child_exit);
+    try std.testing.expectEqual(@as(usize, 2), session.denied.load(.acquire));
+    session.reset();
+    try std.testing.expectEqual(@as(u32, @backingInt(Rejection.none)), session.last_rejection.load(.acquire));
 }
 
 test "runtime approval requires exactly one SHA-256 hex digest" {

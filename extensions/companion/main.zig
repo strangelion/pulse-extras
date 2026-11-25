@@ -185,19 +185,30 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
         .running => {
             content.children[2] = changingLabel(&content.dynamic_ids[0], "running.status", instance.runtime_status);
             const live = instance.runtime_task_id != 0 and instance.task_kind == .builtin_session;
-            const can_start = instance.runtime_checked and config.helper_sha256.len == 64 and !instance.stop_requested and (instance.runtime_task_id == 0 or (live and instance.session.canStart()));
-            content.toolbar[0] = action("running.start", if (live) "再启动一个桌宠" else "启动内置桌宠", commands[12], can_start);
+            const can_start = config.runtime_sha256.len == 64 and config.helper_sha256.len == 64 and !instance.stop_requested and ((instance.runtime_task_id == 0 and instance.runtime_checked) or (live and instance.session.canStart()));
+            content.toolbar[0] = action("running.start", if (live) "再启动内置桌宠" else "启动内置桌宠", commands[12], can_start);
             content.toolbar[1] = action("running.stop", "停止全部桌宠", commands[13], live and !instance.stop_requested);
             content.children[3] = horizontal("running.toolbar", content.toolbar[0..2]);
             count = 4;
             if (live) {
                 const phase: library.Phase = @fromBackingInt(@intCast(instance.session.phase.load(.acquire)));
-                const status = std.fmt.bufPrint(&content.value, "{s} · 运行 {d}/{d} · 拒绝 {d} · 工作集 {d} KiB · 私有内存 {d} KiB", .{ switch (phase) {
+                const rejection: library.Rejection = @fromBackingInt(@intCast(instance.session.last_rejection.load(.acquire)));
+                const reason: []const u8 = switch (rejection) {
+                    .none => "",
+                    .capacity => " · 资源预算不足",
+                    .unverified => " · 摘要验证未通过",
+                    .private_root => " · 私有目录不可用",
+                    .unknown_asset => " · 素材不存在",
+                    .launch_failed => " · 启动失败",
+                    .unknown_instance => " · 实例已退出",
+                    .child_exit => " · 实例异常退出",
+                };
+                const status = std.fmt.bufPrint(&content.value, "{s} · 运行 {d}/{d} · 异常 {d} · 工作集 {d} KiB · 私有内存 {d} KiB{s}", .{ switch (phase) {
                     .idle => "等待任务",
                     .starting => "启动中",
                     .running => "首帧已确认",
                     .stopping => "正在退出",
-                }, instance.session.ready.load(.acquire), instance.session.owned.load(.acquire), instance.session.denied.load(.acquire), instance.session.working_set.load(.acquire) / 1024, instance.session.private_bytes.load(.acquire) / 1024 }) catch unreachable;
+                }, instance.session.ready.load(.acquire), instance.session.owned.load(.acquire), instance.session.denied.load(.acquire), instance.session.working_set.load(.acquire) / 1024, instance.session.private_bytes.load(.acquire) / 1024, reason }) catch unreachable;
                 content.children[4] = changingLabel(&content.dynamic_ids[1], "running.metrics", status);
                 count = 5;
                 if (instance.running_rows.count != 0) {
@@ -569,7 +580,7 @@ fn startRuntimeCheck(instance: *Instance) void {
 }
 
 fn startBuiltin(instance: *Instance) void {
-    if (!instance.runtime_checked) return;
+    if (instance.runtime_task_id == 0 and !instance.runtime_checked) return;
     startAsset(instance, library.builtin_asset_id);
 }
 
