@@ -38,8 +38,11 @@ const Info = extern struct {
 const Guid = extern struct { a: u32, b: u16, c: u16, d: [8]u8 };
 const local_app_data: Guid = .{ .a = 0xf1b32785, .b = 0x6fba, .c = 0x4fcf, .d = .{ 0x9d, 0x55, 0x7b, 0x8e, 0x7f, 0x15, 0x70, 0x91 } };
 
-extern "shell32" fn SHGetKnownFolderPath(*const Guid, u32, ?*anyopaque, *?[*:0]u16) callconv(.winapi) i32;
-extern "ole32" fn CoTaskMemFree(?*anyopaque) callconv(.winapi) void;
+const KnownFolderFn = *const fn (*const Guid, u32, ?*anyopaque, *?[*:0]u16) callconv(.winapi) i32;
+const TaskMemFreeFn = *const fn (?*anyopaque) callconv(.winapi) void;
+extern "kernel32" fn LoadLibraryExW([*:0]const u16, ?*anyopaque, u32) callconv(.winapi) usize;
+extern "kernel32" fn GetProcAddress(usize, [*:0]const u8) callconv(.winapi) ?*const anyopaque;
+extern "kernel32" fn FreeLibrary(usize) callconv(.winapi) i32;
 extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, ?*anyopaque) callconv(.winapi) usize;
 extern "kernel32" fn CloseHandle(usize) callconv(.winapi) i32;
 extern "kernel32" fn GetLastError() callconv(.winapi) u32;
@@ -67,16 +70,41 @@ fn appendPath(out: []u16, base: []const u16, tail: []const u16) ![:0]const u16 {
     return out[0..len :0];
 }
 
-pub fn readDefault(out: *Snapshot) !void {
-    if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
+// Resolve only system DLLs, never search the application directory or PATH.
+// The MSVC cross-build needs no external Windows SDK import libraries.
+// Keep the libraries loaded until the allocated path has been freed.
+fn knownRoot(out: []u16) ![:0]const u16 {
+    const system32 = 0x00000800; // LOAD_LIBRARY_SEARCH_SYSTEM32
+    const shell = LoadLibraryExW(std.unicode.wtf8ToWtf16LeStringLiteral("shell32.dll"), null, system32);
+    if (shell == 0) return error.KnownFolderUnavailable;
+    const ole = LoadLibraryExW(std.unicode.wtf8ToWtf16LeStringLiteral("ole32.dll"), null, system32);
+    if (ole == 0) {
+        if (FreeLibrary(shell) == 0) return error.CleanupFailed;
+        return error.KnownFolderUnavailable;
+    }
+    const result = resolveRoot(shell, ole, out);
+    const ole_closed = FreeLibrary(ole) != 0;
+    const shell_closed = FreeLibrary(shell) != 0;
+    if (!ole_closed or !shell_closed) return error.CleanupFailed;
+    return result;
+}
+
+fn resolveRoot(shell: usize, ole: usize, out: []u16) ![:0]const u16 {
+    const folder: KnownFolderFn = @ptrCast(GetProcAddress(shell, "SHGetKnownFolderPath") orelse return error.KnownFolderUnavailable);
+    const free: TaskMemFreeFn = @ptrCast(GetProcAddress(ole, "CoTaskMemFree") orelse return error.KnownFolderUnavailable);
     var path: ?[*:0]u16 = null;
     // KF_FLAG_DONT_VERIFY: do not create or probe arbitrary alternate folders.
-    const status = SHGetKnownFolderPath(&local_app_data, 0x4000, null, &path);
-    defer if (path) |owned| CoTaskMemFree(@ptrCast(owned));
+    const status = folder(&local_app_data, 0x4000, null, &path);
+    defer if (path) |owned| free(@ptrCast(owned));
     if (status != 0) return error.KnownFolderFailed;
     const base = path orelse return error.KnownFolderFailed;
+    return appendPath(out, std.mem.span(base), std.unicode.wtf8ToWtf16LeStringLiteral("\\PulseExtras-Companion"));
+}
+
+pub fn readDefault(out: *Snapshot) !void {
+    if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
     var root: [1024]u16 = undefined;
-    const full = try appendPath(&root, std.mem.span(base), std.unicode.wtf8ToWtf16LeStringLiteral("\\PulseExtras-Companion"));
+    const full = try knownRoot(&root);
     try readAt(full, out);
 }
 

@@ -658,3 +658,15 @@ of the worker result. Cancellation is cooperative and host drains its
 workers before destroy. CI native import fixture now reads actual persisted
 inventory through the reader. Existing DLL ABI fixture updated for new
 navigation commands. Previous actual DLL ABI regression passed; new CI pending.
+
+### MSVC cross-build correction
+
+The initial library reader passed explicit shell32/ole32 link dependencies
+through the shared Modules import table, breaking all three Windows MSVC
+DLL cross-builds on Ubuntu (run 45596177364). Remove those explicit link
+requirements from the shared module and integration root. Resolve the two
+known-folder APIs only through LoadLibraryExW with SYSTEM32 search policy
+on the background worker; release both module references after freeing the
+known-folder string, and surface missing symbols or cleanup failure. The
+standalone GNU companion's existing system-library dependencies stay intact.
+No changes to CI scope, tests, root discovery policy or file write access.

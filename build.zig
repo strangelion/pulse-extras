@@ -267,10 +267,6 @@ const Modules = struct {
             .target = target,
             .optimize = optimize,
         });
-        if (target.result.os.tag == .windows) {
-            companion_library.linkSystemLibrary("shell32", .{});
-            companion_library.linkSystemLibrary("ole32", .{});
-        }
         var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod, .vcs_capabilities = vcs_capabilities, .vcs_identity = vcs_identity, .vcs_risk = vcs_risk, .vcs_detect = vcs_detect, .vcs_provider = vcs_provider, .vcs_cli = vcs_cli, .vcs_snapshot = vcs_snapshot, .vcs_git = vcs_git, .vcs_jj = vcs_jj, .vcs_svn = vcs_svn };
         modules.all = .{
             .{ .name = "companion_library", .module = companion_library },
@@ -438,8 +434,6 @@ pub fn build(b: *std.Build) void {
             .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
         });
         import_root.linkSystemLibrary("winhttp", .{});
-        import_root.linkSystemLibrary("shell32", .{});
-        import_root.linkSystemLibrary("ole32", .{});
         const import_tests = b.addTest(.{ .root_module = import_root });
         import_integration.dependOn(&b.addRunArtifact(import_tests).step);
     }
