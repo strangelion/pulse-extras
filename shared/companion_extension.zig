@@ -33,6 +33,60 @@ extern "kernel32" fn GetModuleFileNameW(usize, [*]u16, u32) callconv(.winapi) u3
 extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
 extern "kernel32" fn GetWindowsDirectoryW([*]u16, u32) callconv(.winapi) u32;
+extern "kernel32" fn LoadLibraryExW([*:0]const u16, ?*anyopaque, u32) callconv(.winapi) usize;
+extern "kernel32" fn GetProcAddress(usize, [*:0]const u8) callconv(.winapi) ?*const anyopaque;
+extern "kernel32" fn FreeLibrary(usize) callconv(.winapi) c_int;
+
+pub const market_gallery_url = "https://openpets.dev/gallery";
+const ShellOpen = *const fn (?*anyopaque, [*:0]const u16, [*:0]const u16, ?[*:0]const u16, ?[*:0]const u16, c_int) callconv(.winapi) usize;
+const ComInit = *const fn (?*anyopaque, u32) callconv(.winapi) i32;
+const ComUninit = *const fn () callconv(.winapi) void;
+
+fn invokeMarketGallery(open: ShellOpen) !void {
+    const operation = std.unicode.wtf8ToWtf16LeStringLiteral("open");
+    const url = std.unicode.wtf8ToWtf16LeStringLiteral(market_gallery_url);
+    // No command line, user-provided URL, working directory or parameters.
+    // Values <= 32 are ShellExecuteW errors; success is handoff, not page load.
+    if (open(null, operation, url, null, null, 1) <= 32) return error.BrowserOpenFailed;
+}
+
+/// Explicit UI action only, on the host-owned background task. The default
+/// browser is an OS-managed application, not an owned companion child.
+pub fn openMarketGallery() !void {
+    if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
+    // Resolve only Windows system DLLs, not the current working directory
+    // or plugin package. Shell extensions can require COM initialization.
+    const system32 = 0x800;
+    const ole = LoadLibraryExW(std.unicode.wtf8ToWtf16LeStringLiteral("ole32.dll"), null, system32);
+    if (ole == 0) return error.BrowserUnavailable;
+    defer _ = FreeLibrary(ole);
+    const initialize: ComInit = @ptrCast(GetProcAddress(ole, "CoInitializeEx") orelse return error.BrowserUnavailable);
+    const uninitialize: ComUninit = @ptrCast(GetProcAddress(ole, "CoUninitialize") orelse return error.BrowserUnavailable);
+    if (initialize(null, 2) < 0) return error.BrowserUnavailable;
+    defer uninitialize();
+    const shell = LoadLibraryExW(std.unicode.wtf8ToWtf16LeStringLiteral("shell32.dll"), null, system32);
+    if (shell == 0) return error.BrowserUnavailable;
+    defer _ = FreeLibrary(shell);
+    const open: ShellOpen = @ptrCast(GetProcAddress(shell, "ShellExecuteW") orelse return error.BrowserUnavailable);
+    try invokeMarketGallery(open);
+}
+
+test "gallery fallback uses only the approved fixed HTTPS URL and reports launch refusal" {
+    const Fixture = struct {
+        fn accept(window: ?*anyopaque, verb: [*:0]const u16, url: [*:0]const u16, args: ?[*:0]const u16, directory: ?[*:0]const u16, show: c_int) callconv(.winapi) usize {
+            const valid = window == null and args == null and directory == null and show == 1 and
+                std.mem.eql(u16, std.mem.span(verb), std.unicode.wtf8ToWtf16LeStringLiteral("open")) and
+                std.mem.eql(u16, std.mem.span(url), std.unicode.wtf8ToWtf16LeStringLiteral(market_gallery_url));
+            return if (valid) 33 else 31;
+        }
+
+        fn refuse(_: ?*anyopaque, _: [*:0]const u16, _: [*:0]const u16, _: ?[*:0]const u16, _: ?[*:0]const u16, _: c_int) callconv(.winapi) usize {
+            return 32;
+        }
+    };
+    try invokeMarketGallery(Fixture.accept);
+    try std.testing.expectError(error.BrowserOpenFailed, invokeMarketGallery(Fixture.refuse));
+}
 
 pub fn parseDigest(hex: []const u8) ![32]u8 {
     if (hex.len != 64) return error.InvalidRuntimeDigest;

@@ -135,3 +135,23 @@ thumbnail only with a bounded transfer and isolated decode/re-encode
 implementation. Do not classify live previews, cache or license
 provenance as accepted based solely on this fixture. No real-host
 result is recorded until someone runs the isolated test.
+
+## Market image fallback and default browser acceptance
+
+Use the existing bundled isolated-host workflow. On the market page:
+1. Verify the text URL and browser button before performing any search.
+2. Enable the offline SDK image diagnostic; if rejected, the text layout
+   and browser button must remain usable, with no browser opening on its own.
+3. Explicitly press "浏览器查看图库". Confirm the default browser opens
+   https://openpets.dev/gallery, not a ZIP download, install protocol,
+   search-engine page or local file. No pet should be installed.
+4. Verify selection, filters and queued packages are unchanged after
+   returning to Pulse. The browser action should be refused while another
+   market/library task owns the host task slot.
+5. On a separate test profile with no browser association or a restricted
+   shell, confirm a visible failure and the manual URL. Do not change the
+   user's actual default browser. Switch pages or deactivate during the
+   task and verify safe worker collection. Browser remains open if launched.
+6. Record host version, exact source revision and whether Windows accepted
+   the browser handoff separately from whether the gallery actually loaded.
+   This is a manual real-host check, not an automated CI result.

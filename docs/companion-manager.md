@@ -1678,3 +1678,27 @@ untrusted compressed catalog images or arbitrary URL/path strings to
 the host until a bounded decode/re-encode pipeline and actual renderer
 test are confirmed. See companion-host-smoke.md for the explicit isolated
 host procedure, and keep the fixture source as the known-good control.
+
+## Explicit browser fallback for the market
+
+The public upstream Pulse 1.0.60 pinned source has no IMAGE enum, while
+the installed Preview 3 SDK exposes IMAGE=44. The image test remains
+opt-in and retains the text fallback. Both versions also retain an
+explicit "浏览器查看图库" button, opening only the verified public URL
+https://openpets.dev/gallery (the official gallery linked from the
+OpenPets homepage). The gallery is not a selected-pet deep link: no
+stable per-pet web route is assumed. The URL is visible as text even
+when task/dispatch support is unavailable or the browser refuses.
+No network access or browser launch on navigation, search, image
+rejection or unload. Only an explicit, idle market command creates an
+owned host task; it calls the system default browser via ShellExecuteW
+with the constant HTTPS URL, no shell command line, parameters or
+current-directory executable search. COM is initialized in the worker;
+failure is explicit, including a host worker with incompatible COM mode.
+A successful result means Windows accepted the handoff, not that the
+remote page loaded. Browser lifetime is OS-managed; never close or adopt
+the user's browser during plugin unload. The existing market snapshot,
+queue, selected detail and local inventory are not changed. The task is
+collected through the existing host task lifecycle. Tests use a mock
+ShellExecuteW function and never launch the browser in CI. Actual default
+browser behavior (and shell extension latency) remains real-host acceptance.
