@@ -618,10 +618,9 @@ fn fillLocalDetail(content: *Content, id: u64, detail: *const library.AssetDetai
 // The pinned model schema permits at most 32 states. Keep the existing
 // eleven and fifteen bounded editor states, even on the legacy layout.
 const policy_keys = [_][]const u8{
-    "policy.automatic", "policy.batch", "policy.interval", "policy.grace", "policy.timeout",
-    "policy.entry.1", "policy.entry.2", "policy.entry.3", "policy.entry.4",
-    "policy.entry.5", "policy.entry.6", "policy.entry.7", "policy.entry.8",
-    "policy.hide-on-minimize", "policy.retain-history",
+    "policy.automatic", "policy.batch",   "policy.interval", "policy.grace",            "policy.timeout",
+    "policy.entry.1",   "policy.entry.2", "policy.entry.3",  "policy.entry.4",          "policy.entry.5",
+    "policy.entry.6",   "policy.entry.7", "policy.entry.8",  "policy.hide-on-minimize", "policy.retain-history",
 };
 
 fn nativePolicyEditor(instance: *const Instance) bool {
