@@ -856,3 +856,16 @@ restart, cancellation on deactivate and task completion before destroy.
 The ordinary unbundled ABI scenarios remain unchanged. This is a simulated
 host using actual DLLs and a real Helper process, not real Pulse UI or
 installation acceptance. The new lane must pass before expanding launches.
+
+## Independent runtime and library task slots
+
+The settings attachment now retains separate IDs, completion atomics and
+error/result storage for runtime and library operations. A single coalesced
+UI dispatcher timer polls both and disarms only after both slots clear.
+Navigation or library refresh does not cancel or replace the live runtime
+worker; close requests cancellation for both before removing the page.
+The bundled ABI fixture additionally switches to the library while a real
+built-in helper is running, collects a simulated canceled library read
+without touching real user files, then returns to Running and stops the
+same session. This is still one live pet per attachment; managed asset
+start and multi-instance command admission are not implemented here.

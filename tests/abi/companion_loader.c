@@ -31,7 +31,10 @@ typedef struct {
     uint32_t operation;
     PulseUiClickFn click[14];
     void *users[14];
-    uint64_t task;
+    uint64_t task, aux_task;
+    PulseTaskWorkFn aux_work;
+    void *aux_user;
+    unsigned aux_released;
     unsigned task_released, task_canceled;
     PulseTaskState task_state;
     PulseTaskWorkFn task_work;
@@ -198,7 +201,14 @@ static void observe_worker(Fixture *f) {
 }
 static PulseStatus PULSE_CALL create_task(void *ctx, const PulseTaskDescriptor *desc, PulseTaskId *id) {
     Fixture *f = ctx;
-    REQUIRE(!f->task && desc && desc->size == sizeof(*desc) && desc->work && desc->user && id);
+    REQUIRE(desc && desc->size == sizeof(*desc) && desc->work && desc->user && id);
+    if (f->bundled && f->worker && same(desc->type, "companion.library")) {
+        REQUIRE(!f->aux_task);
+        f->aux_task = ++f->next; f->aux_work = desc->work; f->aux_user = desc->user;
+        *id = f->aux_task;
+        return PULSE_OK;
+    }
+    REQUIRE(!f->task);
     int runtime = same(desc->type, "companion.runtime") || same(desc->type, "companion.session");
     REQUIRE(same(desc->type, "companion.library") || (f->bundled && runtime));
     f->task = ++f->next; f->task_state = PULSE_TASK_RUNNING;
@@ -217,6 +227,7 @@ static uint32_t PULSE_CALL cancelled(void *ctx) {
 }
 static PulseStatus PULSE_CALL cancel_task(void *ctx, PulseTaskId id) {
     Fixture *f = ctx;
+    if (id && id == f->aux_task) return PULSE_OK;
     REQUIRE(id && id == f->task && f->task_work);
     observe_worker(f);
     if (f->task_state != PULSE_TASK_RUNNING) return PULSE_ERROR_STATE;
@@ -233,6 +244,15 @@ static PulseStatus PULSE_CALL cancel_task(void *ctx, PulseTaskId id) {
 }
 static PulseStatus PULSE_CALL get_task(void *ctx, PulseTaskId id, PulseTaskSnapshotFn callback, void *user) {
     Fixture *f = ctx;
+    if (id && id == f->aux_task) {
+        REQUIRE(callback && f->aux_work);
+        PulseTaskContext task = {.id=id, .context=f, .cancelled=cancelled};
+        PulseTaskState state = f->aux_work(f->aux_user, &task);
+        REQUIRE(state == PULSE_TASK_CANCELLED);
+        PulseTaskSnapshot snapshot = {.size=sizeof(snapshot), .id=id, .state=state};
+        callback(user, &snapshot);
+        return PULSE_OK;
+    }
     REQUIRE(id && id == f->task && callback);
     observe_worker(f);
     PulseTaskSnapshot snapshot = {.size=sizeof(snapshot), .id=id, .state=f->task_state};
@@ -241,6 +261,11 @@ static PulseStatus PULSE_CALL get_task(void *ctx, PulseTaskId id, PulseTaskSnaps
 }
 static PulseStatus PULSE_CALL release_task(void *ctx, PulseTaskId id) {
     Fixture *f = ctx;
+    if (id && id == f->aux_task) {
+        f->aux_task = 0; f->aux_work = NULL; f->aux_user = NULL;
+        ++f->aux_released;
+        return PULSE_OK;
+    }
     REQUIRE(id && id == f->task);
     observe_worker(f);
     if (f->worker) {
@@ -417,6 +442,11 @@ static int bundled_session(PulsePluginEntryV1Fn entry) {
         for (unsigned i = 0; i < 900 && f.task && !f.first_frame; ++i) { Sleep(20); pump(&f); }
         CHECK(f.task && f.first_frame && f.stop_enabled);
         if (!cycle) {
+            const uint64_t session = f.task;
+            CHECK(click(&f, 0) == 0 && f.aux_task && f.task == session);
+            for (unsigned i = 0; i < 100 && f.aux_task; ++i) { Sleep(20); pump(&f); }
+            CHECK(!f.aux_task && f.aux_released == 1 && f.task == session);
+            CHECK(click(&f, 1) == 0 && f.first_frame && f.stop_enabled);
             CHECK(click(&f, 13) == 0 && !f.stop_enabled);
             for (unsigned i = 0; i < 400 && f.task; ++i) { Sleep(20); pump(&f); }
             CHECK(!f.task && f.task_state == PULSE_TASK_CANCELLED && f.start_enabled);
