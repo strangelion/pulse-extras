@@ -844,3 +844,15 @@ session. No managed asset launch or general multi-instance UI yet. Runtime
 and helper remain bound to the actual installed package location and embedded
 digests. Host task cancellation and final destroy retain the existing SDK
 lifetime contract. Real Pulse launch/stop and cleanup need acceptance.
+
+## Bundled live host ABI regression
+
+The Windows desktop lane builds a second MSVC entry DLL with the actual
+runtime/helper SHA-256 options, stages the verified binaries beside it and
+loads it via the pinned public C ABI fixture. The fixture runs runtime and
+session callbacks on a real worker thread and collects UI status through
+host dispatch. It checks explicit start, first frame, cooperative stop,
+restart, cancellation on deactivate and task completion before destroy.
+The ordinary unbundled ABI scenarios remain unchanged. This is a simulated
+host using actual DLLs and a real Helper process, not real Pulse UI or
+installation acceptance. The new lane must pass before expanding launches.

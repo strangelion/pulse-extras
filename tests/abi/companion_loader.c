@@ -20,7 +20,9 @@ typedef struct {
     uint64_t page, next, pending, version;
     unsigned created, removed, canceled, updates, subscribed, fail_subscribe;
     int fallback, fail_remove, enabled_more, enabled_less, global, saved_present;
-    int auto_dispatch;
+    int auto_dispatch, bundled, start_enabled, stop_enabled, first_frame;
+    HANDLE worker;
+    volatile LONG cancel_flag;
     CRITICAL_SECTION dispatch_lock;
     PulseDispatchCallback queued;
     void *queued_user;
@@ -67,6 +69,20 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
         REQUIRE(same(less->command.value, commands[5]) && same(more->command.value, commands[6]));
         f->enabled_less = (int)less->enabled.value;
         f->enabled_more = (int)more->enabled.value;
+    }
+    if (same(root->children.data[1].id, "running")) {
+        REQUIRE(root->children.count == 4 || root->children.count == 5);
+        const PulseUiModelNode *toolbar = root->children.data + 3;
+        REQUIRE(toolbar->children.present && toolbar->children.count == 2);
+        f->start_enabled = (int)toolbar->children.data[0].enabled.value;
+        f->stop_enabled = (int)toolbar->children.data[1].enabled.value;
+        f->first_frame = 0;
+        if (root->children.count == 5) {
+            const PulseStringView text = root->children.data[4].text.value;
+            const char *prefix = "首帧已确认";
+            f->first_frame = text.data && text.length >= strlen(prefix) &&
+                memcmp(text.data, prefix, strlen(prefix)) == 0;
+        }
     }
     if (same(root->children.data[1].id, "library")) {
         REQUIRE(root->children.count >= 5);
@@ -165,12 +181,33 @@ static PulseStatus PULSE_CALL cancel(void *ctx, uint64_t id) {
     ++f->canceled;
     return PULSE_OK;
 }
+static uint32_t PULSE_CALL worker_cancelled(void *ctx) {
+    Fixture *f = ctx;
+    return InterlockedCompareExchange(&f->cancel_flag, 0, 0) != 0;
+}
+static DWORD WINAPI work_thread(void *ctx) {
+    Fixture *f = ctx;
+    PulseTaskContext task = {.id=f->task, .context=f, .cancelled=worker_cancelled};
+    return f->task_work(f->task_user, &task);
+}
+static void observe_worker(Fixture *f) {
+    if (!f->worker || WaitForSingleObject(f->worker, 0) != WAIT_OBJECT_0) return;
+    DWORD code = 0;
+    if (!GetExitCodeThread(f->worker, &code)) code = PULSE_TASK_FAILED;
+    f->task_state = code;
+}
 static PulseStatus PULSE_CALL create_task(void *ctx, const PulseTaskDescriptor *desc, PulseTaskId *id) {
     Fixture *f = ctx;
     REQUIRE(!f->task && desc && desc->size == sizeof(*desc) && desc->work && desc->user && id);
-    REQUIRE(same(desc->type, "companion.library"));
+    int runtime = same(desc->type, "companion.runtime") || same(desc->type, "companion.session");
+    REQUIRE(same(desc->type, "companion.library") || (f->bundled && runtime));
     f->task = ++f->next; f->task_state = PULSE_TASK_RUNNING;
     f->task_work = desc->work; f->task_user = desc->user;
+    if (runtime) {
+        InterlockedExchange(&f->cancel_flag, 0);
+        f->worker = CreateThread(NULL, 0, work_thread, f, 0, NULL);
+        if (!f->worker) { f->task = 0; return PULSE_ERROR_STATE; }
+    }
     *id = f->task;
     return PULSE_OK;
 }
@@ -181,7 +218,13 @@ static uint32_t PULSE_CALL cancelled(void *ctx) {
 static PulseStatus PULSE_CALL cancel_task(void *ctx, PulseTaskId id) {
     Fixture *f = ctx;
     REQUIRE(id && id == f->task && f->task_work);
+    observe_worker(f);
     if (f->task_state != PULSE_TASK_RUNNING) return PULSE_ERROR_STATE;
+    if (f->worker) {
+        InterlockedExchange(&f->cancel_flag, 1);
+        ++f->task_canceled;
+        return PULSE_OK;
+    }
     PulseTaskContext task = {.id=id, .context=f, .cancelled=cancelled};
     f->task_state = f->task_work(f->task_user, &task);
     REQUIRE(f->task_state == PULSE_TASK_CANCELLED);
@@ -191,13 +234,22 @@ static PulseStatus PULSE_CALL cancel_task(void *ctx, PulseTaskId id) {
 static PulseStatus PULSE_CALL get_task(void *ctx, PulseTaskId id, PulseTaskSnapshotFn callback, void *user) {
     Fixture *f = ctx;
     REQUIRE(id && id == f->task && callback);
+    observe_worker(f);
     PulseTaskSnapshot snapshot = {.size=sizeof(snapshot), .id=id, .state=f->task_state};
     callback(user, &snapshot);
     return PULSE_OK;
 }
 static PulseStatus PULSE_CALL release_task(void *ctx, PulseTaskId id) {
     Fixture *f = ctx;
-    REQUIRE(id && id == f->task && f->task_state == PULSE_TASK_CANCELLED);
+    REQUIRE(id && id == f->task);
+    observe_worker(f);
+    if (f->worker) {
+        REQUIRE(f->task_state == PULSE_TASK_COMPLETED || f->task_state == PULSE_TASK_CANCELLED || f->task_state == PULSE_TASK_FAILED);
+        REQUIRE(WaitForSingleObject(f->worker, 0) == WAIT_OBJECT_0 && CloseHandle(f->worker));
+        f->worker = NULL;
+    } else {
+        REQUIRE(f->task_state == PULSE_TASK_CANCELLED);
+    }
     f->task = 0; f->task_work = NULL; f->task_user = NULL;
     ++f->task_released;
     return PULSE_OK;
@@ -347,8 +399,54 @@ static int partial(PulsePluginEntryV1Fn entry) {
     out.deactivate(out.instance); out.destroy(out.instance);
     return 0;
 }
+static int bundled_session(PulsePluginEntryV1Fn entry) {
+    Fixture f = {.auto_dispatch=1, .bundled=1};
+    InitializeCriticalSection(&f.dispatch_lock);
+    PulseHostV1 host = {.size=sizeof(host), .version=1, .context=&f, .query_interface=query};
+    PulsePluginV1 out = {.size=sizeof(out), .version=1};
+    CHECK(entry(&host, &out) == PULSE_OK);
+    CHECK(out.activate(out.instance) == PULSE_OK && f.task);
+    CHECK(cancel_task(&f, f.task) == PULSE_OK);
+    for (unsigned i = 0; i < 100 && f.task; ++i) { Sleep(20); pump(&f); }
+    CHECK(!f.task);
+    CHECK(click(&f, 1) == 0 && f.task && f.worker);
+    for (unsigned i = 0; i < 750 && f.task; ++i) { Sleep(20); pump(&f); }
+    CHECK(!f.task && f.task_state == PULSE_TASK_COMPLETED && f.start_enabled);
+    for (unsigned cycle = 0; cycle < 2; ++cycle) {
+        CHECK(click(&f, 12) == 0 && f.task && f.worker && !f.start_enabled);
+        for (unsigned i = 0; i < 900 && f.task && !f.first_frame; ++i) { Sleep(20); pump(&f); }
+        CHECK(f.task && f.first_frame && f.stop_enabled);
+        if (!cycle) {
+            CHECK(click(&f, 13) == 0 && !f.stop_enabled);
+            for (unsigned i = 0; i < 400 && f.task; ++i) { Sleep(20); pump(&f); }
+            CHECK(!f.task && f.task_state == PULSE_TASK_CANCELLED && f.start_enabled);
+        } else {
+            // Match the SDK destroy contract: cancellation first, wait for
+            // the host-owned worker to return, then destroy plugin userdata.
+            out.deactivate(out.instance);
+            CHECK(f.worker && WaitForSingleObject(f.worker, 8000) == WAIT_OBJECT_0);
+            observe_worker(&f);
+            CHECK(f.task_state == PULSE_TASK_CANCELLED);
+        }
+    }
+    out.destroy(out.instance);
+    CHECK(release_task(&f, f.task) == PULSE_OK);
+    pump(&f);
+    CHECK(!f.page && !f.pending && !f.worker && !f.queued);
+    DeleteCriticalSection(&f.dispatch_lock);
+    return 0;
+}
 int main(int argc, char **argv) {
-    CHECK(argc == 2);
+    CHECK(argc == 2 || (argc == 3 && !strcmp(argv[2], "--bundled")));
+    if (argc == 3) {
+        HMODULE lib = LoadLibraryExA(argv[1], NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+        CHECK(lib);
+        PulsePluginEntryV1Fn entry = (PulsePluginEntryV1Fn)GetProcAddress(lib, "PulsePluginEntryV1");
+        CHECK(entry && bundled_session(entry) == 0);
+        CHECK(FreeLibrary(lib));
+        puts("Bundled Companion ABI: actual first-frame, stop, restart, deactivate verified");
+        return 0;
+    }
     for (unsigned i = 0; i < 8; ++i) {
         HMODULE lib = LoadLibraryExA(argv[1], NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
         CHECK(lib);

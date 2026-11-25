@@ -266,6 +266,25 @@ jobs:
           $env:PULSE_BRIDGE_FIXTURE_SHA256 = (Get-FileHash -Algorithm SHA256 ./zig-out/bin/pulse_companion_runtime.dll).Hash
           & ./zig-out/companion-bridge-probe.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise bundled Companion DLL with actual pet lifecycle
+        if: matrix.lane == 'desktop'
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          python scripts/fetch_sdk.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $runtime = (Get-FileHash -Algorithm SHA256 zig-out/bin/pulse_companion_runtime.dll).Hash.ToLowerInvariant()
+          $helper = (Get-FileHash -Algorithm SHA256 zig-out/bin/pulse-pet-demo.exe).Hash.ToLowerInvariant()
+          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe "-Dcompanion-runtime-sha256=$runtime" "-Dcompanion-helper-sha256=$helper" --prefix zig-out/bundled --summary all
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dll = @(Get-ChildItem zig-out/bundled -Recurse -Filter pulse_companion.dll)
+          if ($dll.Count -ne 1) { throw "Expected one bundled Companion DLL" }
+          Copy-Item zig-out/bin/pulse_companion_runtime.dll $dll[0].DirectoryName
+          Copy-Item zig-out/bin/pulse-pet-demo.exe $dll[0].DirectoryName
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu -I.sdk-cache/include tests/abi/companion_loader.c -o zig-out/companion-bundled-loader.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/companion-bundled-loader.exe $dll[0].FullName --bundled
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exercise private companion root ACL and exclusive owner lease
         if: matrix.lane == 'desktop'
         shell: pwsh
