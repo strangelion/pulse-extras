@@ -75,3 +75,5 @@ Post-merge candidate adds a Windows Runner cancellation/reuse test, per-field VC
 Candidate tests: relative/traversal PATH rejection, approval refusing compatibility and unsupported tools, malformed identity output, real linked Git worktree. No new dependency/workflow; current CI required. Host integration remains deferred.
 
 CLI/worktree candidate efdc821 passed full CI 45516706043. New panel tests cover superseded selection, stale failure, cancellation and stop, owned text buffers and zero/unknown distinction; real Git fixture exercises controller/model generation. All new tests pending current CI. Mock controller/model is not actual Pulse host acceptance.
+
+Panel baseline 440a360 passed full CI 45518972152 after the clock shadowing fix. New candidate tests cover task cancellation versus terminal, retryable release failure, invalid ID/snapshot, inline dispatch and STATE, host task publication after terminal release, cancellation before work and mismatched workspace. Mock callbacks run synchronously in tests; cross-thread delivery, actual host task ordering and cancellation latency require host acceptance. No new dependencies, no private host interfaces.
