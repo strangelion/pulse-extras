@@ -294,7 +294,6 @@ pub fn inspect(source: anytype, length: u64, out: *Plan) Error!void {
     if (end != central) return error.InvalidArchive;
 }
 
-
 // A positional reader that exposes exactly one compressed range to std's
 // raw Deflate implementation. Buffered lookahead never sees the next entry.
 const RangeReader = struct {
