@@ -185,3 +185,25 @@ privilege-dependent fixture and live OpenPets compatibility remain unverified.
 
 API references: [NtCreateFile](https://learn.microsoft.com/windows/win32/api/winternl/nf-winternl-ntcreatefile),
 [GetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo).
+
+## Explicit directory bootstrap and Zig/Win32 bridge
+
+openpets_windows.zig implements ProbeTransport using the existing Win32
+primitives and a small C ABI bridge. The caller supplies independently
+approved UTF-16 directory and image paths, a reusable workspace, a fresh
+request ID and optional borrowed cancellation event. No implicit APPDATA,
+environment override, process launch or network fallback. The directory
+bootstrap accepts a bounded absolute fixed-drive DOS path, walks each
+component via handle-relative opens without following reparse objects, rejects
+dot/trailing-space/alternate-stream components and checks the final private
+ACL. Earlier ancestor handles are released after each child is opened; this
+pins the final object but does not claim immutable ancestry or executable
+signature verification. Same-user code remains outside this trust model.
+Only hello/status are enabled, with no lease or pet changes.
+
+The Windows CI command links Zig, C bridge and native primitives into an
+isolated test binary. A private temporary discovery file and real local
+named pipe exercise the actual hello exchange, cancellation, invalid directory
+and rejected image path. It is a synthetic fixture, not actual OpenPets or
+Pulse host integration. The new CI result must be checked before expanding
+the API. The production DLLs remain unchanged.

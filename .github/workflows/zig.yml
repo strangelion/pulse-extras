@@ -97,6 +97,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./zig-out/openpets-trust-test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise Zig to Win32 OpenPets probe end to end
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          zig test shared/companion/openpets_windows.zig shared/companion/openpets_bridge_win32.c shared/companion/openpets_trust_win32.c shared/companion/openpets_pipe_win32.c tests/companion/openpets_bridge_fixture.c -target x86_64-windows-gnu -lc -ladvapi32
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Fetch pinned native SDK headers
         if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
         run: python scripts/fetch_sdk.py

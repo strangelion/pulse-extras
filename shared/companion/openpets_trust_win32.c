@@ -109,10 +109,12 @@ typedef NTSTATUS (NTAPI *op_nt_create_file)(PHANDLE, ACCESS_MASK,
     POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER, ULONG, ULONG,
     ULONG, ULONG, PVOID, ULONG);
 
-static op_pipe_result open_child(HANDLE directory, HANDLE *file) {
+static op_pipe_result open_relative(HANDLE directory, wchar_t *name, USHORT length,
+    int is_directory, HANDLE *file) {
     enum {
         op_file_open = 1,
         op_sync_nonalert = 0x20,
+        op_directory = 0x1,
         op_non_directory = 0x40,
         op_open_reparse = 0x00200000,
         op_obj_case_insensitive = 0x40
@@ -125,11 +127,10 @@ static op_pipe_result open_child(HANDLE directory, HANDLE *file) {
     _Static_assert(sizeof(create) == sizeof(address), "Windows function pointer ABI");
     memcpy(&create, &address, sizeof(create));
 
-    wchar_t name[] = L"ipc.json";
     UNICODE_STRING child = {0};
     child.Buffer = name;
-    child.Length = (USHORT)(sizeof(name) - sizeof(wchar_t));
-    child.MaximumLength = (USHORT)sizeof(name);
+    child.Length = length;
+    child.MaximumLength = length;
     OBJECT_ATTRIBUTES attributes = {0};
     attributes.Length = sizeof(attributes);
     attributes.RootDirectory = directory;
@@ -139,8 +140,10 @@ static op_pipe_result open_child(HANDLE directory, HANDLE *file) {
     HANDLE opened = NULL;
     NTSTATUS status = create(&opened,
         FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
-        &attributes, &io, NULL, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ,
-        op_file_open, op_sync_nonalert | op_non_directory | op_open_reparse,
+        &attributes, &io, NULL, FILE_ATTRIBUTE_NORMAL,
+        is_directory ? FILE_SHARE_READ | FILE_SHARE_WRITE : FILE_SHARE_READ,
+        op_file_open, op_sync_nonalert | op_open_reparse |
+        (is_directory ? op_directory : op_non_directory),
         NULL, 0);
     if (status < 0 || !opened || opened == INVALID_HANDLE_VALUE)
         return OP_PIPE_UNAVAILABLE;
@@ -165,7 +168,8 @@ op_pipe_result op_read_discovery(HANDLE directory, void *buffer, DWORD capacity,
     result = gate(deadline, cancel);
     if (result != OP_PIPE_OK) return result;
     HANDLE file = NULL;
-    result = open_child(directory, &file);
+    wchar_t child[] = L"ipc.json";
+    result = open_relative(directory, child, (USHORT)(sizeof(child) - sizeof(wchar_t)), 0, &file);
     if (result != OP_PIPE_OK) return result;
 
     BY_HANDLE_FILE_INFORMATION info;
@@ -242,4 +246,85 @@ op_pipe_result op_open_candidate_process(DWORD pid, const wchar_t *approved_imag
     }
     *process = candidate;
     return OP_PIPE_OK;
+}
+
+
+/* Explicit DOS path, walked component-by-component from a fixed-drive root.
+ * The final handle pins the selected object; previously opened parents are
+ * released after their child is opened. No environment or path search. */
+op_pipe_result op_open_runtime_directory(const wchar_t *path, HANDLE *directory,
+    uint64_t deadline, HANDLE cancel) {
+    if (!directory) return OP_PIPE_INVALID;
+    *directory = NULL;
+    if (!path) return OP_PIPE_INVALID;
+    size_t length = 0;
+    while (length < 1024 && path[length]) ++length;
+    if (length < 4 || length == 1024 || path[1] != L':' || path[2] != L'\\' ||
+        !((path[0] >= L'A' && path[0] <= L'Z') || (path[0] >= L'a' && path[0] <= L'z')))
+        return OP_PIPE_UNTRUSTED;
+    wchar_t root[] = {path[0], L':', L'\\', L'\0'};
+    op_pipe_result result = gate(deadline, cancel);
+    if (result != OP_PIPE_OK) return result;
+    if (GetDriveTypeW(root) != DRIVE_FIXED) return OP_PIPE_UNTRUSTED;
+    HANDLE current = CreateFileW(root, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES |
+        SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (current == INVALID_HANDLE_VALUE) return OP_PIPE_UNAVAILABLE;
+    if (!local_fixed_directory(current)) {
+        result = OP_PIPE_UNTRUSTED;
+        goto cleanup;
+    }
+    size_t offset = 3;
+    unsigned components = 0;
+    while (offset < length) {
+        result = gate(deadline, cancel);
+        if (result != OP_PIPE_OK) goto cleanup;
+        wchar_t name[256];
+        size_t n = 0;
+        while (offset < length && path[offset] != L'\\') {
+            wchar_t c = path[offset++];
+            if (n >= 255 || c < 32 || c == L'/' || c == L':' ||
+                c == L'*' || c == L'?' || c == L'"' || c == L'<' ||
+                c == L'>' || c == L'|') {
+                result = OP_PIPE_UNTRUSTED;
+                goto cleanup;
+            }
+            name[n++] = c;
+        }
+        if (!n || name[n - 1] == L'.' || name[n - 1] == L' ' || ++components > 32) {
+            result = OP_PIPE_UNTRUSTED;
+            goto cleanup;
+        }
+        if (offset < length) {
+            ++offset;
+            if (offset == length) {
+                result = OP_PIPE_UNTRUSTED;
+                goto cleanup;
+            }
+        }
+        HANDLE next = NULL;
+        result = open_relative(current, name, (USHORT)(n * sizeof(wchar_t)), 1, &next);
+        if (result != OP_PIPE_OK) goto cleanup;
+        CloseHandle(current);
+        current = next;
+        if (!local_fixed_directory(current)) {
+            result = OP_PIPE_UNTRUSTED;
+            goto cleanup;
+        }
+    }
+    op_sid user;
+    DWORD session = 0;
+    if (!token_identity(GetCurrentProcess(), &user, &session) ||
+        !private_acl(current, user.bytes)) {
+        result = OP_PIPE_UNTRUSTED;
+        goto cleanup;
+    }
+    result = gate(deadline, cancel);
+    if (result == OP_PIPE_OK) {
+        *directory = current;
+        return OP_PIPE_OK;
+    }
+cleanup:
+    CloseHandle(current);
+    return result;
 }

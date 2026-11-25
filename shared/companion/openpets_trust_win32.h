@@ -21,4 +21,8 @@ op_pipe_result op_read_discovery(HANDLE directory, void *buffer, DWORD capacity,
 op_pipe_result op_open_candidate_process(DWORD pid, const wchar_t *approved_image,
     HANDLE *process, uint64_t deadline, HANDLE cancel);
 
+/* Explicit approved absolute DOS path; no environment or path search. */
+op_pipe_result op_open_runtime_directory(const wchar_t *path, HANDLE *directory,
+    uint64_t deadline, HANDLE cancel);
+
 #endif
