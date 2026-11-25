@@ -290,3 +290,33 @@ pose or V1's first idle frame. These are local timeline primitives, not
 an implemented Windows renderer. No image decoder, asset downloads,
 archive extraction, SVG rasterizer, Motion clips, wardrobe, gaze or host
 integration is enabled. Tests use synthetic headers rather than real art.
+
+## Desktop placement and native layered surface
+
+The native companion is intended to be a separate transparent desktop
+window, not a child of the Pulse main window. Prefer a separate lightweight
+helper process for fault isolation; Pulse owns opt-in settings, activity
+events, backend selection and lifetime. Minimize should not hide it by
+default; full Pulse exit should stop the helper by default. An in-app
+preview is optional and not the primary surface. External OpenPets IPC and
+the native desktop backend must be mutually exclusive as display backends.
+No helper executable, launch mechanism or host settings are enabled yet.
+
+pet_surface_win32.{h,c} implements a worker-independent, dedicated UI-thread
+Win32 window primitive using WS_EX_LAYERED, WS_EX_TOOLWINDOW and
+WS_EX_NOACTIVATE. The caller selects optional topmost and click-through,
+position and whole-window opacity. It reuses one top-down 192x208 32-bit DIB
+(159,744 bytes of pixels), converts only the selected decoded RGBA8 atlas
+cell to premultiplied BGRA8, and presents it with UpdateLayeredWindow.
+No full-atlas copy per frame, timer, polling, global hook, GPU dependency
+or extra image library. The initially hidden surface must be successfully
+primed before showing. Close is owner-thread-only and idempotent.
+The owner must run a dedicated message loop, use animation deadlines,
+and avoid rendering when hidden. Scaling, DPI/work-area policy, dragging,
+actual WebP decode/cache, Zig binding and helper lifecycle remain pending.
+
+CI compiles the C primitive and checks synthetic pixel conversion, bounds,
+alpha, hidden window presentation, styles, wrong-thread rejection and
+repeated cleanup on Windows. This is a hidden kernel/GDI surface test,
+not an interactive desktop or resource benchmark. No production DLL is
+changed; the sample pixels are not distributable pet artwork.
