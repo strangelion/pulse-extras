@@ -1,4 +1,5 @@
 //! Experimental OpenPets v1 local IPC wire codec.
+//! Pure wire codec, Windows discovery validation and bounded response framing.
 //! No discovery file I/O, socket access, process creation, or host callbacks.
 //! Contract: OpenPetsHQ/openpets@2f02bb04d872dec6923a47572343305235c63482.
 //! Caller owns buffers and transport; never log requests (they contain tokens).
@@ -195,4 +196,218 @@ test "reject error envelopes malformed and oversized frames" {
     var too_large: [max_message_bytes + 1]u8 = undefined;
     @memset(&too_large, 'x');
     try testing.expectError(error.InvalidFrame, decode(testing.allocator, &too_large, "a", .hello));
+}
+
+// The pinned Windows server generates \\.\pipe\openpets-<16 hex>-<pid>.
+// Deliberately reject custom endpoints, TCP, UNC hosts and Unix sockets.
+const pipe_prefix = "\\\\.\\pipe\\openpets-";
+pub const max_endpoint_bytes: usize = 240;
+pub const max_token_bytes: usize = 256;
+
+const DiscoveryWire = struct {
+    protocol: []const u8,
+    protocolVersion: u32,
+    endpoint: []const u8,
+    token: []const u8,
+    appVersion: []const u8,
+    pid: u32,
+    platform: []const u8,
+};
+
+/// Owned, bounded copy. Never format or log this value: it contains a token.
+/// clear() removes the active copy; the caller also owns and must clear the
+/// input and any scratch storage used by its allocator.
+pub const WindowsDiscovery = struct {
+    endpoint_bytes: [max_endpoint_bytes]u8,
+    token_bytes: [max_token_bytes]u8,
+    endpoint_len: usize,
+    token_len: usize,
+    pid: u32,
+
+    pub fn endpoint(self: *const WindowsDiscovery) []const u8 {
+        return self.endpoint_bytes[0..self.endpoint_len];
+    }
+
+    pub fn token(self: *const WindowsDiscovery) []const u8 {
+        return self.token_bytes[0..self.token_len];
+    }
+
+    pub fn clear(self: *WindowsDiscovery) void {
+        @memset(&self.endpoint_bytes, 0);
+        @memset(&self.token_bytes, 0);
+        self.endpoint_len = 0;
+        self.token_len = 0;
+        self.pid = 0;
+    }
+};
+
+fn validWindowsPipe(endpoint: []const u8, pid: u32) bool {
+    if (endpoint.len > max_endpoint_bytes or !std.mem.startsWith(u8, endpoint, pipe_prefix)) return false;
+    const suffix = endpoint[pipe_prefix.len..];
+    if (suffix.len < 18 or suffix[16] != '-') return false;
+    for (suffix[0..16]) |c| {
+        if (!(c >= '0' and c <= '9') and !(c >= 'a' and c <= 'f')) return false;
+    }
+    const pid_text = suffix[17..];
+    if (pid_text[0] == '0') return false;
+    for (pid_text) |c| {
+        if (c < '0' or c > '9') return false;
+    }
+    const parsed_pid = std.fmt.parseInt(u32, pid_text, 10) catch return false;
+    return pid != 0 and parsed_pid == pid;
+}
+
+/// Pure discovery validation only. A syntactically valid endpoint is NOT
+/// authenticated. The future transport must verify file ownership/ACLs,
+/// reparse points and server identity on opened handles before sending a
+/// token. Use a bounded scratch allocator; no OS I/O is performed here.
+/// On error, out is unchanged. No peer strings escape except the validated
+/// endpoint and token.
+pub fn parseWindowsDiscovery(allocator: std.mem.Allocator, input: []const u8, out: *WindowsDiscovery) error{ InvalidDiscovery, OutOfMemory }!void {
+    if (input.len == 0 or input.len > max_message_bytes or !std.unicode.utf8ValidateSlice(input)) return error.InvalidDiscovery;
+    const parsed = std.json.parseFromSlice(DiscoveryWire, allocator, input, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidDiscovery,
+    };
+    defer parsed.deinit();
+    const wire = parsed.value;
+    if (wire.protocolVersion != protocol_version or !std.mem.eql(u8, wire.protocol, "openpets-ipc")) return error.InvalidDiscovery;
+    if (!std.mem.eql(u8, wire.platform, "win32")) return error.InvalidDiscovery;
+    if (wire.appVersion.len == 0 or wire.appVersion.len > 128) return error.InvalidDiscovery;
+    if (!validWindowsPipe(wire.endpoint, wire.pid) or !safeAtom(wire.token, 16, max_token_bytes)) return error.InvalidDiscovery;
+
+    out.clear();
+    @memcpy(out.endpoint_bytes[0..wire.endpoint.len], wire.endpoint);
+    @memcpy(out.token_bytes[0..wire.token.len], wire.token);
+    out.endpoint_len = wire.endpoint.len;
+    out.token_len = wire.token.len;
+    out.pid = wire.pid;
+}
+
+/// Incremental LF framing over caller-owned storage. One instance per
+/// connection, no allocation or unbounded accumulation. The transport owns
+/// timeouts/cancellation and must stop reading at EOF or its deadline.
+/// Reject extra bytes in the same chunk or later chunks; never decode a
+/// failed frame. Call finish after the peer closes the response stream.
+pub const ResponseFramer = struct {
+    storage: []u8,
+    len: usize = 0,
+    state: enum { receiving, complete, failed } = .receiving,
+
+    pub fn init(storage: []u8) ResponseFramer {
+        return .{ .storage = storage[0..@min(storage.len, max_message_bytes)] };
+    }
+
+    pub fn feed(self: *ResponseFramer, chunk: []const u8) error{InvalidFrame}!void {
+        if (self.state == .failed) return error.InvalidFrame;
+        if (chunk.len == 0) return;
+        if (self.state == .complete or chunk.len > self.storage.len - self.len) {
+            self.state = .failed;
+            return error.InvalidFrame;
+        }
+        if (std.mem.indexOfScalar(u8, chunk, '\r') != null) {
+            self.state = .failed;
+            return error.InvalidFrame;
+        }
+        if (std.mem.indexOfScalar(u8, chunk, '\n')) |newline| {
+            if (newline != chunk.len - 1 or (newline == 0 and self.len == 0)) {
+                self.state = .failed;
+                return error.InvalidFrame;
+            }
+            self.state = .complete;
+        } else if (chunk.len == self.storage.len - self.len) {
+            // No room remains for the required LF.
+            self.state = .failed;
+            return error.InvalidFrame;
+        }
+        @memcpy(self.storage[self.len..][0..chunk.len], chunk);
+        self.len += chunk.len;
+    }
+
+    pub fn finish(self: *const ResponseFramer) error{InvalidFrame}![]const u8 {
+        if (self.state != .complete) return error.InvalidFrame;
+        return self.storage[0..self.len];
+    }
+
+    pub fn reset(self: *ResponseFramer) void {
+        @memset(self.storage[0..self.len], 0);
+        self.len = 0;
+        self.state = .receiving;
+    }
+};
+
+const discovery_fixture = "{\"protocol\":\"openpets-ipc\",\"protocolVersion\":1,\"endpoint\":\"\\\\\\\\.\\\\pipe\\\\openpets-0123456789abcdef-42\",\"token\":\"0123456789abcdef0123456789abcdef\",\"appVersion\":\"0.0.0\",\"pid\":42,\"platform\":\"win32\"}";
+
+test "Windows discovery owns validated endpoint and token" {
+    var input: [discovery_fixture.len]u8 = undefined;
+    @memcpy(&input, discovery_fixture);
+    var discovery: WindowsDiscovery = undefined;
+    try parseWindowsDiscovery(testing.allocator, &input, &discovery);
+    @memset(&input, 0);
+    try testing.expectEqualStrings(pipe_prefix ++ "0123456789abcdef-42", discovery.endpoint());
+    try testing.expectEqualStrings(fixture_token, discovery.token());
+    try testing.expectEqual(@as(u32, 42), discovery.pid);
+    discovery.clear();
+    try testing.expectEqual(@as(usize, 0), discovery.token().len);
+    for (discovery.token_bytes) |byte| try testing.expectEqual(@as(u8, 0), byte);
+}
+
+test "Windows discovery rejects remote and ambiguous pipe names" {
+    try testing.expect(!validWindowsPipe("tcp://127.0.0.1:1234", 42));
+    try testing.expect(!validWindowsPipe("\\\\remote\\pipe\\openpets-0123456789abcdef-42", 42));
+    try testing.expect(!validWindowsPipe(pipe_prefix ++ "0123456789abcdef-43", 42));
+    try testing.expect(!validWindowsPipe(pipe_prefix ++ "0123456789abcdef-042", 42));
+    try testing.expect(!validWindowsPipe(pipe_prefix ++ "0123456789abcdef-42\\other", 42));
+    try testing.expect(!validWindowsPipe(pipe_prefix ++ "0123456789abcdef-4294967296", 42));
+    try testing.expect(!validWindowsPipe(pipe_prefix ++ "0123456789abcdeG-42", 42));
+    try testing.expect(!validWindowsPipe(pipe_prefix ++ "0123456789abcdef-0", 0));
+}
+
+test "Windows discovery rejects malformed and oversized input without replacing output" {
+    var discovery: WindowsDiscovery = undefined;
+    try parseWindowsDiscovery(testing.allocator, discovery_fixture, &discovery);
+    defer discovery.clear();
+    try testing.expectError(error.InvalidDiscovery, parseWindowsDiscovery(testing.allocator, "{}", &discovery));
+    try testing.expectError(error.InvalidDiscovery, parseWindowsDiscovery(testing.allocator, "{\"protocol\":\"openpets-ipc\",\"protocol\":1}", &discovery));
+    var oversized: [max_message_bytes + 1]u8 = undefined;
+    @memset(&oversized, 'x');
+    try testing.expectError(error.InvalidDiscovery, parseWindowsDiscovery(testing.allocator, &oversized, &discovery));
+    try testing.expectEqualStrings(fixture_token, discovery.token());
+}
+
+test "response framer assembles split responses and rejects trailing bytes" {
+    var storage: [128]u8 = undefined;
+    var framer = ResponseFramer.init(&storage);
+    try framer.feed("{\"id\":");
+    try testing.expectError(error.InvalidFrame, framer.finish());
+    try framer.feed("\"a\"}\n");
+    try testing.expectEqualStrings("{\"id\":\"a\"}\n", try framer.finish());
+    try testing.expectError(error.InvalidFrame, framer.feed("x"));
+    try testing.expectError(error.InvalidFrame, framer.finish());
+    framer.reset();
+    try testing.expectError(error.InvalidFrame, framer.feed("{}\n{}\n"));
+    try testing.expectError(error.InvalidFrame, framer.finish());
+    framer.reset();
+    try testing.expectError(error.InvalidFrame, framer.feed("{}\r\n"));
+    framer.reset();
+    try testing.expectError(error.InvalidFrame, framer.feed("\n"));
+}
+
+test "response framer enforces storage and wire caps including the LF" {
+    var storage: [max_message_bytes + 1]u8 = undefined;
+    var chunk: [max_message_bytes]u8 = undefined;
+    @memset(&chunk, 'x');
+    chunk[chunk.len - 1] = '\n';
+    var framer = ResponseFramer.init(&storage);
+    try framer.feed(&chunk);
+    try testing.expectEqual(max_message_bytes, (try framer.finish()).len);
+    framer.reset();
+    try testing.expectError(error.InvalidFrame, framer.feed(&storage));
+    framer.reset();
+    var small: [4]u8 = undefined;
+    framer = ResponseFramer.init(&small);
+    try testing.expectError(error.InvalidFrame, framer.feed("abcd"));
+    framer.reset();
+    try framer.feed("abc\n");
+    try testing.expectEqualStrings("abc\n", try framer.finish());
 }
