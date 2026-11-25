@@ -1007,8 +1007,6 @@ fn showImportWithSelection(instance: *Instance, selection: *const Selection) voi
     if (!instance.active or instance.section != .library or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0) return;
     const dialogs = instance.dialogs orelse return;
     const embedded_picker = instance.dialog_v2_table != null and instance.picker_api != null and !instance.dialog_picker_disabled;
-    const show_context = if (embedded_picker) instance.dialog_v2_table.?.context else dialogs.context;
-    const show = if (embedded_picker) (instance.dialog_v2_table.?.show orelse return) else (dialogs.show orelse return);
     var fields = [_]ui.Node{ ui.node(ui.NodeKind.text_input), ui.node(ui.NodeKind.text_input), ui.node(ui.NodeKind.button) };
     fields[0].id = abi.view("import.path");
     fields[0].text = .{ .present = 1, .value = abi.view("素材文件夹") };
@@ -1054,7 +1052,22 @@ fn showImportWithSelection(instance: *Instance, selection: *const Selection) voi
         .model = &tree,
     };
     var id: u64 = 0;
-    if (show(show_context, &request, null, importClosed, instance, &id) != abi.ok or id == 0) {
+    const show_status = if (embedded_picker) blk: {
+        const table = instance.dialog_v2_table.?;
+        const show = table.show orelse return;
+        break :blk show(table.context, &request, null, importClosed, instance, &id);
+    } else blk: {
+        const show = dialogs.show orelse return;
+        break :blk show(dialogs.context, &request, null, importClosed, instance, &id);
+    };
+    if (show_status != abi.ok or id == 0) {
+        if (embedded_picker) {
+            // If V2 rejects this model, retry with a V1-compatible form and
+            // expose the separate toolbar picker instead of losing import.
+            instance.dialog_picker_disabled = true;
+            showImportWithSelection(instance, selection);
+            return;
+        }
         instance.library_status = "宿主未能打开导入确认窗口";
     } else {
         instance.import_dialog = id;
