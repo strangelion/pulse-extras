@@ -426,6 +426,12 @@ pub const Binding = struct {
 
     pub fn render(self: *Binding) host_mod.Error!void {
         if (!self.accepting) return error.State;
+        // Even an explicit repaint must not expose a superseded workspace.
+        // Clear the view before cancel; paint that cleared state on failure.
+        var navigation_error: ?host_mod.Error = null;
+        self.invalidateNavigation() catch |err| {
+            navigation_error = err;
+        };
         const model = if (self.model) |*value| value else return error.State;
         var content: panel.Content = undefined;
         var tree: ui.Tree = undefined;
@@ -438,6 +444,10 @@ pub const Binding = struct {
             if (err == error.State) self.accepting = false;
             return err;
         };
+        if (navigation_error) |err| {
+            self.last_error = err;
+            return err;
+        }
     }
 
     fn closeModel(self: *Binding) host_mod.Error!void {
@@ -840,27 +850,67 @@ test "model update failure does not free an active host task" {
     try binding.checkDrained();
 }
 
+const MockNavigation = struct {
+    callback: context.ChangeFn = null,
+    data: ?*anyopaque = null,
+    fail_close: bool = false,
+
+    fn get(_: ?*anyopaque, callback: context.ChangeFn, data: ?*anyopaque) callconv(.c) abi.Status {
+        var snapshot: context.Snapshot = .{ .size = @sizeOf(context.Snapshot), .directory = abi.view("one") };
+        (callback orelse return abi.error_argument)(data, &snapshot);
+        return abi.ok;
+    }
+
+    fn subscribe(user: ?*anyopaque, callback: context.ChangeFn, data: ?*anyopaque, out: [*c]context.SubscriptionId) callconv(.c) abi.Status {
+        const self: *MockNavigation = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        self.callback = callback;
+        self.data = data;
+        out.* = 3;
+        return abi.ok;
+    }
+
+    fn unsubscribe(user: ?*anyopaque, id: context.SubscriptionId) callconv(.c) abi.Status {
+        const self: *MockNavigation = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        if (id != 3) return abi.error_argument;
+        if (self.fail_close) return abi.error_permission;
+        self.callback = null;
+        self.data = null;
+        return abi.ok;
+    }
+
+    fn table(self: *MockNavigation) context.Table {
+        return .{ .raw = .{
+            .size = @sizeOf(context.TableV1),
+            .version = context.version_1,
+            .context = self,
+            .get = &get,
+            .subscribe = &subscribe,
+            .unsubscribe = &unsubscribe,
+        } };
+    }
+
+    fn navigate(self: *MockNavigation, path: []const u8) void {
+        var snapshot: context.Snapshot = .{ .size = @sizeOf(context.Snapshot), .directory = abi.view(path) };
+        if (self.callback) |callback| callback(self.data, &snapshot);
+    }
+};
+
 test "navigation tickets prevent obsolete selection and result publication" {
     var mock: Mock = .{};
     var host_ui: MockUi = .{};
+    var host_context: MockNavigation = .{};
     var binding = try Binding.init(mock.table(), .en);
     try binding.openWithTable(host_ui.table());
-    // Context adapter callback ownership is tested in pulse_context.
-    // Model the mailbox's latest copied tickets here to exercise the gate.
-    binding.navigation.accepting = true;
-    var first: Binding.Navigation.Ticket = .{ .generation = 1, .len = 3 };
-    @memcpy(first.bytes[0..3], "one");
-    binding.navigation.latest = first;
-    binding.navigation.pending = true;
+    try binding.openNavigationWithTable(host_context.table());
     const ticket = (try binding.takeNavigation()).?;
     const workspace = try identity.Workspace.init(.git, "repo", "repo");
     try std.testing.expectError(error.State, binding.select(mock.provider(), &workspace));
     try binding.selectResolved(&ticket, mock.provider(), &workspace);
     mock.runWork();
-    var second: Binding.Navigation.Ticket = .{ .generation = 2, .len = 3 };
-    @memcpy(second.bytes[0..3], "two");
-    binding.navigation.latest = second;
-    binding.navigation.pending = true;
+    host_context.navigate("two");
+    // Explicit render must invalidate the result before a pump or UI command.
+    try binding.render();
+    try std.testing.expectEqual(panel.Phase.empty, binding.controller.view().phase);
     try std.testing.expectError(error.State, binding.selectResolved(&ticket, mock.provider(), &workspace));
     // The mock cancel changes state to cancelling even if work had finished.
     mock.state = .completed;
@@ -869,6 +919,12 @@ test "navigation tickets prevent obsolete selection and result publication" {
     try std.testing.expect(binding.controller.view().snapshot == null);
     const next = (try binding.takeNavigation()).?;
     try std.testing.expectEqualStrings("two", next.directory().?);
+    host_context.fail_close = true;
+    try std.testing.expectError(error.Permission, binding.requestStop());
+    try std.testing.expectError(error.Busy, binding.checkDrained());
+    host_context.navigate("late");
+    host_context.fail_close = false;
     try binding.requestStop();
     try binding.checkDrained();
+    try std.testing.expect(host_context.callback == null);
 }
