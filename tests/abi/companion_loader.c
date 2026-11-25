@@ -16,7 +16,7 @@
 static const char *commands[] = {
     "companion.library", "companion.running", "companion.market", "companion.global",
     "companion.settings.refresh", "companion.download.less", "companion.download.more",
-    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan"
+    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore"
 };
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 /* Optional 1.0.61 picker ABI: independent C layout matching the supplied
@@ -105,7 +105,7 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
     for (unsigned i = 0; i < COMMAND_COUNT; ++i) REQUIRE(same(t->commands[i], commands[i]));
     const PulseUiModelNode *root = t->root;
     REQUIRE(root->size == sizeof(*root) && root->type == PULSE_UI_MODEL_STACK);
-    REQUIRE(root->children.present && root->children.data && (root->children.count >= 3 && root->children.count <= 28));
+    REQUIRE(root->children.present && root->children.data && (root->children.count >= 3 && root->children.count <= 32));
     const PulseUiModelNode *nav = root->children.data;
     REQUIRE(nav->children.present && nav->children.count == 4 && nav->children.data);
     for (unsigned i = 0; i < 4; ++i) {
@@ -662,6 +662,9 @@ static int bundled_session(PulsePluginEntryV1Fn entry) {
     CHECK(cancel_task(&f, f.task) == PULSE_OK);
     for (unsigned i = 0; i < 100 && f.task; ++i) { Sleep(20); pump(&f); }
     CHECK(!f.task);
+    /* No diagnostic snapshot/selection: direct mutation commands must do nothing. */
+    CHECK(click(&f, 23) == 0 && !f.dialog && !f.task);
+    CHECK(click(&f, 24) == 0 && !f.dialog && !f.task);
     CHECK(click(&f, 19) == 0 && f.dialog && !f.task);
     CHECK(close_dialog(&f, f.dialog) == PULSE_OK && !f.dialog && !f.task);
     CHECK(click(&f, 21) == 0 && f.picker && !f.dialog && !f.task);

@@ -144,7 +144,6 @@ pub fn applyRemovalDefault(hex: []const u8, request: *const RemovalRequest) !voi
     return outcome;
 }
 
-
 // Use the same verified module and private-root lease as other maintenance
 // operations. The scan never adopts or deletes any asset or preference.
 pub fn scanRecoveryDefault(hex: []const u8) !RecoverySnapshot {

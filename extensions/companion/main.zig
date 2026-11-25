@@ -26,7 +26,7 @@ const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -66,6 +66,9 @@ const Instance = struct {
     import_request: ?library.ImportRequest = null,
     import_result: ?library.ImportResult = null,
     import_dialog: u64 = 0,
+    removal_dialog: u64 = 0,
+    removal_request: ?library.RemovalRequest = null,
+    removal_committed: bool = false,
     picker: ?pickers.Table = null,
     picker_api: ?pickers.Table = null,
     dialog_v2_table: ?dialogs_v2.Table = null,
@@ -94,7 +97,8 @@ const Instance = struct {
 const Content = struct {
     declared: [commands.len]abi.StringView = undefined,
     navigation: [4]ui.Node = undefined,
-    children: [28]ui.Node = undefined,
+    children: [32]ui.Node = undefined,
+    removal_toolbar: [2]ui.Node = undefined,
     import_toolbar: [3]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
@@ -253,6 +257,13 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 const body = recoveryText(report.summary, &content.recovery_text) catch unreachable;
                 content.children[count] = changingLabel(&content.dynamic_ids[2], "library.recovery-report", body);
                 count += 1;
+                if (instance.library_loaded and instance.library_snapshot.count != 0 and instance.dialogs != null and config.runtime_sha256.len == 64 and config.helper_sha256.len == 64) {
+                    const enabled = canMaintain(instance);
+                    content.removal_toolbar[0] = action("library.remove", "隔离移除指定素材", commands[23], enabled);
+                    content.removal_toolbar[1] = action("library.restore", "恢复中断移除", commands[24], enabled);
+                    content.children[count] = horizontal("library.removal-toolbar", &content.removal_toolbar);
+                    count += 1;
+                }
             }
         },
         .running => {
@@ -448,6 +459,13 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
         if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
         return raw.PULSE_TASK_COMPLETED;
     }
+    if (instance.removal_request) |*request| {
+        library.applyRemovalDefault(config.runtime_sha256, request) catch |err| {
+            instance.work_error = err;
+            return raw.PULSE_TASK_FAILED;
+        };
+        instance.removal_committed = true;
+    }
     if (instance.preference_edit) |*edit| {
         library.editPreferenceDefault(config.runtime_sha256, edit) catch |err| {
             instance.work_error = err;
@@ -635,6 +653,8 @@ fn pollLibrary(instance: *Instance) void {
     }
     const was_edit = instance.preference_edit != null;
     const was_import = instance.import_request != null;
+    const removal = instance.removal_request;
+    instance.removal_request = null;
     instance.preference_edit = null;
     instance.import_request = null;
     instance.import_cancel_requested = false;
@@ -643,10 +663,10 @@ fn pollLibrary(instance: *Instance) void {
         instance.library_snapshot = instance.work_snapshot;
         instance.library_loaded = true;
         instance.library_offset = 0;
-        instance.library_status = if (was_import) (if (instance.import_result != null and instance.import_result.? == .existing) "素材已存在；未重复复制" else "素材已导入并重新读取") else if (was_edit) "偏好已保存并重新读取" else if (instance.library_snapshot.missing) "固定目录中尚无素材清单（未创建文件）" else "已读取持久化清单；尚未验证素材文件";
+        instance.library_status = if (removal) |request| (if (request.action == .quarantine) "素材已隔离移除；文件仍保留" else "中断移除已恢复；请重新扫描") else if (was_import) (if (instance.import_result != null and instance.import_result.? == .existing) "素材已存在；未重复复制" else "素材已导入并重新读取") else if (was_edit) "偏好已保存并重新读取" else if (instance.library_snapshot.missing) "固定目录中尚无素材清单（未创建文件）" else "已读取持久化清单；尚未验证素材文件";
     } else {
         instance.library_loaded = false;
-        instance.library_status = if (was_import and done and instance.import_result != null) "导入已提交；请刷新确认库存" else if (instance.task_state == raw.PULSE_TASK_CANCELLED) (if (was_import or was_edit) "任务已取消；请刷新确认磁盘状态" else "读取已取消") else if (done) if (instance.work_error) |err| @errorName(err) else "读取结果无效" else "读取未完成";
+        instance.library_status = if (removal != null and done and instance.removal_committed) "操作已提交；请刷新并重新扫描" else if (removal != null and instance.task_state == raw.PULSE_TASK_CANCELLED) "任务取消；请刷新确认磁盘状态" else if (was_import and done and instance.import_result != null) "导入已提交；请刷新确认库存" else if (instance.task_state == raw.PULSE_TASK_CANCELLED) (if (was_import or was_edit) "任务已取消；请刷新确认磁盘状态" else "读取已取消") else if (done) if (instance.work_error) |err| @errorName(err) else "读取结果无效" else "读取未完成";
     }
     refresh(instance);
 }
@@ -690,7 +710,7 @@ fn pollRuntime(instance: *Instance) void {
 }
 
 fn startRuntimeCheck(instance: *Instance) void {
-    if (!instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0 or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan) return;
+    if (!instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0 or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0) return;
     const tasks = instance.tasks orelse return;
     const create = tasks.create orelse return;
     // Existing dispatcher/timer is required: do not create an uncollectable task.
@@ -726,7 +746,7 @@ fn startBuiltin(instance: *Instance) void {
 }
 
 fn startAsset(instance: *Instance, asset_id: u64) void {
-    if (!instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or asset_id == 0) return;
+    if (!instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0 or asset_id == 0) return;
     if (instance.runtime_task_id != 0) {
         if (instance.task_kind != .builtin_session) return;
         instance.runtime_status = if (instance.session.requestAsset(asset_id)) "已提交新增实例请求" else "暂不可新增实例；请等待或停止";
@@ -1157,6 +1177,99 @@ fn cancelImport(instance: *Instance) void {
     refresh(instance);
 }
 
+fn canMaintain(instance: *const Instance) bool {
+    return instance.active and instance.library_loaded and instance.recovery_report != null and instance.tasks != null and instance.dispatch != null and instance.dialogs != null and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.import_dialog == 0 and instance.removal_dialog == 0 and instance.removal_request == null and instance.picker_request == 0 and !instance.fallback_pick and !instance.recovery_scan and instance.preference_edit == null and instance.import_request == null;
+}
+
+fn confirmedRemoval(status: abi.Status, button: abi.StringView) bool {
+    return status == abi.ok and std.mem.eql(u8, abi.slice(button) orelse "", "confirm");
+}
+
+fn removalClosed(user: ?*anyopaque, dialog: u64, status: abi.Status, button: abi.StringView, _: [*c]const ui.State, _: u32) callconv(.c) void {
+    const instance: *Instance = @ptrCast(@alignCast(user orelse return));
+    if (dialog == 0 or dialog != instance.removal_dialog) return;
+    instance.removal_dialog = 0;
+    const request = instance.removal_request orelse return;
+    instance.removal_request = null;
+    if (!instance.active) return;
+    if (!confirmedRemoval(status, button)) {
+        instance.library_status = "已取消素材维护；未提交任务";
+        refresh(instance);
+        return;
+    }
+    if (instance.section != .library or !canMaintain(instance)) {
+        instance.library_status = "素材维护条件已变化；请重新扫描";
+        refresh(instance);
+        return;
+    }
+    instance.removal_request = request;
+    startLibrary(instance, false);
+    if (instance.task_id == 0) instance.removal_request = null;
+    refresh(instance);
+}
+
+fn showRemoval(instance: *Instance, action_kind: library.RemovalAction) void {
+    if (config.runtime_sha256.len != 64 or !canMaintain(instance)) return;
+    const panel = instance.panel orelse return;
+    const get_state = panel.table.get_state orelse return;
+    var bytes: [32]u8 = undefined;
+    var needed: u32 = 0;
+    if (get_state(panel.table.context, panel.id, abi.view("library.asset-id"), &bytes, bytes.len, &needed) != abi.ok or needed == 0 or needed >= bytes.len) {
+        instance.library_status = "请输入有效素材 ID";
+        refresh(instance);
+        return;
+    }
+    const id = std.fmt.parseInt(u64, bytes[0..needed], 10) catch 0;
+    for (instance.library_snapshot.rows[0..instance.library_snapshot.count]) |*row| {
+        if (row.id != id) continue;
+        const request = library.RemovalRequest.init(row, &instance.recovery_report.?, action_kind) catch |err| {
+            instance.library_status = @errorName(err);
+            refresh(instance);
+            return;
+        };
+        showRemovalDialog(instance, request);
+        return;
+    }
+    instance.library_status = "素材不存在或不在当前筛选结果中";
+    refresh(instance);
+}
+
+fn showRemovalDialog(instance: *Instance, request: library.RemovalRequest) void {
+    const dialogs = instance.dialogs orelse return;
+    const show = dialogs.show orelse return;
+    const removing = request.action == .quarantine;
+    var message_buffer: [512]u8 = undefined;
+    const message = std.fmt.bufPrint(&message_buffer, "素材 #{d}：{s}。{s}", .{ request.expected.id, request.expected.sourceId(), if (removing) "将受管副本移入隔离区并从素材库移除；不会删除原始目录或隔离文件。" else "仅恢复仍登记的中断移除事务，不覆盖现有目录，不恢复已完成移除的 ID。" }) catch unreachable;
+    var root = label("removal.notice", message);
+    var tree = std.mem.zeroes(ui.Tree);
+    tree.size = @sizeOf(ui.Tree);
+    tree.root = &root;
+    const buttons = [_]raw.PulseDialogButton{
+        .{ .size = @sizeOf(raw.PulseDialogButton), .kind = raw.PULSE_DIALOG_BUTTON_PRIMARY, .id = abi.view("confirm"), .text = abi.view(if (removing) "隔离移除" else "恢复") },
+        .{ .size = @sizeOf(raw.PulseDialogButton), .kind = raw.PULSE_DIALOG_BUTTON_STANDARD, .id = abi.view("cancel"), .text = abi.view("取消") },
+    };
+    const descriptor: raw.PulseDialogRequest = .{
+        .size = @sizeOf(raw.PulseDialogRequest),
+        .title = abi.view(if (removing) "确认隔离移除" else "确认恢复中断移除"),
+        .message = abi.view(message),
+        .width = 560,
+        .height = 160,
+        .default_button = 1,
+        .cancel_button = 1,
+        .button_count = buttons.len,
+        .buttons = &buttons,
+        .model = &tree,
+    };
+    var dialog: u64 = 0;
+    if (show(dialogs.context, &descriptor, null, removalClosed, instance, &dialog) == abi.ok and dialog != 0) {
+        instance.removal_dialog = dialog;
+        instance.removal_request = request;
+    } else {
+        instance.library_status = "宿主拒绝素材维护确认；未提交任务";
+    }
+    refresh(instance);
+}
+
 fn startRecovery(instance: *Instance) void {
     if (!instance.active or config.runtime_sha256.len != 64 or instance.dispatch == null or instance.tasks == null or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.preference_edit != null or instance.import_request != null) return;
     instance.recovery_report = null;
@@ -1168,7 +1281,7 @@ fn startRecovery(instance: *Instance) void {
 
 fn startLibrary(instance: *Instance, capture_query: bool) void {
     const tasks = instance.tasks orelse return;
-    if (instance.task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0) return;
+    if (instance.task_id != 0 or instance.import_dialog != 0 or instance.removal_dialog != 0 or instance.picker_request != 0) return;
     const create = tasks.create orelse return;
     if (capture_query) {
         const panel = instance.panel orelse return;
@@ -1189,12 +1302,13 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     }
     instance.work_done.store(false, .release);
     instance.work_error = null;
-    if (instance.import_request != null or instance.preference_edit != null) instance.recovery_report = null;
+    if (instance.import_request != null or instance.preference_edit != null or instance.removal_request != null) instance.recovery_report = null;
+    instance.removal_committed = false;
     instance.work_snapshot = .{};
     if (!instance.fallback_pick and !instance.recovery_scan) instance.library_loaded = false;
     const descriptor: raw.PulseTaskDescriptor = .{
         .size = @sizeOf(raw.PulseTaskDescriptor),
-        .title = abi.view(if (instance.fallback_pick) "选择素材文件夹" else if (instance.recovery_scan) "扫描桌宠恢复状态" else if (instance.import_request != null) "导入桌宠素材" else if (instance.preference_edit != null) "保存桌宠偏好" else "读取桌宠素材清单"),
+        .title = abi.view(if (instance.fallback_pick) "选择素材文件夹" else if (instance.recovery_scan) "扫描桌宠恢复状态" else if (instance.removal_request != null) "维护桌宠素材" else if (instance.import_request != null) "导入桌宠素材" else if (instance.preference_edit != null) "保存桌宠偏好" else "读取桌宠素材清单"),
         .type = abi.view("companion.library"),
         .work = readLibrary,
         .user = instance,
@@ -1202,7 +1316,7 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     var id: u64 = 0;
     if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
         instance.task_id = id;
-        instance.library_status = if (instance.fallback_pick) "正在使用 Windows 文件夹选择器（60 秒超时）" else if (instance.recovery_scan) "正在进行只读恢复扫描" else if (instance.import_request != null) "正在导入本地素材" else if (instance.preference_edit != null) "正在保存素材偏好" else "正在自动读取素材清单";
+        instance.library_status = if (instance.fallback_pick) "正在使用 Windows 文件夹选择器（60 秒超时）" else if (instance.recovery_scan) "正在进行只读恢复扫描" else if (instance.removal_request != null) "正在维护桌宠素材" else if (instance.import_request != null) "正在导入本地素材" else if (instance.preference_edit != null) "正在保存素材偏好" else "正在自动读取素材清单";
         armTimer(instance);
         if (instance.timer == null) instance.library_status = "正在读取；宿主自动刷新不可用，可手动检查";
     } else {
@@ -1213,7 +1327,7 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
 
 fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
-    if (!instance.active or panel != instance.page) return;
+    if (!instance.active or panel != instance.page or instance.removal_dialog != 0) return;
     const name = abi.slice(command) orelse return;
     for (commands, 0..) |candidate, n| {
         if (!std.mem.eql(u8, candidate, name)) continue;
@@ -1257,6 +1371,8 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             20 => cancelImport(instance),
             21 => browseImport(instance),
             22 => startRecovery(instance),
+            23 => showRemoval(instance, .quarantine),
+            24 => showRemoval(instance, .restore_interrupted),
             else => {},
         }
         return;
@@ -1301,6 +1417,16 @@ fn close(instance: *Instance) host_mod.Error!void {
             else => return err,
         };
         instance.import_dialog = 0;
+    }
+    if (instance.removal_dialog != 0) {
+        const dialogs = instance.dialogs orelse return error.State;
+        const close_dialog = dialogs.close orelse return error.Unavailable;
+        host_mod.mapStatus(close_dialog(dialogs.context, instance.removal_dialog)) catch |err| switch (err) {
+            error.State => {},
+            else => return err,
+        };
+        instance.removal_dialog = 0;
+        instance.removal_request = null;
     }
     instance.dialogs = null;
     instance.dialog_v2_table = null;
@@ -1594,4 +1720,21 @@ test "recovery labels identify registered assets and leave unknown IDs unmarked"
     try std.testing.expectEqualStrings(" · 扫描：隔离待恢复", recoverySuffix(&snapshot, 2));
     try std.testing.expectEqualStrings(" · 扫描：目录缺失", recoverySuffix(&snapshot, 3));
     try std.testing.expectEqualStrings("", recoverySuffix(&snapshot, 4));
+}
+
+test "removal confirmation is explicit and cancellation clears copied request" {
+    const instance = try std.testing.allocator.create(Instance);
+    defer std.testing.allocator.destroy(instance);
+    instance.* = .{ .host = undefined, .active = true, .removal_dialog = 7 };
+    instance.removal_request = .{ .expected = .{ .id = 1, .len = 3, .source = @splat(0) }, .action = .quarantine };
+    try std.testing.expect(confirmedRemoval(abi.ok, abi.view("confirm")));
+    try std.testing.expect(!confirmedRemoval(abi.ok, abi.view("cancel")));
+    try std.testing.expect(!confirmedRemoval(abi.error_state, abi.view("confirm")));
+    removalClosed(instance, 6, abi.ok, abi.view("confirm"), null, 0);
+    try std.testing.expectEqual(@as(u64, 7), instance.removal_dialog);
+    removalClosed(instance, 7, abi.ok, abi.view("cancel"), null, 0);
+    try std.testing.expectEqual(@as(u64, 0), instance.removal_dialog);
+    try std.testing.expect(instance.removal_request == null);
+    try std.testing.expectEqual(@as(u64, 0), instance.task_id);
+    try std.testing.expect(!canMaintain(instance));
 }

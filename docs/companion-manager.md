@@ -1162,3 +1162,23 @@ backend; the diagnostic state is not authority to mutate. Portable tests
 cover legacy, missing, mismatched and copied selection identity. The
 confirmation window and command registration remain unexposed until the
 current regression and subsequent UI fixture are validated.
+
+## Native removal and interrupted-restore confirmation
+
+The library exposes two bounded commands after a successful recovery scan.
+They reuse the numeric asset selection and the copied RemovalRequest; only
+a matching registered state and both recorded fingerprints can open the
+confirmation. The native V1 dialog shows the exact ID/source and operation,
+with cancel as the default and escape button. No editable path is accepted.
+Cancel, stale callbacks, disabled host capabilities and changed admission
+conditions do not submit work. Confirmation starts the serialized library
+task; the worker rechecks durable identity and namespace under its verified
+lease. A successful mutation is recorded before reloading the filtered
+inventory so late cancellation or refresh failure cannot be reported as
+rollback. The previous diagnostic snapshot is invalidated; scan again before
+another operation. Deactivation closes the confirmation and cancels owned
+tasks without freeing live task data. Permanent deletion is still absent.
+Unit tests exercise confirmation/cancellation and stale dialog IDs; the C
+ABI fixture verifies command registration and refuses direct actions without
+a scan. Actual confirmed UI interaction and Windows acceptance remain NOT
+VERIFIED; the existing isolated bridge fixture covers the mutation itself.
