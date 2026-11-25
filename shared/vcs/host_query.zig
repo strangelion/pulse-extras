@@ -8,6 +8,7 @@
 //! No automatic polling, dispatch or DLL unload is implied by this bridge.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const abi = @import("pulse_abi");
 const async_host = @import("pulse_async_host");
 const host_mod = @import("pulse_host");
@@ -107,6 +108,149 @@ pub const Query = struct {
     }
 
     pub fn checkDrained(self: *const Query) error{Busy}!void {
+        if (self.task.occupied()) return error.Busy;
+    }
+};
+
+/// The resolver runs on a host worker, not in a context/UI callback.
+/// The caller supplies independent repository/tool approval and stable
+/// provider contexts. A marker is not approval and no PATH fallback is allowed.
+pub const Resolved = struct {
+    provider: contract.Provider,
+    workspace: identity.Workspace,
+};
+
+pub const Resolver = struct {
+    ctx: *anyopaque,
+    resolve: *const fn (*anyopaque, *const identity.Path) contract.Error!?Resolved,
+};
+
+/// Marker discovery is deliberately separate from selection and authorization.
+/// The policy must authorize the actual installation, repository configuration
+/// and metadata paths before it runs any provider resolution command.
+/// No candidate is silently preferred over another (including Git + JJ).
+pub const Discovery = struct {
+    probe: detect.Probe,
+    policy_ctx: *anyopaque,
+    authorizeAndResolve: *const fn (*anyopaque, *const identity.Path, *const detect.Result) contract.Error!?Resolved,
+
+    pub fn resolver(self: *Discovery) Resolver {
+        return .{ .ctx = self, .resolve = &resolve };
+    }
+
+    fn resolve(user: *anyopaque, directory: *const identity.Path) contract.Error!?Resolved {
+        const self: *Discovery = @ptrCast(@alignCast(user));
+        const path = directory.slice();
+        // Lexical local-path gate only. Probe/policy must independently
+        // reject junctions, reparse points, untrusted config and remote I/O.
+        if (!localDirectory(path)) return error.Permission;
+        const candidates = detect.detect(path, self.probe);
+        if (candidates.len == 0) return null;
+        const selected = (try self.authorizeAndResolve(self.policy_ctx, directory, &candidates)) orelse return null;
+        if (selected.provider.kind != selected.workspace.kind or !selected.provider.supports(.status)) return error.Unsupported;
+        const candidate = candidates.find(selected.workspace.kind) orelse return error.Permission;
+        if (selected.workspace.root.len == 0 or selected.workspace.root.len > identity.max_path_bytes or selected.workspace.repository_root.len == 0 or selected.workspace.repository_root.len > identity.max_path_bytes) return error.Parse;
+        if (!candidate.root.eql(selected.workspace.root.slice())) return error.Permission;
+        return selected;
+    }
+
+    fn localDirectory(path: []const u8) bool {
+        if (builtin.os.tag == .windows) {
+            if (path.len < 3 or !std.ascii.isAlphabetic(path[0]) or path[1] != ':' or (path[2] != '\\' and path[2] != '/')) return false;
+            if (std.mem.indexOfScalar(u8, path[2..], ':') != null) return false;
+        } else if (path.len == 0 or path[0] != '/') return false;
+        var parts = std.mem.tokenizeAny(u8, path, if (builtin.os.tag == .windows) "/\\" else "/");
+        while (parts.next()) |part| {
+            if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return false;
+        }
+        return true;
+    }
+};
+
+/// Exactly one host-owned resolver task. All task API operations are owner
+/// only; the worker writes the result once and publishes it with release.
+/// Terminal observation and successful release precede any selection handoff.
+pub const Resolution = struct {
+    pub const Ticket = context_mod.Navigation(identity.max_path_bytes).Ticket;
+    pub const Result = struct {
+        ticket: Ticket,
+        selection: contract.Error!?Resolved,
+    };
+
+    task: async_host.Task,
+    resolver: Resolver = undefined,
+    ticket: Ticket = undefined,
+    directory: identity.Path = undefined,
+    result: contract.Error!?Resolved = error.Cancelled,
+    published: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    discard: bool = false,
+    stopped: bool = false,
+
+    pub fn init(table: async_host.TaskTable) host_mod.Error!Resolution {
+        return .{ .task = try async_host.Task.init(table) };
+    }
+
+    pub fn start(self: *Resolution, resolver: Resolver, ticket: *const Ticket) host_mod.Error!void {
+        if (self.stopped or self.task.occupied()) return error.State;
+        const directory = ticket.directory() orelse return error.Argument;
+        self.directory = identity.Path.init(directory) catch return error.Argument;
+        self.ticket = ticket.*;
+        self.resolver = resolver;
+        self.result = error.Cancelled;
+        self.published.store(false, .monotonic);
+        self.discard = false;
+        const descriptor: async_host.Descriptor = .{
+            .size = @sizeOf(async_host.Descriptor),
+            .title = abi.view("VCS repository discovery"),
+            .type = abi.view("vcs.resolve"),
+            .work = &work,
+            .user = self,
+        };
+        try self.task.start(&descriptor);
+    }
+
+    fn work(user: ?*anyopaque, ctx: [*c]const async_host.Context) callconv(.c) u32 {
+        const self: *Resolution = @ptrCast(@alignCast(user orelse return @backingInt(async_host.TaskState.failed)));
+        if (ctx == null) return @backingInt(async_host.TaskState.failed);
+        const cancelled = ctx.*.cancelled orelse return @backingInt(async_host.TaskState.failed);
+        if (cancelled(ctx.*.context) != 0) return @backingInt(async_host.TaskState.cancelled);
+        self.result = self.resolver.resolve(self.resolver.ctx, &self.directory);
+        self.published.store(true, .release);
+        if (cancelled(ctx.*.context) != 0) return @backingInt(async_host.TaskState.cancelled);
+        if (self.result) |_| {
+            return @backingInt(async_host.TaskState.completed);
+        } else |err| {
+            return @backingInt(if (err == error.Cancelled) async_host.TaskState.cancelled else async_host.TaskState.failed);
+        }
+    }
+
+    pub fn poll(self: *Resolution) host_mod.Error!?Result {
+        if (!self.task.occupied()) return null;
+        const state = try self.task.poll();
+        if (!state.terminal()) return null;
+        var selection: contract.Error!?Resolved = error.Io;
+        if (self.discard or self.stopped or state == .cancelled) {
+            selection = error.Cancelled;
+        } else if (self.published.load(.acquire)) {
+            if (self.result) |value| {
+                if (state == .completed) selection = value;
+            } else |err| selection = err;
+        }
+        try self.task.releaseTerminal();
+        return .{ .ticket = self.ticket, .selection = selection };
+    }
+
+    pub fn cancel(self: *Resolution) host_mod.Error!void {
+        self.discard = true;
+        try self.task.cancel();
+    }
+
+    pub fn requestStop(self: *Resolution) host_mod.Error!void {
+        self.stopped = true;
+        try self.cancel();
+    }
+
+    pub fn checkDrained(self: *const Resolution) error{Busy}!void {
         if (self.task.occupied()) return error.Busy;
     }
 };
@@ -257,6 +401,8 @@ pub const Binding = struct {
     pub const Navigation = context_mod.Navigation(identity.max_path_bytes);
 
     controller: Controller,
+    resolution: Resolution,
+    resolver: ?Resolver = null,
     navigation: Navigation = .{},
     navigation_generation: ?u64 = null,
     model: ?ui.Panel = null,
@@ -266,7 +412,7 @@ pub const Binding = struct {
     last_error: ?host_mod.Error = null,
 
     pub fn init(table: async_host.TaskTable, language: panel.Language) host_mod.Error!Binding {
-        return .{ .controller = try Controller.init(table), .language = language };
+        return .{ .controller = try Controller.init(table), .resolution = try Resolution.init(table), .language = language };
     }
 
     pub fn open(self: *Binding, host: host_mod.Host) host_mod.Error!void {
@@ -308,6 +454,14 @@ pub const Binding = struct {
         self.accepting = true;
     }
 
+    /// Opt in before subscribing. The resolver and all policy/provider
+    /// contexts must remain alive until successful stop/drain. Without one,
+    /// manual takeNavigation/selectResolved retains its existing semantics.
+    pub fn configureResolver(self: *Binding, resolver: Resolver) host_mod.Error!void {
+        if (self.controller.stopped or self.resolver != null or self.navigation.table != null or self.controller.selection != null or self.controller.query.task.occupied()) return error.State;
+        self.resolver = resolver;
+    }
+
     /// Subscribe only after the panel is live. Callback delivery stores a
     /// bounded directory ticket; no VCS tool or filesystem lookup runs there.
     pub fn openNavigation(self: *Binding, host: host_mod.Host) host_mod.Error!void {
@@ -332,14 +486,22 @@ pub const Binding = struct {
         if (!self.navigation.accepting) return;
         const latest = if (self.navigation.latest) |*value| value else return;
         if (self.navigation_generation == latest.generation) return;
-        try self.controller.clear();
+        var failure: ?host_mod.Error = null;
+        self.resolution.cancel() catch |err| {
+            failure = err;
+        };
+        self.controller.clear() catch |err| {
+            failure = err;
+        };
+        if (failure) |err| return err;
         self.navigation_generation = latest.generation;
+        if (self.resolver != null and self.navigation.pending and latest.directory() != null) self.controller.current = .{ .phase = .queued };
     }
 
     /// The owner can schedule independent repository discovery and approval
     /// for this ticket. A null directory means clear, not a repository root.
     pub fn takeNavigation(self: *Binding) host_mod.Error!?Navigation.Ticket {
-        if (!self.accepting) return error.State;
+        if (!self.accepting or self.resolver != null) return error.State;
         try self.invalidateNavigation();
         if (!self.navigation.pending) return null;
         try self.render();
@@ -349,7 +511,7 @@ pub const Binding = struct {
     /// Only apply a still-current, independently authorized resolution.
     /// A navigation ticket is not itself proof of trust or root identity.
     pub fn selectResolved(self: *Binding, ticket: *const Navigation.Ticket, provider: contract.Provider, workspace: *const identity.Workspace) host_mod.Error!void {
-        if (!self.accepting) return error.State;
+        if (!self.accepting or self.resolver != null) return error.State;
         try self.invalidateNavigation();
         if (ticket.directory() == null or !self.navigation.isCurrent(ticket)) {
             try self.render();
@@ -372,6 +534,36 @@ pub const Binding = struct {
             self.render() catch {};
             return;
         };
+        if (self.resolver != null) {
+            const command_kind = panel.parseCommand(name) orelse {
+                self.last_error = error.Argument;
+                return;
+            };
+            if (command_kind == .check) {
+                self.pump() catch |err| {
+                    self.last_error = err;
+                };
+                return;
+            }
+            if (command_kind == .refresh) {
+                self.retryResolution() catch |err| {
+                    self.last_error = err;
+                };
+                self.render() catch |err| {
+                    self.last_error = err;
+                };
+                return;
+            }
+            if (command_kind == .cancel and (self.resolution.task.occupied() or self.navigation.pending)) {
+                self.cancelResolution() catch |err| {
+                    self.last_error = err;
+                };
+                self.render() catch |err| {
+                    self.last_error = err;
+                };
+                return;
+            }
+        }
         self.controller.command(name) catch |err| {
             self.last_error = err;
         };
@@ -383,7 +575,7 @@ pub const Binding = struct {
     /// Resolved, independently authorized selection only. Never resolve a
     /// repository or spawn a CLI from this UI-thread method.
     pub fn select(self: *Binding, provider: contract.Provider, workspace: *const identity.Workspace) host_mod.Error!void {
-        if (!self.accepting or self.navigation.table != null or self.navigation.accepting) return error.State;
+        if (!self.accepting or self.resolver != null or self.navigation.table != null or self.navigation.accepting) return error.State;
         try self.selectAuthorized(provider, workspace);
     }
 
@@ -399,6 +591,15 @@ pub const Binding = struct {
 
     pub fn clear(self: *Binding) host_mod.Error!void {
         if (!self.accepting) return error.State;
+        if (self.resolver != null) {
+            self.navigation.pending = false;
+            self.resolution.cancel() catch |err| {
+                self.controller.clear() catch {};
+                self.last_error = err;
+                self.render() catch {};
+                return err;
+            };
+        }
         self.controller.clear() catch |err| {
             self.last_error = err;
             self.render() catch {};
@@ -406,6 +607,71 @@ pub const Binding = struct {
         };
         self.last_error = null;
         try self.render();
+    }
+
+    /// A refresh is an explicit fresh policy decision, not permission cached
+    /// indefinitely from a prior navigation. Retain old task ownership.
+    fn retryResolution(self: *Binding) host_mod.Error!void {
+        if (!self.accepting or !self.navigation.accepting or self.controller.stopped) return error.State;
+        if (self.controller.current.phase == .queued or self.controller.current.phase == .refreshing) return error.State;
+        const latest = self.navigation.latest orelse return error.State;
+        if (latest.directory() == null) return error.State;
+        self.navigation.pending = true;
+        var failure: ?host_mod.Error = null;
+        self.resolution.cancel() catch |err| {
+            failure = err;
+        };
+        self.controller.clear() catch |err| {
+            failure = err;
+        };
+        self.controller.current = .{ .phase = .queued };
+        if (failure) |err| return err;
+        try self.pump();
+    }
+
+    fn cancelResolution(self: *Binding) host_mod.Error!void {
+        self.navigation.pending = false;
+        self.controller.current = .{ .phase = .cancelled };
+        var failure: ?host_mod.Error = null;
+        self.resolution.cancel() catch |err| {
+            failure = err;
+        };
+        self.controller.cancel() catch |err| {
+            failure = err;
+        };
+        self.controller.current.phase = .cancelled;
+        if (failure) |err| return err;
+    }
+
+    /// One resolver or summary at a time, including release failure.
+    /// Never consume a pending ticket until host admission succeeds.
+    fn pumpResolution(self: *Binding) host_mod.Error!void {
+        const resolver = self.resolver orelse return;
+        const discarded = self.resolution.discard;
+        if (try self.resolution.poll()) |finished| {
+            if (self.accepting and !discarded and self.navigation.isCurrent(&finished.ticket)) {
+                if (finished.selection) |selection| {
+                    if (selection) |selected| {
+                        try self.controller.select(selected.provider, &selected.workspace);
+                    } else self.controller.current = .{ .phase = .empty };
+                } else |err| {
+                    self.controller.current = .{ .phase = if (err == error.Cancelled) .cancelled else .failed, .failure = if (err == error.Cancelled) null else err };
+                }
+            }
+        }
+        if (!self.accepting or self.controller.stopped or self.resolution.task.occupied() or self.controller.query.task.occupied() or !self.navigation.pending) return;
+        const ticket = self.navigation.latest orelse return;
+        if (ticket.directory() == null) {
+            _ = self.navigation.take();
+            return;
+        }
+        self.controller.current = .{ .phase = .queued };
+        self.resolution.start(resolver, &ticket) catch |err| {
+            self.controller.current = .{ .phase = .failed, .failure = if (err == error.Permission) error.Permission else error.Io };
+            return err;
+        };
+        _ = self.navigation.take();
+        self.controller.current = .{ .phase = .refreshing };
     }
 
     /// An explicit owner event can advance a task and repaint. No wait or
@@ -418,6 +684,11 @@ pub const Binding = struct {
         };
         self.controller.pump() catch |err| {
             self.last_error = err;
+            return err;
+        };
+        self.pumpResolution() catch |err| {
+            self.last_error = err;
+            if (self.accepting) self.render() catch {};
             return err;
         };
         self.last_error = null;
@@ -435,7 +706,10 @@ pub const Binding = struct {
         const model = if (self.model) |*value| value else return error.State;
         var content: panel.Content = undefined;
         var tree: ui.Tree = undefined;
-        const current = self.controller.view();
+        var current = self.controller.view();
+        if (self.resolver != null and self.navigation.accepting) {
+            if (self.navigation.latest) |*latest| current.discovery_available = latest.directory() != null;
+        }
         content.buildInteractive(self.language, &current, &tree);
         model.update(&tree) catch |err| {
             self.last_error = err;
@@ -468,6 +742,9 @@ pub const Binding = struct {
         self.navigation.close() catch |err| {
             failure = err;
         };
+        self.resolution.requestStop() catch |err| {
+            failure = err;
+        };
         self.controller.requestStop() catch |err| {
             failure = err;
         };
@@ -481,6 +758,7 @@ pub const Binding = struct {
     pub fn checkDrained(self: *const Binding) error{Busy}!void {
         if (self.model != null or self.poisoned) return error.Busy;
         try self.navigation.checkDrained();
+        try self.resolution.checkDrained();
         try self.controller.checkDrained();
     }
 };
@@ -927,4 +1205,197 @@ test "navigation tickets prevent obsolete selection and result publication" {
     try binding.requestStop();
     try binding.checkDrained();
     try std.testing.expect(host_context.callback == null);
+}
+
+const MockResolver = struct {
+    host_task: *Mock,
+    calls: usize = 0,
+    denied: bool = false,
+    no_repository: bool = false,
+
+    fn resolve(user: *anyopaque, directory: *const identity.Path) contract.Error!?Resolved {
+        const self: *MockResolver = @ptrCast(@alignCast(user));
+        self.calls += 1;
+        if (self.denied) return error.Permission;
+        if (self.no_repository) return null;
+        const workspace = identity.Workspace.init(.git, directory.slice(), directory.slice()) catch return error.Parse;
+        return .{ .provider = self.host_task.provider(), .workspace = workspace };
+    }
+
+    fn resolver(self: *MockResolver) Resolver {
+        return .{ .ctx = self, .resolve = &resolve };
+    }
+};
+
+test "resolver release failure retains ownership and never starts a summary early" {
+    var mock: Mock = .{};
+    var resolver: MockResolver = .{ .host_task = &mock };
+    var resolution = try Resolution.init(mock.table());
+    var ticket: Resolution.Ticket = .{ .generation = 7, .len = 3 };
+    @memcpy(ticket.bytes[0..3], "one");
+    try resolution.start(resolver.resolver(), &ticket);
+    try std.testing.expect((try resolution.poll()) == null);
+    mock.runWork();
+    mock.fail_release = true;
+    try std.testing.expectError(error.State, resolution.poll());
+    try std.testing.expectError(error.Busy, resolution.checkDrained());
+    try std.testing.expectEqual(@as(usize, 0), mock.calls);
+    mock.fail_release = false;
+    const finished = (try resolution.poll()).?;
+    try std.testing.expectEqual(@as(u64, 7), finished.ticket.generation);
+    const selected = (try finished.selection).?;
+    try std.testing.expect(selected.workspace.root.eql("one"));
+    try resolution.checkDrained();
+}
+
+test "binding serializes resolver and summary across obsolete navigation" {
+    var mock: Mock = .{};
+    var resolver: MockResolver = .{ .host_task = &mock };
+    var host_ui: MockUi = .{};
+    var host_context: MockNavigation = .{};
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.configureResolver(resolver.resolver());
+    try binding.openWithTable(host_ui.table());
+    try binding.openNavigationWithTable(host_context.table());
+    try binding.pump();
+    try std.testing.expect(binding.resolution.task.occupied());
+    try std.testing.expect(!binding.controller.query.task.occupied());
+    mock.runWork();
+    host_context.navigate("two");
+    host_context.navigate("three");
+    try binding.pump();
+    try std.testing.expectEqual(@as(usize, 0), mock.calls);
+    mock.state = .completed;
+    try binding.pump();
+    try std.testing.expect(binding.resolution.task.occupied());
+    try std.testing.expect(!binding.controller.query.task.occupied());
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expect(!binding.resolution.task.occupied());
+    try std.testing.expect(binding.controller.query.task.occupied());
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expectEqual(panel.Phase.ready, binding.controller.view().phase);
+    try std.testing.expect(binding.controller.view().workspace.?.root.eql("three"));
+    try std.testing.expectEqual(@as(usize, 2), resolver.calls);
+    try std.testing.expectEqual(@as(usize, 1), mock.calls);
+    try binding.requestStop();
+    try binding.checkDrained();
+}
+
+test "resolver denial and cancellation never admit a VCS summary" {
+    var mock: Mock = .{};
+    var resolver: MockResolver = .{ .host_task = &mock, .denied = true };
+    var host_ui: MockUi = .{};
+    var host_context: MockNavigation = .{};
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.configureResolver(resolver.resolver());
+    try binding.openWithTable(host_ui.table());
+    try binding.openNavigationWithTable(host_context.table());
+    try binding.pump();
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expectEqual(panel.Phase.failed, binding.controller.view().phase);
+    try std.testing.expectEqual(error.Permission, binding.controller.view().failure.?);
+    resolver.denied = false;
+    host_context.navigate("two");
+    try binding.pump();
+    host_ui.click(7, panel.command_cancel);
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expectEqual(panel.Phase.cancelled, binding.controller.view().phase);
+    try std.testing.expectEqual(@as(usize, 1), resolver.calls);
+    try std.testing.expectEqual(@as(usize, 0), mock.calls);
+    host_context.navigate("three");
+    try binding.pump();
+    try binding.requestStop();
+    try std.testing.expectError(error.Busy, binding.checkDrained());
+    mock.runWork();
+    try binding.pump();
+    try binding.checkDrained();
+}
+
+const DiscoveryFixture = struct {
+    host_task: *Mock,
+    policy_calls: usize = 0,
+    lookups: usize = 0,
+    deny: bool = false,
+    wrong_root: bool = false,
+
+    fn lookup(user: *anyopaque, path: []const u8) detect.EntryType {
+        const self: *DiscoveryFixture = @ptrCast(@alignCast(user));
+        self.lookups += 1;
+        return if (std.mem.endsWith(u8, path, std.fs.path.sep_str ++ ".git")) .directory else .missing;
+    }
+
+    fn authorize(user: *anyopaque, _: *const identity.Path, candidates: *const detect.Result) contract.Error!?Resolved {
+        const self: *DiscoveryFixture = @ptrCast(@alignCast(user));
+        self.policy_calls += 1;
+        if (self.deny) return error.Permission;
+        const candidate = candidates.find(.git) orelse return null;
+        const root = if (self.wrong_root) "unrelated" else candidate.root.slice();
+        const workspace = identity.Workspace.init(.git, root, root) catch return error.Parse;
+        return .{ .provider = self.host_task.provider(), .workspace = workspace };
+    }
+};
+
+test "discovery requires local candidate and explicit policy decision" {
+    var mock: Mock = .{};
+    var fixture: DiscoveryFixture = .{ .host_task = &mock, .deny = true };
+    var discovery: Discovery = .{
+        .probe = .{ .ctx = &fixture, .lookup = &DiscoveryFixture.lookup },
+        .policy_ctx = &fixture,
+        .authorizeAndResolve = &DiscoveryFixture.authorize,
+    };
+    const relative = try identity.Path.init("relative");
+    try std.testing.expectError(error.Permission, Discovery.resolve(&discovery, &relative));
+    try std.testing.expectEqual(@as(usize, 0), fixture.lookups);
+    const local = try identity.Path.init(if (builtin.os.tag == .windows) "C:\\work" else "/work");
+    try std.testing.expectError(error.Permission, Discovery.resolve(&discovery, &local));
+    try std.testing.expectEqual(@as(usize, 1), fixture.policy_calls);
+    fixture.deny = false;
+    fixture.wrong_root = true;
+    try std.testing.expectError(error.Permission, Discovery.resolve(&discovery, &local));
+    fixture.wrong_root = false;
+    const selected = (try Discovery.resolve(&discovery, &local)).?;
+    try std.testing.expect(selected.workspace.root.eql(local.slice()));
+    try std.testing.expectEqual(@as(usize, 0), mock.calls);
+}
+
+test "explicit refresh re-enters repository authorization instead of reusing the provider" {
+    var mock: Mock = .{};
+    var resolver: MockResolver = .{ .host_task = &mock };
+    var host_ui: MockUi = .{};
+    var host_context: MockNavigation = .{};
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.configureResolver(resolver.resolver());
+    try binding.openWithTable(host_ui.table());
+    try binding.openNavigationWithTable(host_context.table());
+    try binding.pump();
+    mock.runWork();
+    try binding.pump();
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expectEqual(panel.Phase.ready, binding.controller.view().phase);
+    resolver.denied = true;
+    host_ui.click(7, panel.command_refresh);
+    try std.testing.expect(binding.resolution.task.occupied());
+    try std.testing.expect(!binding.controller.query.task.occupied());
+    try std.testing.expect(binding.controller.view().snapshot == null);
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expectEqual(error.Permission, binding.controller.view().failure.?);
+    try std.testing.expectEqual(@as(usize, 1), mock.calls);
+    resolver.denied = false;
+    host_ui.click(7, panel.command_refresh);
+    try std.testing.expect(binding.resolution.task.occupied());
+    mock.runWork();
+    try binding.pump();
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expectEqual(panel.Phase.ready, binding.controller.view().phase);
+    try std.testing.expectEqual(@as(usize, 3), resolver.calls);
+    try std.testing.expectEqual(@as(usize, 2), mock.calls);
+    try binding.requestStop();
+    try binding.checkDrained();
 }

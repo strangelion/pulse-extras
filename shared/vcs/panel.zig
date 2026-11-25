@@ -35,6 +35,7 @@ pub const View = struct {
     snapshot: ?contract.Snapshot = null,
     stale: bool = false,
     failure: ?contract.Error = null,
+    discovery_available: bool = false,
 };
 
 const Selection = struct {
@@ -228,7 +229,12 @@ pub const Content = struct {
 
     pub fn build(self: *Content, lang: Language, view: *const View, tree: *ui.Tree) void {
         self.len = 0;
-        self.add("vcs.phase", "", phaseLabel(lang, view.phase));
+        const status = if (view.discovery_available and view.workspace == null) switch (view.phase) {
+            .queued => loc(lang, "Waiting to discover repository", "等待识别仓库"),
+            .refreshing => loc(lang, "Discovering repository", "正在识别仓库"),
+            else => phaseLabel(lang, view.phase),
+        } else phaseLabel(lang, view.phase);
+        self.add("vcs.phase", "", status);
         if (view.failure) |err| self.add("vcs.error", "", failureLabel(lang, err));
         if (view.workspace) |workspace| {
             self.add("vcs.provider", loc(lang, "Provider: ", "类型："), workspace.kind.displayName());
@@ -274,7 +280,7 @@ pub const Content = struct {
         tree.commands = &self.commands;
         tree.command_count = self.commands.len;
         if (view.phase != .stopped) {
-            if (view.workspace != null) {
+            if (view.workspace != null or view.discovery_available) {
                 if (view.phase == .queued or view.phase == .refreshing) {
                     self.addButton("vcs.action.cancel", loc(lang, "Cancel", "取消"), command_cancel);
                 } else {
@@ -404,4 +410,25 @@ test "model owns its text and never renders unknown counts as numeric zero" {
     try std.testing.expectEqualStrings("Workspace: repo", content.textFor("vcs.root").?);
     try std.testing.expectEqual(@as(u32, @intCast(content.len)), content.root.children.count);
     try std.testing.expect(content.len <= Content.capacity);
+}
+
+test "discovery phase offers cancel before a workspace and refresh after failure" {
+    var content: Content = undefined;
+    var tree: ui.Tree = undefined;
+    var view: View = .{ .phase = .refreshing, .discovery_available = true };
+    content.buildInteractive(.en, &view, &tree);
+    try std.testing.expectEqualStrings("Discovering repository", content.textFor("vcs.phase").?);
+    var found = false;
+    for (content.nodes[0..content.len]) |node| {
+        if (std.mem.eql(u8, abi.slice(node.id) orelse continue, "vcs.action.cancel")) found = true;
+    }
+    try std.testing.expect(found);
+    view.phase = .failed;
+    view.failure = error.Permission;
+    content.buildInteractive(.en, &view, &tree);
+    found = false;
+    for (content.nodes[0..content.len]) |node| {
+        if (std.mem.eql(u8, abi.slice(node.id) orelse continue, "vcs.action.refresh")) found = true;
+    }
+    try std.testing.expect(found);
 }
