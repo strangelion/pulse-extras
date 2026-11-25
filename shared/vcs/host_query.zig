@@ -14,6 +14,7 @@ const host_mod = @import("pulse_host");
 const identity = @import("vcs_identity");
 const contract = @import("vcs_provider");
 const panel = @import("vcs_panel");
+const ui = @import("pulse_ui_model");
 const capabilities = @import("vcs_capabilities");
 const detect = @import("vcs_detect");
 
@@ -243,6 +244,161 @@ pub const Controller = struct {
             },
             .check => try self.pump(),
         }
+    }
+};
+
+/// Actual Preview 3 UI model attachment. This is an owner-thread object
+/// with a stable address from open through successful close and task drain.
+/// The host synchronously copies the tree and invalidates subscriptions on
+/// close. Failed close retains the handle; no new commands are accepted.
+/// Tool/repository approval and provider lifetime belong to the caller.
+pub const Binding = struct {
+    controller: Controller,
+    model: ?ui.Panel = null,
+    language: panel.Language,
+    accepting: bool = false,
+    poisoned: bool = false,
+    last_error: ?host_mod.Error = null,
+
+    pub fn init(table: async_host.TaskTable, language: panel.Language) host_mod.Error!Binding {
+        return .{ .controller = try Controller.init(table), .language = language };
+    }
+
+    pub fn open(self: *Binding, host: host_mod.Host) host_mod.Error!void {
+        const table = try host.query(ui.TableV1, ui.interface_name, ui.version_1);
+        try self.openWithTable(table);
+    }
+
+    pub fn openWithTable(self: *Binding, table: ui.TableV1) host_mod.Error!void {
+        if (self.model != null or self.poisoned or self.controller.stopped) return error.State;
+        if (table.size < @sizeOf(ui.TableV1) or table.version < ui.version_1) return error.Abi;
+        const create = table.create orelse return error.Unavailable;
+        if (table.update == null or table.close == null or table.subscribe_command == null or table.unsubscribe == null) return error.Unavailable;
+        self.last_error = null;
+        var content: panel.Content = undefined;
+        var tree: ui.Tree = undefined;
+        const current = self.controller.view();
+        content.buildInteractive(self.language, &current, &tree);
+        var id: u64 = 0;
+        try host_mod.mapStatus(create(table.context, abi.view("VCS"), &tree, &id));
+        if (id == 0) {
+            // Invalid successful ID: no handle to close. Do not certify drain.
+            self.poisoned = true;
+            self.last_error = error.State;
+            return error.State;
+        }
+        self.model = .{ .table = table, .id = id };
+        for ([_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check }) |name| {
+            _ = self.model.?.subscribeCommand(name, &onCommand, self) catch |err| {
+                self.last_error = err;
+                // Close invalidates all subscriptions, including any partial
+                // registration. Keep the original panel if cleanup fails.
+                self.closeModel() catch |cleanup_err| {
+                    self.last_error = cleanup_err;
+                    return cleanup_err;
+                };
+                return err;
+            };
+        }
+        self.accepting = true;
+    }
+
+    /// Only the registered panel and declared vocabulary may invoke actions.
+    /// Errors are retained for the owner; do not throw across C ABI.
+    fn onCommand(user: ?*anyopaque, id: u64, command: abi.StringView) callconv(.c) void {
+        const self: *Binding = @ptrCast(@alignCast(user orelse return));
+        if (!self.accepting) return;
+        const model = self.model orelse return;
+        if (model.id != id) return;
+        const name = abi.slice(command) orelse return;
+        self.last_error = null;
+        self.controller.command(name) catch |err| {
+            self.last_error = err;
+        };
+        self.render() catch |err| {
+            self.last_error = err;
+        };
+    }
+
+    /// Resolved, independently authorized selection only. Never resolve a
+    /// repository or spawn a CLI from this UI-thread method.
+    pub fn select(self: *Binding, provider: contract.Provider, workspace: *const identity.Workspace) host_mod.Error!void {
+        if (!self.accepting) return error.State;
+        self.controller.select(provider, workspace) catch |err| {
+            self.last_error = err;
+            self.render() catch {};
+            return err;
+        };
+        self.last_error = null;
+        try self.render();
+    }
+
+    pub fn clear(self: *Binding) host_mod.Error!void {
+        if (!self.accepting) return error.State;
+        self.controller.clear() catch |err| {
+            self.last_error = err;
+            self.render() catch {};
+            return err;
+        };
+        self.last_error = null;
+        try self.render();
+    }
+
+    /// An explicit owner event can advance a task and repaint. No wait or
+    /// recursive dispatch. After closing, the owner may still pump to drain.
+    pub fn pump(self: *Binding) host_mod.Error!void {
+        self.controller.pump() catch |err| {
+            self.last_error = err;
+            return err;
+        };
+        self.last_error = null;
+        if (self.accepting) try self.render();
+    }
+
+    pub fn render(self: *Binding) host_mod.Error!void {
+        if (!self.accepting) return error.State;
+        const model = if (self.model) |*value| value else return error.State;
+        var content: panel.Content = undefined;
+        var tree: ui.Tree = undefined;
+        const current = self.controller.view();
+        content.buildInteractive(self.language, &current, &tree);
+        model.update(&tree) catch |err| {
+            self.last_error = err;
+            // STATE may mean the user closed the panel. Do not assume that
+            // ownership has been released until the close path confirms it.
+            if (err == error.State) self.accepting = false;
+            return err;
+        };
+    }
+
+    fn closeModel(self: *Binding) host_mod.Error!void {
+        self.accepting = false;
+        if (self.poisoned) return error.State;
+        if (self.model) |*model| {
+            try model.close();
+            self.model = null;
+        }
+    }
+
+    /// Always attempt both cancellation and panel close, even if one fails.
+    /// This does not wait for the host worker. Keep self and all provider
+    /// userdata alive until checkDrained or the documented host destroy gate.
+    pub fn requestStop(self: *Binding) host_mod.Error!void {
+        self.accepting = false;
+        var failure: ?host_mod.Error = null;
+        self.controller.requestStop() catch |err| {
+            failure = err;
+        };
+        self.closeModel() catch |err| {
+            failure = err;
+        };
+        self.last_error = failure;
+        if (failure) |err| return err;
+    }
+
+    pub fn checkDrained(self: *const Binding) error{Busy}!void {
+        if (self.model != null or self.poisoned) return error.Busy;
+        try self.controller.checkDrained();
     }
 };
 
@@ -477,4 +633,136 @@ test "interactive model declares only fixed owner commands and maps them" {
     try controller.command(panel.command_check);
     try std.testing.expectEqual(panel.Phase.cancelled, controller.view().phase);
     try controller.checkDrained();
+}
+
+const MockUi = struct {
+    created: usize = 0,
+    closed: usize = 0,
+    updates: usize = 0,
+    subscriptions: usize = 0,
+    fail_subscribe_at: usize = 0,
+    fail_close: bool = false,
+    fail_update: bool = false,
+    callback: ui.ClickFn = null,
+    callback_user: ?*anyopaque = null,
+
+    fn create(user: ?*anyopaque, _: abi.StringView, tree: [*c]const ui.Tree, out: [*c]u64) callconv(.c) abi.Status {
+        const self: *MockUi = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        if (tree == null or tree.*.root == null or tree.*.command_count != 3) return abi.error_argument;
+        self.created += 1;
+        out.* = 7;
+        return abi.ok;
+    }
+
+    fn update(user: ?*anyopaque, id: u64, tree: [*c]const ui.Tree) callconv(.c) abi.Status {
+        const self: *MockUi = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        if (id != 7 or tree == null or tree.*.command_count != 3) return abi.error_argument;
+        if (self.fail_update) return abi.error_state;
+        self.updates += 1;
+        return abi.ok;
+    }
+
+    fn subscribe(user: ?*anyopaque, id: u64, command: abi.StringView, callback: ui.ClickFn, data: ?*anyopaque, out: [*c]u64) callconv(.c) abi.Status {
+        const self: *MockUi = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        if (id != 7 or callback == null or data == null or panel.parseCommand(abi.slice(command) orelse return abi.error_argument) == null) return abi.error_argument;
+        self.subscriptions += 1;
+        if (self.subscriptions == self.fail_subscribe_at) return abi.error_permission;
+        self.callback = callback;
+        self.callback_user = data;
+        out.* = self.subscriptions;
+        return abi.ok;
+    }
+
+    fn unsubscribe(_: ?*anyopaque, _: u64) callconv(.c) abi.Status {
+        return abi.ok;
+    }
+
+    fn close(user: ?*anyopaque, id: u64) callconv(.c) abi.Status {
+        const self: *MockUi = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        if (id != 7) return abi.error_argument;
+        if (self.fail_close) return abi.error_permission;
+        self.closed += 1;
+        self.callback = null;
+        self.callback_user = null;
+        return abi.ok;
+    }
+
+    fn table(self: *MockUi) ui.TableV1 {
+        return .{
+            .size = @sizeOf(ui.TableV1),
+            .version = ui.version_1,
+            .context = self,
+            .create = &create,
+            .update = &update,
+            .subscribe_command = &subscribe,
+            .unsubscribe = &unsubscribe,
+            .close = &close,
+        };
+    }
+
+    fn click(self: *MockUi, id: u64, command: []const u8) void {
+        if (self.callback) |callback| callback(self.callback_user, id, abi.view(command));
+    }
+};
+
+test "binding registers real SDK commands and updates after task completion" {
+    var mock: Mock = .{};
+    var host_ui: MockUi = .{};
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.openWithTable(host_ui.table());
+    try std.testing.expectEqual(@as(usize, 3), host_ui.subscriptions);
+    const workspace = try identity.Workspace.init(.git, "repo", "repo");
+    try binding.select(mock.provider(), &workspace);
+    const updates = host_ui.updates;
+    host_ui.click(99, panel.command_cancel);
+    try std.testing.expectEqual(updates, host_ui.updates);
+    mock.runWork();
+    host_ui.click(7, panel.command_check);
+    try std.testing.expectEqual(panel.Phase.ready, binding.controller.view().phase);
+    try std.testing.expect(host_ui.updates > updates);
+    try std.testing.expect(binding.last_error == null);
+    host_ui.click(7, panel.command_refresh);
+    try std.testing.expectEqual(panel.Phase.refreshing, binding.controller.view().phase);
+    try binding.requestStop();
+    try std.testing.expect(host_ui.callback == null);
+    try std.testing.expectError(error.Busy, binding.checkDrained());
+    mock.runWork();
+    try binding.pump();
+    try binding.checkDrained();
+}
+
+test "binding preflights interfaces and retains failed partial rollback" {
+    var mock: Mock = .{};
+    var host_ui: MockUi = .{ .fail_subscribe_at = 2, .fail_close = true };
+    var binding = try Binding.init(mock.table(), .zh);
+    var incomplete = host_ui.table();
+    incomplete.close = null;
+    try std.testing.expectError(error.Unavailable, binding.openWithTable(incomplete));
+    try std.testing.expectEqual(@as(usize, 0), host_ui.created);
+    try std.testing.expectError(error.Permission, binding.openWithTable(host_ui.table()));
+    try std.testing.expect(!binding.accepting);
+    try std.testing.expect(binding.model != null);
+    host_ui.click(7, panel.command_check);
+    try std.testing.expectEqual(@as(usize, 0), host_ui.updates);
+    try std.testing.expectError(error.Busy, binding.checkDrained());
+    host_ui.fail_close = false;
+    try binding.requestStop();
+    try binding.checkDrained();
+    try std.testing.expectEqual(@as(usize, 1), host_ui.closed);
+}
+
+test "model update failure does not free an active host task" {
+    var mock: Mock = .{};
+    var host_ui: MockUi = .{};
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.openWithTable(host_ui.table());
+    const workspace = try identity.Workspace.init(.git, "repo", "repo");
+    host_ui.fail_update = true;
+    try std.testing.expectError(error.State, binding.select(mock.provider(), &workspace));
+    try std.testing.expect(!binding.accepting);
+    try std.testing.expectError(error.Busy, binding.checkDrained());
+    try binding.requestStop();
+    mock.runWork();
+    try binding.pump();
+    try binding.checkDrained();
 }
