@@ -5,6 +5,8 @@ const loader = @import("companion_runtime_owner.zig");
 const library = @import("companion/pet_library_read.zig");
 const inventory = @import("companion/pet_inventory.zig");
 const model = @import("companion/pet_manager.zig");
+const store = @import("companion_runtime_store.zig");
+const catalog = @import("companion/pet_catalog.zig");
 
 extern "kernel32" fn GetFullPathNameW([*:0]const u16, u32, [*]u16, ?*anyopaque) callconv(.winapi) u32;
 extern "kernel32" fn LoadLibraryExW([*:0]const u16, ?*anyopaque, u32) callconv(.winapi) usize;
@@ -83,6 +85,24 @@ fn exerciseManaged(owner: *loader.Owner, private: [:0]const u16) !void {
     index.* = .{};
     try library.readManagedIndex(private, index);
     if (index.count != 3) return error.UnexpectedInventory;
+    var preference = try catalog.Entry.init(1, "fixture-v1", "Fixture V1", .v1);
+    if (try store.loadPreferences(owner, &preference)) return error.UnexpectedPreference;
+    preference.favorite = true;
+    _ = try preference.addTag("bridge-test");
+    try store.savePreferences(owner, &preference);
+    var reloaded = try catalog.Entry.init(1, "fixture-v1", "Fixture V1", .v1);
+    if (!try store.loadPreferences(owner, &reloaded) or !reloaded.favorite or !reloaded.hasTag("bridge-test")) return error.PreferenceNotPersisted;
+    if (!try store.loadInventory(owner, index) or index.count != 3) return error.UnexpectedInventory;
+    const high_water = index.next_id;
+    index.next_id -= 1;
+    if (store.saveInventory(owner, index)) |_| {
+        return error.AcceptedIdRollback;
+    } else |err| {
+        if (err != error.InvalidRecord) return err;
+    }
+    index.next_id = high_water;
+    try store.saveInventory(owner, index);
+    if (!try store.loadInventory(owner, index) or index.next_id != high_water) return error.InventoryNotPersisted;
     var helper: [1024]u16 = undefined;
     const len = GetFullPathNameW(std.unicode.wtf8ToWtf16LeStringLiteral("zig-out\\bin\\pulse-pet-demo.exe"), helper.len, &helper, null);
     if (len == 0 or len >= helper.len) return error.BadFixturePath;
@@ -195,6 +215,11 @@ pub fn main() !void {
         };
         try owner.close();
         try outcome;
+        try owner.open(root[0..len :0], expected, 1, 128 * 1024 * 1024);
+        _ = try owner.privateRoot(fixture_parent);
+        var reopened = try catalog.Entry.init(1, "fixture-v1", "Fixture V1", .v1);
+        if (!try store.loadPreferences(&owner, &reopened) or !reopened.favorite or !reopened.hasTag("bridge-test")) return error.PreferenceNotPersisted;
+        try owner.close();
     }
     std.debug.print("Pinned runtime owner and private lease ABI verified\n", .{});
 }

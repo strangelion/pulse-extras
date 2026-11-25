@@ -28,6 +28,8 @@ const Lease = extern struct {
 };
 const LeaseOpen = *const fn (*Lease, usize, [*:0]const u16) callconv(.c) c_int;
 const LeaseClose = *const fn (*Lease, usize) callconv(.c) c_int;
+const StoreRead = *const fn (*const Lease, usize, u64, [*]u8, usize, *usize) callconv(.c) c_int;
+const StoreWrite = *const fn (*const Lease, usize, u64, [*]const u8, usize) callconv(.c) c_int;
 
 extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, ?*anyopaque) callconv(.winapi) usize;
 extern "kernel32" fn CloseHandle(usize) callconv(.winapi) c_int;
@@ -86,6 +88,7 @@ pub const Owner = struct {
     lease: Lease = .{},
     lease_opened: bool = false,
     lease_close: ?LeaseClose = null,
+    store_faulted: bool = false,
 
     /// Worker only. Root must already be independently approved; the file
     /// pin denies writes/deletes, and the module stays loaded through drain.
@@ -148,6 +151,40 @@ pub const Owner = struct {
         return self.lease.path[0..len :0];
     }
 
+    fn checkStore(code: c_int) !void {
+        return switch (code) {
+            0 => {},
+            2 => error.InvalidRecord,
+            3 => error.StoreIo,
+            4 => error.StoreBusy,
+            5 => error.CleanupFailed,
+            else => error.StoreIo,
+        };
+    }
+
+    // ID zero selects inventory; nonzero selects one preference record.
+    // Only typed codecs should call these byte-level adapters.
+    pub fn readStore(self: *Owner, id: u64, bytes: []u8) !?usize {
+        if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
+        const read: StoreRead = @ptrCast(GetProcAddress(self.module, "pulse_companion_store_read_v1") orelse return error.MissingStoreApi);
+        var len: usize = 0;
+        const code = read(&self.lease, @sizeOf(Lease), id, bytes.ptr, bytes.len, &len);
+        if (code == 1) return null;
+        try checkStore(code);
+        if (len > bytes.len) return error.InvalidRecord;
+        return len;
+    }
+
+    pub fn writeStore(self: *Owner, id: u64, bytes: []const u8) !void {
+        if (!self.opened or !self.lease_opened or self.module == 0 or self.store_faulted) return error.OwnerUnavailable;
+        const write: StoreWrite = @ptrCast(GetProcAddress(self.module, "pulse_companion_store_write_v1") orelse return error.MissingStoreApi);
+        checkStore(write(&self.lease, @sizeOf(Lease), id, bytes.ptr, bytes.len)) catch |err| {
+            // No retry following an ambiguous write. Reload after close.
+            self.store_faulted = true;
+            return err;
+        };
+    }
+
     // Last-resort terminal shutdown. Caller must report unconfirmed exit.
     pub fn abandon(self: *Owner) !void {
         if (self.opened) {
@@ -168,6 +205,7 @@ pub const Owner = struct {
             if (close_lease(&self.lease, @sizeOf(Lease)) != 0) return error.CleanupFailed;
             self.lease_close = null;
             self.lease_opened = false;
+            self.store_faulted = false;
         }
         if (self.module != 0) {
             if (FreeLibrary(self.module) == 0) return error.CleanupFailed;

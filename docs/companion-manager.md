@@ -950,3 +950,17 @@ asset must exit nonzero without readiness; the two valid siblings remain
 owned. All children drain before lease/module release. This covers the
 managed worker/native path but not real Pulse settings UI or actual user
 inventory; the generated fixtures remain offline and CI-only.
+
+## Lease-bound durable store bridge
+
+The runtime now exports versioned read/write operations using the existing
+native atomic store, scoped to a live private-root lease. Zero ID selects
+PCI3 inventory; positive IDs select PCT1 preferences. The MSVC adapter
+reuses the existing codecs and import coordinator backend contract, rejects
+inventory high-water rollback and corrupt prior records, and latches a
+write failure until close/reload. No UI-supplied root or raw filename is
+accepted. The managed bridge fixture verifies favorite/tag persistence,
+inventory reload and rollback rejection, including reopen after DLL unload.
+The import coordinator adapter is ready for a typed approved helper; host
+file selection and helper invocation still need integration. No write UI
+is enabled by this change.
