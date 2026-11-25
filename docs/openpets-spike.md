@@ -486,3 +486,24 @@ CI extends the owned child fixture to verify read-only mapping rights,
 event signaling rights, coalescing, state delivery and actual hidden
 demo animation. The Pulse callback adapter, approval binding, backend
 selection and production packaging are still pending.
+
+## Optional licensed artwork and native dispatch
+
+The optional real rendering fixture is Juhuali (菊花梨) by Moemark, MIT
+including the actual V2 spritesheet, pinned to commit
+73d50ad6ab61a95d92660b868529ebece9a84a4b. See
+tests/companion/assets/juhuali/README.md and LICENSE for full attribution.
+Run python scripts/fetch_pet_test_asset.py explicitly to fetch the
+unmodified atlas with size and SHA-256 verification. No default download,
+third-party install script or automatic change to installed pets.
+The synthetic CI fixture remains independent of external services and
+WIC codec availability. Actual real-art rendering is an interactive check.
+
+native_dispatch.zig connects the existing bounded behavior scheduler to
+a synchronous native publisher callback with explicit reaction codes.
+The worker owns the controller; poll/complete are paired immediately.
+Admission is not display confirmation, and a failed publish disables
+dispatch without retry. The owner must stop the failed channel; a fresh
+explicit availability signal is required. Unit tests cover activity
+coalescing, terminal expiry, idle and ambiguous failure. The actual C
+supervisor binding and Pulse event subscriptions remain separate work.
