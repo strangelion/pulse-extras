@@ -57,3 +57,18 @@ Report a failed command with its numbered log and a UI failure with the
 screenshot and lifecycle log. Do not send private inventory contents or
 unrelated host profile files. No need to manually test 100 pets in this
 read-only phase; the existing desktop stress harness remains separate.
+
+## Optional standalone helper build evidence
+
+Add `--prepare-helper wic` or `--prepare-helper libwebp` to the smoke
+command to build a separate Windows GNU ReleaseSafe helper under the fresh
+acceptance directory, at `helper-build/bin/pulse-pet-demo.exe`. For libwebp,
+prepare the pinned cache first with `python scripts/install_pet_webp.py`.
+The default read-only DLL build and package are unchanged. Evidence records
+the relative fixed path, size, SHA-256, target and decoder choice, with
+`runtime_approved: false`. Reject unexpected locations, aliases, hardlinks,
+empty/oversize files and detectable changes during hashing. This is build
+provenance, not a secure runtime pin or proof of installation ACLs. The
+helper is neither added to the package nor launched, even with --launch;
+that flag still launches only the isolated read-only host. Packaging support,
+independent approval and a worker-owned native launch bridge remain required.
