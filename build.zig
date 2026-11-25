@@ -331,6 +331,7 @@ pub fn build(b: *std.Build) void {
 
     const companion_options = b.addOptions();
     companion_options.addOption([]const u8, "runtime_sha256", b.option([]const u8, "companion-runtime-sha256", "Approved runtime DLL digest for bundled Companion") orelse "");
+    companion_options.addOption([]const u8, "helper_sha256", b.option([]const u8, "companion-helper-sha256", "Approved bundled helper digest") orelse "");
     const companion_config = companion_options.createModule();
 
     var dll_modules = Modules.add(b, target, optimize, vcs_test_config, companion_config);

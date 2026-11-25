@@ -14,19 +14,20 @@ typedef struct {
     pet_child_result (*publish)(pet_supervisor_group *, uint64_t, unsigned);
     pet_child_result (*sample)(pet_supervisor_group *, uint64_t, pet_group_metrics *);
     pet_child_result (*close)(pet_supervisor_group *);
-} pet_runtime_api_v1;
+    pet_child_result (*abandon)(pet_supervisor_group *);
+} pet_runtime_api_v2;
 
-static const pet_runtime_api_v1 api = {
-    1, sizeof(pet_runtime_api_v1), pet_group_storage_size, pet_group_open,
+static const pet_runtime_api_v2 api = {
+    2, sizeof(pet_runtime_api_v2), pet_group_storage_size, pet_group_open,
     pet_group_start_approved, pet_group_request_stop, pet_group_force_stop,
-    pet_group_reap, pet_group_ready, pet_group_publish, pet_group_sample, pet_group_close
+    pet_group_reap, pet_group_ready, pet_group_publish, pet_group_sample, pet_group_close, pet_group_abandon
 };
 
 /* No pointers returned on an unsupported version or mismatched table size.
  * The caller supplies storage of the declared size; no cross-CRT free. */
 __declspec(dllexport) BOOL pulse_companion_runtime_query(uint32_t version,
-    uint32_t size, pet_runtime_api_v1 *out) {
-    if (!out || version != 1 || size != sizeof(api)) return FALSE;
+    uint32_t size, pet_runtime_api_v2 *out) {
+    if (!out || version != 2 || size != sizeof(api)) return FALSE;
     *out = api;
     return TRUE;
 }

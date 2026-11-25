@@ -55,6 +55,7 @@ extern "c" fn pet_group_ready(*Native, u64, *c_int) c_int;
 extern "c" fn pet_group_publish(*Native, u64, u32) c_int;
 extern "c" fn pet_group_sample(*Native, u64, *RawMetrics) c_int;
 extern "c" fn pet_group_close(*Native) c_int;
+extern "c" fn pet_group_abandon(*Native) c_int;
 
 // The native module owns the implementation, not the caller's storage.
 // All calls are serialized by the same worker; no CRT allocation crosses
@@ -72,17 +73,18 @@ pub const NativeApi = extern struct {
     publish: ?*const fn (*Native, u64, u32) callconv(.c) c_int,
     sample: ?*const fn (*Native, u64, *RawMetrics) callconv(.c) c_int,
     close: ?*const fn (*Native) callconv(.c) c_int,
+    abandon: ?*const fn (*Native) callconv(.c) c_int,
 
     pub fn valid(self: *const NativeApi) bool {
-        return self.version == 1 and self.size == @sizeOf(NativeApi) and
+        return self.version == 2 and self.size == @sizeOf(NativeApi) and
             self.storage_size != null and self.open != null and self.start != null and
             self.request_stop != null and self.force_stop != null and self.reap != null and
-            self.ready != null and self.publish != null and self.sample != null and self.close != null;
+            self.ready != null and self.publish != null and self.sample != null and self.close != null and self.abandon != null;
     }
 };
 
 const linked_api: NativeApi = .{
-    .version = 1,
+    .version = 2,
     .size = @sizeOf(NativeApi),
     .storage_size = pet_group_storage_size,
     .open = pet_group_open,
@@ -94,6 +96,7 @@ const linked_api: NativeApi = .{
     .publish = pet_group_publish,
     .sample = pet_group_sample,
     .close = pet_group_close,
+    .abandon = pet_group_abandon,
 };
 
 pub const NativeError = error{ Invalid, Busy, OsError, ContainmentFailed, Timeout, CountLimit, StorageLimit, BudgetLimit, SystemMemory, UnapprovedExecutable };
@@ -217,9 +220,20 @@ pub const Group = struct {
         var path: [1024]u16 = undefined;
         const len = try std.unicode.utf8ToUtf16Le(path[0 .. path.len - 1], approval.path);
         path[len] = 0;
+        return self.startNative(manager, path[0..len :0], &approval.digest, asset_id, options, package);
+    }
+
+    // Built-in development pet only; no asset ID or arbitrary command from UI.
+    pub fn startBuiltin(self: *Group, path: [:0]const u16, digest: *const [32]u8) !Start {
+        const manager = try self.active();
+        if (self.drain != .normal) return error.Draining;
+        return self.startNative(manager, path, digest, 1, .{}, null);
+    }
+
+    fn startNative(self: *Group, manager: *model.Manager, path: [:0]const u16, digest: *const [32]u8, asset_id: u64, options: Options, package: ?Package) !Start {
         const id = try manager.reserveStart(asset_id);
         var native_id: u64 = 0;
-        const code = self.api.start.?(&self.native, path[0..len :0], &approval.digest, &options, if (package) |selected| selected.directory else null, if (package) |selected| selected.source_id else null, if (package) |selected| selected.expected_sha else null, &native_id);
+        const code = self.api.start.?(&self.native, path.ptr, digest, &options, if (package) |selected| selected.directory else null, if (package) |selected| selected.source_id else null, if (package) |selected| selected.expected_sha else null, &native_id);
         if (native_id == 0) {
             // Native contract: zero ID on failure proves no retained child.
             try manager.confirmGone(id);
@@ -361,6 +375,15 @@ pub const Group = struct {
 
     pub fn snapshot(self: *Group, offset: usize, out: []model.Instance) !usize {
         return (try self.active()).snapshotPage(offset, out);
+    }
+
+    // Terminal emergency only: never claim a confirmed reap or reuse the budget.
+    pub fn abandon(self: *Group) !void {
+        _ = try self.active();
+        try check(self.api.abandon.?(&self.native));
+        self.manager = null;
+        self.cursor = 0;
+        self.drain = .normal;
     }
 
     pub fn close(self: *Group) !void {

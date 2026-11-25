@@ -173,6 +173,7 @@ def main() -> int:
                   "--prefix", str(build), "--summary", "all"]
     if args.bundle_runtime:
         build_args.append("-Dcompanion-runtime-sha256=" + evidence["runtime"]["sha256"])
+        build_args.append("-Dcompanion-helper-sha256=" + evidence["helper"]["sha256"])
     command(build_args, out / "05-build.log")
     matches = list(build.rglob("pulse_companion.dll"))
     if len(matches) != 1:

@@ -113,5 +113,7 @@ pet_child_result pet_group_force_stop(pet_supervisor_group *group, uint64_t id);
 pet_child_result pet_group_reap(pet_supervisor_group *group, uint64_t id, DWORD *exit_code);
 /* Close rejects any outstanding children; never silently drops ownership. */
 pet_child_result pet_group_close(pet_supervisor_group *group);
+/* Emergency terminal release; does not confirm child exit. */
+pet_child_result pet_group_abandon(pet_supervisor_group *group);
 
 #endif

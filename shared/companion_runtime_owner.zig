@@ -114,9 +114,18 @@ pub const Owner = struct {
         if (count == 0 or count >= loaded.len or !samePath(loaded[0..count], full)) return error.InvalidImage;
         const query: Query = @ptrCast(GetProcAddress(self.module, "pulse_companion_runtime_query") orelse return error.MissingQuery);
         var api: runtime.NativeApi = undefined;
-        if (query(1, @sizeOf(runtime.NativeApi), &api) == 0 or !api.valid()) return error.BadRuntimeAbi;
+        if (query(2, @sizeOf(runtime.NativeApi), &api) == 0 or !api.valid()) return error.BadRuntimeAbi;
         try self.group.openWithApi(api, limit, budget);
         self.opened = true;
+    }
+
+    // Last-resort terminal shutdown. Caller must report unconfirmed exit.
+    pub fn abandon(self: *Owner) !void {
+        if (self.opened) {
+            try self.group.abandon();
+            self.opened = false;
+        }
+        try self.close();
     }
 
     /// Refuses to unload while a child remains owned. Cleanup errors retain

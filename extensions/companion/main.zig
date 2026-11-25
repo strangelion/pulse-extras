@@ -22,9 +22,9 @@ const allocator = std.heap.page_allocator;
 const title = "Pulse Companion";
 const preference = "market.downloadConcurrency";
 const Section = enum { library, running, market, global };
-const TaskKind = enum { library, runtime_check };
+const TaskKind = enum { library, runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -50,6 +50,8 @@ const Instance = struct {
     task_kind: TaskKind = .library,
     runtime_status: []const u8 = if (config.runtime_sha256.len == 0) "未打包运行时；无法启动桌宠" else "切换至运行管理时检查同包运行时",
     runtime_checked: bool = false,
+    session: library.Session = .{},
+    stop_requested: bool = false,
     task_state: u32 = raw.PULSE_TASK_RUNNING,
     work_done: std.atomic.Value(bool) = .init(false),
     work_error: ?anyerror = null,
@@ -163,7 +165,25 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 }
             }
         },
-        .running => content.children[2] = changingLabel(&content.dynamic_ids[0], "running.status", instance.runtime_status),
+        .running => {
+            content.children[2] = changingLabel(&content.dynamic_ids[0], "running.status", instance.runtime_status);
+            const live = instance.task_id != 0 and instance.task_kind == .builtin_session;
+            content.toolbar[0] = action("running.start", "启动内置桌宠", commands[12], instance.runtime_checked and config.helper_sha256.len == 64 and instance.task_id == 0);
+            content.toolbar[1] = action("running.stop", "停止桌宠", commands[13], live and !instance.stop_requested);
+            content.children[3] = horizontal("running.toolbar", content.toolbar[0..2]);
+            count = 4;
+            if (live) {
+                const phase: library.Phase = @enumFromInt(instance.session.phase.load(.acquire));
+                const status = std.fmt.bufPrint(&content.value, "{s} · 工作集 {d} KiB · 私有内存 {d} KiB", .{ switch (phase) {
+                    .idle => "等待任务",
+                    .starting => "启动中",
+                    .running => "首帧已确认",
+                    .stopping => "正在退出",
+                }, instance.session.working_set.load(.acquire) / 1024, instance.session.private_bytes.load(.acquire) / 1024 }) catch unreachable;
+                content.children[4] = changingLabel(&content.dynamic_ids[1], "running.metrics", status);
+                count = 5;
+            }
+        },
         .market => content.children[2] = label("market.status", "市场服务已独立实现，尚未连接宿主工作线程。搜索、下载和安装暂不可用。"),
         .global => {
             const value = if (instance.loaded) std.fmt.bufPrint(&content.value, "已保存的下载并发偏好：{d}（1–8）", .{instance.saved}) catch unreachable else "下载并发偏好尚未确认";
@@ -303,6 +323,19 @@ fn checkRuntime(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) call
     return if (canceled(context[0].context) != 0) raw.PULSE_TASK_CANCELLED else raw.PULSE_TASK_COMPLETED;
 }
 
+fn runBuiltin(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callconv(.c) raw.PulseTaskState {
+    const instance: *Instance = @ptrCast(@alignCast(user orelse return raw.PULSE_TASK_FAILED));
+    defer instance.work_done.store(true, .release);
+    if (context == null) return raw.PULSE_TASK_FAILED;
+    const canceled = context[0].cancelled orelse return raw.PULSE_TASK_FAILED;
+    if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
+    library.runBuiltin(&instance.session, config.runtime_sha256, config.helper_sha256, canceled, context[0].context) catch |err| {
+        instance.work_error = err;
+        return raw.PULSE_TASK_FAILED;
+    };
+    return if (canceled(context[0].context) != 0) raw.PULSE_TASK_CANCELLED else raw.PULSE_TASK_COMPLETED;
+}
+
 fn observe(user: ?*anyopaque, snapshot: [*c]const raw.PulseTaskSnapshot) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
     if (snapshot == null or snapshot[0].size < @sizeOf(raw.PulseTaskSnapshot) or snapshot[0].id != instance.task_id) return;
@@ -379,7 +412,7 @@ fn pollLibrary(instance: *Instance) void {
     const release = tasks.release orelse return;
     instance.task_state = raw.PULSE_TASK_RUNNING;
     if (get(tasks.context, instance.task_id, observe, instance) != abi.ok) {
-        if (instance.task_kind == .runtime_check) {
+        if (instance.task_kind != .library) {
             instance.runtime_status = "无法读取运行时任务状态；保留任务所有权";
         } else {
             instance.library_status = "无法读取任务状态；保留任务所有权";
@@ -388,11 +421,12 @@ fn pollLibrary(instance: *Instance) void {
         return;
     }
     if (instance.task_state == raw.PULSE_TASK_RUNNING or instance.task_state == raw.PULSE_TASK_CANCELLING) {
+        if (instance.task_kind == .builtin_session and instance.section == .running) refresh(instance);
         return;
     }
     if (instance.task_state != raw.PULSE_TASK_COMPLETED and instance.task_state != raw.PULSE_TASK_FAILED and instance.task_state != raw.PULSE_TASK_CANCELLED and instance.task_state != raw.PULSE_TASK_PARTIAL) return;
     if (release(tasks.context, instance.task_id) != abi.ok) {
-        if (instance.task_kind == .runtime_check) {
+        if (instance.task_kind != .library) {
             instance.runtime_status = "运行时任务释放失败；请重试";
         } else {
             instance.library_status = "任务释放失败；请重试";
@@ -404,6 +438,14 @@ fn pollLibrary(instance: *Instance) void {
     diag.status("companion-library-terminal", instance.task_state);
     instance.task_id = 0;
     const done = instance.work_done.load(.acquire);
+    if (instance.task_kind == .builtin_session) {
+        instance.stop_requested = false;
+        instance.runtime_status = if (done and instance.work_error != null) @errorName(instance.work_error.?) else if (instance.task_state == raw.PULSE_TASK_COMPLETED or instance.task_state == raw.PULSE_TASK_CANCELLED) "内置桌宠已退出" else "运行任务未完成";
+        if (instance.work_error != null) instance.runtime_checked = false;
+        refresh(instance);
+        if (instance.section == .library and !instance.library_loaded) startLibrary(instance, false);
+        return;
+    }
     if (instance.task_kind == .runtime_check) {
         instance.runtime_checked = instance.task_state == raw.PULSE_TASK_COMPLETED and done and instance.work_error == null;
         instance.runtime_status = if (instance.runtime_checked) "同包运行时已通过加载及关闭检查；实例启动尚未接入" else if (done) if (instance.work_error) |err| @errorName(err) else "运行时检查未完成" else "运行时检查已取消";
@@ -451,6 +493,47 @@ fn startRuntimeCheck(instance: *Instance) void {
         if (instance.timer == null) instance.runtime_status = "自动收集不可用；切换页面重试检查";
     } else {
         instance.runtime_status = "宿主拒绝运行时检查任务";
+    }
+    refresh(instance);
+}
+
+fn startBuiltin(instance: *Instance) void {
+    if (!instance.active or !instance.runtime_checked or config.helper_sha256.len != 64 or instance.task_id != 0 or instance.dispatch == null) return;
+    const tasks = instance.tasks orelse return;
+    const create = tasks.create orelse return;
+    instance.work_done.store(false, .release);
+    instance.work_error = null;
+    instance.session.reset();
+    instance.stop_requested = false;
+    instance.task_kind = .builtin_session;
+    const descriptor: raw.PulseTaskDescriptor = .{
+        .size = @sizeOf(raw.PulseTaskDescriptor),
+        .title = abi.view("运行内置桌宠"),
+        .type = abi.view("companion.session"),
+        .work = runBuiltin,
+        .user = instance,
+    };
+    var id: u64 = 0;
+    if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
+        instance.task_id = id;
+        instance.runtime_status = "内置桌宠任务已提交";
+        armTimer(instance);
+        if (instance.timer == null) instance.runtime_status = "自动收集不可用；切换页面重试检查";
+    } else {
+        instance.runtime_status = "宿主拒绝启动任务";
+    }
+    refresh(instance);
+}
+
+fn stopBuiltin(instance: *Instance) void {
+    if (instance.task_id == 0 or instance.task_kind != .builtin_session or instance.stop_requested) return;
+    const tasks = instance.tasks orelse return;
+    const cancel = tasks.cancel orelse return;
+    if (cancel(tasks.context, instance.task_id) == abi.ok) {
+        instance.stop_requested = true;
+        instance.runtime_status = "已请求停止；等待实际退出";
+    } else {
+        instance.runtime_status = "停止请求未确认";
     }
     refresh(instance);
 }
@@ -507,7 +590,8 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
     for (commands, 0..) |candidate, n| {
         if (!std.mem.eql(u8, candidate, name)) continue;
         if (n >= 4 and n <= 6 and instance.section != .global) return;
-        if (n >= 7 and instance.section != .library) return;
+        if (n >= 7 and n <= 11 and instance.section != .library) return;
+        if (n >= 12 and instance.section != .running) return;
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
@@ -533,6 +617,8 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
                 instance.library_offset += 16;
                 refresh(instance);
             },
+            12 => startBuiltin(instance),
+            13 => stopBuiltin(instance),
             else => {},
         }
         return;

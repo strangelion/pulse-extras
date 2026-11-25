@@ -22,9 +22,9 @@ fn checkAbi() !void {
     defer _ = FreeLibrary(module);
     const query: Query = @ptrCast(GetProcAddress(module, "pulse_companion_runtime_query") orelse return error.MissingQuery);
     var api: runtime.NativeApi = undefined;
-    if (query(2, @sizeOf(runtime.NativeApi), &api) != 0 or
-        query(1, @sizeOf(runtime.NativeApi) - 1, &api) != 0 or
-        query(1, @sizeOf(runtime.NativeApi), &api) == 0 or !api.valid())
+    if (query(1, @sizeOf(runtime.NativeApi), &api) != 0 or
+        query(2, @sizeOf(runtime.NativeApi) - 1, &api) != 0 or
+        query(2, @sizeOf(runtime.NativeApi), &api) == 0 or !api.valid())
         return error.BadRuntimeAbi;
     var group: runtime.Group = .{};
     var invalid = api;

@@ -571,3 +571,14 @@ pet_child_result pet_group_close(pet_supervisor_group *group) {
     InterlockedExchange(&live_owner, 0);
     return PET_CHILD_OK;
 }
+
+/* Terminal shutdown only. Job-close requests kernel termination but is not
+ * confirmed reap. Never use this path for normal capacity reclamation. */
+pet_child_result pet_group_abandon(pet_supervisor_group *group) {
+    if (!group || group != active_group) return PET_CHILD_INVALID;
+    for (unsigned i = 0; i < PET_GROUP_MAX; ++i) {
+        if (group->slots[i].id) release_child(&group->slots[i].child);
+    }
+    group->count = 0;
+    return pet_group_close(group);
+}

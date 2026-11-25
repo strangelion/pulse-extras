@@ -828,3 +828,19 @@ The MSVC fixture now supplies the built bridge digest independently through
 CI, checks wrong-digest refusal and successful open/drain/close/reopen. It
 never launches real pets. The host DLL still does not create a runtime owner;
 production package installation and worker hookup remain pending.
+
+## First live built-in session
+
+A bundled dev package embeds both runtime and helper digests. The Running
+page enables an explicit built-in start only after a successful runtime
+check. A single host-owned task serializes start, first-frame readiness,
+100 ms sampling, and exit. Cancellation stops admission, requests cooperative
+exit, escalates after two seconds and waits up to five seconds; emergency job
+close is reported as unconfirmed shutdown, never normal successful reap.
+The private bridge ABI is now v2 (adds terminal abandon); rebuild both DLLs.
+This pilot deliberately limits the session to one built-in pet and reuses
+the existing single task slot: library refresh is unavailable during the
+session. No managed asset launch or general multi-instance UI yet. Runtime
+and helper remain bound to the actual installed package location and embedded
+digests. Host task cancellation and final destroy retain the existing SDK
+lifetime contract. Real Pulse launch/stop and cleanup need acceptance.
