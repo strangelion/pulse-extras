@@ -81,6 +81,13 @@ class ScopeTests(unittest.TestCase):
     def test_normal_push(self):
         self.assertEqual(event_base("push", "refs/heads/main", {"before": SHA}), SHA)
 
+    def test_test_package_push_requires_full(self):
+        payload = {"before": SHA, "head_commit": {"message": "fix(companion): layout [test-package]"}}
+        self.assertIsNone(event_base("push", "refs/heads/experiment/openpets-ipc", payload))
+        self.assertEqual(event_base("push", "refs/heads/main", payload), SHA)
+        self.assertEqual(event_base("push", "refs/heads/experiment/openpets-ipc",
+                                    {"before": SHA, "head_commit": None}), SHA)
+
     def test_pr_base(self):
         self.assertEqual(event_base("pull_request", "refs/pull/1/merge",
                                     {"pull_request": {"base": {"sha": SHA}}}), SHA)

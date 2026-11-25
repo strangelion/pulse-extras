@@ -348,10 +348,12 @@ fn inputField(id: []const u8, caption: []const u8, prompt: []const u8) ui.Node {
 }
 
 fn searchInput(id: []const u8, caption: []const u8, prompt: []const u8) ui.Node {
-    var node = inputField(id, caption, prompt);
-    node.glyph = .{ .present = 1, .value = abi.view("search") };
-    node.flex = .{ .present = 1, .value = 1 };
-    return node;
+    // These controls are direct children of a vertical stack. Flex would
+    // allocate spare vertical space, not make the field wider. The host
+    // already fills the row and measures the native single-line height.
+    // Glyph is a literal glyph string, not an icon-name lookup. Omit it
+    // until the actual host's supported glyph mapping is verified.
+    return inputField(id, caption, prompt);
 }
 
 fn containsFolded(haystack: []const u8, needle: []const u8) bool {
@@ -3256,7 +3258,8 @@ test "settings preference validates exact value and duplicate keys" {
 fn expectInputLabels(node: *const ui.Node) !void {
     if (node.type == ui.NodeKind.text_input) {
         try std.testing.expectEqual(@as(u32, 1), node.text.present);
-        try std.testing.expect((abi.slice(node.text.value) orelse "").len != 0);
+        const caption = abi.slice(node.text.value) orelse return error.TestUnexpectedResult;
+        try std.testing.expect(caption.len != 0);
     }
     if (node.children.present != 0) {
         for (0..node.children.count) |n| try expectInputLabels(&node.children.data[n]);
@@ -3438,7 +3441,7 @@ test "quarantine rows distinguish unknown size from measured zero" {
     try std.testing.expect(std.mem.indexOf(u8, zero, "来源未证实") != null);
 }
 
-test "search field has an accessible label and a native placeholder" {
+test "search fields retain natural single-line layout and accessible labels" {
     const instance = try std.testing.allocator.create(Instance);
     defer std.testing.allocator.destroy(instance);
     instance.* = .{ .host = undefined };
@@ -3447,11 +3450,22 @@ test "search field has an accessible label and a native placeholder" {
     fill(instance, &content, &tree);
     try std.testing.expectEqual(ui.NodeKind.text_input, content.children[3].type);
     try std.testing.expectEqualStrings("library.query", abi.slice(content.children[3].state.value).?);
-    try std.testing.expectEqualStrings("search", abi.slice(content.children[3].glyph.value).?);
+    try std.testing.expectEqual(@as(u32, 0), content.children[3].glyph.present);
+    try std.testing.expectEqual(@as(u32, 0), content.children[3].flex.present);
     try std.testing.expectEqual(@as(u32, 1), content.children[3].text.present);
     try std.testing.expectEqualStrings("搜索素材", abi.slice(content.children[3].text.value).?);
     try std.testing.expectEqualStrings(commands[7], abi.slice(content.toolbar[0].command.value).?);
     try std.testing.expectEqualStrings(commands[28], abi.slice(content.toolbar[2].command.value).?);
+    for ([_]Section{ .library, .running, .market }) |section| {
+        instance.section = section;
+        fill(instance, &content, &tree);
+        const search = &content.children[3];
+        try std.testing.expectEqual(ui.NodeKind.text_input, search.type);
+        try expectInputLabels(search);
+        try std.testing.expectEqual(@as(u32, 1), search.placeholder.present);
+        try std.testing.expectEqual(@as(u32, 0), search.glyph.present);
+        try std.testing.expectEqual(@as(u32, 0), search.flex.present);
+    }
 }
 
 test "typing copies latest user query without mutating the worker input" {
@@ -3507,7 +3521,8 @@ test "market panel requires explicit admission and has no implicit install" {
     try std.testing.expectEqualStrings(commands[78], abi.slice(content.market_actions[4].command.value).?);
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[4].enabled.value);
     try std.testing.expect(std.mem.indexOf(u8, abi.slice(content.children[5].text.value).?, library.market_gallery_url) != null);
-    try std.testing.expectEqualStrings("search", abi.slice(content.children[3].glyph.value).?);
+    try std.testing.expectEqual(@as(u32, 0), content.children[3].glyph.present);
+    try std.testing.expectEqual(@as(u32, 0), content.children[3].flex.present);
     try std.testing.expectEqual(@as(u32, 27), tree.state_count);
     try std.testing.expectEqualStrings("policy.capture-crashes", abi.slice(tree.states[26].key).?);
     try std.testing.expectEqualStrings("false", abi.slice(tree.states[26].value).?);

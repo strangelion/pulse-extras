@@ -129,6 +129,11 @@ static PulseStatus check_input_labels(const PulseUiModelNode *node, unsigned dep
     REQUIRE(node && depth <= 32);
     if (node->type == PULSE_UI_MODEL_TEXT_INPUT) {
         REQUIRE(node->text.present && node->text.value.data && node->text.value.length);
+        if (same(node->id, "library.query") || same(node->id, "running.query") ||
+            same(node->id, "market.query")) {
+            REQUIRE(node->placeholder.present && node->placeholder.value.length);
+            REQUIRE(!node->glyph.present && !node->flex.present);
+        }
     }
     if (node->children.present) {
         REQUIRE(!node->children.count || node->children.data);
@@ -226,7 +231,7 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
         }
         const PulseUiModelNode *search = root->children.data + 3;
         REQUIRE(search->type == PULSE_UI_MODEL_TEXT_INPUT && same(search->state.value, "market.query"));
-        REQUIRE(search->glyph.present && same(search->glyph.value, "search"));
+        REQUIRE(!search->glyph.present && !search->flex.present);
         const PulseUiModelNode *actions = root->children.data + 4;
         REQUIRE(actions->children.present && actions->children.count == 5);
         REQUIRE(same(actions->children.data[3].command.value, commands[39]));
@@ -245,7 +250,7 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
                 (toolbar->children.count == 3 || toolbar->children.count == 4));
         const PulseUiModelNode *search = root->children.data + 3;
         REQUIRE(search->type == PULSE_UI_MODEL_TEXT_INPUT && search->placeholder.present);
-        REQUIRE(search->glyph.present && same(search->glyph.value, "search") && same(search->text.value, "搜索素材"));
+        REQUIRE(!search->glyph.present && !search->flex.present && same(search->text.value, "搜索素材"));
         REQUIRE(same(search->state.value, "library.query"));
         REQUIRE(same(toolbar->children.data[0].command.value, commands[7]));
         REQUIRE(same(toolbar->children.data[1].command.value, commands[11]));

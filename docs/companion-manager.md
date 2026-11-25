@@ -275,3 +275,21 @@ through one labeled constructor, checks recursive trees in Zig and C,
 and logs raw settings-create/query status, subscription index on failure
 and error name. This addresses a concrete upstream contract violation;
 actual 1.0.61 activation still requires a successful rerun with a new package.
+
+### D2 search field rendering follow-up
+
+The user confirmed actual Pulse activation and displayed the initial library
+page after the labeled-input fix. Search height was excessive and six
+missing-glyph boxes appeared at the left. Pinned upstream
+[src/ui/extension_tree_layout.cpp](https://github.com/jimmgreen/pulse/blob/b32436831a066e18448b2810bef4bf989024fc68/src/ui/extension_tree_layout.cpp)
+allocates surplus vertical space by child flex; the native
+[control painter](https://github.com/jimmgreen/pulse/blob/b32436831a066e18448b2810bef4bf989024fc68/src/ui/extension_tree_controls.cpp)
+passes glyph strings to the text field as literal glyphs. Remove flex and
+the unverified literal "search" glyph from all three search fields. Keep
+text labels, placeholders, state keys and existing search/clear behavior.
+Retest the three pages at actual host DPI/width; appearance remains
+unverified after this correction. No custom renderer or new dependency.
+The previous full CI (45724204710) failed compiling the added Zig label
+assertion; Windows desktop and IPC passed. Correct the optional-slice
+assertion, add layout checks, and force full scope on an explicit
+experimental-branch test-package push so it can actually produce an artifact.

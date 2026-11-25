@@ -54,8 +54,19 @@ def classify(paths: list[str]) -> str:
     return "full"
 
 
+def test_package_requested(event_name: str, ref: str, event: dict) -> bool:
+    """Match the workflow's explicit experimental-branch push opt-in."""
+    if event_name != "push" or ref != "refs/heads/experiment/openpets-ipc":
+        return False
+    head = event.get("head_commit")
+    message = head.get("message") if isinstance(head, dict) else None
+    return isinstance(message, str) and "[test-package]" in message
+
+
 def event_base(event_name: str, ref: str, event: dict) -> str | None:
     if event_name == "push" and ref.startswith("refs/heads/"):
+        if test_package_requested(event_name, ref, event):
+            return None  # Explicit package request requires full regression.
         if event.get("forced") or event.get("created") or event.get("deleted"):
             return None
         sha = event.get("before")
@@ -73,7 +84,7 @@ def determine_scope() -> tuple[str, str]:
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
         base = event_base(os.environ["GITHUB_EVENT_NAME"], os.environ["GITHUB_REF"], event)
         if base is None:
-            return "full", "manual, tag, new/rewritten branch or unknown event"
+            return "full", "manual, test-package request, tag, new/rewritten branch or unknown event"
         # PR checkout is the tested merge commit; compare it to the PR base.
         # --no-renames includes both old and new paths, and -z preserves names.
         result = subprocess.run(
