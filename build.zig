@@ -391,6 +391,7 @@ pub fn build(b: *std.Build) void {
         "shared/companion/pet_memory.zig",
         "shared/companion/pet_resources.zig",
         "shared/companion/pet_decode_task.zig",
+        "shared/companion/pet_async_bridge.zig",
         "shared/companion/animation.zig",
         "shared/companion/native_dispatch.zig",
     };

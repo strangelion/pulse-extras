@@ -51,11 +51,18 @@ pub const Bridge = extern struct {
     }
 };
 
+fn wireKind(kind: task.Kind) u32 {
+    return switch (kind) {
+        .outfit => 0,
+        .activity => 1,
+    };
+}
+
 fn decode(context: *anyopaque, _: std.mem.Allocator, selection: task.Selection) ?[]u8 {
     const ctx: *Context = @ptrCast(@alignCast(context));
     var bytes: usize = 0;
     // The native loader allocates through this same Group's pool.
-    const pixels = ctx.decode(ctx.user, @intFromEnum(selection.kind), selection.outfit, selection.activity, &bytes) orelse return null;
+    const pixels = ctx.decode(ctx.user, wireKind(selection.kind), selection.outfit, selection.activity, &bytes) orelse return null;
     std.debug.assert(bytes != 0);
     return pixels[0..bytes];
 }
@@ -97,11 +104,11 @@ fn takeTask(owner: *Owner, out: *Result) callconv(.c) c_int {
     switch (completed) {
         .stale => return 0,
         .failed => |selection| {
-            out.* = .{ .kind = @intFromEnum(selection.kind), .outfit = selection.outfit, .activity = selection.activity };
+            out.* = .{ .kind = wireKind(selection.kind), .outfit = selection.outfit, .activity = selection.activity };
             return 2;
         },
         .ready => |result| {
-            out.* = .{ .kind = @intFromEnum(result.selection.kind), .outfit = result.selection.outfit, .activity = result.selection.activity, .pixels = result.bytes.ptr, .bytes = result.bytes.len };
+            out.* = .{ .kind = wireKind(result.selection.kind), .outfit = result.selection.outfit, .activity = result.selection.activity, .pixels = result.bytes.ptr, .bytes = result.bytes.len };
             return 1;
         },
     }
@@ -117,4 +124,89 @@ fn busyTask(owner: *Owner) callconv(.c) c_int {
 
 fn stopTask(owner: *Owner) callconv(.c) void {
     owner.stop();
+}
+
+const Fixture = struct {
+    group: *Group,
+    notifications: usize = 0,
+
+    fn load(user: *anyopaque, kind: u32, outfit: u32, activity: u32, bytes: *usize) callconv(.c) ?[*]u8 {
+        const self: *Fixture = @ptrCast(@alignCast(user));
+        bytes.* = 0;
+        if (activity == 15) return null;
+        const result = self.group.allocator().alloc(u8, 16) catch return null;
+        @memset(result, @intCast(kind * 32 + outfit));
+        bytes.* = result.len;
+        return result.ptr;
+    }
+
+    fn signal(user: *anyopaque) callconv(.c) void {
+        const self: *Fixture = @ptrCast(@alignCast(user));
+        self.notifications += 1;
+    }
+};
+
+test "native bridge transfers only latest result with explicit wire codes" {
+    var group = Group.init(std.testing.allocator, 64, 1, 1);
+    var owner = Owner.init(std.testing.io, &group);
+    defer owner.stop();
+    var fixture: Fixture = .{ .group = &group };
+    const abi = Bridge.init(&owner);
+    var result: Result = .{};
+    try std.testing.expectEqual(@as(c_int, 0), abi.submit(abi.owner, 0, 0, 0));
+    try std.testing.expectEqual(@as(c_int, -1), abi.take(abi.owner, &result));
+    try std.testing.expectEqual(@as(c_int, 1), abi.bind(abi.owner, &fixture, Fixture.load, Fixture.signal));
+    try std.testing.expectEqual(@as(c_int, 0), abi.bind(abi.owner, &fixture, Fixture.load, Fixture.signal));
+    try std.testing.expectEqual(@as(c_int, 0), abi.submit(abi.owner, 2, 0, 0));
+    try std.testing.expectEqual(@as(c_int, 0), abi.submit(abi.owner, 0, 17, 0));
+    try std.testing.expectEqual(@as(c_int, 0), abi.submit(abi.owner, 1, 0, 16));
+    try std.testing.expectEqual(@as(c_int, 1), abi.submit(abi.owner, 0, 1, 0));
+    try std.testing.expectEqual(@as(c_int, 1), abi.start(abi.owner));
+    try std.testing.expectEqual(@as(c_int, 1), abi.submit(abi.owner, 0, 2, 0));
+    try std.testing.expectEqual(@as(c_int, 1), abi.submit(abi.owner, 1, 3, 4));
+    try std.testing.expectEqual(@as(c_int, 0), abi.start(abi.owner));
+    try std.testing.expectEqual(@as(c_int, 0), abi.take(abi.owner, &result));
+    try std.testing.expect(result.pixels == null);
+    try std.testing.expectEqual(@as(usize, 0), group.diagnostics().memory.live_bytes);
+    try std.testing.expectEqual(@as(c_int, 1), abi.start(abi.owner));
+    try std.testing.expectEqual(@as(c_int, 1), abi.take(abi.owner, &result));
+    {
+        const pixels = result.pixels orelse return error.MissingPixels;
+        defer group.allocator().free(pixels[0..result.bytes]);
+        try std.testing.expectEqual(@as(u32, 1), result.kind);
+        try std.testing.expectEqual(@as(u32, 3), result.outfit);
+        try std.testing.expectEqual(@as(u32, 4), result.activity);
+        try std.testing.expectEqual(@as(usize, 16), result.bytes);
+        try std.testing.expectEqual(@as(u8, 35), pixels[0]);
+    }
+    try std.testing.expectEqual(@as(usize, 2), fixture.notifications);
+    try std.testing.expectEqual(@as(c_int, 0), abi.busy(abi.owner));
+    try group.checkDrained();
+}
+
+test "native bridge failure cancellation and stop drain all reservations" {
+    var group = Group.init(std.testing.allocator, 64, 1, 1);
+    var owner = Owner.init(std.testing.io, &group);
+    defer owner.stop();
+    var fixture: Fixture = .{ .group = &group };
+    const abi = Bridge.init(&owner);
+    var result: Result = .{};
+    try std.testing.expectEqual(@as(c_int, 1), abi.bind(abi.owner, &fixture, Fixture.load, Fixture.signal));
+    try std.testing.expectEqual(@as(c_int, 1), abi.submit(abi.owner, 1, 0, 15));
+    try std.testing.expectEqual(@as(c_int, 1), abi.start(abi.owner));
+    try std.testing.expectEqual(@as(c_int, 2), abi.take(abi.owner, &result));
+    try std.testing.expectEqual(@as(u32, 15), result.activity);
+    try std.testing.expect(result.pixels == null and result.bytes == 0);
+    try std.testing.expectEqual(@as(c_int, 1), abi.submit(abi.owner, 0, 1, 0));
+    try std.testing.expectEqual(@as(c_int, 1), abi.start(abi.owner));
+    abi.invalidate(abi.owner);
+    try std.testing.expectEqual(@as(c_int, 0), abi.take(abi.owner, &result));
+    try group.checkDrained();
+    try std.testing.expectEqual(@as(c_int, 1), abi.submit(abi.owner, 0, 2, 0));
+    try std.testing.expectEqual(@as(c_int, 1), abi.start(abi.owner));
+    try std.testing.expectEqual(@as(c_int, 1), abi.submit(abi.owner, 0, 3, 0));
+    abi.stop(abi.owner);
+    abi.stop(abi.owner);
+    try std.testing.expectEqual(@as(c_int, 0), abi.busy(abi.owner));
+    try group.checkDrained();
 }

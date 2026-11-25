@@ -899,3 +899,14 @@ that an actual task ran and all accounted resources drained. It does
 not verify successful WIC decoding, desktop responsiveness, or actual
 host unload. New revision requires Windows CI and later real artwork
 stress tests.
+
+### Native async bridge regression gate
+
+Run 45548810616 stopped on both platforms at zig fmt --check. The
+pinned formatter migrates @intFromEnum to @backingInt. Use an explicit
+wireKind switch instead, so the C protocol does not depend on Zig enum
+ordinals or deprecated builtins. Add the bridge itself to portable
+unit tests, exercising the actual callback ABI, invalid inputs,
+replacement, stale cleanup, result ownership, notification, decode
+failure and stop/drain. The native Windows compile and real WIC
+execution remain unverified until the new revision passes CI.
