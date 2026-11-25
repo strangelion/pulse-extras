@@ -10,18 +10,30 @@ const process = @import("pulse_process");
 const http = @import("companion/pet_market_http_win32.zig");
 const download = @import("companion/pet_market_download.zig");
 const installer = @import("companion_market_install.zig");
+const service_mod = @import("companion_market_service.zig");
+const market = @import("companion/pet_market.zig");
 const Group = @import("runtime_group").Group;
 const Budget = @import("runtime_budget").Budget;
 
 const FixtureTransport = struct {
     bytes: []const u8,
 
-    pub fn get(self: *FixtureTransport, _: download.Kind, _: []const u8, sink: *download.Sink) !void {
-        try sink.headers(self.bytes.len);
+    pub fn get(self: *FixtureTransport, kind: download.Kind, url: []const u8, sink: *download.Sink) !void {
+        const body = if (kind == .zip) self.bytes else if (kind == .index)
+            "{\"version\":3,\"generatedAt\":\"fixture-revision\",\"total\":1,\"pageSize\":20,\"search\":\"https://openpets.dev/pets/catalog.v3/rev/search.json\",\"pages\":[\"https://openpets.dev/pets/catalog.v3/rev/detail.json\"]}"
+        else if (std.mem.endsWith(u8, url, "/search.json"))
+            "{\"version\":3,\"generatedAt\":\"fixture-revision\",\"total\":1,\"pageSize\":100,\"pages\":[\"https://openpets.dev/pets/catalog.v3/rev/s0.json\"]}"
+        else if (std.mem.endsWith(u8, url, "/s0.json"))
+            "{\"version\":3,\"page\":0,\"pageSize\":100,\"pets\":[{\"id\":\"fixture-v1\",\"displayName\":\"Fixture\",\"searchText\":\"Fixture\",\"category\":\"asian\",\"catalogPage\":0,\"original\":true}]}"
+        else if (std.mem.endsWith(u8, url, "/detail.json"))
+            "{\"version\":3,\"page\":0,\"pageSize\":20,\"pets\":[{\"id\":\"fixture-v1\",\"displayName\":\"Fixture\",\"description\":\"Fixture\",\"thumbnail\":\"https://openpets.dev/pets/fixture-v1/thumb.webp\",\"spritesheet\":\"https://openpets.dev/pets/fixture-v1/spritesheet.webp\",\"zip\":\"https://zip.openpets.dev/pets/fixture-v1/base.zip\",\"category\":\"asian\",\"original\":true}]}"
+        else
+            return error.InvalidUrl;
+        try sink.headers(body.len);
         var offset: usize = 0;
-        while (offset < self.bytes.len) {
-            const end = @min(self.bytes.len, offset + 37);
-            try sink.append(self.bytes[offset..end]);
+        while (offset < body.len) {
+            const end = @min(body.len, offset + 37);
+            try sink.append(body[offset..end]);
             offset = end;
         }
     }
@@ -39,6 +51,7 @@ extern "c" fn pet_catalog_store_fixture_open([*]u16, u32) c_int;
 extern "c" fn pet_import_fixture_path(c_uint, [*]u8, u32) u32;
 extern "c" fn pet_import_fixture_utf8([*:0]const u16, [*]u8, u32) u32;
 extern "c" fn pet_import_fixture_close([*:0]const u16) c_int;
+extern "c" fn pet_market_cache_fixture_close([*:0]const u16) c_int;
 
 fn fixturePath(kind: c_uint, out: []u8) ![]const u8 {
     const len = pet_import_fixture_path(kind, out.ptr, @intCast(out.len));
@@ -104,20 +117,63 @@ test "real approved helper imports package and reload deduplicates" {
     try std.testing.expectEqual(archive_size, @as(u64, n));
     const scratch = try std.Io.Dir.cwd().openDir(io, root_path, .{ .follow_symlinks = false });
     defer scratch.close(io);
-    var group = Group.init(std.testing.allocator, 0, 0, 2);
+    var group = Group.init(std.testing.allocator, 32 * 1024 * 1024, 0, 2);
     var tasks = @import("companion/pet_market_tasks.zig").Tasks(FixtureTransport).init(io, scratch, &group);
     defer tasks.shutdown() catch @panic("download fixture cleanup failed");
-    const request = try tasks.start(.zip, "https://zip.openpets.dev/pets/fixture-v1/base.zip", .{ .bytes = zip_buf[0..n] });
-    const archive = try tasks.join(request);
+    var cache_root: [1024]u16 = @splat(0);
+    try std.testing.expect(pet_catalog_store_fixture_open(&cache_root, cache_root.len) != 0);
+    const cache_path: [*:0]const u16 = @ptrCast(&cache_root);
+    defer {
+        std.testing.expect(pet_market_cache_fixture_close(cache_path) != 0) catch @panic("market cache cleanup failed");
+    }
+    var service: service_mod.Service(FixtureTransport) = .{
+        .allocator = group.allocator(),
+        .tasks = &tasks,
+        .cache = .{ .root = cache_path },
+        .transport = .{ .bytes = zip_buf[0..n] },
+        .now = 1000,
+    };
+    defer service.shutdown() catch @panic("market service cleanup failed");
+    var market_root = try service.openRoot();
+    defer market_root.deinit();
+    var hits: [1]market.Hit = undefined;
+    const selection = try service.search(&market_root, .{ .query = "fixture" }, 0, &hits);
+    try std.testing.expectEqual(@as(usize, 1), selection.summary.written);
     var stage: installer.Install = .{};
     var disk = Budget.init(2 * 1024 * 1024 * 1024);
     defer stage.cleanup(io, scratch, &disk) catch @panic("ZIP fixture cleanup failed");
-    const result = try stage.run(io, scratch, root_path, &disk, archive, root_wide, &owner, &helper, "fixture-v1");
-    try stage.cleanup(io, scratch, &disk);
+
+    // Cancellation after a successful download must not publish anything.
+    const canceled = try service.startPackage(&market_root, &selection, &hits[0], false);
+    _ = try tasks.join(canceled);
+    try service.cancelPackage(canceled);
+    const canceled_result = try service.finishPackage(canceled, &stage, scratch, root_path, &disk, root_wide, &owner, &helper);
+    try std.testing.expectError(error.Canceled, canceled_result.result);
+    try std.testing.expect(canceled_result.stage_cleanup == null and canceled_result.transfer_cleanup == null);
+    try std.testing.expectEqual(@as(usize, 0), owner.index.count);
+
+    // Invalid ZIP also releases both archive and extraction reservations.
+    service.transport.bytes = "not a zip";
+    const invalid = try service.startPackage(&market_root, &selection, &hits[0], false);
+    const invalid_result = try service.finishPackage(invalid, &stage, scratch, root_path, &disk, root_wide, &owner, &helper);
+    try std.testing.expectError(error.InvalidArchive, invalid_result.result);
+    try std.testing.expect(invalid_result.stage_cleanup == null and invalid_result.transfer_cleanup == null);
     try std.testing.expectEqual(@as(usize, 0), disk.used);
-    try tasks.release(request);
-    try group.checkDrained();
-    try std.testing.expectEqual(@as(u64, 1), result.imported);
+    try std.testing.expectEqual(@as(usize, 0), owner.index.count);
+
+    service.transport.bytes = zip_buf[0..n];
+    const request = try service.startPackage(&market_root, &selection, &hits[0], false);
+    const outcome = try service.finishPackage(request, &stage, scratch, root_path, &disk, root_wide, &owner, &helper);
+    try std.testing.expect(outcome.stage_cleanup == null and outcome.transfer_cleanup == null);
+    try std.testing.expectEqual(@as(u64, 1), (try outcome.result).imported);
+    try std.testing.expectError(error.NotOwned, service.finishPackage(request, &stage, scratch, root_path, &disk, root_wide, &owner, &helper));
+    const duplicate_request = try service.startPackage(&market_root, &selection, &hits[0], false);
+    const duplicate_outcome = try service.finishPackage(duplicate_request, &stage, scratch, root_path, &disk, root_wide, &owner, &helper);
+    try std.testing.expect(duplicate_outcome.stage_cleanup == null and duplicate_outcome.transfer_cleanup == null);
+    try std.testing.expectEqual(@as(u64, 1), (try duplicate_outcome.result).existing);
+    try std.testing.expectEqual(@as(usize, 0), disk.used);
+    try service.shutdown();
+    try tasks.checkDrained();
     var restarted: importing.Coordinator = .{};
     try std.testing.expect(try store.loadInventory(root_wide, &restarted.index));
     try std.testing.expectEqual(@as(u64, 2), restarted.index.next_id);

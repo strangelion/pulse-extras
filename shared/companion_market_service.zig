@@ -9,6 +9,22 @@ const tasks_mod = @import("companion/pet_market_tasks.zig");
 const cache_mod = @import("companion_market_cache.zig");
 const codec = @import("companion/pet_market_cache.zig");
 const http = @import("companion/pet_market_http_win32.zig");
+const installer = @import("companion_market_install.zig");
+const importing = @import("companion/pet_import.zig");
+const Budget = @import("runtime_budget").Budget;
+
+fn hitKey(hit: *const market.Hit) ![32]u8 {
+    if (hit.id_len == 0 or hit.id_len > hit.id.len or hit.name_len == 0 or hit.name_len > hit.name.len) return error.InvalidCatalog;
+    var hash = std.crypto.hash.sha2.Sha256.init(.{});
+    var lengths: [12]u8 = undefined;
+    std.mem.writeInt(u32, lengths[0..4], @intCast(hit.id_len), .little);
+    std.mem.writeInt(u32, lengths[4..8], @intCast(hit.name_len), .little);
+    std.mem.writeInt(u32, lengths[8..12], hit.catalog_page, .little);
+    hash.update(&lengths);
+    hash.update(hit.sourceId());
+    hash.update(hit.displayName());
+    return hash.finalResult();
+}
 
 pub const Policy = enum { online, offline_only, stale_on_network_failure };
 
@@ -33,6 +49,16 @@ pub const Search = struct {
     stale: bool,
     created_at: u64,
     expires_at: u64,
+    row_keys: [128][32]u8 = undefined,
+
+    pub fn contains(self: *const Search, hit: *const market.Hit) bool {
+        if (self.summary.written > self.row_keys.len) return false;
+        const key = hitKey(hit) catch return false;
+        for (self.row_keys[0..self.summary.written]) |expected| {
+            if (std.mem.eql(u8, &key, &expected)) return true;
+        }
+        return false;
+    }
 
     pub fn matches(self: *const Search, root: *const Root) bool {
         return self.revision_len <= self.revision.len and
@@ -55,8 +81,22 @@ pub fn Service(comptime Transport: type) type {
             }
         };
 
+        const Pending = struct {
+            id: u64,
+            source: [64]u8 = @splat(0),
+            source_len: usize,
+            consumed: bool = false,
+        };
+
+        pub const Finish = struct {
+            result: anyerror!importing.Result,
+            stage_cleanup: ?anyerror = null,
+            transfer_cleanup: ?anyerror = null,
+        };
+
         allocator: std.mem.Allocator,
         tasks: *Tasks,
+        pending: [8]?Pending = @splat(null),
         cache: cache_mod.Cache,
         transport: Transport,
         policy: Policy = .online,
@@ -148,6 +188,9 @@ pub fn Service(comptime Transport: type) type {
             }
             var result: Search = .{ .summary = try scan.finish(search_index.value), .revision_len = index.generatedAt.len, .stale = stale, .created_at = self.now, .expires_at = expires };
             @memcpy(result.revision[0..result.revision_len], index.generatedAt);
+            for (output[0..result.summary.written], 0..) |*hit, n| {
+                result.row_keys[n] = try hitKey(hit);
+            }
             return result;
         }
 
@@ -155,7 +198,14 @@ pub fn Service(comptime Transport: type) type {
         /// or offline results are browsable but cannot initiate installation.
         /// Return a task ID: dispatcher later joins it and calls Install.run.
         pub fn startPackage(self: *Self, root: *const Root, result: *const Search, hit: *const market.Hit, full: bool) !u64 {
-            if (!result.matches(root)) return error.StaleSelection;
+            if (!result.matches(root) or !result.contains(hit)) return error.StaleSelection;
+            var free_slot: ?usize = null;
+            for (self.pending, 0..) |entry, n| {
+                if (entry) |pending| {
+                    if (std.mem.eql(u8, pending.source[0..pending.source_len], hit.sourceId())) return error.AlreadyQueued;
+                } else if (free_slot == null) free_slot = n;
+            }
+            const slot = free_slot orelse return error.ResourceLimit;
             if (!root.fresh(self.now) or result.stale or self.now < result.created_at or self.now >= result.expires_at or self.policy == .offline_only) return error.StaleSelection;
             const index = root.parsed.value;
             const body = try self.get(.{ .detail = .{ .root = index, .number = hit.catalog_page } });
@@ -164,8 +214,89 @@ pub fn Service(comptime Transport: type) type {
             const parsed = try market.parsePage(self.allocator, body.payload, hit.catalog_page, index.pageSize);
             defer parsed.deinit();
             const pet = try market.resolveHit(hit, parsed.value);
+            if (!std.mem.eql(u8, pet.displayName, hit.displayName())) return error.StaleSelection;
             const url = pet.download(full) orelse return error.UnsupportedPackage;
-            return self.tasks.start(.zip, url, self.transport);
+            const id = try self.tasks.start(.zip, url, self.transport);
+            var pending: Pending = .{ .id = id, .source_len = pet.id.len };
+            @memcpy(pending.source[0..pending.source_len], pet.id);
+            self.pending[slot] = pending;
+            return id;
+        }
+
+        fn pendingSlot(self: *Self, id: u64) !usize {
+            for (self.pending, 0..) |entry, n| {
+                if (entry) |pending| {
+                    if (pending.id == id) return n;
+                }
+            }
+            return error.NotOwned;
+        }
+
+        pub fn packageProgress(self: *Self, id: u64) !Tasks.Progress {
+            _ = try self.pendingSlot(id);
+            return self.tasks.progress(id);
+        }
+
+        pub fn cancelPackage(self: *Self, id: u64) !void {
+            _ = try self.pendingSlot(id);
+            try self.tasks.cancel(id);
+        }
+
+        /// Serialized worker only. The archive is borrowed until run returns.
+        /// The source ID comes from the validated detail page, never the UI.
+        /// Report committed results separately from cleanup failures; neither
+        /// a failed import nor a cleanup failure permits a second installation.
+        pub fn finishPackage(self: *Self, id: u64, stage: *installer.Install, scratch: std.Io.Dir, scratch_path: []const u8, budget: *Budget, root: [*:0]const u16, owner: *importing.Coordinator, helper: anytype) !Finish {
+            const slot = try self.pendingSlot(id);
+            const pending = self.pending[slot].?;
+            if (pending.consumed) return error.AlreadyConsumed;
+            if (stage.charged != 0 or stage.stage.root_created or stage.recovery_required) return error.Busy;
+            self.pending[slot].?.consumed = true;
+            const archive = self.tasks.join(id);
+            var outcome: Finish = .{ .result = error.Canceled };
+            if (archive) |file| {
+                const progress = self.tasks.progress(id) catch unreachable;
+                if (!progress.canceled) {
+                    outcome.result = stage.run(self.tasks.io, scratch, scratch_path, budget, file, root, owner, helper, pending.source[0..pending.source_len]);
+                    stage.cleanup(self.tasks.io, scratch, budget) catch |err| {
+                        outcome.stage_cleanup = err;
+                    };
+                }
+            } else |err| {
+                outcome.result = err;
+            }
+            if (self.tasks.release(id)) |_| {
+                self.pending[slot] = null;
+            } else |err| {
+                outcome.transfer_cleanup = err;
+            }
+            return outcome;
+        }
+
+        /// Cancel, join, release. A consumed task may only retry cleanup.
+        pub fn discardPackage(self: *Self, id: u64) !void {
+            const slot = try self.pendingSlot(id);
+            self.pending[slot].?.consumed = true;
+            try self.tasks.cancel(id);
+            _ = self.tasks.join(id) catch {};
+            try self.tasks.release(id);
+            self.pending[slot] = null;
+        }
+
+        /// Reject new transfers and drain all owned package and task slots.
+        /// Do not free the service, scratch root or group on failure.
+        pub fn shutdown(self: *Self) !void {
+            self.tasks.requestStop();
+            var failed = false;
+            for (self.pending) |entry| {
+                if (entry) |pending| {
+                    self.discardPackage(pending.id) catch {
+                        failed = true;
+                    };
+                }
+            }
+            if (failed) return error.CleanupFailed;
+            try self.tasks.shutdown();
         }
     };
 }
@@ -222,10 +353,15 @@ test "market service connects real persistent cache, futures, search and package
         try std.testing.expectEqual(@as(usize, 1), result.summary.written);
         try std.testing.expectEqualStrings("cat", hits[0].sourceId());
         try std.testing.expectEqual(@as(usize, 3), calls);
+        var wrong = hits[0];
+        wrong.name[0] = 'X';
+        try std.testing.expectError(error.StaleSelection, service.startPackage(&root, &result, &wrong, false));
         const id = try service.startPackage(&root, &result, &hits[0], false);
+        try std.testing.expectError(error.AlreadyQueued, service.startPackage(&root, &result, &hits[0], false));
         const archive = try tasks.join(id);
         try std.testing.expectEqual(@as(usize, "fixture archive".len), archive.bytes);
-        try tasks.release(id);
+        try service.discardPackage(id);
+        try std.testing.expectError(error.NotOwned, service.packageProgress(id));
         try std.testing.expectEqual(@as(usize, 5), calls);
         service.policy = .offline_only;
         try std.testing.expectError(error.StaleSelection, service.startPackage(&root, &result, &hits[0], false));
@@ -243,6 +379,7 @@ test "market service connects real persistent cache, futures, search and package
         try std.testing.expectEqual(@as(usize, 6), calls);
         try std.testing.expectError(error.StaleSelection, service.startPackage(&fallback, &result, &hits[0], false));
     }
+    try service.shutdown();
     try tasks.checkDrained();
     try group.checkDrained();
 }

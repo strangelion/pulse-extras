@@ -1356,3 +1356,30 @@ hostile same-user mapped writes are outside the guarantee; actual host
 acceptance and Windows regression are required before release. Tests cover
 marker blocking, direct command without selection, actual isolated package
 cleanup and retry refusal. The feature remains experimental.
+
+## Selected market download-to-install transaction
+
+The serialized service now binds the copied search window to its generation
+and bounded SHA-256 row identities (ID, display name and detail page).
+A row outside that exact window or with altered identity is refused before
+network admission. Detail resolution must still match the visible name.
+Up to eight pending package slots retain the resolved source ID and transfer
+ID; duplicate in-flight source IDs are refused. Progress and cancellation
+require an owned package ID. Finish joins the transfer, checks cancellation
+even after successful transfer, passes the bound source ID into the existing
+ZIP and inventory transaction, and always attempts extraction and transfer
+cleanup. Import outcome and cleanup errors remain separate: a committed
+installation is never disguised as a failed import, and a consumed transfer
+cannot install again. Failed transfer cleanup retains the slot for explicit
+release retry; ambiguous inventory or staging state retains its separate
+reservation. Shutdown cancels, joins and drains every package before the
+owner is released. No detached jobs or UI-thread calls.
+
+The independent Windows integration fixture now drives V3 search, real
+temporary files, ZIP admission/extraction and the approved helper through
+this service, testing cancellation after download, invalid archive, success,
+deduplication and double-finish refusal. Synthetic catalog/transport data
+does not prove live HTTPS or a real-host market panel. The installation
+adapter still uses caller-approved roots and the serialized catalog owner;
+host-side lease-bound wiring, persistent provenance/license display and
+live concurrent UI integration remain outstanding. New CI pending.
