@@ -152,3 +152,36 @@ subsequent I/O, EOF and repeated close. It is not a running OpenPets test.
 This experiment is not linked into the shipping DLL. The remaining gate
 is secure opened-handle discovery/ACL and independently authenticated
 process identity, then a Zig adapter and real approved hello/status.
+
+## Windows discovery and candidate process trust primitives
+
+The pipe primitive passed run [45528576360](https://github.com/strangelion/pulse-extras/actions/runs/45528576360).
+The separate openpets_trust_win32 C primitive accepts a caller-approved,
+pinned directory handle on a fixed local drive. It opens only ipc.json
+relative to that handle (NtCreateFile, no concatenated path fallback),
+opens reparse objects without following them, and rejects reparse attributes,
+multiple hard links, empty/oversized data and unexpected ACLs. File sharing
+denies concurrent write/delete; both directory and file must be owned by the
+current user and have a non-null DACL with only effective ordinary allow ACEs
+for that user, SYSTEM or Administrators. Other ACE forms fail closed (ordinary
+deny ACEs are allowed). This intentionally may reject real installations.
+All reads are bounded, unsuccessful reads clear the destination; synchronous
+metadata/file operations still belong on a worker and are not hard-cancellable.
+
+The candidate process function takes an independently approved executable path,
+checks the live process's token user, session and reported image path, and returns
+an owned handle for subsequent named-pipe server PID comparison. It is not a
+signature/hash check of the mapped executable and does not protect against
+malicious same-user code, administrators, or preexisting privileged handles.
+Do not derive the approved path or directory from the discovery JSON.
+Directory bootstrap (including safe ancestor traversal and user approval) and
+the Zig-to-C adapter remain separate gates. No automatic discovery or shipping
+extension is enabled by these primitives.
+
+Windows CI exercises a private temporary directory, real kernel ACL checks,
+hard links, exact-size/oversized/missing files, cancellation and process
+identity/path mismatch. Reparse-point rejection is implemented but its
+privilege-dependent fixture and live OpenPets compatibility remain unverified.
+
+API references: [NtCreateFile](https://learn.microsoft.com/windows/win32/api/winternl/nf-winternl-ntcreatefile),
+[GetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo).
