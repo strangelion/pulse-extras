@@ -319,6 +319,8 @@ const Modules = struct {
                 .{ .name = "pulse_process", .module = process_mod },
                 .{ .name = "process_trust", .module = process_trust },
                 .{ .name = "vcs_test_config", .module = vcs_test_config },
+                .{ .name = "pulse_async_host", .module = async_host },
+                .{ .name = "pulse_abi", .module = abi },
             },
         });
         const vcs_windows_evidence = b.createModule(.{
@@ -421,7 +423,15 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(hello_panel);
 
-    // Experimental fail-closed candidate; no distributable package yet.
+    // Optional trusted provisioning implementation compiled into the DLL.
+    // The default is always locked. Never load an arbitrary runtime source.
+    const source_path = b.option([]const u8, "vcs-approval-source", "Trusted reviewed approval provisioning Zig source (relative to repository)") orelse "extensions/vcs-panel/locked_source.zig";
+    const native_source = b.createModule(.{
+        .root_source_file = b.path(source_path),
+        .target = target,
+        .optimize = optimize,
+        .imports = dll_modules.imports(),
+    });
     const vcs_panel_dll = b.addLibrary(.{
         .name = "pulse_vcs_panel",
         .linkage = .dynamic,
@@ -432,11 +442,18 @@ pub fn build(b: *std.Build) void {
             .imports = dll_modules.imports(),
         }),
     });
+    vcs_panel_dll.root_module.addImport("vcs_native_source", native_source);
     b.installArtifact(vcs_panel_dll);
 
     // Every module also runs its own tests on the host target, so the wrappers
     // are checked even when the probe does not use them yet.
     var host_modules = Modules.add(b, b.graph.host, .Debug, vcs_test_config);
+    const locked_source = b.createModule(.{
+        .root_source_file = b.path("extensions/vcs-panel/locked_source.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+        .imports = host_modules.imports(),
+    });
     const test_sources = [_][]const u8{
         "extensions/abi-probe/main.zig",
         "extensions/hello-panel/main.zig",
@@ -486,6 +503,7 @@ pub fn build(b: *std.Build) void {
                 .imports = host_modules.imports(),
             }),
         });
+        if (std.mem.eql(u8, source, "extensions/vcs-panel/main.zig")) unit_tests.root_module.addImport("vcs_native_source", locked_source);
         test_step.dependOn(&b.addRunArtifact(unit_tests).step);
     }
 }

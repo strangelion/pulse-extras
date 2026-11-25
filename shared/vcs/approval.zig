@@ -133,6 +133,46 @@ pub const Review = struct {
         return self.grant;
     }
 
+    pub const record_max_bytes = 142 + 3 * identity.max_path_bytes;
+    const record_magic = "PVCSRV01";
+
+    /// Bounded portable record; a caller must store/authenticate it in its
+    /// private trusted store. Decode alone NEVER grants approval. Unknown
+    /// schema versions are refused, never silently migrated to permission.
+    pub fn encode(self: *const Review, buffer: []u8) contract.Error![]const u8 {
+        const paths = [_][]const u8{ self.grant.executable.slice(), self.grant.root.slice(), self.grant.neutral_cwd.slice() };
+        const size = 142 + paths[0].len + paths[1].len + paths[2].len;
+        if (size > record_max_bytes or size > buffer.len) return error.ResourceLimit;
+        @memcpy(buffer[0..8], record_magic);
+        @memcpy(buffer[8..40], &self.grant.executable_digest);
+        @memcpy(buffer[40..72], &self.grant.installation_digest);
+        @memcpy(buffer[72..104], &self.grant.repository_digest);
+        @memcpy(buffer[104..136], &self.environment_digest);
+        var offset: usize = 142;
+        for (paths, 0..) |path, i| {
+            if (!strictPath(path) or path.len > identity.max_path_bytes) return error.Permission;
+            std.mem.writeInt(u16, buffer[136 + i * 2 ..][0..2], @intCast(path.len), .little);
+            @memcpy(buffer[offset..][0..path.len], path);
+            offset += path.len;
+        }
+        return buffer[0..size];
+    }
+
+    pub fn decode(bytes: []const u8) contract.Error!Review {
+        if (bytes.len < 142 or bytes.len > record_max_bytes or !equal(bytes[0..8], record_magic)) return error.Parse;
+        var offset: usize = 142;
+        var paths: [3][]const u8 = undefined;
+        for (&paths, 0..) |*path, i| {
+            const length = std.mem.readInt(u16, bytes[136 + i * 2 ..][0..2], .little);
+            if (length == 0 or length > identity.max_path_bytes or length > bytes.len - offset) return error.Parse;
+            path.* = bytes[offset..][0..length];
+            offset += length;
+        }
+        if (offset != bytes.len) return error.Parse;
+        const grant = Grant.init(paths[0], bytes[8..40].*, paths[1], paths[2], bytes[40..72].*, bytes[72..104].*) catch return error.Parse;
+        return .{ .grant = grant, .environment_digest = bytes[104..136].* };
+    }
+
     fn environmentDigest(environment: *const std.process.Environ.Map, cwd: []const u8) contract.Error!Digest {
         run.validateGitEnvironment(environment, cwd) catch return error.Permission;
         var hash = std.crypto.hash.sha2.Sha256.init(.{});
@@ -162,6 +202,7 @@ pub const Policy = struct {
     runner: *run.Runner,
     environment: *const std.process.Environ.Map,
     probe: detect.Probe,
+    reviewed_environment: ?Digest = null,
     revoked: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     git: git_mod.Git = undefined,
 
@@ -179,6 +220,10 @@ pub const Policy = struct {
 
     fn verify(self: *Policy) contract.Error!void {
         if (self.revoked.load(.acquire)) return error.Permission;
+        if (self.reviewed_environment) |expected| {
+            const actual = try Review.environmentDigest(self.environment, self.grant.neutral_cwd.slice());
+            if (!equal(&actual, &expected)) return error.Permission;
+        }
         const evidence = try self.verifier.inspect(self.verifier.ctx, &self.grant, self.environment);
         if (!completeEvidence(evidence)) return error.Permission;
         if (!equal(&evidence.installation_digest, &self.grant.installation_digest) or !equal(&evidence.repository_digest, &self.grant.repository_digest)) return error.Permission;
@@ -243,13 +288,71 @@ pub const Policy = struct {
         const root = self.grant.root.slice();
         const version = argvEqual(request.argv, &.{ exe, "--version" });
         const identity_query = argvEqual(request.argv, &.{ exe, "--no-optional-locks", "-C", root, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--absolute-git-dir" });
-        const status = argvEqual(request.argv, &.{ exe, "--no-optional-locks", "-C", root, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=none" });
+        const status = argvEqual(request.argv, &.{ exe, "--no-optional-locks", "-C", root, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all" });
         if (!version and !identity_query and !status) return error.UnapprovedExecutable;
         self.verify() catch |err| return switch (err) {
             error.Cancelled => error.Cancelled,
             error.OutOfMemory => error.OutOfMemory,
             else => error.UnapprovedExecutable,
         };
+    }
+};
+
+/// Trusted provisioning input. The implementation is compiled into the
+/// extension, owns I/O and immutable environment/auditor storage and must
+/// authenticate any persisted review before returning it. No automatic
+/// consent, no PATH discovery, and no untrusted config import.
+pub const NativeInput = struct {
+    review: Review,
+    verifier: Verifier,
+    environment: *const std.process.Environ.Map,
+    probe: detect.Probe,
+    io: std.Io,
+    release_ctx: *anyopaque,
+    release: *const fn (*anyopaque) void,
+};
+
+/// Native session retains every input until Binding drain / final destroy.
+/// Initialize at the final stable address. Verification happens on the
+/// host worker; never inspect files or run commands in an owner callback.
+pub const NativeSession = struct {
+    input: NativeInput,
+    runner: run.Runner,
+    policy: Policy = undefined,
+    configured: bool = false,
+    finished: bool = false,
+
+    pub fn init(input: NativeInput, allocator: std.mem.Allocator) NativeSession {
+        return .{ .input = input, .runner = run.Runner.init(allocator, input.io) };
+    }
+
+    pub fn configure(self: *NativeSession, binding: *host_query.Binding) host_query.HostError!void {
+        if (self.configured or self.finished) return error.State;
+        self.policy = Policy.init(self.input.review.grant, self.input.verifier, &self.runner, self.input.environment, self.input.probe);
+        self.configured = true;
+        self.policy.reviewed_environment = self.input.review.environment_digest;
+        try binding.configureResolver(self.policy.resolver());
+        try binding.configureRevocation(.{ .ctx = self, .revoke = &revoke });
+    }
+
+    fn revoke(user: *anyopaque) void {
+        const self: *NativeSession = @ptrCast(@alignCast(user));
+        self.policy.revoke();
+    }
+
+    /// Owner-safe atomic gate: do not touch worker-owned runner state.
+    pub fn stopAdmission(self: *NativeSession) void {
+        if (self.configured) self.policy.revoke();
+    }
+
+    /// Caller must prove host task/callback drain before stopping the Runner.
+    pub fn finish(self: *NativeSession) contract.Error!void {
+        if (self.finished) return;
+        self.stopAdmission();
+        self.runner.requestStop();
+        self.runner.finishStop() catch return error.Io;
+        self.finished = true;
+        self.input.release(self.input.release_ctx);
     }
 };
 
@@ -543,4 +646,80 @@ test "review captures independent evidence and explicit confirmation rejects dri
     try std.testing.expectError(error.Permission, review.confirm(verifier, &environment));
     fixture.complete = false;
     try std.testing.expectError(error.Permission, Review.inspect(candidate.executable.slice(), candidate.executable_digest, candidate.root.slice(), candidate.neutral_cwd.slice(), verifier, &environment));
+}
+
+test "review record is versioned bounded and never imports malformed paths" {
+    const grant = try Fixture.makeGrant();
+    const review: Review = .{ .grant = grant, .environment_digest = @splat(9) };
+    var buffer: [Review.record_max_bytes]u8 = undefined;
+    const encoded = try review.encode(&buffer);
+    const decoded = try Review.decode(encoded);
+    try std.testing.expect(decoded.grant.root.eql(grant.root.slice()));
+    try std.testing.expectEqualSlices(u8, &review.environment_digest, &decoded.environment_digest);
+    try std.testing.expectError(error.Parse, Review.decode(encoded[0 .. encoded.len - 1]));
+    buffer[7] = '2';
+    try std.testing.expectError(error.Parse, Review.decode(encoded));
+}
+
+const NativeFixture = struct {
+    releases: usize = 0,
+
+    fn release(user: *anyopaque) void {
+        const self: *NativeFixture = @ptrCast(@alignCast(user));
+        self.releases += 1;
+    }
+
+    fn create(_: ?*anyopaque, _: [*c]const @import("pulse_async_host").Descriptor, _: [*c]u64) callconv(.c) @import("pulse_abi").Status {
+        return @import("pulse_abi").error_permission;
+    }
+
+    fn cancel(_: ?*anyopaque, _: u64) callconv(.c) @import("pulse_abi").Status {
+        return @import("pulse_abi").error_permission;
+    }
+
+    fn get(_: ?*anyopaque, _: u64, _: ?*const fn (?*anyopaque, [*c]const @import("pulse_async_host").Snapshot) callconv(.c) void, _: ?*anyopaque) callconv(.c) @import("pulse_abi").Status {
+        return @import("pulse_abi").error_permission;
+    }
+};
+
+test "native session connects reviewed environment and releases source exactly once" {
+    const task_table = @import("pulse_async_host").TaskTable;
+    const grant = try Fixture.makeGrant();
+    var environment = std.process.Environ.Map.init(std.testing.allocator);
+    defer environment.deinit();
+    try configureFixtureEnvironment(&environment, grant.neutral_cwd.slice());
+    var audit: ReviewFixture = .{};
+    const verifier: Verifier = .{ .ctx = &audit, .inspect = &ReviewFixture.inspect };
+    const review = try Review.inspect(grant.executable.slice(), grant.executable_digest, grant.root.slice(), grant.neutral_cwd.slice(), verifier, &environment);
+    var fixture: Fixture = .{};
+    var lifetime: NativeFixture = .{};
+    var binding = try host_query.Binding.init(.{
+        .size = @sizeOf(task_table),
+        .version = 1,
+        .context = &lifetime,
+        .create = &NativeFixture.create,
+        .cancel = &NativeFixture.cancel,
+        .get = &NativeFixture.get,
+        .release = &NativeFixture.cancel,
+    }, .en);
+    var session = NativeSession.init(.{
+        .review = review,
+        .verifier = verifier,
+        .environment = &environment,
+        .probe = .{ .ctx = &fixture, .lookup = &Fixture.lookup },
+        .io = std.testing.io,
+        .release_ctx = &lifetime,
+        .release = &NativeFixture.release,
+    }, std.testing.allocator);
+    try session.configure(&binding);
+    try session.policy.verify();
+    try environment.put("LANG", "drift");
+    try std.testing.expectError(error.Permission, session.policy.verify());
+    session.stopAdmission();
+    try std.testing.expectError(error.Permission, session.policy.verify());
+    try binding.requestStop();
+    try binding.checkDrained();
+    try session.finish();
+    try session.finish();
+    try std.testing.expectEqual(@as(usize, 1), lifetime.releases);
 }

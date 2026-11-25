@@ -20,6 +20,7 @@ pub const Language = enum { en, zh };
 pub const command_refresh = "vcs.refresh";
 pub const command_cancel = "vcs.cancel";
 pub const command_check = "vcs.check";
+pub const command_revoke = "vcs.revoke";
 pub const Command = enum { refresh, cancel, check };
 
 pub fn parseCommand(name: []const u8) ?Command {
@@ -37,6 +38,7 @@ pub const View = struct {
     failure: ?contract.Error = null,
     discovery_available: bool = false,
     approval_required: bool = false,
+    revocation_configured: bool = false,
 };
 
 const Selection = struct {
@@ -198,7 +200,7 @@ pub const Content = struct {
     nodes: [capacity]ui.Node = undefined,
     len: usize = 0,
     root: ui.Node = undefined,
-    commands: [3]abi.StringView = undefined,
+    commands: [4]abi.StringView = undefined,
 
     fn add(self: *Content, id: []const u8, label: []const u8, value: []const u8) void {
         std.debug.assert(self.len < capacity);
@@ -236,7 +238,12 @@ pub const Content = struct {
             else => phaseLabel(lang, view.phase),
         } else phaseLabel(lang, view.phase);
         self.add("vcs.phase", "", status);
-        if (view.approval_required) self.add("vcs.approval", "", loc(lang, "Execution locked: production approval unavailable", "执行已锁定：尚未提供生产授权"));
+        if (view.approval_required) {
+            self.add("vcs.approval", "", if (view.revocation_configured)
+                loc(lang, "Session approval revoked", "本次授权已撤销")
+            else
+                loc(lang, "Execution locked: production approval unavailable", "执行已锁定：尚未提供生产授权"));
+        }
         if (view.failure) |err| self.add("vcs.error", "", failureLabel(lang, err));
         if (view.workspace) |workspace| {
             self.add("vcs.provider", loc(lang, "Provider: ", "类型："), workspace.kind.displayName());
@@ -278,9 +285,9 @@ pub const Content = struct {
     /// The owner still validates commands against current controller state.
     pub fn buildInteractive(self: *Content, lang: Language, view: *const View, tree: *ui.Tree) void {
         self.build(lang, view, tree);
-        self.commands = .{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check) };
+        self.commands = .{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check), abi.view(command_revoke) };
         tree.commands = &self.commands;
-        tree.command_count = self.commands.len;
+        tree.command_count = if (view.revocation_configured) 4 else 3;
         if (view.phase != .stopped) {
             if (!view.approval_required and (view.workspace != null or view.discovery_available)) {
                 if (view.phase == .queued or view.phase == .refreshing) {
@@ -290,6 +297,7 @@ pub const Content = struct {
                 }
             }
             self.addButton("vcs.action.check", loc(lang, "Check result", "检查结果"), command_check);
+            if (view.revocation_configured and !view.approval_required) self.addButton("vcs.action.revoke", loc(lang, "Revoke session approval", "撤销本次授权"), command_revoke);
         }
         ui.withChildren(&self.root, self.nodes[0..self.len]);
     }

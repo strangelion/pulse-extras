@@ -1,6 +1,6 @@
-//! Experimental native VCS lifecycle candidate. No production approval
-//! source yet: no resolver, tool discovery, task admission or CLI execution.
-//! The host must prove callback drain before any distributable package ships.
+//! Native VCS candidate. The default build is locked; an explicitly compiled
+//! trusted provisioning source may supply one independently reviewed session.
+//! Real-host acceptance and production auditor certification are release gates.
 
 const std = @import("std");
 const abi = @import("pulse_abi");
@@ -8,12 +8,16 @@ const host_mod = @import("pulse_host");
 const async_host = @import("pulse_async_host");
 const host_query = @import("vcs_host_query");
 const diag = @import("pulse_diagnostics");
+const approval = @import("vcs_approval");
+const source = @import("vcs_native_source");
 
 const allocator = std.heap.page_allocator;
 
 const Instance = struct {
     host: host_mod.Host,
     binding: ?host_query.Binding = null,
+    session: ?approval.NativeSession = null,
+    session_revoked: bool = false,
     active: bool = false,
 
     fn start(self: *Instance) host_mod.Error!void {
@@ -23,24 +27,44 @@ const Instance = struct {
             }
             return error.State;
         }
-        if (self.binding != null) return error.State;
+        if (self.binding != null or self.session != null) return error.State;
         self.binding = try host_query.Binding.init(try async_host.taskTable(self.host), .en);
         errdefer self.stop() catch |err| diag.status("vcs-rollback-failed", @intFromError(err));
         const binding = &self.binding.?;
-        try binding.lockExecution();
-        // No dispatch or worker while the real host drain gate is unverified.
-        // Navigation is a copied mailbox; explicit Check result repaints it.
+        if (!self.session_revoked) {
+            if (try source.acquire(allocator)) |input| {
+                self.session = approval.NativeSession.init(input, allocator);
+                try self.session.?.configure(binding);
+                // Supported wake hints only; no polling loop. An unavailable
+                // dispatcher is a visible activation failure, not fallback.
+                try binding.configureDispatch(try async_host.Dispatch.init(self.host));
+            }
+        }
+        if (self.session == null) try binding.lockExecution();
         try binding.open(self.host);
         try binding.openNavigation(self.host);
+        // Start only from the owner after the borrowed initial context call
+        // returned. Later navigation uses bounded dispatch/manual Check.
+        if (self.session != null) try binding.pump();
         self.active = true;
     }
 
     fn stop(self: *Instance) host_mod.Error!void {
         self.active = false;
+        if (self.session) |*session| session.stopAdmission();
         if (self.binding) |*binding| {
             try binding.requestStop();
             binding.checkDrained() catch return error.State;
+            if (binding.approval_locked and self.session != null) self.session_revoked = true;
             self.binding = null;
+        }
+        try self.finishSession();
+    }
+
+    fn finishSession(self: *Instance) host_mod.Error!void {
+        if (self.session) |*session| {
+            session.finish() catch return error.State;
+            self.session = null;
         }
     }
 };
@@ -66,7 +90,7 @@ fn activate(raw: ?*anyopaque) callconv(.c) abi.Status {
         diag.status("vcs-activate-failed", @intFromError(err));
         return statusOf(err);
     };
-    diag.event("vcs-activated-locked");
+    diag.event(if (self.session == null) "vcs-activated-locked" else "vcs-activated-reviewed");
     return abi.ok;
 }
 
@@ -83,8 +107,8 @@ fn destroy(raw: ?*anyopaque) callconv(.c) void {
     const self: *Instance = @ptrCast(@alignCast(raw orelse return));
     self.stop() catch |err| {
         diag.status("vcs-destroy-stop-failed", @intFromError(err));
-        // The locked candidate owns no tasks, dispatch or plugin threads.
-        // At final destroy the SDK stop boundary suppresses host callbacks.
+        // At final destroy the SDK stop boundary suppresses callbacks and
+        // joins host-owned task work. The source must own no live producers.
         // Never use this retirement path for ordinary deactivate.
         if (self.binding) |*binding| {
             binding.retireAtHostDestroy() catch |retire_err| {
@@ -94,6 +118,10 @@ fn destroy(raw: ?*anyopaque) callconv(.c) void {
             binding.checkDrained() catch return;
             self.binding = null;
         }
+        self.finishSession() catch |finish_err| {
+            diag.status("vcs-destroy-runner-failed", @intFromError(finish_err));
+            return;
+        };
     };
     allocator.destroy(self);
 }

@@ -195,7 +195,7 @@ pub const Git = struct {
                 "--branch",
                 "-z",
                 "--untracked-files=normal",
-                "--ignore-submodules=none",
+                if (self.execution == .approved) "--ignore-submodules=all" else "--ignore-submodules=none",
             },
             .timeout_ns = 10 * std.time.ns_per_s,
             .stdout_limit = parse_limit,

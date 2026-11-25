@@ -21,6 +21,8 @@ const context_mod = @import("pulse_context");
 const capabilities = @import("vcs_capabilities");
 const detect = @import("vcs_detect");
 
+pub const HostError = host_mod.Error;
+
 pub const Query = struct {
     task: async_host.Task,
     provider: contract.Provider = undefined,
@@ -410,6 +412,7 @@ pub const Controller = struct {
 /// Tool/repository approval and provider lifetime belong to the caller.
 pub const Binding = struct {
     pub const Navigation = context_mod.Navigation(identity.max_path_bytes);
+    pub const Revocation = struct { ctx: *anyopaque, revoke: *const fn (*anyopaque) void };
 
     controller: Controller,
     resolution: Resolution,
@@ -421,6 +424,7 @@ pub const Binding = struct {
     model: ?ui.Panel = null,
     language: panel.Language,
     approval_locked: bool = false,
+    revocation: ?Revocation = null,
     destroyed: bool = false,
     accepting: bool = false,
     poisoned: bool = false,
@@ -435,6 +439,22 @@ pub const Binding = struct {
     pub fn lockExecution(self: *Binding) host_mod.Error!void {
         if (self.model != null or self.resolver != null or self.controller.selection != null or self.controller.query.task.occupied() or self.resolution.task.occupied() or self.navigation.table != null or self.controller.stopped) return error.State;
         self.approval_locked = true;
+    }
+
+    pub fn configureRevocation(self: *Binding, revocation: Revocation) host_mod.Error!void {
+        if (self.approval_locked or self.revocation != null or self.resolver == null or self.model != null or self.navigation.table != null or self.controller.stopped) return error.State;
+        self.revocation = revocation;
+    }
+
+    /// Revoke future command admission before discarding any old result.
+    /// Do not access the worker-owned Runner until task drain.
+    pub fn revokeApproval(self: *Binding) host_mod.Error!void {
+        if (!self.accepting or self.approval_locked) return error.State;
+        const action = self.revocation orelse return error.Permission;
+        self.approval_locked = true;
+        action.revoke(action.ctx);
+        self.navigation.pending = false;
+        try self.clear();
     }
 
     pub fn open(self: *Binding, host: host_mod.Host) host_mod.Error!void {
@@ -452,6 +472,7 @@ pub const Binding = struct {
         var tree: ui.Tree = undefined;
         var current = self.controller.view();
         current.approval_required = self.approval_locked;
+        current.revocation_configured = self.revocation != null;
         content.buildInteractive(self.language, &current, &tree);
         var id: u64 = 0;
         try host_mod.mapStatus(create(table.context, abi.view("VCS"), &tree, &id));
@@ -462,7 +483,8 @@ pub const Binding = struct {
             return error.State;
         }
         self.model = .{ .table = table, .id = id };
-        for ([_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check }) |name| {
+        const commands = [_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check, panel.command_revoke };
+        for (commands[0..if (self.revocation != null) @as(usize, 4) else 3]) |name| {
             _ = self.model.?.subscribeCommand(name, &onCommand, self) catch |err| {
                 self.last_error = err;
                 // Close invalidates all subscriptions, including any partial
@@ -559,7 +581,7 @@ pub const Binding = struct {
         };
         if (failure) |err| return err;
         self.navigation_generation = latest.generation;
-        if (self.resolver != null and self.navigation.pending and latest.directory() != null) self.controller.current = .{ .phase = .queued };
+        if (!self.approval_locked and self.resolver != null and self.navigation.pending and latest.directory() != null) self.controller.current = .{ .phase = .queued };
     }
 
     /// The owner can schedule independent repository discovery and approval
@@ -594,6 +616,12 @@ pub const Binding = struct {
         if (model.id != id) return;
         const name = abi.slice(command) orelse return;
         self.last_error = null;
+        if (std.mem.eql(u8, name, panel.command_revoke)) {
+            self.revokeApproval() catch |err| {
+                self.last_error = err;
+            };
+            return;
+        }
         if (self.approval_locked and !std.mem.eql(u8, name, panel.command_check)) {
             self.last_error = error.Permission;
             return;
@@ -719,7 +747,7 @@ pub const Binding = struct {
         const resolver = self.resolver orelse return;
         const discarded = self.resolution.discard;
         if (try self.resolution.poll()) |finished| {
-            if (self.accepting and !discarded and self.navigation.isCurrent(&finished.ticket)) {
+            if (self.accepting and !self.approval_locked and !discarded and self.navigation.isCurrent(&finished.ticket)) {
                 if (finished.selection) |selection| {
                     if (selection) |selected| {
                         try self.controller.select(selected.provider, &selected.workspace);
@@ -729,7 +757,7 @@ pub const Binding = struct {
                 }
             }
         }
-        if (!self.accepting or self.controller.stopped or self.resolution.task.occupied() or self.controller.query.task.occupied() or !self.navigation.pending) return;
+        if (!self.accepting or self.approval_locked or self.controller.stopped or self.resolution.task.occupied() or self.controller.query.task.occupied() or !self.navigation.pending) return;
         const ticket = self.navigation.latest orelse return;
         if (ticket.directory() == null) {
             _ = self.navigation.take();
@@ -786,7 +814,8 @@ pub const Binding = struct {
         var tree: ui.Tree = undefined;
         var current = self.controller.view();
         current.approval_required = self.approval_locked;
-        if (self.resolver != null and self.navigation.accepting) {
+        current.revocation_configured = self.revocation != null;
+        if (!self.approval_locked and self.resolver != null and self.navigation.accepting) {
             if (self.navigation.latest) |*latest| current.discovery_available = latest.directory() != null;
         }
         content.buildInteractive(self.language, &current, &tree);
@@ -854,6 +883,7 @@ pub const Binding = struct {
         self.model = null;
         self.poisoned = false;
         self.resolver = null;
+        self.revocation = null;
         self.navigation_generation = null;
         self.resolution.stopped = true;
         self.resolution.discard = true;
@@ -1121,6 +1151,7 @@ const MockUi = struct {
     closed: usize = 0,
     updates: usize = 0,
     subscriptions: usize = 0,
+    commands_expected: u32 = 3,
     fail_subscribe_at: usize = 0,
     fail_close: bool = false,
     fail_update: bool = false,
@@ -1129,7 +1160,7 @@ const MockUi = struct {
 
     fn create(user: ?*anyopaque, _: abi.StringView, tree: [*c]const ui.Tree, out: [*c]u64) callconv(.c) abi.Status {
         const self: *MockUi = @ptrCast(@alignCast(user orelse return abi.error_argument));
-        if (tree == null or tree.*.root == null or tree.*.command_count != 3) return abi.error_argument;
+        if (tree == null or tree.*.root == null or tree.*.command_count != self.commands_expected) return abi.error_argument;
         self.created += 1;
         out.* = 7;
         return abi.ok;
@@ -1137,7 +1168,7 @@ const MockUi = struct {
 
     fn update(user: ?*anyopaque, id: u64, tree: [*c]const ui.Tree) callconv(.c) abi.Status {
         const self: *MockUi = @ptrCast(@alignCast(user orelse return abi.error_argument));
-        if (id != 7 or tree == null or tree.*.command_count != 3) return abi.error_argument;
+        if (id != 7 or tree == null or tree.*.command_count != self.commands_expected) return abi.error_argument;
         if (self.fail_update) return abi.error_state;
         self.updates += 1;
         return abi.ok;
@@ -1145,7 +1176,9 @@ const MockUi = struct {
 
     fn subscribe(user: ?*anyopaque, id: u64, command: abi.StringView, callback: ui.ClickFn, data: ?*anyopaque, out: [*c]u64) callconv(.c) abi.Status {
         const self: *MockUi = @ptrCast(@alignCast(user orelse return abi.error_argument));
-        if (id != 7 or callback == null or data == null or panel.parseCommand(abi.slice(command) orelse return abi.error_argument) == null) return abi.error_argument;
+        if (id != 7 or callback == null or data == null) return abi.error_argument;
+        const name = abi.slice(command) orelse return abi.error_argument;
+        if (panel.parseCommand(name) == null and !(self.commands_expected == 4 and std.mem.eql(u8, name, panel.command_revoke))) return abi.error_argument;
         self.subscriptions += 1;
         if (self.subscriptions == self.fail_subscribe_at) return abi.error_permission;
         self.callback = callback;
@@ -1720,4 +1753,48 @@ test "destroy boundary discards completed summary that could not be released" {
     try binding.checkDrained();
     try std.testing.expect(binding.controller.view().snapshot == null);
     try std.testing.expectEqual(@as(usize, 1), mock.calls);
+}
+
+const RevocationFixture = struct {
+    calls: usize = 0,
+
+    fn revoke(user: *anyopaque) void {
+        const self: *RevocationFixture = @ptrCast(@alignCast(user));
+        self.calls += 1;
+    }
+};
+
+test "session revoke suppresses raced summary and future navigation admission" {
+    var mock: Mock = .{};
+    var resolver: MockResolver = .{ .host_task = &mock };
+    var revocation: RevocationFixture = .{};
+    var model: MockUi = .{ .commands_expected = 4 };
+    var navigation: MockNavigation = .{};
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.configureResolver(resolver.resolver());
+    try binding.configureRevocation(.{ .ctx = &revocation, .revoke = &RevocationFixture.revoke });
+    try binding.openWithTable(model.table());
+    try binding.openNavigationWithTable(navigation.table());
+    try binding.pump();
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expect(binding.controller.query.task.occupied());
+    mock.runWork();
+    model.click(7, panel.command_revoke);
+    try std.testing.expect(binding.approval_locked);
+    try std.testing.expectEqual(@as(usize, 1), revocation.calls);
+    // The completed worker result raced the revocation, but is discarded.
+    mock.state = .completed;
+    try binding.pump();
+    try std.testing.expect(binding.controller.view().snapshot == null);
+    try std.testing.expect(!binding.controller.query.task.occupied());
+    navigation.navigate("other");
+    model.click(7, panel.command_check);
+    try std.testing.expect(!binding.resolution.task.occupied());
+    try std.testing.expectEqual(@as(usize, 1), resolver.calls);
+    try std.testing.expectEqual(@as(usize, 1), mock.calls);
+    model.click(7, panel.command_revoke);
+    try std.testing.expectEqual(@as(usize, 1), revocation.calls);
+    try binding.requestStop();
+    try binding.checkDrained();
 }
