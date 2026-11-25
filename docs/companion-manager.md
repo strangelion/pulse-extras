@@ -584,3 +584,23 @@ the caller, actual request/cache orchestration and UI are still pending.
 Add portable codec and Windows durable reload/expiry tests. Prior archive
 installation full regression and stress passed; search regression general
 checks passed and desktop integration was still running. New CI pending.
+
+## Worker-facing market service
+
+Connect typed requests to the persistent cache, bounded concurrent download
+owner, search scan and selected-package admission. Fresh cache first;
+explicit offline-only mode never contacts the network, and optional stale
+fallback is restricted to NetworkFailed. Do not hide corruption, protocol,
+cancel, admission or cleanup errors. Cache payloads are read into a
+caller-budgeted bounded buffer; release the download lease before cache
+publication. The root and search result carry a revision/freshness token;
+rehydrate the selected ID on its detail page and reject stale/offline
+install selection. Package admission returns a task ID for the existing
+join and Install adapter; it does not auto-publish. Test uses actual
+Windows cache, concurrent task lifecycle and synthetic V3 responses,
+including cache-only root read, network failure fallback and package
+admission. The caller must serialize the service and retain the same root
+for search results; it must not block a UI callback on this service. No
+live HTTPS, UI, persistent queue, or in-flight whole-search cancellation
+claim yet. Cache reads may fail visibly on a corrupt record or pending
+write; recovery remains explicit. New code awaits Windows integration CI.
