@@ -13,7 +13,7 @@ re-running the workload.
 | Hello Panel | Workspace/sidebar command and context panel on Pulse 1.0.61 | [Host compatibility](host-compatibility.md) | UI behavior only; no measured latency or memory baseline |
 | VCS | Read-only Git, Jujutsu and Subversion providers, temporary repository integration | [Provider status](vcs-architecture.md), [CI](testing.md) | No comparable repository-scale throughput/latency benchmark |
 | Companion | Classic V1/V2 WebP standalone runtime, event bridge, contained multi-instance model, verified staged import | [Runtime](openpets-spike.md), [Manager](companion-manager.md), [real import CI](https://github.com/strangelion/pulse-extras/actions/runs/45581496727) | 100 independent processes measured below; not 100 host-supervised instances |
-| Companion market | V3 directory parsing and strict ZIP admission; actual online install and native page not complete | [Manager](companion-manager.md) | Download/installation throughput not measured |
+| Companion market | V3 directory parsing and strict ZIP admission; actual online install and native page runtime wiring not complete | [Manager](companion-manager.md) | Download/installation throughput not measured |
 | Convert / Inspect / Data / DevKit / Compare | Planned | [Scope](product-scope.md), [Roadmap](roadmap.md) | Not measured |
 | Forge | Design only | [Design](forge-architecture.md) | Not measured |
 | Shared Runtime | Ownership, quota, cancellation, process and teardown primitives | [Runtime](shared-runtime.md) | Not a separate shipping extension; no cross-extension load baseline |

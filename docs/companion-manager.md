@@ -604,3 +604,25 @@ for search results; it must not block a UI callback on this service. No
 live HTTPS, UI, persistent queue, or in-flight whole-search cancellation
 claim yet. Cache reads may fail visibly on a corrupt record or pending
 write; recovery remains explicit. New code awaits Windows integration CI.
+
+## Native Companion settings contribution (experimental)
+
+Build a distinct pulse_companion.dll using the pinned Preview 3 SDK. On
+activation create a dedicated pulse.settings.pages page, query its scoped
+pulse.ui.model, subscribe only to declared navigation/settings commands,
+and remove the page on deactivate. If the settings interface is absent,
+use an ordinary workspace panel. Never mount a settings page outside the
+settings surface. Four native sections: library, running instances, market,
+and global preferences. Navigation updates the real tree; disconnected
+backend operations are explicitly unavailable, not fake empty lists.
+Global download concurrency preference (1..8, default 4) is read/written
+with pulse.resources settings_get/settings_set and optimistic versioning.
+Only confirmed replies change the saved display; a failed/conflicting
+write requires refresh. At most one pending request; cancel on teardown.
+Preference is persisted, but does not yet control a live download owner.
+No network, helper launch, user directory access or resident worker in
+this first DLL. Unit tests cover tree and setting validation; native host
+acceptance, package manifest, production root approval and runtime hookup
+remain open. The DLL is experimental, not release eligible. No real-host
+performance claims. Previous cache regression passed; service regression
+was still running when this change started.

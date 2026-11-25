@@ -346,6 +346,19 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(hello_panel);
 
+    // Experimental settings contribution; not a release-ready pet runtime.
+    const companion = b.addLibrary(.{
+        .name = "pulse_companion",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("extensions/companion/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = dll_modules.imports(),
+        }),
+    });
+    b.installArtifact(companion);
+
     // Standalone companion uses the existing GNU Windows native ABI.
     // Explicit step: no demo in the default production DLL install.
     const pet_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu });
@@ -421,6 +434,7 @@ pub fn build(b: *std.Build) void {
     const test_sources = [_][]const u8{
         "extensions/abi-probe/main.zig",
         "extensions/hello-panel/main.zig",
+        "extensions/companion/main.zig",
         "shared/diagnostics/probe_log.zig",
         "shared/process/run.zig",
         "shared/runtime/budget.zig",
@@ -490,7 +504,7 @@ pub fn build(b: *std.Build) void {
         const run = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run.step);
         const runtime = std.mem.startsWith(u8, source, "shared/runtime/") or std.mem.startsWith(u8, source, "shared/process/");
-        if (runtime or std.mem.startsWith(u8, source, "shared/companion/"))
+        if (runtime or std.mem.startsWith(u8, source, "shared/companion/") or std.mem.eql(u8, source, "extensions/companion/main.zig"))
             companion_tests.dependOn(&run.step);
         if (runtime or std.mem.startsWith(u8, source, "shared/vcs/"))
             vcs_tests.dependOn(&run.step);
