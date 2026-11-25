@@ -581,7 +581,8 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                  * same-volume rename. Caller-owned root remains pinned. */
                 pet_package_close(memory, &package);
                 if (!MoveFileExW(staged, final, MOVEFILE_WRITE_THROUGH)) {
-                    fputs("Package import failed at stage-publish (pending directory retained).\n", stderr);
+                    DWORD publish_error = GetLastError();
+                    fprintf(stderr, "Package import failed at stage-publish (Win32 %lu; pending directory retained).\n", (unsigned long)publish_error);
                     goto cleanup;
                 }
                 if (dual_fingerprint) printf("PULSE_PACKAGE_STAGED_V2 %s\n", hex);

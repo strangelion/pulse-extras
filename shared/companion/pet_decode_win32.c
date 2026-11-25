@@ -53,19 +53,23 @@ static BOOL fixed_path(HANDLE file, wchar_t *resolved, DWORD capacity) {
     return GetDriveTypeW(root) == DRIVE_FIXED;
 }
 
-static HANDLE tracked_open(const pet_memory *memory, const wchar_t *path, DWORD access, DWORD flags) {
+static HANDLE tracked_open_shared(const pet_memory *memory, const wchar_t *path, DWORD access, DWORD flags, DWORD share) {
     const pet_resources *r = memory->resource_bridge;
     if (!pet_reserve(r, PET_RESOURCE_FILE, 1)) {
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         return INVALID_HANDLE_VALUE;
     }
-    HANDLE file = CreateFileW(path, access, FILE_SHARE_READ, NULL, OPEN_EXISTING, flags, NULL);
+    HANDLE file = CreateFileW(path, access, share, NULL, OPEN_EXISTING, flags, NULL);
     if (file == INVALID_HANDLE_VALUE) {
         DWORD error = GetLastError();
         pet_release(r, PET_RESOURCE_FILE, 1);
         SetLastError(error);
     }
     return file;
+}
+
+static HANDLE tracked_open(const pet_memory *memory, const wchar_t *path, DWORD access, DWORD flags) {
+    return tracked_open_shared(memory, path, access, flags, FILE_SHARE_READ);
 }
 
 static void tracked_close(const pet_memory *memory, HANDLE file) {
@@ -85,9 +89,9 @@ static uint8_t *read_local(const pet_memory *memory, const wchar_t *path, DWORD 
 }
 
 /* Canonical local paths with pinned handles, not a race-free directory walk. */
-static HANDLE package_handle(const pet_memory *memory, const wchar_t *path, BOOL directory) {
-    HANDLE file = tracked_open(memory, path, directory ? FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES : GENERIC_READ,
-        FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_FLAG_SEQUENTIAL_SCAN));
+static HANDLE package_handle_shared(const pet_memory *memory, const wchar_t *path, BOOL directory, DWORD share) {
+    HANDLE file = tracked_open_shared(memory, path, directory ? FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES : GENERIC_READ,
+        FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_FLAG_SEQUENTIAL_SCAN), share);
     if (file == INVALID_HANDLE_VALUE) {
         fprintf(stderr, "Package handle: open failed (Win32 %lu).\n", (unsigned long)GetLastError());
         return NULL;
@@ -113,6 +117,10 @@ static HANDLE package_handle(const pet_memory *memory, const wchar_t *path, BOOL
         return NULL;
     }
     return file;
+}
+
+static HANDLE package_handle(const pet_memory *memory, const wchar_t *path, BOOL directory) {
+    return package_handle_shared(memory, path, directory, FILE_SHARE_READ);
 }
 
 static BOOL join_path(wchar_t *out, size_t capacity, const wchar_t *root, const wchar_t *leaf) {
@@ -381,7 +389,10 @@ BOOL pet_package_stage(const pet_memory *memory, const pet_package *package,
     if (n < 4 || n >= 960 || full[1] != L':' || full[2] != L'\\') return FALSE;
     n = GetLongPathNameW(full, root + 4, 1020);
     if (n < 4 || n >= 900 || root[n + 3] == L'\\') return FALSE;
-    *root_pin = package_handle(memory, root, TRUE);
+    /* The private destination parent must allow directory mutations during
+     * publication, unlike immutable source package files. Still deny delete
+     * sharing on the parent itself. Caller controls the directory ACL. */
+    *root_pin = package_handle_shared(memory, root, TRUE, FILE_SHARE_READ | FILE_SHARE_WRITE);
     if (!*root_pin) return FALSE;
     int a = swprintf(stage, 1024, L"%ls\\pet-%ls.pending", root + 4, id_hex);
     int b = swprintf(final, 1024, L"%ls\\pet-%ls", root + 4, id_hex);

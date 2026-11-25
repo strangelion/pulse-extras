@@ -386,3 +386,19 @@ all public pets are freely redistributable; show source and license where
 provided, do not bundle third-party art. Search-index protocol, live fixture
 verification, UI and network transport remain pending. No plugins or private
 Teams/Studio accounts in scope. Portable tests cover URL and page validation.
+
+## Windows import regression triage
+
+Runs 45575428171 and 45576460968 failed the Python SHA-256 reference
+assertion (fixed in 4302d68). Runs 45577858134 and 45578997179 progressed
+to stage-publish but failed MoveFileExW. All four Ubuntu jobs succeeded;
+the Windows codec probe alone did not exercise staged import. The target
+parent previously used the same read-only sharing as immutable package
+files. Allow write sharing on that parent only, still disallow delete
+sharing and retain normalized-path checks. Keep same-volume non-replacing
+MoveFileExW with write-through; add exact Win32 failure code to logs.
+This is a targeted sharing hypothesis, not a confirmed root cause until
+Windows CI passes. Existing source handles keep read-only sharing. Add
+real package smoke to automatic runtime preflight before sampling, and
+check an occupied pending directory's sentinel is preserved. No tests
+skipped and no heavy benchmark added. Latest regression awaits CI.

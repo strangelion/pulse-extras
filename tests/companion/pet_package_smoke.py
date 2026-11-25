@@ -84,6 +84,17 @@ def main() -> None:
             if file.is_file():
                 assert (copied / file.relative_to(root)).read_bytes() == file.read_bytes()
         assert reference() == expected_sha
+        # A pre-existing pending directory must be preserved, not reused.
+        pending = managed / "pet-0000000000000002.pending"
+        pending.mkdir()
+        sentinel = pending / "keep.txt"
+        sentinel.write_bytes(b"must not overwrite")
+        blocked = args[:-1] + ["0000000000000002"]
+        result = subprocess.run(blocked, timeout=20, capture_output=True)
+        assert result.returncode != 0, result.stderr
+        assert sentinel.read_bytes() == b"must not overwrite"
+        assert not (managed / "pet-0000000000000002").exists()
+        assert b"Companion resources: files=0 codec=0 dib=0 cleanup_failures=0" in result.stderr
         wrong = expected_pair[:-1] + ('0' if expected_pair[-1] != '0' else '1')
         result = subprocess.run([str(exe), '--check-package', str(copied), 'cat', '--expected-fingerprint', wrong], timeout=15, capture_output=True)
         assert result.returncode != 0 and b'fingerprint-mismatch' in result.stderr

@@ -25,6 +25,8 @@ on:
       - 'shared/companion/pet_webp_*'
       - 'shared/companion/pet_assets.zig'
       - 'shared/companion/pet_package.zig'
+      - 'shared/companion/pet_fingerprint.zig'
+      - tests/companion/pet_package_smoke.py
       - 'shared/companion/pet_demo*'
       - 'shared/companion/pet_supervisor_win32.*'
       - tests/companion/pet_supervisor_win32_test.c
@@ -89,6 +91,11 @@ jobs:
             $buildArgs += '-Dpet-libwebp=true'
           }
           zig @buildArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validate real package import and digest before runtime preflight
+        shell: pwsh
+        run: |
+          python tests/companion/pet_package_smoke.py zig-out/bin/pulse-pet-demo.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Sample independent instances (${{ matrix.profile }})
         env:
