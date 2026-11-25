@@ -63,7 +63,20 @@ int main(void) {
     strcpy(meta.outfit_ids[1], "summer"); strcpy(meta.activity_ids[0], "jump");
     CHECK(pet_preferences_apply(&meta, &restored, &outfit, &automatic, &enabled));
     CHECK(outfit == 0 && automatic && enabled == 0);
+    /* A temporarily absent outfit must survive unrelated activity edits;
+     * conversely preserve an absent activity when only changing outfits. */
+    pet_preferences edited = {0};
+    CHECK(pet_preferences_update(&meta, 0, 1, 1, &restored, PET_PREF_ACTIVITIES_CHANGED, &edited));
+    CHECK(strcmp(edited.outfit, "night") == 0 && strcmp(edited.enabled[0], "jump") == 0);
+    CHECK(pet_preferences_update(&meta, 0, 0, 0, &restored, PET_PREF_OUTFIT_CHANGED, &edited));
+    CHECK(strcmp(edited.outfit, "default") == 0 && strcmp(edited.enabled[0], "wave") == 0);
+    CHECK(!pet_preferences_update(&meta, 0, 0, 0, &restored, 0, &edited));
+    CHECK(!pet_preferences_update(&meta, 0, 0, 0, &restored, 4, &edited));
+    CHECK(strcmp(edited.outfit, "default") == 0);
+    CHECK(pet_preferences_update(&meta, 0, 1, 2, NULL, PET_PREF_ACTIVITIES_CHANGED, &edited));
+    CHECK(strcmp(edited.outfit, "auto") == 0 && strcmp(edited.enabled[0], "nap") == 0);
     strcpy(meta.pet_id, "dog");
+    CHECK(!pet_preferences_update(&meta, 0, 0, 0, &restored, PET_PREF_OUTFIT_CHANGED, &edited));
     CHECK(!pet_preferences_apply(&meta, &restored, &outfit, &automatic, &enabled));
     CHECK(pet_preferences_capture(&meta, 0, 0, 0, &prefs));
     CHECK(pet_preferences_save(key, &prefs) == PET_CONFIG_OK);

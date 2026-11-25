@@ -39,4 +39,12 @@ BOOL pet_preferences_apply(const pet_package_meta *meta, const pet_preferences *
     unsigned *outfit, int *automatic, uint32_t *enabled);
 BOOL pet_preferences_capture(const pet_package_meta *meta, unsigned outfit,
     int automatic, uint32_t enabled, pet_preferences *out);
+#define PET_PREF_OUTFIT_CHANGED 1u
+#define PET_PREF_ACTIVITIES_CHANGED 2u
+/* Preserve the untouched category from a valid previously loaded record,
+ * including IDs currently absent from the catalog. NULL previous captures
+ * the full initial preference. Never persist pending decoded artwork. */
+BOOL pet_preferences_update(const pet_package_meta *meta, unsigned outfit,
+    int automatic, uint32_t enabled, const pet_preferences *previous,
+    unsigned changed, pet_preferences *out);
 #endif

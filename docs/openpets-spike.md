@@ -1049,3 +1049,22 @@ Pulse host-managed preferences or user-editable schedule. Registry
 tests use an isolated volatile key, including reorder, removed IDs,
 cross-pet isolation, full table and corrupt-value preservation.
 Native restored artwork and desktop restart acceptance remain pending.
+
+### Independent preference fields and fallback preservation
+
+Read and save the two versioned registry values independently: an
+invalid SettingsV1 is preserved but does not disable a valid
+PetPreferencesV1, and vice versa. Split the dirty mask into outfit
+and enabled-activity categories. Selecting Auto or the current fixed
+appearance marks the outfit category; a different manual outfit only
+marks it after successful presentation. A failed/canceled request
+alone does not persist an unpresented choice. When a previous valid
+record was loaded, preserve the untouched category verbatim, including
+temporarily unavailable IDs. Changing activity opt-ins does not replace
+a saved outfit that fell back at startup; changing outfits does not
+discard absent activity IDs. Editing the activity category captures the
+currently declared enabled IDs. First-time records capture both fields.
+No change to the bounded 16-pet table, version, or write-on-clean-visible-
+exit policy. Regression tests cover selective updates, missing IDs,
+invalid flags, other-pet rejection and first-record capture.
+Concurrent same-pet writes still use last-writer-wins semantics.

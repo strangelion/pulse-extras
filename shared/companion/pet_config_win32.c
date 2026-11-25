@@ -202,3 +202,20 @@ BOOL pet_preferences_capture(const pet_package_meta *meta, unsigned outfit,
     *out = next;
     return TRUE;
 }
+
+BOOL pet_preferences_update(const pet_package_meta *meta, unsigned outfit,
+    int automatic, uint32_t enabled, const pet_preferences *previous,
+    unsigned changed, pet_preferences *out) {
+    pet_preferences next;
+    if (!out || !changed || (changed & ~(PET_PREF_OUTFIT_CHANGED | PET_PREF_ACTIVITIES_CHANGED)) ||
+        !pet_preferences_capture(meta, outfit, automatic, enabled, &next)) return FALSE;
+    if (previous) {
+        if (!valid_preferences(previous) || strcmp(previous->pet, next.pet)) return FALSE;
+        if (!(changed & PET_PREF_OUTFIT_CHANGED))
+            memcpy(next.outfit, previous->outfit, sizeof(next.outfit));
+        if (!(changed & PET_PREF_ACTIVITIES_CHANGED))
+            memcpy(next.enabled, previous->enabled, sizeof(next.enabled));
+    }
+    *out = next;
+    return TRUE;
+}
