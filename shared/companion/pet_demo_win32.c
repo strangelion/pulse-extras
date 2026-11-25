@@ -266,7 +266,7 @@ static void decode_notify(void *userdata) {
     native_decode *ctx = userdata;
     InterlockedExchange(&ctx->ready, 1);
     if (!SetEvent(ctx->event))
-        pet_cleanup_failed(ctx->memory->resource_bridge, PET_RESOURCE_CODEC);
+        pet_cleanup_failed(ctx->memory->resource_bridge, PET_RESOURCE_NOTIFY);
 }
 
 static int request_decode(const pet_async *async, unsigned kind, unsigned outfit, unsigned index) {
@@ -280,7 +280,7 @@ static int take_decode(const pet_async *async, native_decode *ctx, pet_decode_re
     int result = async->take(async->owner, out);
     InterlockedExchange(&ctx->ready, 0);
     if (!ResetEvent(ctx->event)) {
-        pet_cleanup_failed(ctx->memory->resource_bridge, PET_RESOURCE_CODEC);
+        pet_cleanup_failed(ctx->memory->resource_bridge, PET_RESOURCE_NOTIFY);
         pet_free(ctx->memory, out->pixels, out->bytes);
         *out = (pet_decode_result){0};
         return -1;
@@ -407,8 +407,13 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         version = package.meta.version;
         idle.unavailable = unavailable_activities(&package, outfit);
         if (check_package) { rc = 0; goto cleanup; }
+        if (!pet_reserve(memory->resource_bridge, PET_RESOURCE_NOTIFY, 1)) goto cleanup;
         decode_ctx.event = CreateEventW(NULL, TRUE, FALSE, NULL);
-        if (!decode_ctx.event || !async->bind(async->owner, &decode_ctx, decode_package, decode_notify)) goto cleanup;
+        if (!decode_ctx.event) {
+            pet_release(memory->resource_bridge, PET_RESOURCE_NOTIFY, 1);
+            goto cleanup;
+        }
+        if (!async->bind(async->owner, &decode_ctx, decode_package, decode_notify)) goto cleanup;
         async_bound = 1;
         if (check_task) {
             if (!request_decode(async, PET_DECODE_OUTFIT, 0, 0)) goto cleanup;
@@ -776,9 +781,13 @@ cleanup:
     /* Joining precedes closing every borrowed file/event and freeing
      * the native context. No worker touches UI or survives this run. */
     if (async_bound) async->stop(async->owner);
-    if (decode_ctx.event && !CloseHandle(decode_ctx.event)) {
-        pet_cleanup_failed(memory->resource_bridge, PET_RESOURCE_CODEC);
-        rc = 1;
+    if (decode_ctx.event) {
+        if (CloseHandle(decode_ctx.event))
+            pet_release(memory->resource_bridge, PET_RESOURCE_NOTIFY, 1);
+        else {
+            pet_cleanup_failed(memory->resource_bridge, PET_RESOURCE_NOTIFY);
+            rc = 1;
+        }
     }
     if (settings) RegCloseKey(settings);
     if (state_slot) UnmapViewOfFile((const void *)state_slot);

@@ -99,6 +99,7 @@ pub fn main(init: std.process.Init) !void {
     // A single bounded shutdown diagnostic; no per-frame logging.
     std.debug.print("Companion heap: live={d} allocations={d} peak={d} denied={d}\n", .{ stats.live_bytes, stats.live_allocations, stats.reserved_peak, stats.denied });
     std.debug.print("Companion resources: files={d} codec={d} dib={d} cleanup_failures={d} peaks={d}/{d}/{d}\n", .{ resource_owner.files.used, resource_owner.codecs.used, resource_owner.dib.used, resource_owner.cleanup_failures, resource_owner.files.peak, resource_owner.codecs.peak, resource_owner.dib.peak });
+    std.debug.print("Companion notification: live={d} peak={d}\n", .{ resource_owner.notifications.used, resource_owner.notifications.peak });
     if (stats.denied != 0) resource_owner.log.add(.{ .kind = .allocation_limit, .count = stats.denied });
     if (result != 0) resource_owner.log.add(.{ .kind = .io_failure, .count = 1 });
     resource_owner.log.add(.{ .kind = .stopped, .count = 1 });

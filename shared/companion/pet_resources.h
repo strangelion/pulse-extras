@@ -5,7 +5,7 @@
 
 /* Session-local owner, callbacks synchronize shared accounting. NULL is allowed only for the low-level
  * surface unit fixture, which has no runtime owner. */
-enum { PET_RESOURCE_FILE = 0, PET_RESOURCE_CODEC = 1, PET_RESOURCE_DIB = 2 };
+enum { PET_RESOURCE_FILE = 0, PET_RESOURCE_CODEC = 1, PET_RESOURCE_DIB = 2, PET_RESOURCE_NOTIFY = 3 };
 typedef struct {
     void *context;
     int (*reserve)(void *, uint32_t, size_t);

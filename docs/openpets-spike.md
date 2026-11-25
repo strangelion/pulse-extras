@@ -910,3 +910,13 @@ unit tests, exercising the actual callback ABI, invalid inputs,
 replacement, stale cleanup, result ownership, notification, decode
 failure and stop/drain. The native Windows compile and real WIC
 execution remain unverified until the new revision passes CI.
+
+### Completion event quota
+
+The native completion event uses a separate one-slot shared Budget.
+Reserve before CreateEventW, roll back on creation failure, and release
+only after CloseHandle succeeds following worker join. Notification and
+reset failures use the notification resource category, not the codec
+category. The native task smoke checks zero live and one peak event
+reservation. Unit tests cover quota rejection and drain enforcement.
+Other IPC, menu and registry resources remain outside this quota.
