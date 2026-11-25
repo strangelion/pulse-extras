@@ -42,25 +42,12 @@ typedef struct {
     PulseStatus (PULSE_CALL *cancel)(void *, uint64_t);
 } FolderTable;
 _Static_assert(sizeof(FolderTable) == 56 && sizeof(FolderRequest) == 56 && sizeof(FolderResult) == 64, "picker ABI");
-typedef void (PULSE_CALL *DialogCommandFn)(void *, uint64_t, PulseStringView);
-typedef struct {
-    uint32_t size, version;
-    void *context;
-    PulseStatus (PULSE_CALL *show)(void *, const PulseDialogRequest *, PulseDialogStateChanged, PulseDialogClosed, void *, uint64_t *);
-    PulseStatus (PULSE_CALL *set_states)(void *, uint64_t, const PulseUiState *, uint32_t);
-    PulseStatus (PULSE_CALL *close)(void *, uint64_t);
-    PulseStatus (PULSE_CALL *subscribe_command)(void *, uint64_t, PulseStringView, DialogCommandFn, void *, uint64_t *);
-    PulseStatus (PULSE_CALL *unsubscribe_command)(void *, uint64_t);
-    PulseStatus (PULSE_CALL *update_model)(void *, uint64_t, const PulseUiModelTree *);
-    PulseStatus (PULSE_CALL *get_state)(void *, uint64_t, PulseStringView, char *, uint32_t, uint32_t *);
-} DialogsV2Compat;
-_Static_assert(sizeof(DialogsV2Compat) == 72, "dialogs V2 ABI");
 
 typedef struct {
     uint64_t page, next, pending, version;
     unsigned created, removed, canceled, updates, subscribed, fail_subscribe;
     int fallback, fail_remove, enabled_more, enabled_less, global, saved_present;
-    int auto_dispatch, bundled, dialogs_v2, start_enabled, stop_enabled, first_frame, two_ready, only_second;
+    int auto_dispatch, bundled, start_enabled, stop_enabled, first_frame, two_ready, only_second;
     unsigned running_rows;
     HANDLE worker;
     volatile LONG cancel_flag;
@@ -83,10 +70,6 @@ typedef struct {
     uint64_t dialog, picker;
     FolderCallback picker_callback;
     void *picker_user;
-    DialogCommandFn dialog_command;
-    void *dialog_command_user;
-    uint64_t dialog_command_subscription;
-    unsigned dialog_states_updated;
     PulseDialogClosed dialog_closed;
     void *dialog_user;
     PulseResourcesCompletionFn completion;
@@ -385,54 +368,12 @@ static PulseStatus PULSE_CALL show_dialog(void *ctx, const PulseDialogRequest *r
     REQUIRE(!f->dialog && request && closed && user && id);
     REQUIRE(request->button_count == 2 && request->cancel_button == 1 && request->model);
     REQUIRE(request->model->state_count == 2 && request->model->states);
-    if (f->dialogs_v2) {
-        REQUIRE(request->model->command_count == 1 && request->model->commands);
-        REQUIRE(same(request->model->commands[0], "browse"));
-    } else {
-        REQUIRE(request->model->command_count == 0);
-    }
     REQUIRE(same(request->model->states[0].key, "import.path"));
     REQUIRE(same(request->model->states[0].value, "C:\\fixture\\cat"));
     REQUIRE(same(request->model->states[1].value, "cat"));
     f->dialog = ++f->next; *id = f->dialog;
     f->dialog_closed = closed; f->dialog_user = user;
     return PULSE_OK;
-}
-static PulseStatus PULSE_CALL set_dialog_states(void *ctx, uint64_t dialog, const PulseUiState *states, uint32_t count) {
-    Fixture *f = ctx;
-    REQUIRE(dialog && dialog == f->dialog && states && count == 2);
-    REQUIRE(same(states[0].key, "import.path") && same(states[0].value, "C:\\fixture\\cat"));
-    REQUIRE(same(states[1].key, "import.id") && same(states[1].value, "cat"));
-    ++f->dialog_states_updated;
-    return PULSE_OK;
-}
-static PulseStatus PULSE_CALL subscribe_dialog_command(void *ctx, uint64_t dialog, PulseStringView command, DialogCommandFn callback, void *user, uint64_t *id) {
-    Fixture *f = ctx;
-    REQUIRE(f->dialogs_v2 && dialog == f->dialog && same(command, "browse") && callback && user && id && !f->dialog_command);
-    f->dialog_command = callback;
-    f->dialog_command_user = user;
-    f->dialog_command_subscription = ++f->next;
-    *id = f->dialog_command_subscription;
-    return PULSE_OK;
-}
-static PulseStatus PULSE_CALL unsubscribe_dialog_command(void *ctx, uint64_t id) {
-    Fixture *f = ctx;
-    REQUIRE(id && id == f->dialog_command_subscription);
-    f->dialog_command = NULL;
-    f->dialog_command_user = NULL;
-    f->dialog_command_subscription = 0;
-    return PULSE_OK;
-}
-static PulseStatus PULSE_CALL update_dialog_model(void *ctx, uint64_t dialog, const PulseUiModelTree *model) {
-    Fixture *f = ctx;
-    REQUIRE(dialog && dialog == f->dialog && model);
-    return PULSE_OK;
-}
-static PulseStatus PULSE_CALL get_dialog_state(void *ctx, uint64_t dialog, PulseStringView key, char *buffer, uint32_t capacity, uint32_t *needed) {
-    Fixture *f = ctx;
-    REQUIRE(dialog && dialog == f->dialog && key.data && buffer && capacity && needed);
-    *needed = 0;
-    return PULSE_ERROR_UNAVAILABLE;
 }
 static PulseStatus PULSE_CALL close_dialog(void *ctx, uint64_t dialog) {
     Fixture *f = ctx;
@@ -468,7 +409,7 @@ static PulseStatus PULSE_CALL cancel_picker(void *ctx, uint64_t id) {
 }
 static PulseStatus PULSE_CALL query(void *ctx, PulseStringView name, uint32_t version, void *out, uint32_t size) {
     Fixture *f = ctx;
-    REQUIRE(out);
+    REQUIRE(version == 1 && out);
     if (same(name, PULSE_SETTINGS_PAGES_INTERFACE_NAME)) {
         if (f->fallback) return PULSE_ERROR_UNAVAILABLE;
         REQUIRE(size >= sizeof(PulseSettingsPagesV1));
@@ -488,17 +429,10 @@ static PulseStatus PULSE_CALL query(void *ctx, PulseStringView name, uint32_t ve
         memcpy(out, &t, sizeof(t)); return PULSE_OK;
     }
     if (f->bundled && same(name, PULSE_DIALOGS_INTERFACE_NAME)) {
-        if (version == 2) {
-            if (!f->dialogs_v2) return PULSE_ERROR_UNAVAILABLE;
-            REQUIRE(size >= sizeof(DialogsV2Compat));
-            DialogsV2Compat t = {.size=sizeof(t), .version=2, .context=f, .show=show_dialog, .set_states=set_dialog_states, .close=close_dialog, .subscribe_command=subscribe_dialog_command, .unsubscribe_command=unsubscribe_dialog_command, .update_model=update_dialog_model, .get_state=get_dialog_state};
-            memcpy(out, &t, sizeof(t)); return PULSE_OK;
-        }
-        REQUIRE(version == 1 && size >= sizeof(PulseDialogsV1));
+        REQUIRE(size >= sizeof(PulseDialogsV1));
         PulseDialogsV1 t = {.size=sizeof(t), .version=1, .context=f, .show=show_dialog, .close=close_dialog};
         memcpy(out, &t, sizeof(t)); return PULSE_OK;
     }
-    REQUIRE(version == 1);
     if (f->bundled && same(name, PULSE_CONTEXT_INTERFACE_NAME)) {
         REQUIRE(size >= sizeof(PulseContextV1));
         PulseContextV1 t = {.size=sizeof(t), .version=1, .context=f, .get_selection=selection};
@@ -607,38 +541,6 @@ static int partial(PulsePluginEntryV1Fn entry) {
     out.deactivate(out.instance); out.destroy(out.instance);
     return 0;
 }
-static int picker_compat_session(PulsePluginEntryV1Fn entry, int use_v2) {
-    Fixture f = {.auto_dispatch=1, .bundled=1, .dialogs_v2=use_v2};
-    InitializeCriticalSection(&f.dispatch_lock);
-    PulseHostV1 host = {.size=sizeof(host), .version=1, .context=&f, .query_interface=query};
-    PulsePluginV1 out = {.size=sizeof(out), .version=1};
-    CHECK(entry(&host, &out) == PULSE_OK);
-    CHECK(out.activate(out.instance) == PULSE_OK && f.task);
-    CHECK(cancel_task(&f, f.task) == PULSE_OK);
-    for (unsigned i = 0; i < 100 && f.task; ++i) { Sleep(20); pump(&f); }
-    CHECK(!f.task);
-    if (use_v2) {
-        CHECK(click(&f, 19) == 0 && f.dialog && f.dialog_command && f.dialog_command_subscription);
-        f.dialog_command(f.dialog_command_user, f.dialog, view("browse"));
-        CHECK(f.picker && f.dialog);
-        CHECK(picker_reply(&f, 1) == PULSE_OK && !f.picker && f.dialog && f.dialog_states_updated == 0);
-        f.dialog_command(f.dialog_command_user, f.dialog, view("browse"));
-        CHECK(f.picker && f.dialog);
-        CHECK(picker_reply(&f, 0) == PULSE_OK && !f.picker && f.dialog && f.dialog_states_updated == 1);
-    } else {
-        CHECK(click(&f, 21) == 0 && f.picker && !f.dialog);
-        CHECK(picker_reply(&f, 1) == PULSE_OK && !f.picker && !f.dialog);
-        CHECK(click(&f, 21) == 0 && f.picker);
-        CHECK(picker_reply(&f, 0) == PULSE_OK && !f.picker && f.dialog);
-    }
-    CHECK(close_dialog(&f, f.dialog) == PULSE_OK && !f.dialog && !f.dialog_command_subscription);
-    out.deactivate(out.instance);
-    out.destroy(out.instance);
-    CHECK(!f.page && !f.pending && !f.worker && !f.queued && !f.picker);
-    DeleteCriticalSection(&f.dispatch_lock);
-    return 0;
-}
-
 static int bundled_session(PulsePluginEntryV1Fn entry) {
     Fixture f = {.auto_dispatch=1, .bundled=1};
     InitializeCriticalSection(&f.dispatch_lock);
@@ -700,7 +602,7 @@ int main(int argc, char **argv) {
         HMODULE lib = LoadLibraryExA(argv[1], NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
         CHECK(lib);
         PulsePluginEntryV1Fn entry = (PulsePluginEntryV1Fn)GetProcAddress(lib, "PulsePluginEntryV1");
-        CHECK(entry && picker_compat_session(entry, 1) == 0 && picker_compat_session(entry, 0) == 0 && bundled_session(entry) == 0);
+        CHECK(entry && bundled_session(entry) == 0);
         CHECK(FreeLibrary(lib));
         puts("Bundled Companion ABI: actual first-frame, stop, restart, deactivate verified");
         return 0;

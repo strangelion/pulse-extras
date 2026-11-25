@@ -1074,16 +1074,3 @@ party dialog executable, or arbitrary executable is invoked. Existing
 selection prefill and manual input remain. C fixture covers host picker
 accept/cancel; actual Windows fallback interaction needs manual acceptance.
 The rest of the uploaded SDK and harness are not yet migrated or executed.
-
-## Dialogs V2 nested folder picker
-
-The Companion import confirmation form probes the optional V2 table
-independently of the frozen V1 prefix. On hosts exposing both V2 and
-pulse.pickers, Browse is part of the dialog model and subscribes to the
-`browse` command. The host parents the picker to the active dialog. An
-accepted single local directory updates both path and inferred source ID via
-V2 set_states; cancellation leaves the form open and unchanged. The command
-subscription is released on dialog close and during session shutdown. If V2
-or its command subscription is unavailable, the separate toolbar picker
-remains available; if pulse.pickers is also missing, the approved Zig/Windows
-helper remains the final fallback.

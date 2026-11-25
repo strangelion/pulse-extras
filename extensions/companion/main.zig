@@ -1006,8 +1006,9 @@ fn browseImport(instance: *Instance) void {
 fn showImportWithSelection(instance: *Instance, selection: *const Selection) void {
     if (!instance.active or instance.section != .library or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0) return;
     const dialogs = instance.dialogs orelse return;
-    const show = dialogs.show orelse return;
     const embedded_picker = instance.dialog_v2_table != null and instance.picker_api != null and !instance.dialog_picker_disabled;
+    const show_context = if (embedded_picker) instance.dialog_v2_table.?.context else dialogs.context;
+    const show = if (embedded_picker) (instance.dialog_v2_table.?.show orelse return) else (dialogs.show orelse return);
     var fields = [_]ui.Node{ ui.node(ui.NodeKind.text_input), ui.node(ui.NodeKind.text_input), ui.node(ui.NodeKind.button) };
     fields[0].id = abi.view("import.path");
     fields[0].text = .{ .present = 1, .value = abi.view("素材文件夹") };
@@ -1053,7 +1054,7 @@ fn showImportWithSelection(instance: *Instance, selection: *const Selection) voi
         .model = &tree,
     };
     var id: u64 = 0;
-    if (show(dialogs.context, &request, null, importClosed, instance, &id) != abi.ok or id == 0) {
+    if (show(show_context, &request, null, importClosed, instance, &id) != abi.ok or id == 0) {
         instance.library_status = "宿主未能打开导入确认窗口";
     } else {
         instance.import_dialog = id;
@@ -1067,8 +1068,8 @@ fn showImportWithSelection(instance: *Instance, selection: *const Selection) voi
             } else {
                 // Never leave a visible command without a live callback.
                 instance.dialog_picker_disabled = true;
-                if (dialogs.close) |close_dialog| {
-                    if (close_dialog(dialogs.context, id) == abi.ok) {
+                if (table.close) |close_dialog| {
+                    if (close_dialog(table.context, id) == abi.ok) {
                         showImportWithSelection(instance, selection);
                         return;
                     }
@@ -1214,8 +1215,14 @@ fn close(instance: *Instance) host_mod.Error!void {
             }
         }
         const dialogs = instance.dialogs orelse return error.State;
-        const close_dialog = dialogs.close orelse return error.Unavailable;
-        host_mod.mapStatus(close_dialog(dialogs.context, instance.import_dialog)) catch |err| switch (err) {
+        const close_status = if (instance.dialog_v2_table) |table| blk: {
+            const close_dialog = table.close orelse return error.Unavailable;
+            break :blk close_dialog(table.context, instance.import_dialog);
+        } else blk: {
+            const close_dialog = dialogs.close orelse return error.Unavailable;
+            break :blk close_dialog(dialogs.context, instance.import_dialog);
+        };
+        host_mod.mapStatus(close_status) catch |err| switch (err) {
             error.State => {},
             else => return err,
         };
