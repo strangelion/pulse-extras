@@ -245,3 +245,19 @@ not accessed by these operations. Actual persistent inventory/ID allocation,
 import and root setup/recovery are still pending. Windows CI adds an isolated
 real-file round trip/replacement/corrupt-record preservation test. Prior
 Ubuntu run 45570692091 passed; Windows was still running at check time.
+
+## Selected Classic package launch
+
+Added typed group startPackage / pet_group_start_package. The worker supplies
+an approved executable, catalog local ID and source ID, and validated local
+private directory (not a raw argument string). Native validates DOS path and
+source ID, appends quoted package directory and restricted ID. Child accepts
+managed package plus state/ready channels, rejects shared registry writes,
+and reuses existing package inventory, metadata, pinned-file, decoder and
+first-frame checks. Wrong package ID exits without readiness; confirmed exit
+returns its reservation. The static mixed preflight adds one real supervised
+package start/ready/reaction/stop test and wrong-ID rejection, without heavy
+stress. Group's catalog-to-private-path resolver, import and persistent
+inventory remain pending. Host-directed reaction still takes precedence over
+idle custom activities. Full Windows GUI acceptance and new CI pending.
+Prior regression 45570692091 passed both platforms.

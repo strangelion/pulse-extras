@@ -2,6 +2,7 @@
 //! A live process is not a ready desktop pet; wait for first-frame acknowledgment.
 const std = @import("std");
 const model = @import("companion/pet_manager.zig");
+const catalog = @import("companion/pet_catalog.zig");
 const trust = @import("process/trust.zig");
 const Handle = ?*anyopaque;
 const Owner = extern struct {
@@ -45,6 +46,7 @@ const RawMetrics = extern struct {
 extern "c" fn pet_group_storage_size() usize;
 extern "c" fn pet_group_open(*Native, u32, usize) c_int;
 extern "c" fn pet_group_start(*Native, [*:0]const u16, *const Options, *u64) c_int;
+extern "c" fn pet_group_start_package(*Native, [*:0]const u16, *const Options, [*:0]const u16, [*:0]const u16, *u64) c_int;
 extern "c" fn pet_group_request_stop(*Native, u64) c_int;
 extern "c" fn pet_group_force_stop(*Native, u64) c_int;
 extern "c" fn pet_group_reap(*Native, u64, *u32) c_int;
@@ -75,6 +77,8 @@ pub const Start = struct {
     // remains owned. Stop/reap it; do not discard the reservation.
     failure: ?NativeError = null,
 };
+const Package = struct { directory: [*:0]const u16, source_id: [*:0]const u16 };
+
 pub const Group = struct {
     native: Native = undefined,
     manager: ?model.Manager = null,
@@ -101,7 +105,29 @@ pub const Group = struct {
         });
     }
 
+    // The worker resolves the local asset ID to the catalog entry and its
+    // independently validated private directory; the child revalidates the
+    // package. Never use an arbitrary UI path or a user-supplied executable.
+    pub fn startPackage(self: *Group, io: std.Io, approval: trust.Approval, entry: *const catalog.Entry, directory: []const u8, scale: u32, reduced: bool, topmost: bool) !Start {
+        if (!trust.localAbsolute(directory) or std.mem.indexOfScalar(u8, directory, 0) != null) return error.Invalid;
+        var dir: [1024]u16 = undefined;
+        const dir_len = try std.unicode.utf8ToUtf16Le(dir[0 .. dir.len - 1], directory);
+        dir[dir_len] = 0;
+        var source: [65]u16 = undefined;
+        const source_len = try std.unicode.utf8ToUtf16Le(source[0 .. source.len - 1], entry.sourceId());
+        source[source_len] = 0;
+        return self.startSelected(io, approval, entry.id, .{
+            .scale = scale,
+            .reduced = @intFromBool(reduced),
+            .topmost = @intFromBool(topmost),
+        }, .{ .directory = dir[0..dir_len :0], .source_id = source[0..source_len :0] });
+    }
+
     fn startInternal(self: *Group, io: std.Io, approval: trust.Approval, asset_id: u64, options: Options) !Start {
+        return self.startSelected(io, approval, asset_id, options, null);
+    }
+
+    fn startSelected(self: *Group, io: std.Io, approval: trust.Approval, asset_id: u64, options: Options, package: ?Package) !Start {
         const manager = try self.active();
         if (options.scale < 50 or options.scale > 200) return error.Invalid;
         try approval.verify(io, approval.path);
@@ -110,7 +136,10 @@ pub const Group = struct {
         path[len] = 0;
         const id = try manager.reserveStart(asset_id);
         var native_id: u64 = 0;
-        const code = pet_group_start(&self.native, path[0..len :0], &options, &native_id);
+        const code = if (package) |selected|
+            pet_group_start_package(&self.native, path[0..len :0], &options, selected.directory, selected.source_id, &native_id)
+        else
+            pet_group_start(&self.native, path[0..len :0], &options, &native_id);
         if (native_id == 0) {
             // Native contract: zero ID on failure proves no retained child.
             try manager.confirmGone(id);

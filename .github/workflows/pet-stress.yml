@@ -26,6 +26,8 @@ on:
       - 'shared/companion/pet_assets.zig'
       - 'shared/companion/pet_package.zig'
       - 'shared/companion/pet_demo*'
+      - 'shared/companion/pet_supervisor_win32.*'
+      - tests/companion/pet_supervisor_win32_test.c
       - 'shared/companion/pet_surface*'
       - 'shared/companion/pet_memory.zig'
       - 'shared/companion/pet_resources*'
@@ -110,6 +112,14 @@ jobs:
               exit $LASTEXITCODE
             }
             $petArgs += $sourceArgs
+            if ($env:PET_PROFILE -eq 'mixed-hidden' -or $env:PET_PROFILE -eq 'mixed-visible') {
+              zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_supervisor_win32.c tests/companion/pet_supervisor_win32_test.c -lshell32 -lpsapi -o zig-out/pet-supervisor-test.exe
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              $demo = (Resolve-Path ./zig-out/bin/pulse-pet-demo.exe).Path
+              $package = (Resolve-Path ./zig-out/stress-fixtures/fixture-v1).Path
+              & ./zig-out/pet-supervisor-test.exe $demo $package
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
           }
           if ($env:PET_MANUAL -ne 'true') {
             Write-Host 'Automatic codec preflight complete; full stress is manual.'

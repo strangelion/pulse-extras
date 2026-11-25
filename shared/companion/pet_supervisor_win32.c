@@ -5,7 +5,7 @@
 #include <psapi.h>
 
 #define PATH_CAP 1024u
-#define CMD_CAP 1400u
+#define CMD_CAP 2600u
 #define STOP_MAX_MS 5000u
 
 /* 0 = none, 1 = legacy singleton, 2 = group. Group identity is worker-owned. */
@@ -71,14 +71,48 @@ void pet_child_abandon(pet_supervisor *owner) {
     InterlockedExchange(&live_owner, 0);
 }
 
+/* Strict structured DOS path and package ID. The child performs full
+ * package validation and holds the actual asset handles during its lifetime.
+ * The caller must supply an independently validated private asset root. */
+static BOOL package_args(const wchar_t *directory, const wchar_t *id) {
+    if (!directory || !id) return FALSE;
+    size_t n = 0;
+    while (n < PATH_CAP && directory[n]) ++n;
+    if (n < 4 || n >= PATH_CAP ||
+        !((directory[0] >= L'A' && directory[0] <= L'Z') ||
+          (directory[0] >= L'a' && directory[0] <= L'z')) ||
+        directory[1] != L':' || directory[2] != L'\\') return FALSE;
+    size_t component = 3;
+    for (size_t i = 3; i <= n; ++i) {
+        wchar_t ch = directory[i];
+        if (ch == L'\\' || !ch) {
+            if (i == component || directory[i - 1] == L'.' || directory[i - 1] == L' ') return FALSE;
+            component = i + 1;
+        } else if (ch < 32 || ch == L'"' || ch == L'/' || ch == L':' ||
+            ch == L'*' || ch == L'?' || ch == L'<' || ch == L'>' || ch == L'|') return FALSE;
+    }
+    wchar_t drive[] = {directory[0], L':', L'\\', 0};
+    if (GetDriveTypeW(drive) != DRIVE_FIXED) return FALSE;
+    size_t len = 0;
+    while (len <= 64 && id[len]) {
+        wchar_t ch = id[len];
+        if (!((ch >= L'a' && ch <= L'z') || (ch >= L'0' && ch <= L'9') ||
+              (len && (ch == L'-' || ch == L'_')))) return FALSE;
+        ++len;
+    }
+    return len && len <= 64 && wcscmp(id, L"builtin") != 0;
+}
+
 static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approved_exe,
-    const pet_child_options *options) {
+    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id) {
     if (!owner || !options || options->scale < PET_MIN_SCALE ||
         options->scale > PET_MAX_SCALE ||
         (options->smoke && (options->remember || options->reduced || options->topmost)))
         return PET_CHILD_INVALID;
     if (owner->job || owner->process || owner->stop || owner->state_mapping ||
         owner->state_event || owner->state_slot || owner->ready_event) return PET_CHILD_BUSY;
+    if ((directory || package_id) && (options->smoke || options->remember ||
+        !package_args(directory, package_id))) return PET_CHILD_INVALID;
     pet_child_result result = PET_CHILD_OS_ERROR;
     HANDLE image = INVALID_HANDLE_VALUE, job = NULL, stop = NULL;
     HANDLE mapping = NULL, event = NULL, ready = NULL;
@@ -142,6 +176,11 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
         (unsigned long long)(uintptr_t)inherited[1], (unsigned long long)(uintptr_t)inherited[2],
         (unsigned long long)(uintptr_t)inherited[3]);
     if (written < 0 || (unsigned)written >= CMD_CAP) { result = PET_CHILD_INVALID; goto cleanup; }
+    if (directory) {
+        size_t remaining = CMD_CAP - (unsigned)written;
+        int appended = swprintf(command + written, remaining, L" --package \"%ls\" %ls", directory, package_id);
+        if (appended < 0 || (size_t)appended >= remaining) { result = PET_CHILD_INVALID; goto cleanup; }
+    }
     /* No inherited PATH, credentials or loader variables. Use system cwd;
      * the approved installation directory still must be trusted by caller. */
     wchar_t cwd[PATH_CAP], env[PATH_CAP + 16] = L"SystemRoot=";
@@ -207,7 +246,7 @@ pet_child_result pet_child_start(pet_supervisor *owner, const wchar_t *approved_
     if (owner->job || owner->process || owner->stop || owner->state_mapping ||
         owner->state_event || owner->state_slot || owner->ready_event) return PET_CHILD_BUSY;
     if (InterlockedCompareExchange(&live_owner, 1, 0) != 0) return PET_CHILD_BUSY;
-    pet_child_result result = start_child(owner, approved_exe, options);
+    pet_child_result result = start_child(owner, approved_exe, options, NULL, NULL);
     if (result != PET_CHILD_OK) {
         /* Preserve legacy last-resort cleanup semantics. Group callers use
          * start_child directly and retain ambiguous termination ownership. */
@@ -300,8 +339,8 @@ pet_child_result pet_group_admission(const pet_supervisor_group *group,
     return PET_CHILD_OK;
 }
 
-pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *approved_exe,
-    const pet_child_options *options, uint64_t *id) {
+static pet_child_result group_start(pet_supervisor_group *group, const wchar_t *approved_exe,
+    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, uint64_t *id) {
     if (!id) return PET_CHILD_INVALID;
     *id = 0;
     if (!group || group != active_group || !options || options->remember)
@@ -320,7 +359,7 @@ pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *app
         if (slot->id) continue;
         slot->id = group->next_id++;
         ++group->count;
-        pet_child_result result = start_child(&slot->child, approved_exe, options);
+        pet_child_result result = start_child(&slot->child, approved_exe, options, directory, package_id);
         if (result != PET_CHILD_OK && !slot->child.process) {
             *slot = (pet_group_slot){0};
             --group->count;
@@ -331,6 +370,20 @@ pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *app
         return result;
     }
     return PET_CHILD_STORAGE_LIMIT;
+}
+
+pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *approved_exe,
+    const pet_child_options *options, uint64_t *id) {
+    return group_start(group, approved_exe, options, NULL, NULL, id);
+}
+
+pet_child_result pet_group_start_package(pet_supervisor_group *group, const wchar_t *approved_exe,
+    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, uint64_t *id) {
+    if (!id) return PET_CHILD_INVALID;
+    *id = 0;
+    if (!package_args(directory, package_id) || !options || options->smoke || options->remember)
+        return PET_CHILD_INVALID;
+    return group_start(group, approved_exe, options, directory, package_id, id);
 }
 
 pet_child_result pet_group_publish(pet_supervisor_group *group, uint64_t id, unsigned reaction) {

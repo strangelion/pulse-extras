@@ -101,7 +101,7 @@ int main(void) {
     CloseHandle(observed);
     observed = NULL;
     /* Also launch the actual demo, if supplied, without showing a window. */
-    if (argc == 2) {
+    if (argc >= 2) {
         CHECK(pet_child_start(&owner, argv[1], &options) == PET_CHILD_OK);
         CHECK(pet_child_publish(&owner, PET_STATE_TESTING) == PET_CHILD_OK);
         CHECK(WaitForSingleObject(owner.ready_event, 5000) == WAIT_OBJECT_0);
@@ -152,6 +152,26 @@ int main(void) {
     CHECK(WaitForSingleObject(group.slots[1].child.process, 5000) == WAIT_OBJECT_0);
     CHECK(pet_group_reap(&group, b, &code) == PET_CHILD_OK && group.count == 0);
     CHECK(pet_group_close(&group) == PET_CHILD_OK);
+    if (argc == 3) {
+        /* Actual package with static decoder from the mixed preflight. */
+        options.smoke = FALSE;
+        CHECK(pet_group_open(&group, 2, PET_CHILD_COMMIT_LIMIT * 2) == PET_CHILD_OK);
+        CHECK(pet_group_start_package(&group, argv[1], &options, L"relative", L"fixture-v1", &rejected) == PET_CHILD_INVALID && !rejected);
+        CHECK(pet_group_start_package(&group, argv[1], &options, argv[2], L"bad id", &rejected) == PET_CHILD_INVALID && !rejected);
+        CHECK(pet_group_start_package(&group, argv[1], &options, argv[2], L"wrong-id", &a) == PET_CHILD_OK && a);
+        CHECK(WaitForSingleObject(group.slots[0].child.process, 10000) == WAIT_OBJECT_0);
+        CHECK(WaitForSingleObject(group.slots[0].child.ready_event, 0) == WAIT_TIMEOUT);
+        CHECK(pet_group_reap(&group, a, &code) == PET_CHILD_OK && code != 0 && !group.count);
+        CHECK(pet_group_start_package(&group, argv[1], &options, argv[2], L"fixture-v1", &b) == PET_CHILD_OK && b);
+        CHECK(WaitForSingleObject(group.slots[0].child.ready_event, 15000) == WAIT_OBJECT_0);
+        CHECK(pet_group_ready(&group, b, &ready_state) == PET_CHILD_OK && ready_state);
+        CHECK(pet_group_publish(&group, b, PET_STATE_THINKING) == PET_CHILD_OK);
+        CHECK(pet_group_request_stop(&group, b) == PET_CHILD_OK);
+        CHECK(WaitForSingleObject(group.slots[0].child.process, 10000) == WAIT_OBJECT_0);
+        CHECK(pet_group_reap(&group, b, &code) == PET_CHILD_OK && code == 0 && !group.count);
+        CHECK(pet_group_close(&group) == PET_CHILD_OK);
+        options.smoke = TRUE;
+    }
     CHECK(pet_child_start(&owner, path, &options) == PET_CHILD_OK);
     CHECK(pet_child_stop(&owner, 0, &forced, &code) == PET_CHILD_OK);
     rc = 0;

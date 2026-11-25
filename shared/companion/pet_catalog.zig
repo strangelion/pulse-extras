@@ -90,6 +90,10 @@ pub const Entry = struct {
         return entry;
     }
 
+    pub fn sourceId(self: *const Entry) []const u8 {
+        return self.source_id.slice();
+    }
+
     pub fn displayName(self: *const Entry) []const u8 {
         return self.name.slice();
     }

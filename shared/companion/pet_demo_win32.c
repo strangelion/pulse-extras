@@ -492,7 +492,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         }
     }
     pet_demo_sample activity_check = {0};
-    if ((package_dir && (path || activity_path || smoke || state_map)) ||
+    if ((package_dir && (path || activity_path || smoke || (state_map && (!ready_event || remember)))) ||
         ((check_package || check_task) && (stop || remember || reset_position || gaze_set)) ||
         (activity_path && (smoke || state_map ||
             sample_activity(activity_frames, activity_fps, 0, &activity_check) != 0)) ||

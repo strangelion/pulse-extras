@@ -81,6 +81,10 @@ pet_child_result pet_group_admission(const pet_supervisor_group *group,
  * reap or stop it before reclaiming the reservation. */
 pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *approved_exe,
     const pet_child_options *options, uint64_t *id);
+/* Typed Classic package launch. Caller must validate private asset root;
+ * child revalidates contents. No arbitrary command-line arguments. */
+pet_child_result pet_group_start_package(pet_supervisor_group *group, const wchar_t *approved_exe,
+    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, uint64_t *id);
 pet_child_result pet_group_publish(pet_supervisor_group *group, uint64_t id, unsigned reaction);
 pet_child_result pet_group_status(pet_supervisor_group *group, uint64_t id, BOOL *running, DWORD *exit_code);
 typedef struct {
