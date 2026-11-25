@@ -48,6 +48,19 @@ def main():
     (root / "fixture-v2.webp").write_bytes(decode_atlas(V2, 192, 1536, 2288,
         '9ab0cd6bc08d58f85485c7e88ee62b4f261e1f5bfdebf5b86ddd5fab363e242d'))
 
+    # Exercise the exact metadata distributed by the optional real artwork
+    # downloader, but use original synthetic pixels so CI is offline.
+    metadata_path = Path(__file__).parent / "assets" / "hoodie-cat" / "pet.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    wardrobe = root / "hoodie-cat"
+    (wardrobe / "outfits").mkdir(parents=True)
+    atlas = (root / "fixture-v2.webp").read_bytes()
+    (wardrobe / "pet.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (wardrobe / "spritesheet.webp").write_bytes(atlas)
+    for outfit in metadata["wardrobe"]["outfits"]:
+        (wardrobe / outfit["spritesheetPath"]).write_bytes(atlas)
+
+
 
 if __name__ == "__main__":
     main()

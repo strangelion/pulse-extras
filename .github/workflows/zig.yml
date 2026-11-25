@@ -279,6 +279,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           zig build test-companion-import --summary all
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/bin/pulse-pet-demo.exe --check-package "$PWD/zig-out/import-fixtures/hoodie-cat" hoodie-cat
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   gate:
     name: Regression gate

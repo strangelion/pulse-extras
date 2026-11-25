@@ -1407,3 +1407,17 @@ For a consolidated, commit-scoped benchmark comparison and reproduction
 instructions, see [performance.md](performance.md). The earlier prototype
 results above are historical; the newer parallel CI and import checkpoints
 are tracked separately.
+
+## Optional official Hoodie Cat wardrobe smoke asset
+
+The original Juhuali download remains the default. Run
+`python scripts/fetch_pet_test_asset.py --pet hoodie-cat` for the pinned
+OpenPets base atlas plus five official outfit atlases, copied metadata
+schedule and adjacent MIT license. No upstream executable or installer.
+Size and Git blob object ID are checked before exclusive publication;
+existing mismatched files are never replaced. See
+[asset test instructions](../tests/companion/assets/hoodie-cat/README.md).
+The Python unit tests exercise integrity, metadata/atlas coverage and
+no-overwrite behavior without network access. This is a standalone demo
+package, not yet imported into the native manager. Live download/render
+has not been verified in this environment.
