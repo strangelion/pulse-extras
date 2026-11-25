@@ -152,6 +152,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/companion/pet_stop_smoke.py zig-out/pulse-pet-demo.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test contained companion process supervision
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_supervisor_win32.c tests/companion/pet_supervisor_win32_test.c -lshell32 -o zig-out/pet-supervisor-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $demo = (Resolve-Path ./zig-out/pulse-pet-demo.exe).Path
+          & ./zig-out/pet-supervisor-test.exe $demo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Fetch pinned native SDK headers
         if: runner.os == 'Windows' && needs.scope.outputs.level != 'vcs'
         run: python scripts/fetch_sdk.py

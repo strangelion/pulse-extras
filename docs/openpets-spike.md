@@ -431,3 +431,32 @@ retains the pinned checksum and version checks. Permanent HTTP errors
 and checksum mismatches fail closed. Offline Python regression tests
 cover retry, exhaustion, permanent failure and partial-file cleanup.
 The merged runtime and companion combination still requires CI verification.
+
+## Native child supervisor seam
+
+pet_supervisor_win32.{h,c} is a worker-only, zero-initialized owner of one
+native demo child. A process-local interlocked guard also prevents two
+supervisor objects from starting simultaneous children in the same host.
+The eventual host must verify an independently approved helper digest
+and installation ACLs using shared/process/trust.zig before calling it.
+The supervisor accepts only an explicit canonical fixed-drive executable,
+pins the opened final image against write/delete sharing during launch,
+passes a fixed set of switches, a minimal SystemRoot environment and a
+system working directory. Path checks are not a race-free approval boundary.
+
+Unlike the synchronous capture runner in shared/process/windows_tree.zig,
+this long-lived UI helper requires a cooperative stop handle and no
+stdio pipe collection. CreateProcessW uses STARTUPINFOEX with a single
+inherited SYNCHRONIZE-only event handle and a private job list, suspended
+creation and confirmation of job membership before resume. The job is
+kill-on-close with an active process limit of one; no fallback to an
+uncontained child. Windows 10+ job-list support is required. Stop signals
+the event, waits up to a caller-selected 5s, then terminates only its
+owned job and waits up to 5s for confirmed process exit. Abandon closes
+the job and requests kernel cleanup without claiming confirmation.
+The supervisor does not wait on the UI thread or automatically restart.
+It retains handles after failed confirmation. Process-local ownership is
+not machine-wide single-instance enforcement; standalone external demo
+instances are not managed. CI exercises normal stop, force stop, duplicate
+ownership, job-close cleanup and the actual hidden demo. No host callback,
+production startup, real asset launch or user-facing settings is wired yet.
