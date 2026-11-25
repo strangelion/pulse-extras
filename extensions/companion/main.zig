@@ -795,9 +795,37 @@ test "four section tree declares only real navigation and preference actions" {
         try std.testing.expectEqual(@as(u32, commands.len), tree.command_count);
         try std.testing.expectEqual(@as(u32, 4), content.children[0].children.count);
         try std.testing.expectEqualStrings(commands[n][10..], abi.slice(content.children[1].id).?);
-        try std.testing.expectEqual(@as(u32, if (instance.section == .global or instance.section == .library) 5 else 3), content.root.children.count);
+        const expected: u32 = switch (instance.section) {
+            .global, .library => 5,
+            .running => 4,
+            .market => 3,
+        };
+        try std.testing.expectEqual(expected, content.root.children.count);
     }
     try std.testing.expectEqual(@as(u32, 0), content.toolbar[2].enabled.value);
+}
+
+test "running view exposes bounded start and stop actions" {
+    var instance: Instance = .{ .host = undefined, .section = .running };
+    var content: Content = undefined;
+    var tree: ui.Tree = undefined;
+    fill(&instance, &content, &tree);
+    try std.testing.expectEqual(@as(u32, 4), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 2), content.children[3].children.count);
+    try std.testing.expectEqualStrings(commands[12], abi.slice(content.toolbar[0].command.value).?);
+    try std.testing.expectEqualStrings(commands[13], abi.slice(content.toolbar[1].command.value).?);
+    try std.testing.expectEqual(@as(u32, 0), content.toolbar[0].enabled.value);
+    try std.testing.expectEqual(@as(u32, 0), content.toolbar[1].enabled.value);
+    instance.task_id = 1;
+    instance.task_kind = .builtin_session;
+    instance.session.set(.running);
+    fill(&instance, &content, &tree);
+    try std.testing.expectEqual(@as(u32, 5), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 0), content.toolbar[0].enabled.value);
+    try std.testing.expectEqual(@as(u32, 1), content.toolbar[1].enabled.value);
+    instance.stop_requested = true;
+    fill(&instance, &content, &tree);
+    try std.testing.expectEqual(@as(u32, 0), content.toolbar[1].enabled.value);
 }
 
 test "library view bounds rows and uses stable IDs" {
