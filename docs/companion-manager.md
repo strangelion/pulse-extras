@@ -1258,3 +1258,20 @@ validate package contents or authenticate a same-user write. The fixture
 checks actual transaction identity and immutable overwrite refusal, rather
 than synthetic receipts. Permanent deletion remains disabled. New CI and
 actual host acceptance are unverified.
+
+## Read-only cleanup content preflight
+
+The lease-bound preflight requires a complete valid inventory, a reserved
+but no longer registered ID, unambiguous quarantine namespace, a valid
+immutable receipt, matching native directory identity and bounded ordinary
+file accounting. It constructs the fixed quarantine path from the lease,
+uses the same approved digest-pinned job-contained package helper as import,
+checks both SHA-256 and SHA-512, drains the helper and repeats the receipt
+and namespace checks. The bridge fixture exercises a real quarantined
+package and rejects a still-registered ID; portable tests reject either
+digest mismatch. There is no permanent-delete API or UI. Preflight is
+read-only, not a capability to delete later, and does not close all
+same-user modification races. A destructive transaction must revalidate
+while pinning the exact files it will remove and provide interruption
+handling. The optional error comparison in the UI was also corrected
+following CI #231's compile error. New CI and real host remain unverified.

@@ -57,3 +57,44 @@ pub fn runControlled(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, 
     if (coordinator.fault != null) return error.RecoveryRequired;
     return outcome;
 }
+
+// Reuse the approved, job-contained fingerprint helper. No source path is
+// accepted from a caller: derive the quarantine name from the leased root.
+// The before/after receipt checks catch ordinary stale selection, not every
+// same-user race. No deletion, restore, or receipt write occurs here.
+pub fn verifyQuarantine(io: std.Io, owner: *runtime.Owner, exe: [:0]const u16, digest: [32]u8, id: u64) !void {
+    const expected = try store.cleanupReceipt(owner, id);
+    const private = std.mem.sliceTo(&owner.lease.path, 0);
+    var exe_buf: [4096]u8 = undefined;
+    const exe_len = try std.unicode.utf16LeToUtf8(&exe_buf, exe);
+    var root_buf: [4096]u8 = undefined;
+    const root_len = try std.unicode.utf16LeToUtf8(&root_buf, private);
+    const root = root_buf[0..root_len];
+    var system_wide: [1024]u16 = undefined;
+    const n = GetWindowsDirectoryW(&system_wide, system_wide.len);
+    if (n == 0 or n >= system_wide.len) return error.InvalidSystemDirectory;
+    var system_buf: [4096]u8 = undefined;
+    const system_len = try std.unicode.utf16LeToUtf8(&system_buf, system_wide[0..n]);
+    var environ = std.process.Environ.Map.init(std.heap.page_allocator);
+    defer environ.deinit();
+    try environ.put("SystemRoot", system_buf[0..system_len]);
+    try environ.put("TEMP", root);
+    try environ.put("TMP", root);
+    var runner = process.Runner.init(std.heap.page_allocator, io);
+    try runner.configureApproved(.{ .path = exe_buf[0..exe_len], .digest = digest }, 60 * std.time.ns_per_s);
+    try runner.configureTree(.windows_job);
+    var helper: helper_mod.Helper = .{
+        .runner = &runner,
+        .exe = exe_buf[0..exe_len],
+        .cwd = root,
+        .asset_root = root,
+        .environ = &environ,
+    };
+    var source: [4096]u8 = undefined;
+    const quarantine = try std.fmt.bufPrint(&source, "{s}\\pet-{x:0>16}.removed", .{ root, id });
+    const outcome = helper.probe(quarantine, expected.record.sourceId());
+    try runner.checkDrained();
+    try expected.verifyPair(try outcome);
+    const current = try store.cleanupReceipt(owner, id);
+    if (!std.meta.eql(expected, current)) return error.StaleSelection;
+}

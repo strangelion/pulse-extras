@@ -3,6 +3,7 @@
 const std = @import("std");
 const inventory = @import("pet_inventory.zig");
 const Sha256 = std.crypto.hash.sha2.Sha256;
+const fingerprint = @import("pet_fingerprint.zig");
 
 pub const encoded_size = 221;
 const payload_size = 189;
@@ -10,6 +11,12 @@ pub const Receipt = struct {
     record: inventory.Record,
     volume: u32,
     file_index: u64,
+
+    pub fn verifyPair(self: Receipt, actual: fingerprint.Pair) !void {
+        const primary = self.record.digest orelse return error.InvalidReceipt;
+        const secondary = self.record.secondary orelse return error.InvalidReceipt;
+        if (!std.mem.eql(u8, &primary, &actual.primary) or !std.mem.eql(u8, &secondary, &actual.secondary)) return error.ContentChanged;
+    }
 
     pub fn encode(self: Receipt, out: *[encoded_size]u8) !void {
         if (self.record.id == 0 or self.record.len == 0 or self.record.len > self.record.source.len or self.file_index == 0) return error.InvalidReceipt;
@@ -73,4 +80,17 @@ test "receipt binds stable ID paired fingerprints and directory identity" {
     var legacy = receipt;
     legacy.record.secondary = null;
     try std.testing.expectError(error.InvalidReceipt, legacy.encode(&bytes));
+}
+
+test "cleanup preflight requires both independent content digests" {
+    var record = try inventory.Record.init(9, "cat");
+    record.digest = @splat(3);
+    record.secondary = @splat(7);
+    var value: Receipt = .{ .record = record, .volume = 1, .file_index = 2 };
+    const pair: fingerprint.Pair = .{ .primary = @splat(3), .secondary = @splat(7) };
+    try value.verifyPair(pair);
+    try std.testing.expectError(error.ContentChanged, value.verifyPair(.{ .primary = @splat(4), .secondary = pair.secondary }));
+    try std.testing.expectError(error.ContentChanged, value.verifyPair(.{ .primary = pair.primary, .secondary = @splat(8) }));
+    value.record.secondary = null;
+    try std.testing.expectError(error.InvalidReceipt, value.verifyPair(pair));
 }

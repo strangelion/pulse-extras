@@ -7,6 +7,7 @@ const catalog = @import("companion/pet_catalog.zig");
 const importing = @import("companion/pet_import.zig");
 const fingerprint = @import("companion/pet_fingerprint.zig");
 const recovery = @import("companion/pet_recovery_scan.zig");
+const receipt = @import("companion/pet_removal_receipt.zig");
 
 pub fn loadInventory(owner: *runtime.Owner, out: *inventory.Inventory) !bool {
     var bytes: [inventory.max_bytes]u8 = undefined;
@@ -80,6 +81,32 @@ fn inspectReceipt(owner: *runtime.Owner, id: u64) !recovery.ReceiptState {
         else => return err,
     };
     return if (value.volume == identity.volume and value.file_index == identity.file_index) .matched_identity else .invalid;
+}
+
+// Read-only cleanup preflight. This is evidence for the current lease, not
+// permission to delete later. A future destructive transaction must repeat
+// verification while pinning the exact objects that it removes.
+pub fn cleanupReceipt(owner: *runtime.Owner, id: u64) !receipt.Receipt {
+    if (try owner.group.remaining() != 0) return error.ActiveInstances;
+    const index = try std.heap.page_allocator.create(inventory.Inventory);
+    defer std.heap.page_allocator.destroy(index);
+    index.* = .{};
+    if (!try loadInventory(owner, index) or id == 0 or id >= index.next_id) return error.RecoveryRequired;
+    if (index.get(id)) |_| {
+        return error.ActiveRecord;
+    } else |err| {
+        if (err != error.UnknownAsset) return err;
+    }
+    const rows = try std.heap.page_allocator.alloc(recovery.Row, recovery.max_rows);
+    defer std.heap.page_allocator.free(rows);
+    const count = try owner.scanStore(rows);
+    _ = try recovery.classify(index, rows[0..count]);
+    if (try recovery.removalState(rows[0..count], id) != .quarantined) return error.RecoveryRequired;
+    const value = (try owner.readRemovalReceipt(id)) orelse return error.MissingReceipt;
+    const identity = try owner.quarantineIdentity(id);
+    if (value.volume != identity.volume or value.file_index != identity.file_index) return error.StaleSelection;
+    _ = try owner.quarantineUsage(id);
+    return value;
 }
 
 fn checkedRemoval(owner: *runtime.Owner, index: *inventory.Inventory, expected: inventory.Record, state: recovery.RemovalState) !void {
