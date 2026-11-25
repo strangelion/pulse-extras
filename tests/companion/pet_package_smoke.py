@@ -48,6 +48,8 @@ def main() -> None:
         assert task.returncode != 0, task.stderr
         assert b"Companion tasks: queued=0 running=0 peaks=1/1" in task.stderr, task.stderr
         assert b"Companion notification: live=0 peak=1" in task.stderr, task.stderr
+        assert b"Companion drawing: windows=0 memory_dc=0 desktop_dc=0" in task.stderr, task.stderr
+        assert b"admitted 1" in task.stderr and b"io_failure 1" in task.stderr, task.stderr
         assert b"Companion heap: live=0 allocations=0" in task.stderr, task.stderr
         assert b"Companion resources: files=0 codec=0 dib=0 cleanup_failures=0" in task.stderr, task.stderr
         # 8.3 aliases may be disabled on this volume. Exercise them if present.

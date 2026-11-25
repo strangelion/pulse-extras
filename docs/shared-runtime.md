@@ -426,3 +426,9 @@ scope. Attached menu ownership follows DestroyMenu recursion. Failed
 native release retains its reservation and produces bounded diagnostics.
 Hidden smoke exercises all five menu objects without a modal popup.
 These counts do not represent Windows-internal memory use.
+
+Companion phase 6 charges the published HWND, owned memory DCs and
+borrowed desktop DC separately, including transactional resize peaks
+and WM_NCDESTROY ownership. Fixed native decode events join the
+existing bounded log. No system-wide allocation accounting or full
+migration of textual diagnostics is claimed.

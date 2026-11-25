@@ -101,6 +101,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Companion resources: files={d} codec={d} dib={d} cleanup_failures={d} peaks={d}/{d}/{d}\n", .{ resource_owner.files.used, resource_owner.codecs.used, resource_owner.dib.used, resource_owner.cleanup_failures, resource_owner.files.peak, resource_owner.codecs.peak, resource_owner.dib.peak });
     std.debug.print("Companion notification: live={d} peak={d}\n", .{ resource_owner.notifications.used, resource_owner.notifications.peak });
     std.debug.print("Companion native: ipc={d} registry={d} menus={d} argv={d} peaks={d}/{d}/{d}/{d}\n", .{ resource_owner.ipc.used, resource_owner.registry.used, resource_owner.menus.used, resource_owner.argv.used, resource_owner.ipc.peak, resource_owner.registry.peak, resource_owner.menus.peak, resource_owner.argv.peak });
+    std.debug.print("Companion drawing: windows={d} memory_dc={d} desktop_dc={d} peaks={d}/{d}/{d}\n", .{ resource_owner.windows.used, resource_owner.memory_dcs.used, resource_owner.desktop_dcs.used, resource_owner.windows.peak, resource_owner.memory_dcs.peak, resource_owner.desktop_dcs.peak });
     if (stats.denied != 0) resource_owner.log.add(.{ .kind = .allocation_limit, .count = stats.denied });
     if (result != 0) resource_owner.log.add(.{ .kind = .io_failure, .count = 1 });
     resource_owner.log.add(.{ .kind = .stopped, .count = 1 });

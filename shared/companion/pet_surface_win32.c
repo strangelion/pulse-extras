@@ -65,12 +65,22 @@ static const wchar_t class_name[] = L"PulseExtras.Companion.Layered.Experimental
 static LRESULT CALLBACK pet_window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     if (message == WM_NCCREATE) {
         const CREATESTRUCTW *create = (const CREATESTRUCTW *)lparam;
-        SetWindowLongPtrW(window, GWLP_USERDATA, (LONG_PTR)create->lpCreateParams);
+        SetLastError(0);
+        if (!SetWindowLongPtrW(window, GWLP_USERDATA, (LONG_PTR)create->lpCreateParams) && GetLastError())
+            return FALSE;
     }
     pet_surface *surface = (pet_surface *)GetWindowLongPtrW(window, GWLP_USERDATA);
     if (surface && (message == WM_DISPLAYCHANGE || message == WM_SETTINGCHANGE ||
         message == WM_DPICHANGED)) surface->placement_dirty = TRUE;
-    if (message == WM_NCDESTROY) SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+    if (message == WM_NCDESTROY) {
+        SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+        /* CreateWindowExW can fail before its return value is published.
+         * Only a published window transfers its reservation here. */
+        if (surface && surface->window == window) {
+            surface->window = NULL;
+            pet_release(surface->resources, PET_RESOURCE_WINDOW, 1);
+        }
+    }
     if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
     /* No system-menu close may accidentally terminate the owning process.
      * Hide the pet; the owner decides when to release the surface. */
@@ -107,26 +117,60 @@ static pet_surface_result check(const pet_surface *surface) {
     return PET_SURFACE_OK;
 }
 
+static HDC create_memory_dc(const pet_resources *resources) {
+    if (!pet_reserve(resources, PET_RESOURCE_MEMORY_DC, 1)) return NULL;
+    HDC dc = CreateCompatibleDC(NULL);
+    if (!dc) pet_release(resources, PET_RESOURCE_MEMORY_DC, 1);
+    return dc;
+}
+
+static BOOL delete_memory_dc(const pet_resources *resources, HDC dc) {
+    if (!dc) return TRUE;
+    if (DeleteDC(dc)) {
+        pet_release(resources, PET_RESOURCE_MEMORY_DC, 1);
+        return TRUE;
+    }
+    pet_cleanup_failed(resources, PET_RESOURCE_MEMORY_DC);
+    return FALSE;
+}
+
+static HDC borrow_desktop_dc(const pet_resources *resources) {
+    if (!pet_reserve(resources, PET_RESOURCE_DESKTOP_DC, 1)) return NULL;
+    HDC dc = GetDC(NULL);
+    if (!dc) pet_release(resources, PET_RESOURCE_DESKTOP_DC, 1);
+    return dc;
+}
+
+static BOOL return_desktop_dc(const pet_resources *resources, HDC dc) {
+    if (ReleaseDC(NULL, dc)) {
+        pet_release(resources, PET_RESOURCE_DESKTOP_DC, 1);
+        return TRUE;
+    }
+    pet_cleanup_failed(resources, PET_RESOURCE_DESKTOP_DC);
+    return FALSE;
+}
+
 pet_surface_result pet_surface_close(pet_surface *surface) {
     if (!surface) return PET_SURFACE_INVALID;
     if (!surface->owner_thread) return PET_SURFACE_OK;
     if (GetCurrentThreadId() != surface->owner_thread) return PET_SURFACE_WRONG_THREAD;
-    if (surface->window && IsWindow(surface->window)) {
-        if (!DestroyWindow(surface->window)) {
-            pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
+    if (surface->window) {
+        if (!IsWindow(surface->window) || !DestroyWindow(surface->window)) {
+            pet_cleanup_failed(surface->resources, PET_RESOURCE_WINDOW);
+            return PET_SURFACE_OS_ERROR;
+        }
+        if (surface->window) {
+            /* A successful destroy must have synchronously delivered NCDESTROY. */
+            pet_cleanup_failed(surface->resources, PET_RESOURCE_WINDOW);
+            surface->window = NULL;
             return PET_SURFACE_OS_ERROR;
         }
     }
-    surface->window = NULL;
     if (surface->memory_dc && surface->previous)
         SelectObject(surface->memory_dc, surface->previous);
     /* Deleting the DC first also releases a selected bitmap if restoration
      * failed. Never delete the previous stock bitmap. */
-    BOOL ok = TRUE;
-    if (surface->memory_dc && !DeleteDC(surface->memory_dc)) {
-        pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
-        ok = FALSE;
-    }
+    BOOL ok = delete_memory_dc(surface->resources, surface->memory_dc);
     if (surface->bitmap) {
         if (DeleteObject(surface->bitmap))
             pet_release(surface->resources, PET_RESOURCE_DIB, (size_t)surface->width * surface->height * 4u);
@@ -157,11 +201,15 @@ pet_surface_result pet_surface_open_scaled(pet_surface *surface, BOOL topmost,
     DWORD ex = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
     if (topmost) ex |= WS_EX_TOPMOST;
     if (click_through) ex |= WS_EX_TRANSPARENT;
+    if (!pet_reserve(surface->resources, PET_RESOURCE_WINDOW, 1)) goto fail;
     surface->window = CreateWindowExW(ex, class_name, L"Pulse companion",
         WS_POPUP, 0, 0, (int)surface->width, (int)surface->height,
         NULL, NULL, module, surface);
-    if (!surface->window) goto fail;
-    surface->memory_dc = CreateCompatibleDC(NULL);
+    if (!surface->window) {
+        pet_release(surface->resources, PET_RESOURCE_WINDOW, 1);
+        goto fail;
+    }
+    surface->memory_dc = create_memory_dc(surface->resources);
     if (!surface->memory_dc) goto fail;
     BITMAPINFO info = {0};
     info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -206,11 +254,11 @@ static pet_surface_result present_grid(pet_surface *surface, const uint8_t *atla
     POINT origin = {0, 0};
     SIZE size = {(LONG)surface->width, (LONG)surface->height};
     BLENDFUNCTION blend = {AC_SRC_OVER, 0, opacity, AC_SRC_ALPHA};
-    HDC desktop = GetDC(NULL);
+    HDC desktop = borrow_desktop_dc(surface->resources);
     if (!desktop) return PET_SURFACE_OS_ERROR;
     BOOL ok = UpdateLayeredWindow(surface->window, desktop, &position, &size,
         surface->memory_dc, &origin, 0, &blend, ULW_ALPHA);
-    if (!ReleaseDC(NULL, desktop)) pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
+    (void)return_desktop_dc(surface->resources, desktop);
     if (!ok) return PET_SURFACE_OS_ERROR;
     surface->primed = TRUE;
     return PET_SURFACE_OK;
@@ -248,7 +296,7 @@ pet_surface_result pet_surface_resize(pet_surface *surface, unsigned percent,
         return PET_SURFACE_INVALID;
     unsigned width = PET_FRAME_WIDTH * percent / 100;
     unsigned height = PET_FRAME_HEIGHT * percent / 100;
-    HDC dc = CreateCompatibleDC(NULL);
+    HDC dc = create_memory_dc(surface->resources);
     if (!dc) return PET_SURFACE_OS_ERROR;
     HBITMAP bitmap = NULL;
     HGDIOBJ previous = NULL;
@@ -278,16 +326,16 @@ pet_surface_result pet_surface_resize(pet_surface *surface, unsigned percent,
     POINT position = {x, y}, origin = {0, 0};
     SIZE size = {(LONG)width, (LONG)height};
     BLENDFUNCTION blend = {AC_SRC_OVER, 0, opacity, AC_SRC_ALPHA};
-    HDC desktop = GetDC(NULL);
+    HDC desktop = borrow_desktop_dc(surface->resources);
     result = PET_SURFACE_OS_ERROR;
     if (!desktop) goto cleanup;
     BOOL ok = UpdateLayeredWindow(surface->window, desktop, &position, &size,
         dc, &origin, 0, &blend, ULW_ALPHA);
-    if (!ReleaseDC(NULL, desktop)) pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
+    (void)return_desktop_dc(surface->resources, desktop);
     if (!ok) goto cleanup;
 
     SelectObject(surface->memory_dc, surface->previous);
-    if (!DeleteDC(surface->memory_dc)) pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
+    (void)delete_memory_dc(surface->resources, surface->memory_dc);
     if (DeleteObject(surface->bitmap))
         pet_release(surface->resources, PET_RESOURCE_DIB, (size_t)surface->width * surface->height * 4u);
     else pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
@@ -300,7 +348,7 @@ pet_surface_result pet_surface_resize(pet_surface *surface, unsigned percent,
     return PET_SURFACE_OK;
 cleanup:
     if (previous) SelectObject(dc, previous);
-    if (!DeleteDC(dc)) pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);
+    (void)delete_memory_dc(surface->resources, dc);
     if (bitmap) {
         if (DeleteObject(bitmap)) pet_release(surface->resources, PET_RESOURCE_DIB, dib_bytes);
         else pet_cleanup_failed(surface->resources, PET_RESOURCE_DIB);

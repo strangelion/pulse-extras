@@ -335,8 +335,11 @@ static void decode_notify(void *userdata) {
         pet_cleanup_failed(ctx->memory->resource_bridge, PET_RESOURCE_NOTIFY);
 }
 
-static int request_decode(const pet_async *async, unsigned kind, unsigned outfit, unsigned index) {
-    return async->submit(async->owner, kind, outfit, index) && async->start(async->owner) >= 0;
+static int request_decode(const pet_resources *resources, const pet_async *async,
+    unsigned kind, unsigned outfit, unsigned index) {
+    int ok = async->submit(async->owner, kind, outfit, index) && async->start(async->owner) >= 0;
+    pet_note(resources, ok ? PET_NOTE_ADMITTED : PET_NOTE_BACKPRESSURE);
+    return ok;
 }
 
 /* Worker has signaled or set its atomic ready flag. Join before reading
@@ -344,6 +347,8 @@ static int request_decode(const pet_async *async, unsigned kind, unsigned outfit
 static int take_decode(const pet_async *async, native_decode *ctx, pet_decode_result *out) {
     if (!InterlockedCompareExchange(&ctx->ready, 0, 0)) return -2;
     int result = async->take(async->owner, out);
+    if (result == 0) pet_note(ctx->memory->resource_bridge, PET_NOTE_CANCELLED);
+    else if (result == 2 || result < 0) pet_note(ctx->memory->resource_bridge, PET_NOTE_IO_FAILURE);
     InterlockedExchange(&ctx->ready, 0);
     if (!ResetEvent(ctx->event)) {
         pet_cleanup_failed(ctx->memory->resource_bridge, PET_RESOURCE_NOTIFY);
@@ -489,8 +494,12 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         if (!async->bind(async->owner, &decode_ctx, decode_package, decode_notify)) goto cleanup;
         async_bound = 1;
         if (check_task) {
-            if (!request_decode(async, PET_DECODE_OUTFIT, 0, 0)) goto cleanup;
-            if (WaitForSingleObject(decode_ctx.event, 10000) != WAIT_OBJECT_0) goto cleanup;
+            if (!request_decode(memory->resource_bridge, async, PET_DECODE_OUTFIT, 0, 0)) goto cleanup;
+            DWORD wait_result = WaitForSingleObject(decode_ctx.event, 10000);
+            if (wait_result != WAIT_OBJECT_0) {
+                pet_note(memory->resource_bridge, wait_result == WAIT_TIMEOUT ? PET_NOTE_TIMEOUT : PET_NOTE_IO_FAILURE);
+                goto cleanup;
+            }
             pet_decode_result result = {0};
             int status = take_decode(async, &decode_ctx, &result);
             pet_free(memory, result.pixels, result.bytes);
@@ -610,7 +619,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                     } else if (command >= MENU_OUTFIT_FIRST &&
                         command - MENU_OUTFIT_FIRST <= package.meta.outfit_count && package.meta.outfit_count) {
                         unsigned next = command - MENU_OUTFIT_FIRST;
-                        if (next != outfit && !request_decode(async, PET_DECODE_OUTFIT, next, 0))
+                        if (next != outfit && !request_decode(memory->resource_bridge, async, PET_DECODE_OUTFIT, next, 0))
                             fputs("Outfit decode admission failed; previous appearance retained.\n", stderr);
                     } else if (command >= MENU_AUTO_FIRST &&
                         command - MENU_AUTO_FIRST < package.meta.count && !state_slot) {
@@ -620,7 +629,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                         command - MENU_ACTIVITY_FIRST < package.meta.count && !state_slot && !reduced &&
                         !((idle.failed | idle.unavailable) & pet_idle_bit(command - MENU_ACTIVITY_FIRST))) {
                         unsigned index = command - MENU_ACTIVITY_FIRST;
-                        if (!request_decode(async, PET_DECODE_ACTIVITY, outfit, index))
+                        if (!request_decode(memory->resource_bridge, async, PET_DECODE_ACTIVITY, outfit, index))
                             fputs("Activity decode admission failed.\n", stderr);
                     } else if (command == MENU_INTERACT && !state_slot && !reduced) {
                         if (activity_path) {
@@ -769,8 +778,10 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                 fputs("Package decode failed; previous appearance retained.\n", stderr);
             }
             pet_free(memory, result.pixels, result.bytes);
-            if (async->start(async->owner) < 0)
+            if (async->start(async->owner) < 0) {
+                pet_note(memory->resource_bridge, PET_NOTE_BACKPRESSURE);
                 fputs("Queued decode admission failed.\n", stderr);
+            }
             now = GetTickCount64();
         }
         pet_demo_sample point = {0};
@@ -786,7 +797,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         unsigned choice = pet_idle_choose(&idle, package.meta.count, available,
             now, delay_random, choice_random);
         if (choice != PET_IDLE_NONE) {
-            if (!request_decode(async, PET_DECODE_ACTIVITY, outfit, choice))
+            if (!request_decode(memory->resource_bridge, async, PET_DECODE_ACTIVITY, outfit, choice))
                 fputs("Automatic decode admission failed.\n", stderr);
         }
         if (activity) {

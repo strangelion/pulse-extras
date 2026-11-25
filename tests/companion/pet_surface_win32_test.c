@@ -20,6 +20,43 @@ static DWORD WINAPI wrong_thread(LPVOID opaque) {
     return pet_surface_close(opaque) == PET_SURFACE_WRONG_THREAD ? 0 : 1;
 }
 
+typedef struct {
+    size_t live[11], peak[11];
+    unsigned denied_kind;
+    unsigned cleanup_failures;
+} quota_fixture;
+
+static int fixture_reserve(void *userdata, uint32_t kind, size_t amount) {
+    quota_fixture *q = userdata;
+    if (kind >= 11 || q->denied_kind == kind) return 0;
+    const size_t limit = kind == PET_RESOURCE_DIB ? 2u * 384 * 416 * 4 :
+        (kind == PET_RESOURCE_MEMORY_DC ? 2u : 1u);
+    if (!amount || amount > limit - q->live[kind]) return 0;
+    q->live[kind] += amount;
+    if (q->live[kind] > q->peak[kind]) q->peak[kind] = q->live[kind];
+    return 1;
+}
+
+static void fixture_release(void *userdata, uint32_t kind, size_t amount) {
+    quota_fixture *q = userdata;
+    if (kind >= 11 || !amount || amount > q->live[kind]) {
+        ++q->cleanup_failures;
+        return;
+    }
+    q->live[kind] -= amount;
+}
+
+static void fixture_failed(void *userdata, uint32_t kind) {
+    quota_fixture *q = userdata;
+    (void)kind;
+    ++q->cleanup_failures;
+}
+
+static int fixture_drained(const quota_fixture *q) {
+    for (unsigned i = 0; i < 11; ++i) if (q->live[i]) return 0;
+    return !q->cleanup_failures;
+}
+
 int main(void) {
     int rc = 1;
     const size_t bytes = (size_t)1536 * 2288 * 4;
@@ -27,6 +64,8 @@ int main(void) {
     uint8_t *out = malloc(PET_FRAME_BYTES);
     pet_surface surface = {0};
     HANDLE thread = NULL;
+    quota_fixture q = {{0}, {0}, UINT32_MAX, 0};
+    const pet_resources budget = {&q, fixture_reserve, fixture_release, fixture_failed, NULL};
     CHECK(atlas && out);
     pet_idle_policy idle = {0};
     CHECK(pet_idle_delay(0) == 120000 && pet_idle_delay(UINT32_MAX) == 240000);
@@ -162,6 +201,38 @@ int main(void) {
     CHECK(pet_surface_open_scaled(&surface, FALSE, FALSE, 50) == PET_SURFACE_OK);
     CHECK(surface.width == 96 && surface.height == 104);
     CHECK(pet_surface_close(&surface) == PET_SURFACE_OK);
+    /* Fail at each native admission stage after earlier acquisitions. */
+    const unsigned failures[] = {PET_RESOURCE_WINDOW, PET_RESOURCE_MEMORY_DC, PET_RESOURCE_DIB};
+    for (unsigned i = 0; i < sizeof(failures) / sizeof(failures[0]); ++i) {
+        q.denied_kind = failures[i];
+        surface.resources = &budget;
+        CHECK(pet_surface_open(&surface, FALSE, FALSE) == PET_SURFACE_OS_ERROR);
+        CHECK(fixture_drained(&q));
+    }
+    q.denied_kind = UINT32_MAX;
+    surface.resources = &budget;
+    CHECK(pet_surface_open(&surface, FALSE, FALSE) == PET_SURFACE_OK);
+    CHECK(pet_surface_present(&surface, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OK);
+    CHECK(q.live[PET_RESOURCE_WINDOW] == 1 && q.live[PET_RESOURCE_MEMORY_DC] == 1);
+    CHECK(q.live[PET_RESOURCE_DESKTOP_DC] == 0);
+    HBITMAP committed = surface.bitmap;
+    q.denied_kind = PET_RESOURCE_MEMORY_DC;
+    CHECK(pet_surface_resize(&surface, 200, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OS_ERROR);
+    CHECK(surface.bitmap == committed && q.live[PET_RESOURCE_MEMORY_DC] == 1);
+    q.denied_kind = PET_RESOURCE_DESKTOP_DC;
+    CHECK(pet_surface_resize(&surface, 200, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OS_ERROR);
+    CHECK(surface.bitmap == committed && q.live[PET_RESOURCE_DIB] == PET_FRAME_BYTES);
+    CHECK(q.live[PET_RESOURCE_MEMORY_DC] == 1 && q.live[PET_RESOURCE_DESKTOP_DC] == 0);
+    q.denied_kind = UINT32_MAX;
+    CHECK(pet_surface_resize(&surface, 200, atlas, bytes, 2, 10, 7, 20, 20, 255) == PET_SURFACE_OK);
+    CHECK(q.peak[PET_RESOURCE_MEMORY_DC] == 2 && q.peak[PET_RESOURCE_DESKTOP_DC] == 1);
+    CHECK(q.live[PET_RESOURCE_MEMORY_DC] == 1);
+    /* Destruction outside close still releases the published window once. */
+    CHECK(DestroyWindow(surface.window));
+    CHECK(!surface.window && q.live[PET_RESOURCE_WINDOW] == 0);
+    CHECK(pet_surface_close(&surface) == PET_SURFACE_OK);
+    CHECK(pet_surface_close(&surface) == PET_SURFACE_OK);
+    CHECK(fixture_drained(&q));
     rc = 0;
 cleanup:
     if (thread) {

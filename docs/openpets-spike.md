@@ -943,3 +943,32 @@ drain, and package admission tests check the added zero-live line.
 No change to the shared runtime API or general extension behavior.
 Window/DC object counts, WIC internal objects, OS allocation bytes,
 actual visual interaction and host unload acceptance remain separate.
+
+## Shared drawing ownership and decode diagnostics — phase 6
+
+Account one published pet window, two owned memory device contexts
+(current plus candidate) and one transient desktop DC lease in separate
+shared Budget categories. Reserve before creation or borrowing and
+roll back on failure. Release the window reservation on WM_NCDESTROY
+only for a successfully published HWND; failed CreateWindowExW returns
+its reservation in the caller. A window destroyed before explicit
+surface close cannot be destroyed or charged twice. DeleteDC and
+ReleaseDC return the appropriate separate reservations on success;
+failure is retained as a cleanup diagnostic. The system cursor and
+process-lifetime class are still OS/shared infrastructure, not
+individually owned runtime allocations.
+
+The native decode admission, stale-result collection, decode failure
+and diagnostic wait timeout paths now also emit fixed-code events into
+the existing bounded shared log. No paths, author labels, per-frame
+success records or arbitrary strings are exported. Existing fixed
+stderr failure stages remain for troubleshooting. The successful
+completion path still transfers ownership only on the UI thread.
+The surface fixture injects denial at window/DC/DIB acquisition and
+transactional resize, checks current bitmap and reservations remain
+intact, exercises externally destroyed HWND cleanup and asserts drain.
+The worker failure smoke checks bounded admitted/io_failure records.
+The Windows run for phase 5 was still in progress at the start of
+this change; this revision requires CI before claiming native pass.
+WIC internals, OS allocation overhead, desktop responsiveness and
+host acceptance remain unverified by these counters.

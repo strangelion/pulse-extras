@@ -3,7 +3,7 @@ const std = @import("std");
 const Budget = @import("runtime_budget").Budget;
 const Log = @import("runtime_event_log").Log;
 
-pub const Kind = enum(u32) { file = 0, codec = 1, dib = 2, notify = 3, ipc = 4, registry = 5, menu = 6, argv = 7 };
+pub const Kind = enum(u32) { file = 0, codec = 1, dib = 2, notify = 3, ipc = 4, registry = 5, menu = 6, argv = 7, window = 8, memory_dc = 9, desktop_dc = 10 };
 pub const Owner = struct {
     files: Budget = Budget.init(320),
     codecs: Budget = Budget.init(1),
@@ -13,6 +13,9 @@ pub const Owner = struct {
     registry: Budget = Budget.init(1),
     menus: Budget = Budget.init(5),
     argv: Budget = Budget.init(1),
+    windows: Budget = Budget.init(1),
+    memory_dcs: Budget = Budget.init(2),
+    desktop_dcs: Budget = Budget.init(1),
     log: Log = .{},
     cleanup_failures: usize = 0,
     lock: std.atomic.Mutex = .unlocked,
@@ -36,6 +39,9 @@ pub const Owner = struct {
             5 => &self.registry,
             6 => &self.menus,
             7 => &self.argv,
+            8 => &self.windows,
+            9 => &self.memory_dcs,
+            10 => &self.desktop_dcs,
             else => null,
         };
     }
@@ -43,7 +49,8 @@ pub const Owner = struct {
     /// Only after all resource users have joined; this is not a join.
     pub fn checkDrained(self: *const Owner) error{OutstandingResources}!void {
         if (self.files.used != 0 or self.codecs.used != 0 or self.dib.used != 0 or self.notifications.used != 0 or self.ipc.used != 0 or self.registry.used != 0 or
-            self.menus.used != 0 or self.argv.used != 0 or self.cleanup_failures != 0) return error.OutstandingResources;
+            self.menus.used != 0 or self.argv.used != 0 or self.windows.used != 0 or self.memory_dcs.used != 0 or
+            self.desktop_dcs.used != 0 or self.cleanup_failures != 0) return error.OutstandingResources;
     }
 };
 
@@ -52,9 +59,10 @@ pub const Bridge = extern struct {
     reserve: *const fn (*Owner, u32, usize) callconv(.c) c_int,
     release: *const fn (*Owner, u32, usize) callconv(.c) void,
     cleanup_failed: *const fn (*Owner, u32) callconv(.c) void,
+    note: *const fn (*Owner, u32) callconv(.c) void,
 
     pub fn init(owner: *Owner) Bridge {
-        return .{ .context = owner, .reserve = reserveResource, .release = releaseResource, .cleanup_failed = cleanupFailed };
+        return .{ .context = owner, .reserve = reserveResource, .release = releaseResource, .cleanup_failed = cleanupFailed, .note = noteEvent };
     }
 };
 
@@ -88,6 +96,20 @@ fn cleanupFailed(owner: *Owner, kind: u32) callconv(.c) void {
     owner.enter();
     defer owner.lock.unlock();
     owner.noteFailureLocked(kind);
+}
+
+fn noteEvent(owner: *Owner, code: u32) callconv(.c) void {
+    const kind: @import("runtime_event_log").Kind = switch (code) {
+        0 => .admitted,
+        1 => .backpressure,
+        2 => .cancelled,
+        3 => .io_failure,
+        4 => .timeout,
+        else => return,
+    };
+    owner.enter();
+    defer owner.lock.unlock();
+    owner.log.add(.{ .kind = kind, .count = 1 });
 }
 
 test "resource quotas reserve release and report bounded denial" {
@@ -139,4 +161,30 @@ test "native IPC registry menu and argument quotas drain independently" {
         bridge.release(bridge.context, code, limit);
     }
     try owner.checkDrained();
+}
+
+test "surface object quotas and fixed diagnostic codes" {
+    var owner: Owner = .{};
+    const bridge = Bridge.init(&owner);
+    const limits = [_]usize{ 1, 2, 1 };
+    for (limits, 8..) |limit, kind| {
+        const code: u32 = @intCast(kind);
+        try std.testing.expectEqual(@as(c_int, 1), bridge.reserve(bridge.context, code, limit));
+        try std.testing.expectEqual(@as(c_int, 0), bridge.reserve(bridge.context, code, 1));
+        try std.testing.expectError(error.OutstandingResources, owner.checkDrained());
+        bridge.release(bridge.context, code, limit);
+    }
+    try owner.checkDrained();
+    owner.log.clear();
+    bridge.note(bridge.context, 99);
+    try std.testing.expectEqual(@as(usize, 0), owner.log.len);
+    bridge.note(bridge.context, 0);
+    bridge.note(bridge.context, 2);
+    bridge.note(bridge.context, 3);
+    try std.testing.expectEqual(@as(usize, 3), owner.log.len);
+    try std.testing.expectEqual(@as(u64, 1), owner.log.get(2).?.count);
+    try std.testing.expect(owner.log.get(2).?.kind == .io_failure);
+    for (0..100) |_| bridge.note(bridge.context, 1);
+    try std.testing.expectEqual(@as(usize, 64), owner.log.len);
+    try std.testing.expectEqual(@as(usize, 39), owner.log.dropped);
 }
