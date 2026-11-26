@@ -1,4 +1,5 @@
 #include "private_root_win32.h"
+#include "identity_win32.h"
 #include <aclapi.h>
 #include <wchar.h>
 #include <string.h>
@@ -8,16 +9,12 @@
 
 static BOOL canonical(HANDLE h, const wchar_t *path, BOOL directory) {
     BY_HANDLE_FILE_INFORMATION info;
-    wchar_t actual[CAP + 4];
-    size_t n = wcslen(path);
-    DWORD len = GetFinalPathNameByHandleW(h, actual, CAP + 4,
-        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-    if (GetFileType(h) != FILE_TYPE_DISK || !GetFileInformationByHandle(h, &info) ||
-        (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
-        !!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != !!directory ||
-        len != n + 4 || len >= CAP + 4 || wcsncmp(actual, L"\\\\?\\", 4) ||
-        CompareStringOrdinal(actual + 4, -1, path, -1, TRUE) != CSTR_EQUAL) return FALSE;
-    return directory || (info.nNumberOfLinks == 1 && !info.nFileSizeHigh && !info.nFileSizeLow);
+    if (!pulse_file_observe(h, path, directory, TRUE, &info)) return FALSE;
+    if (!directory && (info.nFileSizeHigh || info.nFileSizeLow)) {
+        SetLastError(ERROR_INVALID_DATA);
+        return FALSE;
+    }
+    return TRUE;
 }
 static HANDLE directory_open(const wchar_t *path, DWORD access) {
     return CreateFileW(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,

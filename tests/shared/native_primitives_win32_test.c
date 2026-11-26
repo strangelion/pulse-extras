@@ -1,4 +1,6 @@
 #include "../../shared/process/job_win32.h"
+#include "../../shared/process/metrics_win32.h"
+#include "../../shared/fs/identity_win32.h"
 #include "../../shared/process/image_win32.h"
 #include "../../shared/network/https_win32.h"
 #include "../../shared/pulse/menu_win32.h"
@@ -14,6 +16,8 @@ int main(void) {
     DWORD active = 99;
     CHECK(job && pulse_job_configure(job, 1, 16u * 1024u * 1024u, 32u * 1024u * 1024u));
     CHECK(pulse_job_active(job, &active) && active == 0);
+    CHECK(!pulse_job_active(NULL, &active));
+    CHECK(GetLastError() == ERROR_INVALID_PARAMETER);
     CHECK(!pulse_job_configure(job, 1, 32u, 16u));
     CHECK(!pulse_job_terminate_and_drain(job, 1, 0));
     CHECK(pulse_job_terminate_and_drain(job, 1, 1000) && CloseHandle(job));
@@ -25,8 +29,17 @@ int main(void) {
     HANDLE image = pulse_image_pin(self);
     uint8_t wrong[32] = {0};
     CHECK(image != INVALID_HANDLE_VALUE);
+    BY_HANDLE_FILE_INFORMATION info;
+    CHECK(pulse_file_observe(image, self, FALSE, TRUE, &info));
+    CHECK(!pulse_file_observe(image, self, TRUE, TRUE, &info));
     CHECK(pulse_image_verify(image, wrong) == PULSE_IMAGE_MISMATCH);
     CHECK(CloseHandle(image));
+    pulse_process_metrics metrics;
+    HANDLE current = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE,
+        FALSE, GetCurrentProcessId());
+    CHECK(current && pulse_process_sample(current, &metrics));
+    CHECK(metrics.pid == GetCurrentProcessId() && metrics.working_set_bytes > 0);
+    CHECK(CloseHandle(current));
     uint32_t os_error = 0;
     int ctx = 0;
     CHECK(pulse_https_get(L"example.invalid", L"/../bad", 64, &ctx, header, chunk, cancel, &os_error) == HTTP_INVALID);

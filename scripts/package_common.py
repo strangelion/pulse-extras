@@ -13,6 +13,7 @@ import re
 import stat
 import subprocess
 import sys
+import zipfile
 
 FILE_MAX = 64 * 1024 * 1024
 ARCHIVE_MAX = 256 * 1024 * 1024 + 256 * 1024
@@ -120,6 +121,48 @@ def verify_manifest_bindings(manifest: Path, extension_id: str,
             raise RuntimeError("staged member digest mismatch")
 
 
+def verify_archive_bindings(package: Path, package_sha: str, manifest_sha: str,
+                            library: dict, members: list[dict]) -> None:
+    """Additional exact-byte binding after official verify, never extract."""
+    if sha256(package) != require_digest(package_sha):
+        raise RuntimeError("archive digest mismatch")
+    expected = {member_name(item["path"]): require_digest(item["sha256"])
+                for item in [library, *members]}
+    if len(expected) != 1 + len(members) or {"manifest.json", "package.json"} & set(expected):
+        raise ValueError("unexpected archive member")
+    expected["manifest.json"] = require_digest(manifest_sha)
+    with zipfile.ZipFile(package) as archive:
+        infos = archive.infolist()
+        names = set(expected) | {"package.json"}
+        if len(infos) != len(names) or {info.filename for info in infos} != names:
+            raise RuntimeError("archive inventory mismatch")
+        payload_total = 0
+        for info in infos:
+            if info.filename == "manifest.json":
+                limit = EVIDENCE_MAX
+            elif info.filename == "package.json":
+                limit = 16 * 1024
+            else:
+                limit = FILE_MAX
+                payload_total += info.file_size
+            if (not 0 < info.file_size <= limit or payload_total > 256 * 1024 * 1024
+                    or info.flag_bits & 1 or info.is_dir()):
+                raise RuntimeError("archive member exceeds limits")
+            digest = hashlib.sha256()
+            total = 0
+            with archive.open(info) as stream:
+                while chunk := stream.read(64 * 1024):
+                    total += len(chunk)
+                    if total > limit:
+                        raise RuntimeError("archive member exceeds limit")
+                    digest.update(chunk)
+            if total != info.file_size or (info.filename in expected
+                    and digest.hexdigest() != expected[info.filename]):
+                raise RuntimeError("archive member digest mismatch")
+    if sha256(package) != package_sha:
+        raise RuntimeError("archive changed during verification")
+
+
 def official_step(pulse: Path, tool: Path, args: list[str], log: Path,
                   timeout: int = 90) -> None:
     # Explicit trusted author tool; no shell. Logs remain in the private
@@ -165,6 +208,7 @@ def stage(pulse: Path, tool: Path, template: Path, out: Path, extension_id: str,
     package_sha = sha256(package)
     official_step(pulse, tool, ["verify", str(package)], out / "verify.log")
     verify_manifest_bindings(manifest, extension_id, entry, files)
+    verify_archive_bindings(package, package_sha, manifest_sha, entry, files)
     if (sha256(package) != package_sha or sha256(manifest, EVIDENCE_MAX) != manifest_sha
             or sha256(pulse) != host_sha or sha256(tool) != tool_sha
             or sha256(template, EVIDENCE_MAX) != template_sha):

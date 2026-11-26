@@ -1,4 +1,6 @@
 import json
+import hashlib
+import zipfile
 from pathlib import Path
 import tempfile
 import unittest
@@ -48,6 +50,27 @@ class PackageCommonTests(unittest.TestCase):
             self.assertFalse(common.read_evidence(report)["real_host_accepted"])
             with self.assertRaises(FileExistsError):
                 common.write_evidence(report, {})
+
+    def test_archive_binds_payload_and_exact_inventory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "candidate.pulse-ext"
+            manifest = b'{"id":"fixture"}'
+            entry = {"path": "entry.dll", "sha256": hashlib.sha256(b"entry").hexdigest()}
+            manifest_sha = hashlib.sha256(manifest).hexdigest()
+            for payload, extra in ((b"entry", False), (b"other", False), (b"entry", True)):
+                with zipfile.ZipFile(package, "w") as archive:
+                    archive.writestr("manifest.json", manifest)
+                    archive.writestr("package.json", b"{}")
+                    archive.writestr("entry.dll", payload)
+                    if extra:
+                        archive.writestr("extra", b"unexpected")
+                args = (package, common.sha256(package), manifest_sha, entry, [])
+                if payload == b"entry" and not extra:
+                    common.verify_archive_bindings(*args)
+                else:
+                    with self.assertRaises(RuntimeError):
+                        common.verify_archive_bindings(*args)
 
     def test_official_action_rejects_install(self):
         with tempfile.TemporaryDirectory() as tmp:

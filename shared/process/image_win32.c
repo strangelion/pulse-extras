@@ -1,4 +1,5 @@
 #include "image_win32.h"
+#include "../fs/identity_win32.h"
 #include <wchar.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,17 +33,15 @@ HANDLE pulse_image_pin(const wchar_t *path) {
         FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     if (image == INVALID_HANDLE_VALUE) return image;
     BY_HANDLE_FILE_INFORMATION info;
-    wchar_t actual[PATH_CAP + 4];
-    DWORD length = GetFinalPathNameByHandleW(image, actual, PATH_CAP + 4,
-        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-    if (GetFileType(image) != FILE_TYPE_DISK || !GetFileInformationByHandle(image, &info) ||
-        info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) ||
-        info.nNumberOfLinks != 1 || info.nFileSizeHigh || !info.nFileSizeLow || info.nFileSizeLow > 256u * 1024u * 1024u ||
-        length != n + 4 || length >= PATH_CAP + 4 ||
-        wcsncmp(actual, L"\\\\?\\", 4) != 0 ||
-        CompareStringOrdinal(actual + 4, -1, path, -1, TRUE) != CSTR_EQUAL) {
-        CloseHandle(image);
-        SetLastError(ERROR_BAD_PATHNAME);
+    if (!pulse_file_observe(image, path, FALSE, TRUE, &info)) {
+        DWORD error = GetLastError();
+        if (!CloseHandle(image)) return INVALID_HANDLE_VALUE;
+        SetLastError(error);
+        return INVALID_HANDLE_VALUE;
+    }
+    if (info.nFileSizeHigh || !info.nFileSizeLow || info.nFileSizeLow > 256u * 1024u * 1024u) {
+        if (!CloseHandle(image)) return INVALID_HANDLE_VALUE;
+        SetLastError(ERROR_FILE_TOO_LARGE);
         return INVALID_HANDLE_VALUE;
     }
     return image;

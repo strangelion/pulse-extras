@@ -453,3 +453,12 @@ reuse checks in Companion must remain intact. No production release changes.
 
 Status: candidate, NOT VERIFIED until current full CI and affected product
 host acceptance. Do not treat common-module tests as proof of product migration.
+
+The common native file observation helper (identity_win32.h) is used by both
+private-root and executable pinning; it explicitly separates file identity
+and case policy from ACL/ancestor trust. metrics_win32 provides caller-owned
+live-process Private Bytes, working set, cumulative CPU ticks and handle
+samples. The Job Object helper rejects null handles (Windows otherwise permits
+querying the caller's job). Package evidence binds the actual verified archive
+member bytes and exact inventory as well as staged files. These checks do not
+replace the official verifier or the product-specific trust/acceptance gates.

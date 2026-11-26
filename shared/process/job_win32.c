@@ -24,7 +24,7 @@ BOOL pulse_job_configure(HANDLE job, DWORD max_processes, SIZE_T process_commit,
 
 BOOL pulse_job_active(HANDLE job, DWORD *active) {
     JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info = {0};
-    if (!active) {
+    if (!job || job == INVALID_HANDLE_VALUE || !active) {
         SetLastError(ERROR_INVALID_PARAMETER);
         return FALSE;
     }
