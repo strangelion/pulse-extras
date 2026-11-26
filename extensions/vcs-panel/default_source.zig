@@ -40,6 +40,7 @@ extern "crypt32" fn CryptProtectData(input: *const Blob, description: ?[*:0]cons
 extern "crypt32" fn CryptUnprotectData(input: *const Blob, description: ?*?[*:0]u16, entropy: ?*const Blob, reserved: ?*anyopaque, prompt: ?*anyopaque, flags: u32, output: *Blob) callconv(.winapi) i32;
 extern "kernel32" fn LocalFree(memory: *anyopaque) callconv(.winapi) ?*anyopaque;
 extern "kernel32" fn GetEnvironmentVariableW(name: [*:0]const u16, value: [*]u16, capacity: u32) callconv(.winapi) u32;
+extern "kernel32" fn GetCurrentDirectoryW(capacity: u32, buffer: [*]u16) callconv(.winapi) u32;
 extern "kernel32" fn WideCharToMultiByte(codepage: u32, flags: u32, input: [*]const u16, input_len: i32, output: [*]u8, output_len: i32, default_char: ?*const u8, used_default: ?*i32) callconv(.winapi) i32;
 
 const Error = contract.Error;
@@ -761,4 +762,94 @@ test "local trust command admission is exact for each provider" {
     review.executable = try identity.Path.init("C:\\tools\\svn.exe");
     try std.testing.expect(LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "status", "--non-interactive", "--no-auth-cache", "--ignore-externals", "--xml", "--no-ignore", root.slice() }));
     try std.testing.expect(!LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "status", "--xml", "-u", root.slice() }));
+}
+
+fn fixtureAbsoluteRoot(sub_path: []const u8) !identity.Path {
+    var wide: [identity.max_path_bytes + 1]u16 = undefined;
+    const size = GetCurrentDirectoryW(wide.len, &wide);
+    if (size == 0 or size >= wide.len) return error.TestUnexpectedResult;
+    var utf8: [identity.max_path_bytes]u8 = undefined;
+    const len = WideCharToMultiByte(65001, 0x80, &wide, @intCast(size), &utf8, utf8.len, null, null);
+    if (len <= 0) return error.TestUnexpectedResult;
+    var bytes: [identity.max_path_bytes]u8 = undefined;
+    return identity.Path.init(try std.fmt.bufPrint(&bytes, "{s}\\.zig-cache\\tmp\\{s}", .{ utf8[0..@intCast(len)], sub_path }));
+}
+
+fn fixtureTool(selected: cli.Tool) !identity.Path {
+    const config = @import("vcs_test_config");
+    var scratch: [identity.max_path_bytes + 64]u8 = undefined;
+    var path = cli.locateCandidate(std.testing.io, selected, config.path, &scratch) orelse return cli.integrationUnavailable(selected);
+    for (path.bytes[0..path.len]) |*byte| {
+        if (byte.* == '/') byte.* = '\\';
+    }
+    return path;
+}
+
+fn exerciseLocalFixture(kind: identity.Kind, executable: identity.Path, root: identity.Path) !contract.Snapshot {
+    const local = try allocator.create(LocalSession);
+    local.* = .{ .environment = std.process.Environ.Map.init(allocator) };
+    errdefer LocalSession.finish(local) catch {};
+    const review: panel.LocalReview = .{ .root = root, .executable = executable, .kind = kind, .generation = 1 };
+    const resolver = try LocalSession.authorize(local, &review);
+    const resolved = (try resolver.resolve(resolver.ctx, &root)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(kind, resolved.provider.kind);
+    const snapshot = try resolved.provider.summarize(&resolved.workspace);
+    try std.testing.expectEqual(contract.Availability.ready, snapshot.availability);
+    try LocalSession.revoke(local);
+    try std.testing.expectError(error.Permission, resolver.resolve(resolver.ctx, &root));
+    try LocalSession.finish(local);
+    return snapshot;
+}
+
+test "trusted local mode queries ordinary installed Git and revokes admission" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const executable = try fixtureTool(.git);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureAbsoluteRoot(&tmp.sub_path);
+    var runner = process.Runner.init(std.testing.allocator, io);
+    {
+        var outcome = try runner.run(.{ .argv = &.{ executable.slice(), "-C", root.slice(), "init", "--quiet", "--template=" }, .timeout_ns = 20 * std.time.ns_per_s });
+        defer outcome.deinit();
+        if (!outcome.succeeded()) return error.TestUnexpectedResult;
+    }
+    const file = try tmp.dir.createFile(io, "untracked.txt", .{ .exclusive = true });
+    try file.writeStreamingAll(io, "fixture\n");
+    file.close(io);
+    try runner.checkDrained();
+    const snapshot = try exerciseLocalFixture(.git, executable, root);
+    try std.testing.expectEqual(@as(u32, 1), snapshot.changes.untracked);
+}
+
+test "trusted local mode queries ordinary installed Jujutsu without snapshotting" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const executable = try fixtureTool(.jj);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try fixtureAbsoluteRoot(&tmp.sub_path);
+    var runner = process.Runner.init(std.testing.allocator, io);
+    {
+        var outcome = try runner.run(.{ .argv = &.{ executable.slice(), "git", "init", root.slice() }, .timeout_ns = 20 * std.time.ns_per_s });
+        defer outcome.deinit();
+        if (!outcome.succeeded()) return error.TestUnexpectedResult;
+    }
+    try runner.checkDrained();
+    const snapshot = try exerciseLocalFixture(.jj, executable, root);
+    try std.testing.expect(snapshot.revision != null);
+    try std.testing.expectEqual(contract.Availability.not_queried, snapshot.counts.untracked);
+}
+
+test "trusted local mode queries an actual Windows SVN fixture when provisioned" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const config = @import("vcs_test_config");
+    if (config.svn_working_copy.len == 0) return cli.integrationUnavailable(.svn);
+    const executable = try fixtureTool(.svn);
+    var root = try identity.Path.init(config.svn_working_copy);
+    for (root.bytes[0..root.len]) |*byte| {
+        if (byte.* == '/') byte.* = '\\';
+    }
+    const snapshot = try exerciseLocalFixture(.svn, executable, root);
+    try std.testing.expect(snapshot.revision != null);
 }

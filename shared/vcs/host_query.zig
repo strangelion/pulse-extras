@@ -983,6 +983,13 @@ pub const Binding = struct {
         self.accepting = false;
         if (self.wake) |*wake| wake.disable();
         var failure: ?host_mod.Error = null;
+        // Close admission before requesting cancellation. In a multi-step
+        // trusted query this prevents a subsequent CLI launch during drain.
+        if (self.local_access) |access| {
+            access.revoke(access.ctx) catch |err| {
+                failure = err;
+            };
+        }
         self.navigation.close() catch |err| {
             failure = err;
         };

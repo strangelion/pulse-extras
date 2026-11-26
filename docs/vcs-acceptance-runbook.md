@@ -173,3 +173,10 @@ Acceptance still requires positive Git/JJ/SVN execution on ordinary installed
 tools in real Pulse, native text input and confirmation rendering, stale
 navigation/review, cancellation, revocation and teardown tests. No real-host
 acceptance or stable release claim is made.
+
+Regression includes native command admission and owner-consent lifecycle
+fixtures, plus real installed Git/JJ local-trust queries in Windows CI when
+the configured tool is required. SVN local-trust integration requires a
+Windows SVN working-copy fixture; do not substitute Ubuntu provider tests
+for that result. Closing the binding revokes future local CLI admissions
+before cancellation and drain.
