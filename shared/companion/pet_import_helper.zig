@@ -67,6 +67,17 @@ pub fn parseDetail(output: []const u8) !Detail {
 // Map only fixed diagnostics emitted by the digest-pinned helper. Never
 // forward raw stderr (which may contain local paths or untrusted text).
 // Keep an unrecognized failure distinct from a diagnosed validation stage.
+
+// Extract the numeric Win32 code that follows a coded marker prefix.
+fn codedError(line: []const u8, prefix: []const u8) ?u16 {
+    if (!std.mem.startsWith(u8, line, prefix)) return null;
+    const rest = line[prefix.len..];
+    var end: usize = 0;
+    while (end < rest.len and rest[end] >= '0' and rest[end] <= '9') : (end += 1) {}
+    if (end == 0) return null;
+    return std.fmt.parseInt(u16, rest[0..end], 10) catch null;
+}
+
 fn rejection(stderr: []const u8) anyerror {
     const reasons = [_]struct { marker: []const u8, reason: anyerror }{
         .{ .marker = "Package import failed at stage-verification (pending directory retained).", .reason = error.PackageStageVerificationFailed },
@@ -107,7 +118,15 @@ fn rejection(stderr: []const u8) anyerror {
             if ((item.reason == error.PackageStagePublishFailed or
                 item.reason == error.PackageStagePendingCreateFailed or
                 item.reason == error.PackageStageSubdirCreateFailed) and
-                std.mem.startsWith(u8, trimmed, item.marker)) return item.reason;
+                std.mem.startsWith(u8, trimmed, item.marker))
+            {
+                // ERROR_ACCESS_DENIED on a private-root create is distinct: a
+                // security product or policy blocked an unsigned helper.
+                if ((item.reason == error.PackageStagePendingCreateFailed or
+                    item.reason == error.PackageStageSubdirCreateFailed) and
+                    codedError(trimmed, item.marker) == 5) return error.PackageStageAccessDenied;
+                return item.reason;
+            }
         }
     }
     return error.PackageRejected;
@@ -210,7 +229,9 @@ test "helper rejection diagnostics preserve known stages and never forward raw s
     try std.testing.expectEqual(error.PackageMetadataInvalid, rejection("Package admission failed at metadata-parse.\r\nClassic package rejected: metadata, path, inventory or WebP header.\n"));
     try std.testing.expectEqual(error.PackageAtlasHeaderInvalid, rejection("Package admission failed at base-header.\n"));
     try std.testing.expectEqual(error.PackageStageRootPinFailed, rejection("Package stage: root pin failed.\nPackage import failed at stage-copy (pending directory may remain).\n"));
-    try std.testing.expectEqual(error.PackageStagePendingCreateFailed, rejection("Package stage: pending directory creation failed (Win32 5).\nPackage import failed at stage-copy (pending directory may remain).\n"));
+    try std.testing.expectEqual(error.PackageStagePendingCreateFailed, rejection("Package stage: pending directory creation failed (Win32 3).\nPackage import failed at stage-copy (pending directory may remain).\n"));
+    try std.testing.expectEqual(error.PackageStageAccessDenied, rejection("Package stage: pending directory creation failed (Win32 5).\nPackage import failed at stage-copy (pending directory may remain).\n"));
+    try std.testing.expectEqual(error.PackageStageAccessDenied, rejection("Package stage: outfits directory creation failed (Win32 5).\n"));
     try std.testing.expectEqual(error.PackageStagePendingExists, rejection("Package stage: pending path already exists.\n"));
     try std.testing.expectEqual(error.PackageStageSubdirCreateFailed, rejection("Package stage: outfits directory creation failed (Win32 3).\n"));
     try std.testing.expectEqual(error.PackageStageVerificationFailed, rejection("Package admission failed at metadata-open.\nPackage import failed at stage-verification (pending directory retained).\n"));
