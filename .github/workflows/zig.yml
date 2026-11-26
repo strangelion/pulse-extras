@@ -130,6 +130,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends subversion
           svn --version --quiet
           python scripts/ci_vcs.py svn-fixture
+      - name: Provision pinned Windows SVN client and admin
+        if: runner.os == 'Windows' && (needs.scope.outputs.level == 'vcs' || needs.scope.outputs.level == 'full')
+        timeout-minutes: 8
+        run: python scripts/ci_vcs.py svn-windows
+      - name: Prepare real Windows SVN working copy
+        if: runner.os == 'Windows' && (needs.scope.outputs.level == 'vcs' || needs.scope.outputs.level == 'full')
+        run: python scripts/ci_vcs.py svn-fixture
       - name: Scope-selected unit and integration tests
         timeout-minutes: 15
         shell: bash

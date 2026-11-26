@@ -3,8 +3,8 @@
 Status (2026-11-26): **P2A/P2B candidate; full installed acceptance NOT VERIFIED**.
 Unsigned preview `vcs/v1.0.0` is published at df5009c; its locked onboarding
 was reported difficult to use. The newer main candidate contains metadata
-preview, session trust, settings and bookmarks. The exact latest code CI and
-installed package must be checked separately. No CI fixture is actual Pulse
+preview, session trust, settings and bookmarks. The earlier 81b2ad1 code CI passed; later stage candidates and installed
+packages must be checked separately. No CI fixture is actual Pulse
 UI acceptance. Published SDK pin v1.0.60; recorded installed host 1.0.61.
 The authoritative stages and exit gates are in [roadmap](roadmap.md#p2--first-real-vcs-extension).
 This document defines execution and evidence, not a second development plan.
@@ -231,8 +231,8 @@ stage rather than reinstalling after each subtask.
 | --- | --- | --- | --- |
 | P2A | First install, right-click empty/file/folder, reopen | One reachable panel; no duplicate; current/selected scope clearly distinguished | Native C fixtures only; NOT VERIFIED |
 | P2A | Native tool settings: detect, manual, supported browse, save/reset, restart | Correct separate paths, explicit consent; no execution on save; validated version on probe | Source candidate; NOT VERIFIED |
-| P2A | Ordinary Git for Windows, including hardlinks; clean/dirty/untracked/rename/conflict | Correct query, identity/digest checked; no implicit trust | d3dff85 Windows fixture failed on hardlink; scoped fix awaiting exact regression |
-| P2A | JJ standalone/colocated and SVN ordinary Windows working copy | Correct provider-specific summary, no JJ auto snapshot, no unintended SVN server request | Prior provider CI; Windows SVN local-session case NOT VERIFIED |
+| P2A | Ordinary Git for Windows, including hardlinks; clean/dirty/untracked/rename/conflict | Correct query, identity/digest checked; no implicit trust | d3dff85 Windows fixture failed on hardlink; 81b2ad1 full regression passed; actual Pulse NOT VERIFIED |
+| P2A | JJ standalone/colocated and SVN ordinary Windows working copy | Correct provider-specific summary, no JJ auto snapshot, no unintended SVN server request | Prior provider CI; Windows SVN local-session case NOT VERIFIED (CI provisioner added; exact new run required) |
 | P2A | Missing tool, invalid version/path, non-repo, declined/revoked consent, rapid navigation | Honest error/unknown; no stale output or unauthorized command | Mock/unit coverage; NOT VERIFIED |
 | P2A | Cancel, close/reopen, disable while busy, exit, older host, theme/DPI/resize and locale | Drain without deadlock, visible fallback, no UI freeze | NOT VERIFIED |
 | P2B | Add/current/manual/edit/remove/relink/search/favorite, migration/restart and conflict | Durable independent project records; record removal never deletes repo | Initial bounded bookmarks source; full workflow pending |
@@ -248,3 +248,24 @@ host is not available, report a consolidated list of precise remaining cases
 and mark the stage BLOCKED/NOT RUN, not COMPLETE. Do not require the strict
 auditor's Python setup for ordinary P2A local-session testing. Do not change
 ordinary user profiles or disable antivirus/security products for acceptance.
+
+### P2A consolidated onboarding regression
+
+The candidate now persists an explicit Auto/English/Chinese locale in package
+settings; Auto uses the Windows user UI primary language (Chinese -> Chinese,
+all other languages -> English). The review and status model displays the
+bounded tool version only after the approved version probe and current resolver
+handoff, not from discovery or a saved path. Version display is invalidated on
+navigation, refresh, revoke and clear. The native settings page retains unrelated
+unsaved tool drafts when saving another field and rejects writes on failed model
+updates; stale picker requests and conflict replies are covered by fixtures.
+
+CI provisions SlikSVN 1.14.5 on Windows from the vendor archive with a pinned
+SHA-256 and administrative extraction into RUNNER_TEMP (no third-party install
+script), then requires a local svnadmin repository and modified/untracked working
+copy. The test is mandatory on Windows VCS/full lanes, not an optional skip.
+This candidate needs exact-source regression and actual host acceptance; the
+existing 1.0.0 preview is unchanged. No exact-file picker ABI was available in
+the pinned public SDK, so the verified folder picker plus manual absolute path
+remains the supported route. Check result remains a deliberate fallback when
+the dispatch wake precedes host task terminal publication.

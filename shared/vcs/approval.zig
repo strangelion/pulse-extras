@@ -262,7 +262,7 @@ pub const Policy = struct {
         const reported = try self.git.resolveWorkspace(self.grant.root.slice());
         if (!self.matchesWorkspace(&reported)) return error.Permission;
         const workspace: identity.Workspace = .{ .kind = .git, .root = self.grant.root, .repository_root = self.grant.metadata };
-        return .{ .provider = self.git.provider(), .workspace = workspace };
+        return .{ .provider = self.git.provider(), .workspace = workspace, .tool_version = contract.Text.init(report.lineSlice()) catch return error.Parse };
     }
 
     fn matchesWorkspace(self: *const Policy, workspace: *const identity.Workspace) bool {

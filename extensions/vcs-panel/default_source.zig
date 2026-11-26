@@ -502,7 +502,7 @@ const LocalSession = struct {
             .environment = &self.environment,
             .gate = .{ .ctx = self, .check = &checkRequest },
         } };
-        _ = cli.probeApproved(tool(review.kind) orelse return error.Unsupported, &review.executable, &execution, runner) catch |err| return switch (err) {
+        const report = cli.probeApproved(tool(review.kind) orelse return error.Unsupported, &review.executable, &execution, runner) catch |err| return switch (err) {
             error.UnsupportedVersion => error.CliTooOld,
             error.InvalidVersion => error.Parse,
             error.UnapprovedExecutable, error.UnapprovedEnvironment, error.PermissionDenied => error.Permission,
@@ -532,7 +532,7 @@ const LocalSession = struct {
             },
             else => return error.Unsupported,
         };
-        return .{ .provider = provider, .workspace = workspace };
+        return .{ .provider = provider, .workspace = workspace, .tool_version = contract.Text.init(report.lineSlice()) catch return error.Parse };
     }
 
     fn reportedPathEqual(actual: []const u8, expected: []const u8) bool {
@@ -831,6 +831,7 @@ fn exerciseLocalFixture(kind: identity.Kind, executable: identity.Path, root: id
     const resolver = try LocalSession.authorize(local, &review);
     const resolved = (try resolver.resolve(resolver.ctx, &root)) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(kind, resolved.provider.kind);
+    try std.testing.expect(resolved.tool_version.slice().len != 0);
     const snapshot = try resolved.provider.summarize(&resolved.workspace);
     try std.testing.expectEqual(contract.Availability.ready, snapshot.availability);
     try LocalSession.revoke(local);
@@ -890,4 +891,7 @@ test "trusted local mode queries an actual Windows SVN fixture when provisioned"
     }
     const snapshot = try exerciseLocalFixture(.svn, executable, root);
     try std.testing.expect(snapshot.revision != null);
+    try std.testing.expectEqual(@as(u32, 1), snapshot.changes.modified);
+    try std.testing.expectEqual(@as(u32, 1), snapshot.changes.untracked);
+    try std.testing.expectEqual(contract.Availability.ready, snapshot.counts.modified);
 }

@@ -12,6 +12,7 @@ import time
 from http.client import IncompleteRead
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
+from zipfile import ZipFile
 
 JJ_VERSION = "0.46.0"
 ASSETS = {
@@ -78,6 +79,54 @@ def install_jj():
         out.write(str(binary.parent) + "\n")
 
 
+# Apache lists SlikSVN as a Windows distribution. Official archive and
+# independently recorded SHA-256:
+# https://community.chocolatey.org/packages/sliksvn/1.14.5 (VERIFICATION.txt)
+SVN_VERSION = "1.14.5"
+SVN_ARCHIVE_SHA256 = "77d4fe02999da3bdc3a20e86243ae6ede99aaf072b4c12b0cdedb54d88e954a"
+
+
+def install_windows_svn():
+    if platform.system() != "Windows":
+        raise SystemExit("Windows SVN provisioning must run on Windows")
+    root = Path(tempfile.mkdtemp(prefix="pulse-svn-tools-", dir=os.environ["RUNNER_TEMP"]))
+    name = f"Slik-Subversion-{SVN_VERSION}-x64"
+    archive = root / f"{name}.zip"
+    download_archive(f"https://sliksvn.com/pub/{name}.zip", archive)
+    with archive.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != SVN_ARCHIVE_SHA256:
+            raise SystemExit("SVN archive checksum mismatch")
+    # Do not unpack unneeded files or execute a community installation script.
+    msi = root / f"{name}.msi"
+    with ZipFile(archive) as z:
+        matches = [item for item in z.infolist() if item.filename == msi.name]
+        if len(matches) != 1 or not 0 < matches[0].file_size <= 128 * 1024 * 1024:
+            raise SystemExit("Unexpected SVN installer archive")
+        with z.open(matches[0]) as src, msi.open("xb") as out:
+            shutil.copyfileobj(src, out)
+    target = root / "installed"
+    # Administrative extraction only into the ephemeral runner's private
+    # directory. No PATH or registry mutation by a third-party package script.
+    msiexec = Path(os.environ["SystemRoot"]) / "System32" / "msiexec.exe"
+    result = subprocess.run([str(msiexec), "/a", str(msi), "/qn", "/norestart",
+                             f"TARGETDIR={target}", "/l*v", str(root / "msi.log")],
+                            timeout=120, check=False)
+    if result.returncode not in (0, 3010):
+        raise SystemExit(f"SVN administrative extraction failed: {result.returncode}")
+    candidates = [p for p in target.rglob("svn.exe") if (p.parent / "svnadmin.exe").is_file()]
+    if len(candidates) != 1:
+        raise SystemExit("Expected exactly one SVN client/admin pair")
+    binary = candidates[0]
+    for name in ("svn.exe", "svnadmin.exe"):
+        version = subprocess.check_output([str(binary.parent / name), "--version", "--quiet"],
+                                          text=True, timeout=30).strip()
+        if version != SVN_VERSION:
+            raise SystemExit(f"Unexpected {name} version: {version!r}")
+    print(f"Verified pinned SVN archive and both {SVN_VERSION} tools", flush=True)
+    with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as out:
+        out.write(str(binary.parent) + "\n")
+
+
 def svn_fixture():
     root = Path(tempfile.mkdtemp(prefix="pulse-svn-", dir=os.environ["RUNNER_TEMP"]))
     repo, wc = root / "repository", root / "working-copy"
@@ -94,9 +143,11 @@ def svn_fixture():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["jj", "svn-fixture"])
+    parser.add_argument("action", choices=["jj", "svn-windows", "svn-fixture"])
     args = parser.parse_args()
     if args.action == "jj":
         install_jj()
+    elif args.action == "svn-windows":
+        install_windows_svn()
     else:
         svn_fixture()

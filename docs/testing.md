@@ -248,3 +248,12 @@ candidates are packaged locally with the pinned official author tool through
 scripts/package_release.py (native-manifest, pack, verify, evidence) as described
 in [release](release.md#packaging-local-official-tool). CI only builds and tests;
 a green run is not package, signature or real-host evidence.
+
+P2A follow-up: Windows VCS/full lanes provision pinned SlikSVN 1.14.5 and
+require the real local working-copy fixture, in addition to Git/JJ. The
+vendor archive is verified using the independently recorded digest in
+scripts/ci_vcs.py; administrative extraction is confined to ephemeral CI.
+Native settings fixtures exercise optimistic version conflicts, exact path
+precedence, stale picker completion, draft preservation and render failure.
+Installed Pulse acceptance is still separate. No production SDK or CLI is
+bundled by this fixture.

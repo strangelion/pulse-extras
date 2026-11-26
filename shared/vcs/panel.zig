@@ -64,6 +64,7 @@ pub const View = struct {
     local_setup: bool = false,
     local_review: ?LocalReview = null,
     setup_issue: ?SetupIssue = null,
+    tool_version: contract.Text = .{},
     revocation_configured: bool = false,
     approved_root: ?identity.Path = null,
     persistent_revocation: bool = false,
@@ -281,9 +282,10 @@ pub const Content = struct {
             else
                 loc(lang, "External command access requires explicit approval.", "外部命令访问需要明确授权。"));
         } else if (view.local_setup and !view.approval_required) {
-            self.add("vcs.local-trust", "", loc(lang, "Trusted local session (not a sandbox). Close the panel and reopen to select another repository or tool.", "本次会话已信任（非沙箱）。关闭并重新打开面板可选择其他仓库或工具。"));
+            self.add("vcs.local-trust", "", loc(lang, "Trusted local session (not a sandbox). To change tool, provider or root, close and reopen VCS from the context menu.", "本次会话已信任（非沙箱）。若要更换工具、类型或仓库，请关闭后从右键菜单重新打开 VCS。"));
         }
         if (view.approved_root) |root| self.add("vcs.approved-root", loc(lang, "Approved root: ", "授权根目录："), root.slice());
+        if (!view.metadata_only and !view.approval_required and view.tool_version.slice().len != 0) self.add("vcs.tool-version", loc(lang, "Verified tool version: ", "已验证工具版本："), view.tool_version.slice());
         if (view.revocation_failed) self.add("vcs.revocation-error", "", loc(lang, "Session locked; permanent revocation failed. Use approval tool to revoke.", "会话已锁定；永久撤销失败，请使用授权工具撤销。"));
         if (view.failure) |err| self.add("vcs.error", "", failureLabel(lang, err));
         if (view.workspace) |workspace| {
@@ -359,7 +361,7 @@ pub const Content = struct {
         } else {
             const snapshot = view.snapshot orelse return;
             self.addExecutableInput(lang);
-            self.add("vcs.setup-help", "", loc(lang, "Leave the path empty to review a detected candidate, or enter an absolute path. Detection never runs or approves a program.", "留空可使用检测到的候选程序，也可填写绝对路径。检测不会运行或授权程序。"));
+            self.add("vcs.setup-help", "", loc(lang, "Leave empty for the configured or detected path. Change saved paths in VCS settings. Detection never runs or approves a program.", "留空使用已配置或检测到的路径；可在 VCS 设置中更改。检测不会运行或授权程序。"));
             const kinds = [_]identity.Kind{ .git, .jj, .svn };
             const ids = [_][]const u8{ "vcs.candidate.git", "vcs.candidate.jj", "vcs.candidate.svn" };
             const button_ids = [_][]const u8{ "vcs.action.trust-git", "vcs.action.trust-jj", "vcs.action.trust-svn" };
@@ -573,4 +575,21 @@ test "local trust setup shows explicit review and never claims status without co
     content.buildInteractive(.en, &view, &tree);
     try std.testing.expectEqualStrings("Executable: C:\\tools\\jj.exe", content.textFor("vcs.review-exe") orelse return error.TestUnexpectedResult);
     try std.testing.expect(content.textFor("vcs.review-warning") != null);
+}
+
+test "verified tool version is visible only in an approved view" {
+    var content: Content = undefined;
+    var tree: ui.Tree = undefined;
+    var view: View = .{ .phase = .ready, .tool_version = try contract.Text.init("git version 2.56.1") };
+    content.buildInteractive(.en, &view, &tree);
+    try std.testing.expectEqualStrings("Verified tool version: git version 2.56.1", content.textFor("vcs.tool-version") orelse return error.TestUnexpectedResult);
+    content.buildInteractive(.zh, &view, &tree);
+    try std.testing.expectEqualStrings("已验证工具版本：git version 2.56.1", content.textFor("vcs.tool-version") orelse return error.TestUnexpectedResult);
+    view.metadata_only = true;
+    content.buildInteractive(.zh, &view, &tree);
+    try std.testing.expect(content.textFor("vcs.tool-version") == null);
+    view.metadata_only = false;
+    view.approval_required = true;
+    content.buildInteractive(.en, &view, &tree);
+    try std.testing.expect(content.textFor("vcs.tool-version") == null);
 }

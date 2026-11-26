@@ -14,6 +14,7 @@ const commands = @import("pulse_commands");
 const context = @import("pulse_context");
 const mount = @import("pulse_ui_mount");
 const settings_mod = @import("settings.zig");
+const vcs_panel = @import("vcs_panel");
 
 const allocator = std.heap.page_allocator;
 
@@ -37,7 +38,7 @@ const Instance = struct {
             return;
         };
         if (table.raw.unregister_command == null) return;
-        var item = commands.descriptor("vcs.open-current", "VCS: 查看当前目录", &invokeMenu);
+        var item = commands.descriptor("vcs.open-current", "VCS: Current directory / 查看当前目录", &invokeMenu);
         item.kinds = commands.Kind.files | commands.Kind.directories;
         item.min_selection = 0;
         item.max_selection = 4096;
@@ -85,10 +86,11 @@ const Instance = struct {
         if (self.settings) |*settings| settings.open() catch |err| diag.status("vcs-settings-open", @intFromError(err));
     }
 
-    fn settingsUpdated(user: *anyopaque, tools: settings_mod.Tools) void {
+    fn settingsUpdated(user: *anyopaque, tools: settings_mod.Tools, language: vcs_panel.Language) void {
         const self: *Instance = @ptrCast(@alignCast(user));
         if (self.binding) |*binding| {
             binding.configured_tools = tools;
+            binding.language = language;
             binding.local_review = null;
             if (binding.accepting) binding.render() catch |err| diag.status("vcs-settings-view", @intFromError(err));
         }
@@ -115,11 +117,14 @@ const Instance = struct {
             return error.State;
         }
         if (self.binding != null or self.session != null) return error.State;
-        self.binding = try host_query.Binding.init(try async_host.taskTable(self.host), .en);
+        self.binding = try host_query.Binding.init(try async_host.taskTable(self.host), settings_mod.Locale.auto.language());
         errdefer self.stop() catch |err| diag.status("vcs-rollback-failed", @intFromError(err));
         const binding = &self.binding.?;
         if (self.settings) |*settings| {
-            if (settings.loaded) binding.configured_tools = settings.stored.tools;
+            if (settings.loaded) {
+                binding.configured_tools = settings.stored.tools;
+                binding.language = settings.stored.locale.language();
+            }
         }
         if (!self.session_revoked) {
             const input_value = source.acquire(allocator) catch |err| blk: {
@@ -214,7 +219,7 @@ fn activate(raw: ?*anyopaque) callconv(.c) abi.Status {
         diag.status("vcs-activate-failed", @intFromError(err));
         return statusOf(err);
     };
-    diag.event(if (self.session == null) "vcs-activated-locked" else "vcs-activated-reviewed");
+    diag.event(if (self.session != null) "vcs-activated-reviewed" else if (self.binding != null and self.binding.?.metadata_only) "vcs-activated-preview" else "vcs-activated-locked");
     return abi.ok;
 }
 

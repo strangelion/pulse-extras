@@ -126,6 +126,7 @@ pub const Query = struct {
 pub const Resolved = struct {
     provider: contract.Provider,
     workspace: identity.Workspace,
+    tool_version: contract.Text = .{},
 };
 
 pub const Resolver = struct {
@@ -434,6 +435,7 @@ pub const Binding = struct {
     local_access: ?LocalAccess = null,
     local_ui: bool = false,
     configured_tools: [3]?identity.Path = .{ null, null, null },
+    verified_version: contract.Text = .{},
     local_review: ?panel.LocalReview = null,
     setup_issue: ?panel.SetupIssue = null,
     revocation: ?Revocation = null,
@@ -490,6 +492,7 @@ pub const Binding = struct {
         if (!self.accepting or self.approval_locked) return error.State;
         const action = self.revocation orelse return error.Permission;
         self.approval_locked = true;
+        self.verified_version = .{};
         action.revoke(action.ctx) catch {
             self.revocation_failed = true;
             self.navigation.pending = false;
@@ -518,6 +521,7 @@ pub const Binding = struct {
         current.approval_required = self.approval_locked;
         current.metadata_only = self.metadata_only;
         current.local_setup = self.local_ui;
+        current.tool_version = self.verified_version;
         if (current.snapshot) |*snapshot| {
             if (self.metadata_only) {
                 for (self.configured_tools, 0..) |configured, index| {
@@ -632,6 +636,7 @@ pub const Binding = struct {
         if (self.navigation_generation == latest.generation) return;
         self.local_review = null;
         self.setup_issue = null;
+        self.verified_version = .{};
         var failure: ?host_mod.Error = null;
         self.resolution.cancel() catch |err| {
             failure = err;
@@ -675,7 +680,7 @@ pub const Binding = struct {
         try self.invalidateNavigation();
         if (self.navigation.pending or self.resolution.task.occupied() or self.controller.query.task.occupied() or self.controller.queued != null) return error.State;
         const current = self.controller.current;
-        if (current.phase != .ready or current.snapshot == null) return error.State;
+        if (current.phase != .ready or current.snapshot == null or current.stale) return error.State;
         const workspace = current.workspace orelse return error.State;
         return workspace.root;
     }
@@ -825,6 +830,8 @@ pub const Binding = struct {
 
     pub fn clear(self: *Binding) host_mod.Error!void {
         if (!self.accepting) return error.State;
+        self.verified_version = .{};
+        self.local_review = null;
         if (self.resolver != null) {
             self.navigation.pending = false;
             self.resolution.cancel() catch |err| {
@@ -850,6 +857,8 @@ pub const Binding = struct {
         if (self.controller.current.phase == .queued or self.controller.current.phase == .refreshing) return error.State;
         const latest = self.navigation.latest orelse return error.State;
         if (latest.directory() == null) return error.State;
+        self.local_review = null;
+        self.verified_version = .{};
         self.navigation.pending = true;
         var failure: ?host_mod.Error = null;
         self.resolution.cancel() catch |err| {
@@ -864,6 +873,8 @@ pub const Binding = struct {
     }
 
     fn cancelResolution(self: *Binding) host_mod.Error!void {
+        self.local_review = null;
+        self.verified_version = .{};
         self.navigation.pending = false;
         self.controller.current = .{ .phase = .cancelled };
         var failure: ?host_mod.Error = null;
@@ -887,6 +898,7 @@ pub const Binding = struct {
                 if (finished.selection) |selection| {
                     if (selection) |selected| {
                         try self.controller.select(selected.provider, &selected.workspace);
+                        self.verified_version = selected.tool_version;
                     } else self.controller.current = .{ .phase = .empty };
                 } else |err| {
                     self.controller.current = .{ .phase = if (err == error.Cancelled) .cancelled else .failed, .failure = if (err == error.Cancelled) null else err };
@@ -952,6 +964,7 @@ pub const Binding = struct {
         current.approval_required = self.approval_locked;
         current.metadata_only = self.metadata_only;
         current.local_setup = self.local_ui;
+        current.tool_version = self.verified_version;
         if (current.snapshot) |*snapshot| {
             if (self.metadata_only) {
                 for (self.configured_tools, 0..) |configured, index| {
@@ -2036,6 +2049,15 @@ test "local consent is two step, navigation bound, and released only after drain
     try binding.pump();
     binding.controller.current.snapshot.?.preview_kinds = 1;
     binding.controller.current.snapshot.?.preview_tools[0] = try identity.Path.init("C:\\tools\\git.exe");
+    model.executable = "";
+    binding.configured_tools[0] = try identity.Path.init("C:\\configured\\git.exe");
+    model.click(7, panel.command_trust_git);
+    try std.testing.expect(binding.local_review.?.executable.eql("C:\\configured\\git.exe"));
+    model.executable = "C:\\tools\\git.exe";
+    model.click(7, panel.command_trust_git);
+    try std.testing.expect(binding.local_review.?.executable.eql(model.executable));
+    model.click(7, panel.command_trust_cancel);
+    binding.configured_tools[0] = null;
     model.executable = "";
     model.click(7, panel.command_trust_svn);
     try std.testing.expect(binding.local_review == null);

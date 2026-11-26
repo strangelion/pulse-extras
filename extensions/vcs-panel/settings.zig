@@ -14,6 +14,7 @@ const contract = @import("vcs_provider");
 const approval = @import("vcs_approval");
 const cli = @import("vcs_cli");
 const diag = @import("pulse_diagnostics");
+const vcs_panel = @import("vcs_panel");
 
 const max_projects = 32;
 const max_value = 1024;
@@ -21,7 +22,7 @@ const keys = [_][]const u8{ "tool.git", "tool.jj", "tool.svn" };
 const names = [_][]const u8{ "Git", "Jujutsu", "Subversion" };
 const tools = [_]cli.Tool{ .git, .jj, .svn };
 const fields = [_][]const u8{ "settings.git", "settings.jj", "settings.svn" };
-const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check" };
+const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh" };
 const root_key = "settings.project.root";
 const url_key = "settings.project.url";
 const selection_key = "settings.project.selected";
@@ -29,6 +30,83 @@ const project_prefix = "project.";
 const key_len = project_prefix.len + 32;
 
 pub const Tools = [3]?identity.Path;
+const locale_key = "ui.locale";
+
+pub const Locale = enum {
+    auto,
+    en,
+    zh,
+
+    fn parse(value: []const u8) !Locale {
+        for ([_]Locale{ .auto, .en, .zh }) |locale| {
+            if (std.mem.eql(u8, value, @tagName(locale))) return locale;
+        }
+        return error.InvalidSettings;
+    }
+
+    pub fn language(self: Locale) vcs_panel.Language {
+        return switch (self) {
+            .en => .en,
+            .zh => .zh,
+            .auto => if (comptime builtin.os.tag == .windows)
+                languageForWindows(GetUserDefaultUILanguage())
+            else
+                .en,
+        };
+    }
+};
+
+extern "kernel32" fn GetUserDefaultUILanguage() callconv(.winapi) u16;
+
+fn languageForWindows(id: u16) vcs_panel.Language {
+    return if ((id & 0x03ff) == 0x04) .zh else .en;
+}
+
+fn tr(lang: vcs_panel.Language, english: []const u8, chinese: []const u8) []const u8 {
+    return if (lang == .zh) chinese else english;
+}
+
+const Status = enum {
+    initial,
+    sync_failed,
+    conflict,
+    saved,
+    loaded,
+    invalid,
+    pending,
+    rejected,
+    filled,
+    picker_cancel,
+    picker_candidate,
+    picking,
+    browser_pending,
+    browser_opened,
+    browser_failed,
+    command_failed,
+    render_failed,
+
+    fn label(self: Status, lang: vcs_panel.Language) []const u8 {
+        return switch (self) {
+            .initial => tr(lang, "Preparing settings", "准备读取设置"),
+            .sync_failed => tr(lang, "UI state synchronization failed; reload settings", "界面状态同步失败；请重新读取"),
+            .conflict => tr(lang, "Settings operation failed or version changed; reload without overwriting", "设置操作失败或版本冲突；请重新读取，未强制覆盖"),
+            .saved => tr(lang, "Host confirmed settings saved", "宿主已确认保存"),
+            .loaded => tr(lang, "Settings loaded", "已读取设置"),
+            .invalid => tr(lang, "Invalid settings response; previous records retained", "设置数据无效；未覆盖原有记录"),
+            .pending => tr(lang, "Waiting for host confirmation", "等待宿主确认"),
+            .rejected => tr(lang, "Request not accepted; reload settings", "请求未被正常接受；请重新读取"),
+            .filled => tr(lang, "Current repository filled in; review before saving", "已填入当前仓库；请检查后保存"),
+            .picker_cancel => tr(lang, "No folder selected; enter a path manually", "未选择工具目录；可手动填写"),
+            .picker_candidate => tr(lang, "Candidate filled in; review and save (not verified)", "已填入候选路径；请确认文件名并保存（尚未验证）"),
+            .picking => tr(lang, "Selecting tool folder", "正在选择工具目录"),
+            .browser_pending => tr(lang, "Browser task submitted; check result", "已提交浏览器任务；可检查结果"),
+            .browser_opened => tr(lang, "Handed off to the browser; page load not verified", "已交给默认浏览器；不代表网页加载成功"),
+            .browser_failed => tr(lang, "Browser task did not complete", "浏览器任务未完成"),
+            .command_failed => tr(lang, "Operation failed; check path, selection and pending tasks", "操作未完成：请检查路径、选择及当前任务状态"),
+            .render_failed => tr(lang, "Settings model update failed; reload or reopen", "设置界面更新失败；请重新读取或重新打开"),
+        };
+    }
+};
 pub const Current = struct { root: identity.Path, remote: contract.Text = .{} };
 
 const Project = struct {
@@ -72,6 +150,7 @@ fn toolPath(index: usize, value: []const u8) !?identity.Path {
 
 const Stored = struct {
     version: u64 = 0,
+    locale: Locale = .auto,
     tools: Tools = .{ null, null, null },
     projects: [max_projects]Project = undefined,
     count: usize = 0,
@@ -87,10 +166,17 @@ const Stored = struct {
         if (value.version > (1 << 53) - 1 or value.count > 1024 or (value.count != 0 and value.values == null)) return error.InvalidSettings;
         out.* = .{ .version = value.version };
         var seen: [3]bool = @splat(false);
+        var seen_locale = false;
         for (0..value.count) |n| {
             const pair = value.values[n];
             const key = abi.slice(pair.key) orelse return error.InvalidSettings;
             if (key.len > 64) return error.InvalidSettings;
+            if (std.mem.eql(u8, key, locale_key)) {
+                if (seen_locale) return error.InvalidSettings;
+                seen_locale = true;
+                out.locale = try Locale.parse(abi.slice(pair.value) orelse return error.InvalidSettings);
+                continue;
+            }
             for (keys, 0..) |name, i| {
                 if (!std.mem.eql(u8, key, name)) continue;
                 if (seen[i]) return error.InvalidSettings;
@@ -108,7 +194,7 @@ const Stored = struct {
 };
 
 const Content = struct {
-    nodes: [32]ui.Node = undefined,
+    nodes: [40]ui.Node = undefined,
     len: usize = 0,
     root: ui.Node = undefined,
     states: [6]ui.State = undefined,
@@ -141,24 +227,29 @@ const Content = struct {
     fn build(self: *Content, owner: *const Settings, tree: *ui.Tree) void {
         self.len = 0;
         const idle = owner.loaded and owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned;
-        self.add(ui.text("版本控制工具 · 保存路径不等于执行授权"), "settings.tools");
-        self.add(ui.text(owner.status), "settings.status");
-        self.button(0, "重新读取设置", owner.pending == 0 and !owner.poisoned);
+        const lang = owner.stored.locale.language();
+        self.add(ui.text(tr(lang, "VCS tools · Saving a path does not authorize execution", "版本控制工具 · 保存路径不等于执行授权")), "settings.tools");
+        self.add(ui.text(owner.status.label(lang)), "settings.status");
+        self.button(0, tr(lang, "Reload settings", "重新读取设置"), owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned);
+        self.add(ui.text(tr(lang, "Language / 语言", "语言 / Language")), "settings.locale");
+        self.button(12, tr(lang, "System language (Auto)", "跟随系统 (Auto)"), idle and owner.stored.locale != .auto);
+        self.button(13, "English", idle and owner.stored.locale != .en);
+        self.button(14, "简体中文", idle and owner.stored.locale != .zh);
         for (fields, names, 0..) |field, name, i| {
             self.input(field, name, idle);
-            self.button(1 + i, "保存路径（留空恢复自动检测）", idle);
-            if (owner.picker != null) self.button(4 + i, "浏览工具所在文件夹", idle);
+            self.button(1 + i, tr(lang, "Save path (empty restores detection)", "保存路径（留空恢复自动检测）"), idle);
+            if (owner.picker != null) self.button(4 + i, tr(lang, "Browse tool folder", "浏览工具所在文件夹"), idle);
             self.states[i] = .{ .key = abi.view(field), .value = abi.view(if (owner.stored.tools[i]) |*path| path.slice() else "") };
         }
-        self.add(ui.text("项目库 · 仅记录位置，不自动授予权限或运行命令"), "settings.projects");
-        self.input(root_key, "项目根目录（绝对路径）", idle);
-        self.input(url_key, "远程仓库地址（可选：GitHub / GitLab / Bitbucket）", idle);
-        self.button(7, "填入当前 VCS 仓库", idle);
-        self.button(8, "保存项目 / 更新远程地址", idle);
+        self.add(ui.text(tr(lang, "Projects · bookmarks only; no execution or trust", "项目库 · 仅记录位置，不自动授予权限或运行命令")), "settings.projects");
+        self.input(root_key, tr(lang, "Project root (absolute path)", "项目根目录（绝对路径）"), idle);
+        self.input(url_key, tr(lang, "Remote repository (optional: GitHub / GitLab / Bitbucket)", "远程仓库地址（可选：GitHub / GitLab / Bitbucket）"), idle);
+        self.button(7, tr(lang, "Fill current VCS repository", "填入当前 VCS 仓库"), idle);
+        self.button(8, tr(lang, "Save project / update remote", "保存项目 / 更新远程地址"), idle);
         self.states[3] = .{ .key = abi.view(root_key), .value = abi.view("") };
         self.states[4] = .{ .key = abi.view(url_key), .value = abi.view("") };
         self.states[5] = .{ .key = abi.view(selection_key), .value = abi.view("") };
-        const headers = [_][]const u8{ "项目", "本地目录", "远程仓库" };
+        const headers = [_][]const u8{ tr(lang, "Project", "项目"), tr(lang, "Local directory", "本地目录"), tr(lang, "Remote repository", "远程仓库") };
         const ids = [_][]const u8{ "name", "path", "remote" };
         for (headers, ids, 0..) |heading, id, i| {
             self.columns[i] = std.mem.zeroes(raw.PulseUiModelColumn);
@@ -180,10 +271,10 @@ const Content = struct {
             table.rows = .{ .present = 1, .data = &self.rows, .count = @intCast(owner.stored.count) };
             table.data_columns = .{ .present = 1, .data = &self.columns, .count = self.columns.len };
             self.add(table, "settings.project.table");
-            self.button(9, "移除选中记录（不删除项目文件）", idle);
-            self.button(10, "在浏览器打开远程仓库", idle and (if (owner.browser) |*task| !task.occupied() else false));
-        } else self.add(ui.text("尚未记录项目（最多 32 项）"), "settings.project.empty");
-        self.button(11, "检查浏览器任务结果", if (owner.browser) |*task| task.occupied() else false);
+            self.button(9, tr(lang, "Remove selected bookmark (keep files)", "移除选中记录（不删除项目文件）"), idle);
+            self.button(10, tr(lang, "Open remote repository in browser", "在浏览器打开远程仓库"), idle and (if (owner.browser) |*task| !task.occupied() else false));
+        } else self.add(ui.text(tr(lang, "No saved projects (up to 32)", "尚未记录项目（最多 32 项）")), "settings.project.empty");
+        self.button(11, tr(lang, "Check browser task result", "检查浏览器任务结果"), if (owner.browser) |*task| task.occupied() else false);
         for (commands, 0..) |command, i| self.vocabulary[i] = abi.view(command);
         self.root = ui.node(ui.NodeKind.stack);
         self.root.id = abi.view("vcs.settings.root");
@@ -202,7 +293,7 @@ pub const Settings = struct {
     host: host_mod.Host,
     user: *anyopaque,
     current: *const fn (*anyopaque) ?Current,
-    updated: *const fn (*anyopaque, Tools) void,
+    updated: *const fn (*anyopaque, Tools, vcs_panel.Language) void,
     pages: ?raw.PulseSettingsPagesV1 = null,
     resources: ?raw.PulseResourcesV1 = null,
     panel: ?ui.Panel = null,
@@ -216,7 +307,9 @@ pub const Settings = struct {
     // Decode into a second owned buffer. Never partially publish a corrupt
     // host reply or retain a borrowed resource string.
     scratch: Stored = .{},
-    status: []const u8 = "准备读取设置",
+    status: Status = .initial,
+    render_ok: bool = false,
+    sync_mask: u8 = 0,
     picker: ?pickers.Table = null,
     picker_request: u64 = 0,
     picker_index: usize = 0,
@@ -250,7 +343,7 @@ pub const Settings = struct {
         var tree: ui.Tree = undefined;
         content.build(self, &tree);
         var page: u64 = 0;
-        try host_mod.mapStatus(create(pages.context, abi.view("VCS 设置与项目"), &tree, &page));
+        try host_mod.mapStatus(create(pages.context, abi.view("VCS / 设置与项目"), &tree, &page));
         if (page == 0) {
             self.poisoned = true;
             return error.State;
@@ -273,19 +366,36 @@ pub const Settings = struct {
         var content: Content = undefined;
         var tree: ui.Tree = undefined;
         content.build(self, &tree);
-        model.update(&tree) catch |err| diag.status("vcs-settings-render", @intFromError(err));
+        self.render_ok = false;
+        model.update(&tree) catch |err| {
+            self.status = .render_failed;
+            diag.status("vcs-settings-render", @intFromError(err));
+            return;
+        };
+        self.render_ok = true;
     }
 
-    fn syncTools(self: *Settings) void {
+    // Only replace the saved field, or all fields on explicit reload.
+    // Saving one tool or changing locale must not discard other draft edits.
+    fn syncTools(self: *Settings, mask: u8) void {
+        if (!self.render_ok) return;
         const model = if (self.panel) |*value| value else return;
         var states: [4]ui.State = undefined;
+        var count: usize = 0;
         for (fields, 0..) |field, i| {
-            states[i] = .{ .key = abi.view(field), .value = abi.view(if (self.stored.tools[i]) |*path| path.slice() else "") };
+            if (mask & (@as(u8, 1) << @as(u3, @intCast(i))) == 0) continue;
+            states[count] = .{ .key = abi.view(field), .value = abi.view(if (self.stored.tools[i]) |*path| path.slice() else "") };
+            count += 1;
         }
-        states[3] = .{ .key = abi.view(selection_key), .value = abi.view("") };
-        model.setStates(&states) catch |err| {
+        // Selection state belongs to the visible project table only.
+        if (mask & 8 != 0 and self.stored.count != 0) {
+            states[count] = .{ .key = abi.view(selection_key), .value = abi.view("") };
+            count += 1;
+        }
+        if (count == 0) return;
+        model.setStates(states[0..count]) catch |err| {
             self.loaded = false;
-            self.status = "界面状态同步失败；请重新读取";
+            self.status = .sync_failed;
             diag.status("vcs-settings-sync", @intFromError(err));
         };
     }
@@ -294,21 +404,23 @@ pub const Settings = struct {
         const self: *Settings = @ptrCast(@alignCast(user orelse return));
         if (reply == null or reply.*.size < @sizeOf(raw.PulseResourcesReply) or self.pending == 0 or reply.*.request_id != self.pending) return;
         const operation = self.operation;
+        const mask = self.sync_mask;
+        self.sync_mask = 0;
         self.pending = 0;
         self.operation = 0;
         self.loaded = false;
         if (!self.active) return;
         if (reply.*.status != abi.ok or reply.*.operation != operation) {
-            self.status = "设置操作失败或版本冲突；请重新读取，未强制覆盖";
+            self.status = .conflict;
         } else if (Stored.decode(reply.*.settings, &self.scratch)) |_| {
             self.stored = self.scratch;
             self.loaded = true;
-            self.status = if (operation == raw.PULSE_RESOURCES_SETTINGS_GET) "已读取设置" else "宿主已确认保存";
-            self.updated(self.user, self.stored.tools);
+            self.status = if (operation == raw.PULSE_RESOURCES_SETTINGS_GET) .loaded else .saved;
+            self.updated(self.user, self.stored.tools, self.stored.locale.language());
             self.render();
-            self.syncTools();
+            self.syncTools(mask);
         } else |_| {
-            self.status = "设置数据无效；未覆盖原有记录";
+            self.status = .invalid;
         }
         self.render();
     }
@@ -317,20 +429,21 @@ pub const Settings = struct {
         if (status == abi.ok and id != 0) {
             self.pending = id;
             self.operation = operation;
-            self.status = "等待宿主确认";
+            self.status = .pending;
         } else {
             self.loaded = false;
             if (status == abi.ok) self.poisoned = true;
-            self.status = "请求未被正常接受；请重新读取";
+            self.status = .rejected;
         }
         self.render();
     }
 
     fn reload(self: *Settings) void {
-        if (!self.active or self.pending != 0 or self.poisoned) return;
+        if (!self.active or self.pending != 0 or self.picker_request != 0 or self.poisoned) return;
         const resources = self.resources orelse return;
         const get = resources.settings_get orelse return;
         var id: u64 = 0;
+        self.sync_mask = 15;
         const status = get(resources.context, completed, self, &id);
         self.admitted(status, id, raw.PULSE_RESOURCES_SETTINGS_GET);
     }
@@ -340,6 +453,10 @@ pub const Settings = struct {
         const resources = self.resources orelse return;
         const set = resources.settings_set orelse return;
         var id: u64 = 0;
+        self.sync_mask = if (std.mem.startsWith(u8, key, project_prefix)) 8 else 0;
+        for (keys, 0..) |tool_key, i| {
+            if (std.mem.eql(u8, key, tool_key)) self.sync_mask = @as(u8, 1) << @as(u3, @intCast(i));
+        }
         const status = set(resources.context, abi.view(key), abi.view(value), @intFromBool(remove), self.stored.version, completed, self, &id);
         self.admitted(status, id, raw.PULSE_RESOURCES_SETTINGS_SET);
     }
@@ -368,7 +485,7 @@ pub const Settings = struct {
             .{ .key = abi.view(url_key), .value = abi.view(current.remote.slice()) },
         };
         try model.setStates(&states);
-        self.status = "已填入当前仓库；请检查后保存";
+        self.status = .filled;
     }
 
     fn saveProject(self: *Settings) !void {
@@ -393,7 +510,7 @@ pub const Settings = struct {
         if (result == null or result.*.size < @sizeOf(pickers.Result) or self.picker_request == 0 or result.*.request_id != self.picker_request) return;
         self.picker_request = 0;
         if (!self.active) return;
-        self.status = "未选择工具目录；可手动填写";
+        self.status = .picker_cancel;
         if (result.*.outcome == pickers.accepted and result.*.path_count == 1 and result.*.paths != null) blk: {
             const path = abi.slice(result.*.paths[0]) orelse break :blk;
             var bytes: [max_value]u8 = undefined;
@@ -402,7 +519,7 @@ pub const Settings = struct {
             const model = if (self.panel) |*value| value else break :blk;
             const states = [_]ui.State{.{ .key = abi.view(fields[self.picker_index]), .value = abi.view(candidate) }};
             model.setStates(&states) catch break :blk;
-            self.status = "已填入候选路径；请确认文件名并保存（尚未验证）";
+            self.status = .picker_candidate;
         }
         self.render();
     }
@@ -412,14 +529,15 @@ pub const Settings = struct {
         const pick = picker.pick_folders orelse return error.Unavailable;
         self.picker_index = index;
         var id: u64 = 0;
-        const request: pickers.Request = .{ .title = abi.view("选择工具可执行文件所在文件夹"), .ok_label = abi.view("选择") };
+        const lang = self.stored.locale.language();
+        const request: pickers.Request = .{ .title = abi.view(tr(lang, "Select the folder containing the executable", "选择工具可执行文件所在文件夹")), .ok_label = abi.view(tr(lang, "Select", "选择")) };
         try host_mod.mapStatus(pick(picker.context, &request, pickerCompleted, self, &id));
         if (id == 0) {
             self.poisoned = true;
             return error.State;
         }
         self.picker_request = id;
-        self.status = "正在选择工具目录";
+        self.status = .picking;
     }
 
     fn browserWork(user: ?*anyopaque, context: [*c]const async_host.Context) callconv(.c) u32 {
@@ -445,7 +563,7 @@ pub const Settings = struct {
             .user = self,
         };
         try task.start(&descriptor);
-        self.status = "已提交浏览器任务；可检查结果";
+        self.status = .browser_pending;
     }
 
     fn pollBrowser(self: *Settings) !void {
@@ -454,7 +572,7 @@ pub const Settings = struct {
         const state = try task.poll();
         if (!state.terminal()) return;
         try task.releaseTerminal();
-        self.status = if (state == .completed) "已交给默认浏览器；不代表网页加载成功" else "浏览器任务未完成";
+        self.status = if (state == .completed) .browser_opened else .browser_failed;
     }
 
     fn onCommand(user: ?*anyopaque, page: u64, command: abi.StringView) callconv(.c) void {
@@ -466,7 +584,7 @@ pub const Settings = struct {
             self.reload();
             return;
         }
-        if (!self.loaded or self.pending != 0 or self.picker_request != 0) return;
+        if (!self.loaded or !self.render_ok or self.pending != 0 or self.picker_request != 0) return;
         for (commands[1..], 1..) |key, index| {
             if (!std.mem.eql(u8, name, key)) continue;
             const result: anyerror!void = switch (index) {
@@ -481,10 +599,11 @@ pub const Settings = struct {
                 },
                 10 => self.openSelected(),
                 11 => self.pollBrowser(),
+                12...14 => self.save(locale_key, @tagName(([_]Locale{ .auto, .en, .zh })[index - 12]), false),
                 else => return,
             };
             result catch |err| {
-                self.status = "操作未完成：请检查路径、选择及当前任务状态";
+                self.status = .command_failed;
                 diag.status("vcs-settings-command", @intFromError(err));
             };
             self.render();
@@ -494,6 +613,7 @@ pub const Settings = struct {
 
     pub fn close(self: *Settings) host_mod.Error!void {
         self.active = false;
+        self.render_ok = false;
         if (self.poisoned) return error.State;
         if (self.picker_request != 0) {
             const picker = self.picker orelse return error.State;
@@ -535,6 +655,7 @@ pub const Settings = struct {
     pub fn retireAtHostDestroy(self: *Settings) void {
         // Host stop suppresses resource/picker/UI callbacks and joins tasks.
         self.active = false;
+        self.render_ok = false;
         if (self.browser) |*task| task.retireAtHostDestroy();
         self.browser = null;
         self.panel = null;
@@ -589,4 +710,174 @@ test "project records are bounded, exact-keyed, and not grants" {
     try std.testing.expectEqual(@as(usize, 1), stored.count);
     try std.testing.expectError(error.InvalidSettings, Stored.decode(.{ .values = &pairs, .count = 2 }, &stored));
     try std.testing.expectError(error.InvalidSettings, Stored.decode(.{ .count = 1 }, &stored));
+}
+
+test "locale preferences validate and Chinese Windows language has English fallback" {
+    try std.testing.expectEqual(Locale.zh, try Locale.parse("zh"));
+    try std.testing.expectError(error.InvalidSettings, Locale.parse("invalid"));
+    try std.testing.expectEqual(vcs_panel.Language.zh, languageForWindows(0x0804));
+    try std.testing.expectEqual(vcs_panel.Language.en, languageForWindows(0x0409));
+    const pairs = [_]raw.PulseSetting{.{ .key = abi.view(locale_key), .value = abi.view("en") }};
+    var stored: Stored = .{};
+    try Stored.decode(.{ .values = &pairs, .count = 1 }, &stored);
+    try std.testing.expectEqual(Locale.en, stored.locale);
+    const duplicates = [_]raw.PulseSetting{ pairs[0], pairs[0] };
+    try std.testing.expectError(error.InvalidSettings, Stored.decode(.{ .values = &duplicates, .count = 2 }, &stored));
+}
+
+const SettingsFixture = struct {
+    calls: usize = 0,
+    last_version: u64 = 0,
+    cancelled: usize = 0,
+    last_key: [64]u8 = undefined,
+    last_key_len: usize = 0,
+    published: usize = 0,
+    synced: usize = 0,
+    sync_key: [64]u8 = undefined,
+    sync_key_len: usize = 0,
+    fail_update: bool = false,
+    input: []const u8,
+
+    fn current(_: *anyopaque) ?Current {
+        return null;
+    }
+
+    fn updated(user: *anyopaque, _: Tools, _: vcs_panel.Language) void {
+        const self: *SettingsFixture = @ptrCast(@alignCast(user));
+        self.published += 1;
+    }
+
+    fn get(_: ?*anyopaque, _: raw.PulseResourcesCompletionFn, _: ?*anyopaque, id: [*c]u64) callconv(.c) abi.Status {
+        id.* = 4;
+        return abi.ok;
+    }
+
+    fn set(user: ?*anyopaque, key: abi.StringView, _: abi.StringView, _: u32, version: u64, _: raw.PulseResourcesCompletionFn, _: ?*anyopaque, id: [*c]u64) callconv(.c) abi.Status {
+        const self: *SettingsFixture = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        const name = abi.slice(key) orelse return abi.error_argument;
+        if (name.len > self.last_key.len) return abi.error_argument;
+        @memcpy(self.last_key[0..name.len], name);
+        self.last_key_len = name.len;
+        self.calls += 1;
+        self.last_version = version;
+        id.* = 5;
+        return abi.ok;
+    }
+
+    fn cancel(user: ?*anyopaque, _: u64) callconv(.c) abi.Status {
+        const self: *SettingsFixture = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        self.cancelled += 1;
+        return abi.ok;
+    }
+
+    fn update(user: ?*anyopaque, _: u64, tree: [*c]const ui.Tree) callconv(.c) abi.Status {
+        const self: *SettingsFixture = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        if (tree == null or tree.*.command_count != commands.len or self.fail_update) return abi.error_state;
+        return abi.ok;
+    }
+
+    fn getState(user: ?*anyopaque, _: u64, _: abi.StringView, bytes: [*c]u8, capacity: u32, needed: [*c]u32) callconv(.c) abi.Status {
+        const self: *SettingsFixture = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        if (self.input.len >= capacity) return abi.error_argument;
+        @memcpy(bytes[0..self.input.len], self.input);
+        needed.* = @intCast(self.input.len);
+        return abi.ok;
+    }
+
+    fn setStates(user: ?*anyopaque, _: u64, states: [*c]const ui.State, count: u32) callconv(.c) abi.Status {
+        const self: *SettingsFixture = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        if (states == null or count == 0) return abi.error_argument;
+        const key = abi.slice(states[0].key) orelse return abi.error_argument;
+        if (key.len > self.sync_key.len) return abi.error_argument;
+        @memcpy(self.sync_key[0..key.len], key);
+        self.sync_key_len = key.len;
+        self.synced += count;
+        return abi.ok;
+    }
+};
+
+test "settings writes use exact version and preserve drafts on conflict or unrelated save" {
+    const tool = if (builtin.os.tag == .windows) "C:\\tools\\git.exe" else "/tools/git";
+    var fixture: SettingsFixture = .{ .input = tool };
+    const owner = try std.testing.allocator.create(Settings);
+    defer std.testing.allocator.destroy(owner);
+    owner.* = .{
+        .host = undefined,
+        .user = &fixture,
+        .current = &SettingsFixture.current,
+        .updated = &SettingsFixture.updated,
+        .active = true,
+        .page = 7,
+        .resources = .{ .context = &fixture, .settings_get = &SettingsFixture.get, .settings_set = &SettingsFixture.set, .cancel_request = &SettingsFixture.cancel },
+        .panel = .{ .id = 7, .table = .{ .context = &fixture, .update = &SettingsFixture.update, .get_state = &SettingsFixture.getState, .set_states = &SettingsFixture.setStates } },
+    };
+    owner.reload();
+    try std.testing.expectEqual(@as(u64, 4), owner.pending);
+    const initial: raw.PulseResourcesReply = .{ .size = @sizeOf(raw.PulseResourcesReply), .operation = raw.PULSE_RESOURCES_SETTINGS_GET, .request_id = 4, .status = abi.ok, .settings = .{ .version = 9 } };
+    Settings.completed(owner, &initial);
+    try std.testing.expect(owner.loaded and owner.render_ok);
+    try std.testing.expectEqual(@as(usize, 3), fixture.synced);
+    Settings.onCommand(owner, 8, abi.view(commands[1]));
+    try std.testing.expectEqual(@as(usize, 0), fixture.calls);
+    Settings.onCommand(owner, 7, abi.view(commands[1]));
+    try std.testing.expectEqual(@as(u64, 9), fixture.last_version);
+    try std.testing.expectEqualStrings(keys[0], fixture.last_key[0..fixture.last_key_len]);
+    Settings.onCommand(owner, 7, abi.view(commands[2]));
+    try std.testing.expectEqual(@as(usize, 1), fixture.calls);
+    const conflict: raw.PulseResourcesReply = .{ .size = @sizeOf(raw.PulseResourcesReply), .operation = raw.PULSE_RESOURCES_SETTINGS_SET, .request_id = 5, .status = abi.error_state };
+    Settings.completed(owner, &conflict);
+    try std.testing.expect(!owner.loaded);
+    try std.testing.expectEqual(@as(usize, 1), fixture.published);
+    Settings.onCommand(owner, 7, abi.view(commands[1]));
+    try std.testing.expectEqual(@as(usize, 1), fixture.calls);
+    owner.reload();
+    Settings.completed(owner, &initial);
+    Settings.onCommand(owner, 7, abi.view(commands[1]));
+    const pair = [_]raw.PulseSetting{.{ .key = abi.view(keys[0]), .value = abi.view(tool) }};
+    const saved: raw.PulseResourcesReply = .{ .size = @sizeOf(raw.PulseResourcesReply), .operation = raw.PULSE_RESOURCES_SETTINGS_SET, .request_id = 5, .status = abi.ok, .settings = .{ .version = 10, .values = &pair, .count = 1 } };
+    const before = fixture.synced;
+    Settings.completed(owner, &saved);
+    try std.testing.expectEqual(before + 1, fixture.synced);
+    try std.testing.expectEqualStrings(fields[0], fixture.sync_key[0..fixture.sync_key_len]);
+    try std.testing.expect(owner.stored.tools[0].?.eql(tool));
+    fixture.fail_update = true;
+    owner.render();
+    Settings.onCommand(owner, 7, abi.view(commands[1]));
+    try std.testing.expectEqual(@as(usize, 2), fixture.calls);
+}
+
+test "picker callback rejects stale request and only fills a matching candidate" {
+    const folder = if (builtin.os.tag == .windows) "C:\\tools" else "/tools";
+    const expected = if (builtin.os.tag == .windows) "C:\\tools\\jj.exe" else "/tools/jj";
+    var fixture: SettingsFixture = .{ .input = expected };
+    const owner = try std.testing.allocator.create(Settings);
+    defer std.testing.allocator.destroy(owner);
+    owner.* = .{
+        .host = undefined,
+        .user = &fixture,
+        .current = &SettingsFixture.current,
+        .updated = &SettingsFixture.updated,
+        .active = true,
+        .page = 7,
+        .picker_request = 22,
+        .picker_index = 1,
+        .panel = .{ .id = 7, .table = .{ .context = &fixture, .update = &SettingsFixture.update, .set_states = &SettingsFixture.setStates } },
+    };
+    const values = [_]abi.StringView{abi.view(folder)};
+    var reply: pickers.Result = .{ .size = @sizeOf(pickers.Result), .outcome = pickers.accepted, .request_id = 21, .filter_index = 0, .path_count = 1, .paths = &values, .selected_id = .{}, .@"error" = .{} };
+    Settings.pickerCompleted(owner, &reply);
+    try std.testing.expectEqual(@as(u64, 22), owner.picker_request);
+    try std.testing.expectEqual(@as(usize, 0), fixture.synced);
+    reply.request_id = 22;
+    Settings.pickerCompleted(owner, &reply);
+    try std.testing.expectEqual(@as(u64, 0), owner.picker_request);
+    try std.testing.expectEqualStrings(fields[1], fixture.sync_key[0..fixture.sync_key_len]);
+    try std.testing.expectEqual(Status.picker_candidate, owner.status);
+    try std.testing.expectEqual(@as(usize, 0), fixture.calls);
+    owner.picker_request = 23;
+    reply.request_id = 23;
+    reply.outcome = pickers.cancelled;
+    Settings.pickerCompleted(owner, &reply);
+    try std.testing.expectEqual(Status.picker_cancel, owner.status);
+    try std.testing.expectEqual(@as(usize, 1), fixture.synced);
 }
