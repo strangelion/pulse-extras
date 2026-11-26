@@ -82,6 +82,28 @@ jobs:
             Write-Host "::endgroup::"
             if ($status -ne 0) { exit $status }
           }
+      - name: Shared Windows native primitives and isolated crash fixtures
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 6
+        run: |
+          New-Item -ItemType Directory -Path zig-out/shared-fixture -Force | Out-Null
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/fs/private_root_win32.c tests/shared/private_root_win32_test.c -ladvapi32 -o zig-out/shared-fixture/private-root-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/shared-fixture/private-root-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/process/image_win32.c shared/process/job_win32.c shared/network/https_win32.c tests/shared/native_primitives_win32_test.c -lwinhttp -luser32 -o zig-out/shared-fixture/native-primitives-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/shared-fixture/native-primitives-test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu -c shared/diagnostics/store_win32.c -o zig-out/shared-fixture/diagnostic-store.o
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu tests/shared/crash_fixture_win32.c -o zig-out/shared-fixture/pulse-shared-crash-fixture.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/diagnostics/crash_win32.c tests/shared/crash_collector_win32.c -lshell32 -ladvapi32 -o zig-out/shared-fixture/pulse-shared-crash-capture.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/shared/test_crash_capture.py zig-out/shared-fixture/pulse-shared-crash-capture.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install pinned Jujutsu CLI
         run: python scripts/ci_vcs.py jj
       - name: Check Git and JJ tools

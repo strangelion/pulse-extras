@@ -21,7 +21,7 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
-    all: [35]std.Build.Module.Import = undefined,
+    all: [36]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
@@ -88,6 +88,15 @@ const Modules = struct {
                 .{ .name = "pulse_raw", .module = raw },
                 .{ .name = "pulse_abi", .module = abi },
                 .{ .name = "pulse_host", .module = host },
+            },
+        });
+        const task_progress = b.createModule(.{
+            .root_source_file = b.path("shared/pulse/task_progress.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pulse_raw", .module = raw },
+                .{ .name = "pulse_abi", .module = abi },
             },
         });
         const pickers = b.createModule(.{
@@ -300,6 +309,7 @@ const Modules = struct {
             .{ .name = "pulse_commands", .module = commands },
             .{ .name = "pulse_context", .module = context_mod },
             .{ .name = "pulse_async_host", .module = async_host },
+            .{ .name = "pulse_task_progress", .module = task_progress },
             .{ .name = "pulse_pickers", .module = pickers },
             .{ .name = "pulse_dialogs_v2", .module = dialogs_v2 },
             .{ .name = "pulse_ui_model", .module = ui_model },
@@ -404,6 +414,7 @@ pub fn build(b: *std.Build) void {
         "shared/pulse/commands.zig",
         "shared/pulse/context.zig",
         "shared/pulse/async_host.zig",
+        "shared/pulse/task_progress.zig",
         "shared/pulse/pickers_compat.zig",
         "shared/pulse/dialogs_v2_compat.zig",
         "shared/pulse/ui_model.zig",

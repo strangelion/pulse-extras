@@ -411,3 +411,45 @@ no new host behavior or mixed-extension compatibility is certified by this
 extraction. Do not replace product-specific filesystem authorization,
 supervisor or process policies until the existing acceptance cases pass and
 the common primitive's ownership/error contract is independently reviewed.
+
+### Shared foundation extraction — remaining reusable primitives
+
+The second batch extracts the existing Companion diagnostic backend and menu
+helpers, the private-root lease (fixed trusted product namespace), native
+pinned-image verification, Job Object configuration/drain, bounded HTTPS
+transport, additive task-progress ABI, and common official staging/evidence
+helpers. These are independent source modules with no service, global allocator,
+shared authorization record, or shared DLL. Native modules use the existing
+x64 GNU Windows fixture lane; no product-specific native launch, policy,
+or configuration format is replaced in this branch.
+
+| Module | Existing consumer to migrate after verification | Ownership / boundary |
+| --- | --- | --- |
+| shared/fs/private_root_win32.* | Companion root lease; future private product stores | Caller-approved parent and fixed namespace, exact DACL, exclusive lock; not arbitrary user directories |
+| shared/process/image_win32.* | Companion Supervisor native pin/hash | Caller-owned handle and independent executable/dependency approval; not a sandbox |
+| shared/process/job_win32.* | Companion supervisor/collector | Existing Zig Runner retains its own equivalent Job Object path until common ABI/cancellation tests prove parity |
+| shared/network/https_win32.* | Companion market HTTP adapter | Keep OpenPets origin, path, kind and size policies at call site; no arbitrary URL admission |
+| shared/diagnostics/crash_win32.*, store_win32.* | Companion diagnostic collectors | Out-of-process opt-in only; private lease; never attach to real host |
+| shared/pulse/menu_win32.h, task_progress.zig | Companion menu and task report | Optional ABI; no private UI hooks; caller owns strings and callbacks |
+| scripts/package_common.py | Companion and VCS official staging scripts | Exact member hashes, explicit trusted tool and fresh private output; no signing/install/release |
+
+Local integration: merge the verified foundation into a disposable integration
+worktree; preserve both product branch implementations until their existing
+tests and exact-package host acceptance are rerun. Resolve duplicate files by
+comparing contracts and preserving every product-specific gate. Migrate one
+call site at a time, not via search-and-replace of error enums. VCS's strict
+ancestor/ACL audit and Git/DPAPI grant remain product policy; do not replace
+them with the private-root check. Companion's install/recovery journal, IPC,
+startup handshake, image cache and long-lived runtime stay product-specific.
+The HTTPS helper fixes Content-Length arithmetic, but no live network
+acceptance is claimed. New native checks exercise lease, empty job, own test
+image, canceled/invalid network admission and menu escaping; synthetic crash
+checks use a disposable fixture only. Diagnostic store compilation does not
+prove managed dump retention; keep existing managed-crash tests mandatory in
+the Companion lane. The common staging adapter is developer-only, not an
+untrusted process runner; it relies on the official author tool and does not
+claim package installation. Actual source/build provenance and exact archive
+reuse checks in Companion must remain intact. No production release changes.
+
+Status: candidate, NOT VERIFIED until current full CI and affected product
+host acceptance. Do not treat common-module tests as proof of product migration.

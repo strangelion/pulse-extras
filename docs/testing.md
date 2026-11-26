@@ -69,3 +69,14 @@ RT0 non-host candidate tests: Windows job ABI/layout, suspended child capture an
 See [Shared Runtime host acceptance](shared-runtime-host-acceptance.md) for the deferred NOT VERIFIED matrix. The merge gate is current full CI on Windows/Ubuntu; a green ancestor is not sufficient. Added tests for owned approval, bounded diagnostic export and quota-aware session rotation. Crash-safe recovery remains a separate non-host gate; no automatic scan/delete on prefix.
 
 Windows CI 45453154189 was canceled in the aggregate test step after ~29m40s; Ubuntu passed 129/131 (two platform skips). Isolated Windows Job Object tests now precede the full suite with test-name and phase output and a 4-minute step deadline. The full suite remains mandatory and has its own 15-minute deadline. Do not ignore a hang or skip the backend tests to merge. Phase markers are test-only.
+
+### Shared foundation candidate checks
+
+The existing full Windows/Linux regression includes shared SDK and runtime
+modules and Python package helper tests. Windows additionally compiles/runs
+the shared private-root and native-primitives fixtures and a synthetic sibling
+crash collector; managed dump storage is compile-checked here and retains its
+product integration test in the Companion branch. No live network, Pulse
+host, user approval store or user data is used by these shared tests.
+The same Regression gate remains mandatory. Do not mark product migration,
+real-host resource/drain behavior, or formal release as passed on this basis.
