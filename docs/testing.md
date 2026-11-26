@@ -80,3 +80,74 @@ product integration test in the Companion branch. No live network, Pulse
 host, user approval store or user data is used by these shared tests.
 The same Regression gate remains mandatory. Do not mark product migration,
 real-host resource/drain behavior, or formal release as passed on this basis.
+
+## Mandatory Zig safety review
+
+The existing Regression gate includes a dependency-free lexical safety
+inventory on the Linux code-check lane (`python scripts/safety_audit.py`).
+Both OS lanes run its Python regression tests. It checks handwritten Zig
+under build.zig, shared, extensions and tests; generated SDK declarations
+under shared/pulse/raw are covered by the existing binding checks instead.
+The inventory rejects explicit @setRuntimeSafety overrides other than
+literal true. No broad baseline or silent suppression is used. It reports
+potentially risky constructs (optional force unwrap, pointer dereference,
+C pointer types, casts, undefined, unreachable, empty error handlers,
+truncation and memory copy) as REVIEW, not automatic defects. It is not an
+AST, control-flow, alias, lifetime or data-race analyzer. A green scan is
+not evidence that the code has no null pointers or other memory bugs.
+
+### Local review before integration (required for handwritten native changes)
+
+Run `python scripts/safety_audit.py --details` and review relevant findings
+against the change diff, including existing callers. For every changed
+risky operation record its concrete invariant, owner and failure path in
+the review/PR or existing acceptance report; do not blanket-suppress findings.
+An independent review pass must inspect the following, not merely rerun the
+compiler:
+
+- Null and ABI: check C/optional pointers and callbacks before dereference;
+  distinguish null from INVALID_HANDLE_VALUE for the actual Win32 API.
+  Check ABI size/version before tail fields, bounds and alignment before
+  casts, integer conversion, pointer/length consistency and borrowed views.
+  An arbitrary non-null foreign address cannot be proven readable by a
+  lexical check. Never use IsBadReadPtr as a safety guarantee.
+- Ownership: identify allocator, allocation/free pair, handle close owner,
+  borrowed scope, stable address, partial-init unwind and error rollback.
+  No cross-DLL allocator ownership without a documented ABI.
+- Concurrency and unload: prove callback userdata remains live through
+  cancellation/drain/release; distinguish cancellation request from join,
+  test early and late callbacks, stale generations, reentrancy, repeated
+  stop/destroy and unload. Do not assume an extension can veto host unload.
+- Resource and errors: retain raw/native failure information and unresolved
+  ownership; prove memory/handle/process/file cleanup and quota arithmetic.
+  No arbitrary catch-unreachable or swallowed cleanup errors.
+
+Add focused tests for touched boundaries: null/nonzero-length views, missing
+optional tables and callbacks, malformed/short ABI data, invalid IDs/handles,
+allocation failure (using the pinned std testing facilities), partial-init
+failure, cancellation and release races, cleanup failure and repeated lifecycle.
+Exercise the actual native C ABI and isolated host fixture where applicable.
+No test that intentionally crashes or corrupts a user's real Pulse host.
+The Debug test suite and ReleaseSafe DLL build remain required; the latter
+alone is not a ReleaseSafe runtime test.
+
+### Additional local analysis tools
+
+ZLS, ZLint, Zwanzig and any optional compiler analysis must first be proven
+compatible with the exact repository Zig pin. ZLS is an editor diagnostic
+tool, not a lifetime verifier. Use available compatible lint/control-flow
+analysis for native changes, and Clang Static Analyzer for C code. Record
+version, target, invocation, findings and limitations; if unavailable or
+incompatible, report BLOCKED/UNSUPPORTED, not PASS. Do not downgrade Zig
+or install unreviewed binaries simply to run a tool.
+
+Use ASan/UBSan for supported instrumented C/native fixtures, TSan for
+supported concurrency fixtures, and fuzz bounded parsers/IPC/ZIP/JSON
+with synthetic inputs and resource caps. Verify support against the
+actual compiler and target; these are not unconditional Windows DLL flags.
+Use Application Verifier (heap/handle checks) and WinDbg on an isolated
+Windows test process, and real Pulse lifecycle acceptance in an isolated
+profile/user where necessary. Keep crash dumps local and test instrumentation
+out of shipping DLLs. Do not claim an unexecuted analysis passed.
+Promote reproducible, pinned, measured checks into the existing CI only
+after compatibility and false-positive review; do not bypass existing gates.
