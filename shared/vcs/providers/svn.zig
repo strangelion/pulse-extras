@@ -30,31 +30,161 @@ pub fn parseRevision(text: []const u8) ?identity.RevisionId {
     return identity.RevisionId.init(.svn, trimmed) catch null;
 }
 
-/// Counts `wc-status` items. Subversion's XML is the machine format; only the
-/// attribute values this provider reports are inspected, so no general XML
-/// parser (and no external entity handling) is involved.
-pub fn countStatus(xml: []const u8, changes: *contract.Changes) void {
-    changes.modified += countItem(xml, "modified");
-    // SVN schedules changes in its working copy; it has no Git staging index.
-    changes.modified += countItem(xml, "added") + countItem(xml, "replaced");
-    changes.untracked += countItem(xml, "unversioned");
-    changes.conflicted += countItem(xml, "conflicted") + @as(u32, @intCast(std.mem.count(u8, xml, "tree-conflicted=\"true\"")));
-    changes.modified += countItem(xml, "deleted") + countItem(xml, "missing");
+const XmlError = error{Malformed};
+
+fn space(byte: u8) bool {
+    return std.mem.indexOfScalar(u8, " \t\r\n", byte) != null;
 }
 
-fn countItem(xml: []const u8, item: []const u8) u32 {
-    var needle_buffer: [64]u8 = undefined;
-    const needle = std.fmt.bufPrint(&needle_buffer, "item=\"{s}\"", .{item}) catch return 0;
-    return @intCast(std.mem.count(u8, xml, needle));
+fn nameByte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == ':' or byte == '.';
+}
+
+fn skipSpace(xml: []const u8, index: *usize) void {
+    while (index.* < xml.len and space(xml[index.*])) : (index.* += 1) {}
+}
+
+fn readName(xml: []const u8, index: *usize) XmlError![]const u8 {
+    const start = index.*;
+    while (index.* < xml.len and nameByte(xml[index.*])) : (index.* += 1) {}
+    if (index.* == start) return error.Malformed;
+    return xml[start..index.*];
+}
+
+fn eq(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
+/// Local svn status XML only. Bound depth and bytes, match start/end tags,
+/// inspect attributes only on entry/wc-status, reject declarations/entities
+/// other than the optional initial XML declaration. Never resolve entities.
+/// Commit/author and unrelated attributes are not interpreted. Transactional:
+/// malformed output leaves the caller's counts unchanged.
+pub fn countStatus(xml: []const u8, changes: *contract.Changes) XmlError!void {
+    if (xml.len > limit or !std.unicode.utf8ValidateSlice(xml) or std.mem.indexOfScalar(u8, xml, 0) != null) return error.Malformed;
+    var parsed: contract.Changes = .{};
+    var stack: [16][]const u8 = undefined;
+    var depth: usize = 0;
+    var seen_root = false;
+    var seen_entry_status = false;
+    var index: usize = 0;
+    skipSpace(xml, &index);
+    if (std.mem.startsWith(u8, xml[index..], "<?xml ")) {
+        const end = std.mem.indexOf(u8, xml[index..], "?>") orelse return error.Malformed;
+        index += end + 2;
+    }
+    while (index < xml.len) {
+        if (xml[index] != '<') {
+            if (depth == 0 and !space(xml[index])) return error.Malformed;
+            index += 1;
+            continue;
+        }
+        index += 1;
+        if (index >= xml.len) return error.Malformed;
+        if (xml[index] == '/') {
+            index += 1;
+            const tag = try readName(xml, &index);
+            skipSpace(xml, &index);
+            if (depth == 0 or !eq(stack[depth - 1], tag) or index >= xml.len or xml[index] != '>') return error.Malformed;
+            if (eq(tag, "entry") and !seen_entry_status) return error.Malformed;
+            depth -= 1;
+            index += 1;
+            continue;
+        }
+        const tag = try readName(xml, &index);
+        if (depth == 0) {
+            if (seen_root or !eq(tag, "status")) return error.Malformed;
+            seen_root = true;
+        }
+        const entry = eq(tag, "entry");
+        const wc_status = eq(tag, "wc-status");
+        if (entry) {
+            if (depth == 0 or (!eq(stack[depth - 1], "target") and !eq(stack[depth - 1], "changelist"))) return error.Malformed;
+            seen_entry_status = false;
+        }
+        if (wc_status and (depth == 0 or !eq(stack[depth - 1], "entry") or seen_entry_status)) return error.Malformed;
+        var item: ?[]const u8 = null;
+        var props: ?[]const u8 = null;
+        var tree_conflict: ?[]const u8 = null;
+        var closed = false;
+        while (true) {
+            skipSpace(xml, &index);
+            if (index >= xml.len) return error.Malformed;
+            if (xml[index] == '>') {
+                index += 1;
+                break;
+            }
+            if (xml[index] == '/') {
+                index += 1;
+                if (index >= xml.len or xml[index] != '>') return error.Malformed;
+                index += 1;
+                closed = true;
+                break;
+            }
+            const key = try readName(xml, &index);
+            skipSpace(xml, &index);
+            if (index >= xml.len or xml[index] != '=') return error.Malformed;
+            index += 1;
+            skipSpace(xml, &index);
+            if (index >= xml.len or (xml[index] != '"' and xml[index] != '\'')) return error.Malformed;
+            const quote = xml[index];
+            index += 1;
+            const start = index;
+            while (index < xml.len and xml[index] != quote) : (index += 1) {
+                if (xml[index] == '<') return error.Malformed;
+            }
+            if (index >= xml.len) return error.Malformed;
+            const value = xml[start..index];
+            index += 1;
+            if (!wc_status) continue;
+            const slot = if (eq(key, "item")) &item else if (eq(key, "props")) &props else if (eq(key, "tree-conflicted")) &tree_conflict else continue;
+            if (slot.* != null) return error.Malformed;
+            slot.* = value;
+        }
+        if (wc_status) {
+            const state = item orelse return error.Malformed;
+            const property = props orelse return error.Malformed;
+            const tree = tree_conflict orelse "false";
+            if (!eq(tree, "true") and !eq(tree, "false")) return error.Malformed;
+            const conflict = eq(state, "conflicted") or eq(property, "conflicted") or eq(tree, "true");
+            if (!eq(property, "none") and !eq(property, "normal") and !eq(property, "modified") and !eq(property, "conflicted")) return error.Malformed;
+            const changed = eq(state, "modified") or eq(state, "added") or eq(state, "replaced") or eq(state, "deleted") or eq(state, "missing") or eq(state, "obstructed") or eq(state, "incomplete");
+            if (!changed and !eq(state, "conflicted") and !eq(state, "unversioned") and !eq(state, "ignored") and !eq(state, "external") and !eq(state, "normal") and !eq(state, "none")) return error.Malformed;
+            if (conflict) {
+                parsed.conflicted += 1;
+            } else if (eq(state, "unversioned")) {
+                parsed.untracked += 1;
+            } else if (changed or eq(property, "modified")) {
+                parsed.modified += 1;
+            }
+            seen_entry_status = true;
+        }
+        if (closed) {
+            if (entry) return error.Malformed;
+        } else {
+            if (depth == stack.len) return error.Malformed;
+            stack[depth] = tag;
+            depth += 1;
+        }
+    }
+    if (!seen_root or depth != 0) return error.Malformed;
+    changes.* = parsed;
 }
 
 pub const Svn = struct {
     runner: *run.Runner,
     executable: identity.Path,
     probe: detect.Probe,
+    execution: cli.Execution = .compatibility,
 
     pub fn init(runner: *run.Runner, executable: identity.Path, probe: detect.Probe) Svn {
         return .{ .runner = runner, .executable = executable, .probe = probe };
+    }
+
+    /// Caller keeps approved Runner and environment alive through session join.
+    pub fn initApproved(runner: *run.Runner, executable: identity.Path, probe: detect.Probe, execution: cli.Execution) error{UnapprovedExecutable}!Svn {
+        if (execution != .approved or runner.policy != .approved_local) return error.UnapprovedExecutable;
+        return .{ .runner = runner, .executable = executable, .probe = probe, .execution = execution };
     }
 
     pub fn provider(self: *Svn) contract.Provider {
@@ -93,13 +223,22 @@ pub const Svn = struct {
             });
             defer status_outcome.deinit();
             if (!status_outcome.succeeded()) return mapFailure(status_outcome.stderr);
-            countStatus(status_outcome.stdout, &snapshot.changes);
+            countStatus(status_outcome.stdout, &snapshot.changes) catch return error.Parse;
         }
+        snapshot.counts = .{
+            .staged = .unsupported,
+            .modified = .ready,
+            .untracked = .ready,
+            .conflicted = .ready,
+            .ahead = .unsupported,
+            .behind = .unsupported,
+        };
+        snapshot.has_conflict = snapshot.changes.conflicted != 0;
         return snapshot;
     }
 
     fn query(self: *Svn, argv: []const []const u8) contract.Error!run.Outcome {
-        return self.runner.run(.{
+        return self.execution.execute(self.runner, .{
             .argv = argv,
             .timeout_ns = 15 * std.time.ns_per_s,
             .stdout_limit = limit,
@@ -169,11 +308,11 @@ test "counts status items from svn xml" {
         "</target>\n</status>\n";
 
     var changes = contract.Changes{};
-    countStatus(xml, &changes);
+    try countStatus(xml, &changes);
     try std.testing.expectEqual(@as(u32, 0), changes.staged);
     try std.testing.expectEqual(@as(u32, 3), changes.modified);
     try std.testing.expectEqual(@as(u32, 1), changes.untracked);
-    try std.testing.expectEqual(@as(u32, 2), changes.conflicted);
+    try std.testing.expectEqual(@as(u32, 1), changes.conflicted);
 }
 
 test "revision text is normalised and validated" {
@@ -238,4 +377,25 @@ test "reads a real local SVN working copy prepared by integration CI" {
 
 fn testSessionClock() i64 {
     return 1000;
+}
+
+test "SVN counts property changes and ignores misleading attributes" {
+    var changes: contract.Changes = .{};
+    try countStatus("<status><target path='item=&quot;modified&quot;'><entry path='a'><wc-status item='normal' props='modified'/></entry><entry path='b'><wc-status item='conflicted' props='conflicted' tree-conflicted='true'/></entry></target></status>", &changes);
+    try std.testing.expectEqual(@as(u32, 1), changes.modified);
+    try std.testing.expectEqual(@as(u32, 1), changes.conflicted);
+}
+
+test "malformed SVN output is rejected without publishing partial counts" {
+    var changes: contract.Changes = .{ .modified = 17 };
+    for ([_][]const u8{
+        "<!DOCTYPE status SYSTEM 'file:///not-read'><status/>",
+        "<status><target><entry><wc-status item='modified' props='none'/></entry></target>",
+        "<status><target><entry><wc-status item='unknown' props='none'/></entry></target></status>",
+        "<status><target><entry><wc-status item='normal' item='modified' props='none'/></entry></target></status>",
+        "<status><wc-status item='modified' props='none'/></status>",
+    }) |fixture| {
+        try std.testing.expectError(error.Malformed, countStatus(fixture, &changes));
+        try std.testing.expectEqual(@as(u32, 17), changes.modified);
+    }
 }

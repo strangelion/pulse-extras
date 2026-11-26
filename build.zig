@@ -21,7 +21,7 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
-    all: [36]std.Build.Module.Import = undefined,
+    all: [40]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
@@ -256,6 +256,37 @@ const Modules = struct {
                 .{ .name = "vcs_detect", .module = vcs_detect },
             },
         });
+        const vcs_panel = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/panel.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_provider", .module = vcs_provider },
+                .{ .name = "vcs_session", .module = vcs_session },
+                .{ .name = "vcs_capabilities", .module = vcs_capabilities },
+                .{ .name = "vcs_detect", .module = vcs_detect },
+                .{ .name = "pulse_abi", .module = abi },
+                .{ .name = "pulse_ui_model", .module = ui_model },
+            },
+        });
+        const vcs_host_query = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/host_query.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pulse_abi", .module = abi },
+                .{ .name = "pulse_host", .module = host },
+                .{ .name = "pulse_context", .module = context_mod },
+                .{ .name = "pulse_async_host", .module = async_host },
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_provider", .module = vcs_provider },
+                .{ .name = "vcs_panel", .module = vcs_panel },
+                .{ .name = "pulse_ui_model", .module = ui_model },
+                .{ .name = "vcs_capabilities", .module = vcs_capabilities },
+                .{ .name = "vcs_detect", .module = vcs_detect },
+            },
+        });
         const vcs_git = b.createModule(.{
             .root_source_file = b.path("shared/vcs/providers/git.zig"),
             .target = target,
@@ -267,6 +298,8 @@ const Modules = struct {
                 .{ .name = "vcs_identity", .module = vcs_identity },
                 .{ .name = "vcs_provider", .module = vcs_provider },
                 .{ .name = "vcs_session", .module = vcs_session },
+                .{ .name = "vcs_panel", .module = vcs_panel },
+                .{ .name = "pulse_ui_model", .module = ui_model },
                 .{ .name = "pulse_process", .module = process_mod },
                 .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
@@ -299,6 +332,34 @@ const Modules = struct {
                 .{ .name = "vcs_session", .module = vcs_session },
                 .{ .name = "pulse_process", .module = process_mod },
                 .{ .name = "vcs_test_config", .module = vcs_test_config },
+            },
+        });
+        const vcs_approval = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/approval.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_detect", .module = vcs_detect },
+                .{ .name = "vcs_provider", .module = vcs_provider },
+                .{ .name = "vcs_cli", .module = vcs_cli },
+                .{ .name = "vcs_git", .module = vcs_git },
+                .{ .name = "vcs_host_query", .module = vcs_host_query },
+                .{ .name = "pulse_process", .module = process_mod },
+                .{ .name = "process_trust", .module = process_trust },
+                .{ .name = "vcs_test_config", .module = vcs_test_config },
+                .{ .name = "pulse_async_host", .module = async_host },
+                .{ .name = "pulse_abi", .module = abi },
+            },
+        });
+        const vcs_windows_evidence = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/windows_evidence.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_approval", .module = vcs_approval },
+                .{ .name = "vcs_provider", .module = vcs_provider },
             },
         });
         var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod, .vcs_capabilities = vcs_capabilities, .vcs_identity = vcs_identity, .vcs_risk = vcs_risk, .vcs_detect = vcs_detect, .vcs_provider = vcs_provider, .vcs_cli = vcs_cli, .vcs_snapshot = vcs_snapshot, .vcs_git = vcs_git, .vcs_jj = vcs_jj, .vcs_svn = vcs_svn };
@@ -335,7 +396,11 @@ const Modules = struct {
             .{ .name = "vcs_cli", .module = vcs_cli },
             .{ .name = "vcs_snapshot", .module = vcs_snapshot },
             .{ .name = "vcs_session", .module = vcs_session },
+            .{ .name = "vcs_panel", .module = vcs_panel },
+            .{ .name = "vcs_host_query", .module = vcs_host_query },
             .{ .name = "vcs_git", .module = vcs_git },
+            .{ .name = "vcs_approval", .module = vcs_approval },
+            .{ .name = "vcs_windows_evidence", .module = vcs_windows_evidence },
             .{ .name = "vcs_jj", .module = vcs_jj },
             .{ .name = "vcs_svn", .module = vcs_svn },
             .{ .name = "vcs_test_config", .module = vcs_test_config },
@@ -359,6 +424,7 @@ pub fn build(b: *std.Build) void {
     const vcs_test_options = b.addOptions();
     const environ = &b.graph.environ_map;
     vcs_test_options.addOption([]const u8, "path", environ.get("PATH") orelse "");
+    vcs_test_options.addOption([]const u8, "system_root", environ.get("SystemRoot") orelse environ.get("SYSTEMROOT") orelse "");
     vcs_test_options.addOption(bool, "require_git", std.mem.eql(u8, environ.get("PULSE_REQUIRE_GIT") orelse "", "1"));
     vcs_test_options.addOption(bool, "require_jj", std.mem.eql(u8, environ.get("PULSE_REQUIRE_JJ") orelse "", "1"));
     vcs_test_options.addOption(bool, "require_svn", std.mem.eql(u8, environ.get("PULSE_REQUIRE_SVN") orelse "", "1"));
@@ -390,12 +456,42 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(hello_panel);
 
+    // Optional trusted provisioning implementation compiled into the DLL.
+    // The default is always locked. Never load an arbitrary runtime source.
+    const source_path = b.option([]const u8, "vcs-approval-source", "Trusted reviewed approval provisioning Zig source (relative to repository)") orelse "extensions/vcs-panel/default_source.zig";
+    const native_source = b.createModule(.{
+        .root_source_file = b.path(source_path),
+        .target = target,
+        .optimize = optimize,
+        .imports = dll_modules.imports(),
+    });
+    const vcs_panel_dll = b.addLibrary(.{
+        .name = "pulse_vcs_panel",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("extensions/vcs-panel/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = dll_modules.imports(),
+        }),
+    });
+    vcs_panel_dll.root_module.addImport("vcs_native_source", native_source);
+    b.installArtifact(vcs_panel_dll);
+
     // Every module also runs its own tests on the host target, so the wrappers
     // are checked even when the probe does not use them yet.
     var host_modules = Modules.add(b, b.graph.host, .Debug, vcs_test_config);
+    const locked_source = b.createModule(.{
+        .root_source_file = b.path("extensions/vcs-panel/locked_source.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+        .imports = host_modules.imports(),
+    });
     const test_sources = [_][]const u8{
         "extensions/abi-probe/main.zig",
         "extensions/hello-panel/main.zig",
+        "extensions/vcs-panel/main.zig",
+        "extensions/vcs-panel/default_source.zig",
         "shared/diagnostics/probe_log.zig",
         "shared/process/run.zig",
         "shared/runtime/budget.zig",
@@ -418,6 +514,7 @@ pub fn build(b: *std.Build) void {
         "shared/pulse/pickers_compat.zig",
         "shared/pulse/dialogs_v2_compat.zig",
         "shared/pulse/ui_model.zig",
+        "shared/pulse/async_host.zig",
         "shared/pulse/ui_mount.zig",
         "shared/vcs/capabilities.zig",
         "shared/vcs/identity.zig",
@@ -427,6 +524,10 @@ pub fn build(b: *std.Build) void {
         "shared/vcs/cli.zig",
         "shared/vcs/snapshot.zig",
         "shared/vcs/session.zig",
+        "shared/vcs/panel.zig",
+        "shared/vcs/host_query.zig",
+        "shared/vcs/approval.zig",
+        "shared/vcs/windows_evidence.zig",
         "shared/vcs/providers/git.zig",
         "shared/vcs/providers/jj.zig",
         "shared/vcs/providers/svn.zig",
@@ -441,6 +542,7 @@ pub fn build(b: *std.Build) void {
                 .imports = host_modules.imports(),
             }),
         });
+        if (std.mem.eql(u8, source, "extensions/vcs-panel/main.zig")) unit_tests.root_module.addImport("vcs_native_source", locked_source);
         test_step.dependOn(&b.addRunArtifact(unit_tests).step);
     }
 }

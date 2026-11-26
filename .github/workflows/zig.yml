@@ -143,6 +143,10 @@ jobs:
           if ($dll.Count -ne 1) { throw "Expected one ABI probe DLL" }
           & ./zig-out/abi-loader.exe $dll[0].FullName
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $vcs = @(Get-ChildItem zig-out -Recurse -Filter pulse_vcs_panel.dll)
+          if ($vcs.Count -ne 1) { throw "Expected one locked VCS candidate DLL" }
+          & ./zig-out/abi-loader.exe $vcs[0].FullName locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   gate:
     name: Regression gate

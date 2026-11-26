@@ -56,6 +56,14 @@ pub const Session = struct {
         return admission;
     }
 
+    pub fn hasActive(self: *const Session) bool {
+        return self.slot.running != null;
+    }
+
+    pub fn hasQueued(self: *const Session) bool {
+        return self.slot.queued != null;
+    }
+
     pub fn startNext(self: *Session) error{ Stopped, Busy, ResourceBusy, ConcurrencyUnavailable }!bool {
         return self.slot.startNext();
     }

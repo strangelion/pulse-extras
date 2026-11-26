@@ -31,14 +31,27 @@ pub const Revision = struct {
     conflicted: bool = false,
 };
 
-pub fn parseRevision(text: []const u8) Revision {
-    var revision = Revision{};
+pub fn parseRevision(text: []const u8) error{Malformed}!Revision {
     var fields = std.mem.splitScalar(u8, std.mem.trimEnd(u8, text, "\r\n"), '\t');
-    if (fields.next()) |change| revision.change_id = contract.Text.init(change) catch .{};
-    if (fields.next()) |commit| revision.commit_id = identity.RevisionId.init(.jj, commit) catch null;
-    if (fields.next()) |bookmarks| revision.bookmarks = contract.Text.init(bookmarks) catch .{};
-    if (fields.next()) |conflict| revision.conflicted = std.mem.eql(u8, conflict, "conflict");
-    return revision;
+    const change = fields.next() orelse return error.Malformed;
+    const commit = fields.next() orelse return error.Malformed;
+    const bookmarks = fields.next() orelse return error.Malformed;
+    const conflict = fields.next() orelse return error.Malformed;
+    if (fields.next() != null or change.len == 0 or commit.len != 40) return error.Malformed;
+    for (commit) |byte| {
+        if (!std.ascii.isDigit(byte) and !(byte >= 'a' and byte <= 'f')) return error.Malformed;
+    }
+    if (!std.mem.eql(u8, conflict, "ok") and !std.mem.eql(u8, conflict, "conflict")) return error.Malformed;
+    for (change) |byte| {
+        if (byte < 'a' or byte > 'z') return error.Malformed;
+    }
+    if (std.mem.indexOfAny(u8, bookmarks, "\r\n") != null) return error.Malformed;
+    return .{
+        .change_id = contract.Text.init(change) catch return error.Malformed,
+        .commit_id = identity.RevisionId.init(.jj, commit) catch return error.Malformed,
+        .bookmarks = contract.Text.init(bookmarks) catch return error.Malformed,
+        .conflicted = std.mem.eql(u8, conflict, "conflict"),
+    };
 }
 
 /// `jj diff --summary` lines are `<letter> <path>`; letters are M/A/D/R/C.
@@ -57,9 +70,16 @@ pub const Jj = struct {
     runner: *run.Runner,
     executable: identity.Path,
     probe: detect.Probe,
+    execution: cli.Execution = .compatibility,
 
     pub fn init(runner: *run.Runner, executable: identity.Path, probe: detect.Probe) Jj {
         return .{ .runner = runner, .executable = executable, .probe = probe };
+    }
+
+    /// Caller keeps approved Runner and environment alive through session join.
+    pub fn initApproved(runner: *run.Runner, executable: identity.Path, probe: detect.Probe, execution: cli.Execution) error{UnapprovedExecutable}!Jj {
+        if (execution != .approved or runner.policy != .approved_local) return error.UnapprovedExecutable;
+        return .{ .runner = runner, .executable = executable, .probe = probe, .execution = execution };
     }
 
     pub fn provider(self: *Jj) contract.Provider {
@@ -83,14 +103,22 @@ pub const Jj = struct {
             });
             defer revision_out.deinit();
             if (!revision_out.succeeded()) return mapFailure(revision_out.stderr);
-            const parsed = parseRevision(revision_out.stdout);
+            const parsed = parseRevision(revision_out.stdout) catch return error.Parse;
             if (parsed.commit_id == null or parsed.change_id.slice().len == 0) return error.Parse;
             break :blk parsed;
         };
 
         var diff_out = try self.query(&.{
-            self.executable.slice(), "--ignore-working-copy", "--no-pager", "--color=never",
-            "-R",                    workspace.root.slice(),  "diff",       "--summary",
+            self.executable.slice(),
+            "--ignore-working-copy",
+            "--no-pager",
+            "--color=never",
+            "-R",
+            workspace.root.slice(),
+            "diff",
+            "--summary",
+            "-r",
+            revision.commit_id.?.slice(),
         });
         defer diff_out.deinit();
 
@@ -101,14 +129,22 @@ pub const Jj = struct {
             .detail = contract.Text.init("working copy not snapshotted (read-only query)") catch .{},
         };
         snapshot.reference = if (revision.bookmarks.slice().len != 0) revision.bookmarks else revision.change_id;
-        if (revision.conflicted) snapshot.changes.conflicted = 1;
+        snapshot.has_conflict = revision.conflicted;
+        snapshot.counts = .{
+            .staged = .unsupported,
+            .modified = .ready,
+            .untracked = .not_queried,
+            .conflicted = .unknown,
+            .ahead = .not_queried,
+            .behind = .not_queried,
+        };
         if (!diff_out.succeeded()) return mapFailure(diff_out.stderr);
         countDiff(diff_out.stdout, &snapshot.changes);
         return snapshot;
     }
 
     fn query(self: *Jj, argv: []const []const u8) contract.Error!run.Outcome {
-        return self.runner.run(.{
+        return self.execution.execute(self.runner, .{
             .argv = argv,
             .timeout_ns = 10 * std.time.ns_per_s,
             .stdout_limit = limit,
@@ -165,7 +201,7 @@ fn fakeLookup(_: *anyopaque, _: []const u8) detect.EntryType {
 }
 
 test "parses revision fields with bookmarks and conflict" {
-    const revision = parseRevision("qpvuntsm\t8f3a1c9e2b7d4a6f0c5e8d1b3a7f2c4e9d6b0a1f\tmain feature\tconflict\n");
+    const revision = try parseRevision("qpvuntsm\t8f3a1c9e2b7d4a6f0c5e8d1b3a7f2c4e9d6b0a1f\tmain feature\tconflict\n");
     try std.testing.expect(revision.change_id.eql("qpvuntsm"));
     try std.testing.expect(revision.bookmarks.eql("main feature"));
     try std.testing.expect(revision.conflicted);
@@ -173,7 +209,7 @@ test "parses revision fields with bookmarks and conflict" {
 }
 
 test "missing bookmark leaves an empty reference" {
-    const revision = parseRevision("abc\tdef\t\tok\n");
+    const revision = try parseRevision("abc\t1111111111111111111111111111111111111111\t\tok\n");
     try std.testing.expectEqual(@as(usize, 0), revision.bookmarks.slice().len);
     try std.testing.expect(!revision.conflicted);
 }
@@ -242,4 +278,10 @@ test "reads a real jj repository without creating snapshots" {
 
 fn testSessionClock() i64 {
     return 1000;
+}
+
+test "revision parser rejects missing unknown or extra fields" {
+    try std.testing.expectError(error.Malformed, parseRevision("abc\tdef\t\tok"));
+    try std.testing.expectError(error.Malformed, parseRevision("abc\t1111111111111111111111111111111111111111\t\tmaybe"));
+    try std.testing.expectError(error.Malformed, parseRevision("abc\t1111111111111111111111111111111111111111\t\tok\textra"));
 }

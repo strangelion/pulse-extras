@@ -1,6 +1,7 @@
 //! CLI discovery and version detection.
 //!
-//! Providers never guess: a tool is usable only when its executable is on
+//! Compatibility discovery for fixtures is not an approval boundary.
+//! Legacy helpers consider a tool usable when its executable is on
 //! `PATH`, it starts, and its version parses. Detection runs the tool with
 //! `--version` (no repository is touched) and is meant for a worker thread.
 
@@ -36,6 +37,106 @@ pub const Tool = enum {
         };
     }
 };
+
+/// Independent command admission before process spawn. Keep context stable
+/// through worker terminal release.
+pub const Gate = struct {
+    ctx: *anyopaque,
+    check: *const fn (*anyopaque, *run.Runner, run.Request) run.Error!void,
+};
+
+/// Borrowed profile, alive until session joins. Never downgrade approval.
+pub const Execution = union(enum) {
+    compatibility,
+    approved: struct {
+        cwd: identity.Path,
+        environment: *const std.process.Environ.Map,
+        gate: ?Gate = null,
+    },
+
+    pub fn execute(self: *const Execution, runner: *run.Runner, request: run.Request) run.Error!run.Outcome {
+        switch (self.*) {
+            .compatibility => return runner.run(request),
+            .approved => |*profile| {
+                if (runner.policy != .approved_local) return error.UnapprovedExecutable;
+                if (builtin.os.tag == .windows and runner.tree_policy != .windows_job) return error.ContainmentUnavailable;
+                var controlled = request;
+                controlled.cwd = profile.cwd.slice();
+                controlled.environ_map = profile.environment;
+                if (profile.gate) |gate| try gate.check(gate.ctx, runner, controlled);
+                return runner.run(controlled);
+            },
+        }
+    }
+};
+
+/// Lexical check only, not ACL or canonical identity verification.
+pub fn candidatePath(path: []const u8) bool {
+    if (path.len == 0 or path.len > identity.max_path_bytes or std.mem.indexOfScalar(u8, path, 0) != null) return false;
+    if (builtin.os.tag == .windows) {
+        if (path.len < 3 or !std.ascii.isAlphabetic(path[0]) or path[1] != ':' or (path[2] != '\\' and path[2] != '/')) return false;
+        if (std.mem.indexOfScalar(u8, path[2..], ':') != null) return false;
+    } else if (path[0] != '/') return false;
+    var components = std.mem.tokenizeAny(u8, path, if (builtin.os.tag == .windows) "/\\" else "/");
+    while (components.next()) |part| {
+        if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return false;
+    }
+    return true;
+}
+
+/// Candidate discovery is non-executing and never grants approval.
+pub fn locateCandidate(io: std.Io, tool: Tool, path_value: []const u8, scratch: []u8) ?identity.Path {
+    if (path_value.len > 64 * 1024) return null;
+    var entries = std.mem.splitScalar(u8, path_value, std.fs.path.delimiter);
+    for (0..128) |_| {
+        const raw = entries.next() orelse return null;
+        const directory = std.mem.trim(u8, raw, " \t\"");
+        if (!candidatePath(directory)) continue;
+        const candidate = std.fmt.bufPrint(scratch, "{s}" ++ std.fs.path.sep_str ++ "{s}", .{
+            std.mem.trimEnd(u8, directory, std.fs.path.sep_str),
+            tool.exeName(),
+        }) catch continue;
+        std.Io.Dir.cwd().access(io, candidate, .{ .execute = true }) catch continue;
+        return identity.Path.init(candidate) catch continue;
+    }
+    return null;
+}
+
+pub fn minimumVersion(tool: Tool) ?Version {
+    return switch (tool) {
+        .git => .{ .major = 2, .minor = 31 },
+        .jj => .{ .major = 0, .minor = 46 },
+        .svn => .{ .major = 1, .minor = 14 },
+        else => null,
+    };
+}
+
+pub const ProbeError = run.Error || error{ UnsupportedTool, UnsupportedVersion, InvalidVersion };
+
+/// Require an independently approved executable and controlled environment.
+/// Caller must establish installation trust before configuring the Runner.
+pub fn probeApproved(tool: Tool, path: *const identity.Path, execution: *const Execution, runner: *run.Runner) ProbeError!Report {
+    const minimum = minimumVersion(tool) orelse return error.UnsupportedTool;
+    if (execution.* != .approved or !candidatePath(path.slice())) return error.UnapprovedExecutable;
+    var outcome = try execution.execute(runner, .{
+        .argv = &.{ path.slice(), "--version" },
+        .timeout_ns = 3 * std.time.ns_per_s,
+        .stdout_limit = 4096,
+        .stderr_limit = 4096,
+    });
+    defer outcome.deinit();
+    if (!outcome.succeeded()) return error.InvalidVersion;
+    const line_end = std.mem.indexOfScalar(u8, outcome.stdout, '\n') orelse outcome.stdout.len;
+    const line = std.mem.trim(u8, outcome.stdout[0..line_end], " \r\t");
+    const version = parseVersion(tool, line) orelse return error.InvalidVersion;
+    if (!version.atLeast(minimum)) return error.UnsupportedVersion;
+    var report: Report = .{ .tool = tool, .path = path.*, .version = version };
+    if (line.len <= report.line.len and std.unicode.utf8ValidateSlice(line) and std.mem.indexOfScalar(u8, line, 0) == null) {
+        @memcpy(report.line[0..line.len], line);
+        report.line_len = @intCast(line.len);
+    }
+    return report;
+}
 
 pub const Version = struct {
     major: u32,
@@ -210,4 +311,35 @@ pub fn integrationUnavailable(tool: Tool) error{ SkipZigTest, RequiredVcsUnavail
         else => false,
     };
     return if (required) error.RequiredVcsUnavailable else error.SkipZigTest;
+}
+
+test "candidate discovery rejects relative paths and traversal" {
+    try std.testing.expect(!candidatePath("."));
+    try std.testing.expect(!candidatePath("relative"));
+    if (builtin.os.tag == .windows) {
+        try std.testing.expect(candidatePath("C:\\Program Files\\Git\\bin"));
+        try std.testing.expect(!candidatePath("C:relative"));
+        try std.testing.expect(!candidatePath("\\\\server\\share"));
+        try std.testing.expect(!candidatePath("C:\\tools\\..\\bin"));
+        try std.testing.expect(!candidatePath("C:\\tools:stream"));
+    } else {
+        try std.testing.expect(candidatePath("/usr/bin"));
+        try std.testing.expect(!candidatePath("/tmp/../usr/bin"));
+    }
+    var scratch: [4096]u8 = undefined;
+    try std.testing.expect(locateCandidate(std.testing.io, .git, ".", &scratch) == null);
+}
+
+test "approved probe refuses compatibility runner and unsupported tools" {
+    var runner = run.Runner.init(std.testing.allocator, std.testing.io);
+    var environment = std.process.Environ.Map.init(std.testing.allocator);
+    defer environment.deinit();
+    const cwd = try identity.Path.init(if (builtin.os.tag == .windows) "C:\\trusted" else "/trusted");
+    const path = try identity.Path.init(if (builtin.os.tag == .windows) "C:\\trusted\\git.exe" else "/trusted/git");
+    const execution: Execution = .{ .approved = .{ .cwd = cwd, .environment = &environment } };
+    try std.testing.expectError(error.UnapprovedExecutable, probeApproved(.git, &path, &execution, &runner));
+    const compatibility: Execution = .compatibility;
+    try std.testing.expectError(error.UnapprovedExecutable, probeApproved(.git, &path, &compatibility, &runner));
+    try std.testing.expectError(error.UnsupportedTool, probeApproved(.p4, &path, &execution, &runner));
+    try runner.checkDrained();
 }

@@ -158,3 +158,5 @@ failure recovery, registry candidate generation and review. Confirm actual regis
 Add only real implemented stages; no placeholder workflows. No scheduled release, no automatic
 AI publication, no unnecessary jobs for docs. Maintain [testing](testing.md) and
 [roadmap](roadmap.md) with real evidence and actual current status.
+
+Isolated acceptance packaging is implemented separately by scripts/stage_vcs_test.py and extensions/vcs-panel/manifest.test.json. It delegates manifest generation, pack and verify to the official pinned tool and refuses existing output directories. No release signing, registry publication or installation is performed. Production eligibility remains blocked by the acceptance runbook.

@@ -151,3 +151,52 @@ profile/user where necessary. Keep crash dumps local and test instrumentation
 out of shipping DLLs. Do not claim an unexecuted analysis passed.
 Promote reproducible, pinned, measured checks into the existing CI only
 after compatibility and false-positive review; do not bypass existing gates.
+### VCS hardening candidate checks
+
+Post-merge candidate adds a Windows Runner cancellation/reuse test, per-field VCS count availability, strict Git distance and JJ revision parsing, explicit JJ commit diff selection, bounded SVN local-status XML structural validation, and Hello Panel mock model callback/rollback tests. New changes require CI; these are not native host acceptance or complete XML validation. Current approved-path policy and persistent recovery remain separate gates.
+
+Candidate tests: relative/traversal PATH rejection, approval refusing compatibility and unsupported tools, malformed identity output, real linked Git worktree. No new dependency/workflow; current CI required. Host integration remains deferred.
+
+CLI/worktree candidate efdc821 passed full CI 45516706043. New panel tests cover superseded selection, stale failure, cancellation and stop, owned text buffers and zero/unknown distinction; real Git fixture exercises controller/model generation. All new tests pending current CI. Mock controller/model is not actual Pulse host acceptance.
+
+Panel baseline 440a360 passed full CI 45518972152 after the clock shadowing fix. New candidate tests cover task cancellation versus terminal, retryable release failure, invalid ID/snapshot, inline dispatch and STATE, host task publication after terminal release, cancellation before work and mismatched workspace. Mock callbacks run synchronously in tests; cross-thread delivery, actual host task ordering and cancellation latency require host acceptance. No new dependencies, no private host interfaces.
+
+Host controller/model candidate tests: three navigation requests coalesce, completed obsolete output is discarded, failed admission retries only on explicit event, failed refresh retains stale data, failed cancel/release keeps ownership, stop suppresses publication, and fixed interactive commands route through the mock task bridge. New CI required; actual host callbacks and automatic completion remain separate acceptance gates.
+
+SDK task bridge 914d780 passed full CI 45519919502. New Binding mock tests exercise the actual SDK function pointer signatures, fixed command subscription, wrong panel ID, refresh/result update, partial registration rollback, missing callbacks and model update failure while a task is active. Tests remain pending new CI. Actual host owner scheduling, context resolution, automatic delivery and unload remain gates.
+
+Context navigation candidate adds mailbox tests for borrowed-string lifetime, coalescing, duplicate suppression, loading/overlong/NUL rejection, stale tickets across navigation and reopen, failed unsubscribe, and invalid successful subscription ID. VCS mock host exercises public context get/subscribe/unsubscribe plus panel/task callbacks, stale resolution and render-before-pump invalidation, and retryable teardown. New CI required; no local Zig run or real-host validation recorded.
+
+Worker resolver candidate: tests cover release failure before handoff, A/B/C navigation coalescing, denied policy, cancelled queued work, stop/drain, lexical local path gating and rejection of a policy result outside the detected candidate root. Previous final code commit b10ecd2 passed full CI 45521721561; c968aab passed documentation-only gate 45521753364. This combined code/docs revision requires new platform CI; real-host and real approval policy remain NOT VERIFIED.
+
+The combined candidate also covers the visible discovery/cancel state and explicit refresh after permission denial, requiring a new policy decision before the next summary.
+
+Wake candidate adds mock tests for inline-before-post-return, coalescing, queue rejection, successful zero token, failed cancellation, late delivery after stop, navigation-to-resolver-to-summary dispatch, premature worker-return delivery, and explicit owner fallback. The latest resolver revision a143792 was separately submitted; its platform CI must be checked independently. This combined revision requires its own full CI. Mock callback delivery does not certify actual host scheduling or unloading.
+
+Ordinary Git approval tests cover grant path rejection, incomplete/changed evidence, revocation, exact command and cwd admission, unrelated navigation, worktree marker refusal and metadata matching. Fake evidence is not real approval or positive approved-tool execution. Resolver revision a143792 passed both platform jobs and regression gate in CI 45522520423. This candidate needs independent platform CI.
+
+Additional tests cover Windows reported separator normalization (not case or other aliases) and the actual Execution gate rejecting a request before Runner spawn/accounting.
+
+Windows evidence tests cover the restricted config grammar, composition without upgrading flags, and actual Win32 identity observation on the current local directory (Windows only). The test does not certify reparse/ACL attack fixtures or real approved Git execution. Dispatch revision f040ea1 passed full CI 45523125690. This candidate requires independent platform CI.
+
+Additional Windows-only fixture checks actual config handle reads and changed content, distinguishes missing from existing marker, and rejects both names of a hard-linked regular file. Junction/reparse and ACL attack fixtures remain pending.
+
+ACL candidate tests cover pure basic ACL grammar, untrusted write/delete/ownership grants, unknown ACEs, invalid SID/ACE size, explicit owner and changed permission fingerprints, plus real Windows process-token SID ownership and exact system-config isolation variable. No real DACL fixture or effective-access proof yet. Latest previous platform CI must be independently confirmed before release.
+
+Git isolation tests cover exact environment values and rejection of arbitrary global config paths and injected config count. The real Windows DACL fixture modifies only a private test file, using native security APIs, and checks that a trusted owner/user with an Everyone read ACE passes while an added Everyone write ACE fails. The final ACL candidate 0a19791 passed full CI 45524845597 and Windows evidence ad59679 passed 45524373830. This revision still requires its own platform CI and real Git isolation launch evidence.
+
+Runner admission regression additionally verifies mandatory isolation controls and reset on executable reconfiguration without spawning a child. The temporary DACL fixture restores the restrictive ACL on failure as well as on success.
+
+Positive approved Git integration candidate: the CI-provided Git executable is explicitly hashed and a private ordinary repository plus separate empty-config neutral directory are created. The test exercises the actual Policy resolver, version, identity, status, Runner and Windows Job Object where applicable; altered global config, changed verifier evidence and revocation must reject further commands. It deliberately uses an explicit fixture verifier, NOT production installation/ACL certification. Windows native dependency-handle digest test covers content change and total-byte quota; manifest tests cover root and executable matching. Prior isolation candidate 0c924ee passed full CI 45526013867. New revision needs independent CI.
+
+Native lifecycle candidate regression checks locked Binding selection/command denial, navigation, failed close retention and retry, invalid/missing host interface and repeat failed activation. The independent Windows C loader also loads pulse_vcs_panel.dll for 16 missing-interface rejection cycles. It does not exercise the actual Pulse host. Prior real Git fixture revision fc3c8a8 passed full CI 45527308082. Candidate requires its own CI.
+
+C ABI locked candidate test now runs 16 full successful model/context attachment cycles against a public-header mock, including partial activation rollback, repeated activation, forbidden commands, navigation, check repaint, close refusal/retry, user-close and host-first interface invalidation before deactivate/destroy. The mock checks no tasks were created/queried/cancelled/released and all panels/callbacks are gone. This is actual DLL execution but not the installed Pulse host. Prior native candidate platform jobs passed; verify this revision independently.
+
+New regressions cover failed ordinary cancel with pending wake, documented host-final retirement without SDK release calls, unpublished summary discard, permanent stop and two-step grant review drift/incomplete evidence. Prior native candidate 682eaca passed full CI 45528486318; lifecycle C-loader revision 1e23264 passed Ubuntu and Windows was still running at review time. This revision requires its own CI; real-host execution intentionally deferred.
+
+Regression candidate includes versioned review encoding/decoding and staging tool failure paths. Native reviewed session integrates explicit provisioning, revocation and Runner drain. The default test build uses the locked source; positive product source/host lifecycle remain to be validated. See docs/vcs-acceptance-runbook.md.
+
+New tests cover strict stored-record parsing, restricted Git index/name rejection and approval CLI payload/error handling. Default DLL source now uses the actual Windows manager, while Zig unit tests of the entry explicitly import the locked source. The C loader assumes a clean candidate slot on its disposable CI Windows user. The positive real-host and protected storage acceptance matrix is deferred. No real registry grant is written by unit tests.
+
+Additional tests exercise ancestor-only create rights, target write rejection, inherit-only versus inherited ACEs, and DPAPI round-trip/tamper refusal without modifying the registry. The package remains an isolated acceptance candidate.
