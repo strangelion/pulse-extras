@@ -11,6 +11,7 @@ CI never runs it (see docs/release.md).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -78,6 +79,15 @@ def plan(extension: str, artifacts: Path):
         raise ValueError(
             "missing build output(s): " + ", ".join(missing)
             + "; build with: " + "; ".join(product["build"]))
+    for member, _ in members:
+        digest = hashlib.sha256(member.read_bytes()).hexdigest()
+        if digest.encode("ascii") not in library.read_bytes():
+            option = ("-Dcompanion-helper-sha256=" if member.suffix == ".exe"
+                      else "-Dcompanion-runtime-sha256=")
+            raise ValueError(
+                f"{library.name} was not built against {member.name} "
+                f"(sha256 {digest}); rebuild with {option}{digest} "
+                "and the other digest option as scripts/companion_host_smoke.py does")
     return {
         "id": product["id"],
         "versioned_id": product["id"],

@@ -447,8 +447,16 @@ pub fn build(b: *std.Build) void {
     const vcs_test_config = vcs_test_options.createModule();
 
     const companion_options = b.addOptions();
-    companion_options.addOption([]const u8, "runtime_sha256", b.option([]const u8, "companion-runtime-sha256", "Approved runtime DLL digest for bundled Companion") orelse "");
-    companion_options.addOption([]const u8, "helper_sha256", b.option([]const u8, "companion-helper-sha256", "Approved bundled helper digest") orelse "");
+    const runtime_digest = b.option([]const u8, "companion-runtime-sha256", "Approved runtime DLL digest for bundled Companion") orelse "";
+    const helper_digest = b.option([]const u8, "companion-helper-sha256", "Approved bundled helper digest") orelse "";
+    for ([_][]const u8{ runtime_digest, helper_digest }) |digest| {
+        if (digest.len == 0) continue;
+        if (digest.len != 64 or !isHexDigest(digest)) {
+            @panic("companion digest options must be exactly 64 hex characters; a trailing CR from a CRLF file silently disables the pin");
+        }
+    }
+    companion_options.addOption([]const u8, "runtime_sha256", runtime_digest);
+    companion_options.addOption([]const u8, "helper_sha256", helper_digest);
     const companion_config = companion_options.createModule();
 
     var dll_modules = Modules.add(b, target, optimize, vcs_test_config, companion_config);
@@ -747,4 +755,10 @@ pub fn build(b: *std.Build) void {
         if (runtime or std.mem.startsWith(u8, source, "shared/vcs/"))
             vcs_tests.dependOn(&run.step);
     }
+}
+
+/// Build-time validation for approved-digest options: exactly 64 hex characters.
+fn isHexDigest(value: []const u8) bool {
+    for (value) |c| if (!std.ascii.isHex(c)) return false;
+    return true;
 }

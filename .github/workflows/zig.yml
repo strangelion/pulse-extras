@@ -1,5 +1,8 @@
 name: Zig regression
 
+# Scoped correctness, manual full, and no packaging: releases are assembled
+# locally with scripts/package_release.py (see docs/release.md).
+
 on:
   push:
   pull_request:

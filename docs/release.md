@@ -20,11 +20,30 @@ here does not automatically make the package available in the store.
 
 ## 2. Packaging (local official tool)
 
-Packages are built locally, never in CI. Build the ReleaseSafe DLLs first:
+Packages are built locally, never in CI.
+
+Companion bundles a runtime DLL and a helper executable, so the entry DLL must
+be compiled against their exact digests; otherwise the panel reports
+`未打包运行时；无法启动桌宠` and start stays disabled. Build the bundled
+files first, then rebuild the entry with both pins:
+
+    zig build pet-demo -Doptimize=ReleaseSafe
+    zig build companion-runtime-bridge -Doptimize=ReleaseSafe
+    zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe `
+        -Dcompanion-runtime-sha256=<sha256 of pulse_companion_runtime.dll> `
+        -Dcompanion-helper-sha256=<sha256 of pulse-pet-demo.exe>
+
+`build.zig` rejects any non-empty digest that is not exactly 64 hex characters,
+so a CRLF-contaminated value fails at configure time instead of silently
+disabling the pin. `scripts/companion_host_smoke.py` performs the same two-phase
+build automatically and records binary evidence.
+
+VCS has no bundled binaries:
 
     zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe
 
-Then run the product composer (it calls the pinned official author tool):
+Then run the product composer (it calls the pinned official author tool, and
+refuses a Companion DLL that does not embed the digests of its packaged members):
 
     python scripts/package_release.py --extension companion --version 0.1.0 \
         --pulse "C:\Program Files\Pulse\pulse.exe" --sdk-root .local/sdk --out dist
