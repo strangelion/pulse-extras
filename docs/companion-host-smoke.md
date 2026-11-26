@@ -13,7 +13,8 @@ pinned official author tool:
 
 ```powershell
 zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe
-python scripts/package_release.py --product companion --version 0.1.0 --sdk-root .local/sdk
+python scripts/package_release.py --extension companion --version 0.1.0 `
+    --pulse "C:\Program Files\Pulse\pulse.exe" --sdk-root .local/sdk --out dist
 ```
 
 The script requires a clean tree, runs native-manifest → pack → official

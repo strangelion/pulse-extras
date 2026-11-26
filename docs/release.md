@@ -26,8 +26,10 @@ Packages are built locally, never in CI. Build the ReleaseSafe DLLs first:
 
 Then run the product composer (it calls the pinned official author tool):
 
-    python scripts/package_release.py --product companion --version 0.1.0 --sdk-root .local/sdk
-    python scripts/package_release.py --product vcs --version 0.1.0 --sdk-root .local/sdk
+    python scripts/package_release.py --extension companion --version 0.1.0 \
+        --pulse "C:\Program Files\Pulse\pulse.exe" --sdk-root .local/sdk --out dist
+    python scripts/package_release.py --extension vcs --version 0.1.0 \
+        --pulse "C:\Program Files\Pulse\pulse.exe" --sdk-root .local/sdk --out dist
 
 `--dry-run` prints the plan without resolving the host or tool. Each run requires a
 clean tree, records the source revision in `release-evidence.json`, and executes
