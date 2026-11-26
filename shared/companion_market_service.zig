@@ -15,9 +15,10 @@ const Budget = @import("runtime_budget").Budget;
 
 // Counts validated search shards, not bytes of the latest HTTP request.
 pub const ScanProgress = struct {
+    pub const Stage = enum(u32) { idle, cache_read, network, cache_write, parse, finalize };
+
     completed: std.atomic.Value(usize) = .init(0),
     total: std.atomic.Value(usize) = .init(0),
-    pub const Stage = enum(u32) { idle, cache_read, network, cache_write, parse, finalize };
     stage: std.atomic.Value(u32) = .init(@backingInt(Stage.idle)),
 
     pub fn setStage(self: *ScanProgress, value: Stage) void {

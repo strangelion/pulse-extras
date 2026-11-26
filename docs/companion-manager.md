@@ -333,3 +333,18 @@ now receives runtime status but its own Preparing caption remains. Public
 pinned V1 does not offer a background/dismiss API; use Background continue.
 Installed 1.0.61 task-tail contract must be examined before any further
 popup changes; do not invent ABI fields.
+
+### D2 market reentry and task popup diagnostics
+
+User reported Market cannot be reopened after leaving the page. The pinned
+upstream Button allowlist does not include selected; populated search rows
+previously set it even when false. Remove it, retain the selected caption
+and preserve the snapshot if host layout update fails. Explicit navigation
+reconciles pending tasks; log navigation, update errors and result count.
+The persistent runtime worker reports an indeterminate progress item;
+Preparing is a host caption, not proof that startup is incomplete. Log
+phase, readiness, report ID, percent and raw report status on transitions;
+no false completion or undocumented popup control. Market stage and shard
+counts are opt-in via ABI_PROBE_LOG, without query text or credentials.
+Fix CI 45732356968: ScanProgress declaration between fields. Actual host
+reentry, report behavior and regression are not yet verified.

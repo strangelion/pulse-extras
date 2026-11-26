@@ -105,6 +105,7 @@ const Instance = struct {
     import_cancel_requested: bool = false,
     market_request: ?library.MarketRequest = null,
     market_initial_attempted: bool = false,
+    market_render_rejected: bool = false,
     market_query: library.MarketSearch = .{},
     market_snapshot: library.MarketSnapshot = .{},
     market_selected: ?usize = null,
@@ -473,7 +474,7 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
         "市场目录等待运行任务释放；停止桌宠后可加载"
     else
         instance.market_status;
-    content.children[2] = changingLabel(&content.dynamic_ids[0], "market.status", status);
+    content.children[2] = changingLabel(&content.dynamic_ids[0], "market.status", if (instance.market_render_rejected) "宿主拒绝市场结果布局；已保留目录，可重新进入市场或刷新" else status);
     content.children[3] = searchInput("market.query", "搜索市场", "可选：按名称或来源 ID 筛选");
     content.children[3].enabled = .{ .present = 1, .value = @intFromBool(!busy) };
     content.market_actions[0] = action("market.search", "刷新 / 搜索", commands[31], idle);
@@ -547,6 +548,7 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
         content.children[count] = action("market.poll", "手动检查任务状态", commands[38], true);
         count += 1;
     }
+    if (instance.market_render_rejected) return count;
     if (instance.market_snapshot.result) |*result| {
         const snapshot = &instance.market_snapshot;
         const written = @min(result.summary.written, snapshot.rows.len);
@@ -558,7 +560,7 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
             const body = std.fmt.bufPrint(&content.market_rows[n], "{s}{s} · {s}", .{ if (selected) "已选： " else "", row.displayName(), row.sourceId() }) catch unreachable;
             const id = std.fmt.bufPrint(&content.market_row_ids[n], "market-row-{d}-{x}", .{ n, std.hash.Wyhash.hash(0, body) }) catch unreachable;
             content.children[count] = action(id, body, commands[40 + n], idle);
-            content.children[count].selected = .{ .present = 1, .value = @intFromBool(selected) };
+            // Native Button does not accept the SidebarItem selected field.
             count += 1;
         }
         content.market_paging[0] = action("market.previous", "上一页", commands[33], idle and snapshot.query.offset >= snapshot.rows.len);
@@ -1081,10 +1083,20 @@ fn refresh(instance: *Instance) void {
         fill(instance, &content, &tree);
         panel.update(&tree) catch |err| {
             diag.status("companion-update-failed", @intFromError(err));
-            if (instance.section == .market and instance.market_image_test) {
-                rejectMarketImage(instance);
+            diag.status("companion-update-section", @backingInt(instance.section));
+            diag.event(@errorName(err));
+            if (instance.section == .market) {
+                if (instance.market_image_test) {
+                    rejectMarketImage(instance);
+                } else if (instance.market_snapshot.result != null) {
+                    instance.market_render_rejected = true;
+                } else return;
                 fill(instance, &content, &tree);
-                panel.update(&tree) catch |fallback_err| diag.status("companion-image-fallback-failed", @intFromError(fallback_err));
+                panel.update(&tree) catch |fallback_err| {
+                    diag.status("companion-market-fallback-failed", @intFromError(fallback_err));
+                    return;
+                };
+                diag.event("companion-market-fallback-ok");
             }
         };
     }
@@ -1285,13 +1297,18 @@ fn saveSetting(instance: *Instance, key: []const u8, value: []const u8) void {
 // Keep long-lived runtime tasks indeterminate: reaching first frame is not
 // completion of ownership or cleanup, and counters must not move backward.
 fn reportTask(context: [*c]const raw.PulseTaskContext, message: []const u8) void {
-    const report = context[0].report orelse return;
+    const report = context[0].report orelse {
+        diag.event("companion-task-report-unavailable");
+        return;
+    };
     var progress = std.mem.zeroes(raw.PulseTaskProgress);
     progress.size = @sizeOf(raw.PulseTaskProgress);
     progress.percent = std.math.maxInt(u32);
     progress.current_item = abi.view(message);
     const status = report(context[0].context, &progress);
-    if (status != abi.ok) diag.status("companion-task-report-refused", status);
+    diag.status("companion-task-report-id", context[0].id);
+    diag.status("companion-task-report-percent", progress.percent);
+    diag.status("companion-task-report-status", status);
 }
 
 fn tickMillis() u64 {
@@ -1306,6 +1323,7 @@ const SearchWatch = struct {
     timed_out: bool = false,
     last_scanned: usize = 0,
     last_total: usize = 0,
+    last_stage: u32 = 0,
 
     fn canceled(user: ?*anyopaque) callconv(.c) u32 {
         const self: *SearchWatch = @ptrCast(@alignCast(user orelse return 1));
@@ -1315,13 +1333,21 @@ const SearchWatch = struct {
         // synchronous WinHTTP call has its own bounded socket timeouts.
         if (tickMillis() -| self.started >= 180000) {
             self.timed_out = true;
+            diag.event("companion-market-deadline");
             return 1;
         }
         const total = self.progress.scan.total.load(.acquire);
         const scanned = @min(total, self.progress.scan.completed.load(.acquire));
+        const stage = @backingInt(self.progress.scan.getStage());
+        if (stage != self.last_stage) {
+            self.last_stage = stage;
+            diag.status("companion-market-stage", stage);
+        }
         if (scanned != self.last_scanned or total != self.last_total) {
             self.last_scanned = scanned;
             self.last_total = total;
+            diag.status("companion-market-shards-validated", scanned);
+            diag.status("companion-market-shards-total", total);
             var buf: [128]u8 = undefined;
             const text = std.fmt.bufPrint(&buf, "正在验证市场目录分片 {d}/{d}", .{ scanned, total }) catch unreachable;
             reportTask(self.context, text);
@@ -1341,6 +1367,7 @@ const SessionWatch = struct {
         if (host_cancel(self.context[0].context) != 0) {
             if (self.last_phase != .stopping) {
                 self.last_phase = .stopping;
+                diag.event("companion-runtime-cancel-observed");
                 reportTask(self.context, "正在退出并清理桌宠");
             }
             return 1;
@@ -1348,6 +1375,8 @@ const SessionWatch = struct {
         const phase: library.Phase = @fromBackingInt(@intCast(self.session.phase.load(.acquire)));
         if (self.last_phase == null or self.last_phase.? != phase) {
             self.last_phase = phase;
+            diag.status("companion-runtime-phase", @backingInt(phase));
+            diag.status("companion-runtime-ready", self.session.ready.load(.acquire));
             reportTask(self.context, switch (phase) {
                 .idle, .starting => "正在启动桌宠并等待首帧",
                 .running => "桌宠后台运行中；可选择在后台继续",
@@ -1499,6 +1528,8 @@ fn runBuiltin(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callco
     if (context == null) return raw.PULSE_TASK_FAILED;
     const canceled = context[0].cancelled orelse return raw.PULSE_TASK_FAILED;
     if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
+    diag.status("companion-runtime-worker-start", context[0].id);
+    defer diag.status("companion-runtime-worker-end", context[0].id);
     var watch: SessionWatch = .{ .context = context, .session = &instance.session };
     library.runBuiltin(&instance.session, config.runtime_sha256, config.helper_sha256, SessionWatch.canceled, &watch) catch |err| {
         instance.runtime_error = err;
@@ -1791,7 +1822,9 @@ fn pollLibrary(instance: *Instance) void {
             };
         } else if (done and instance.task_state == raw.PULSE_TASK_COMPLETED and instance.work_error == null and request == .search) {
             instance.market_snapshot = instance.market_outcome.snapshot;
+            instance.market_render_rejected = false;
             instance.market_status = "市场搜索完成";
+            if (instance.market_snapshot.result) |result| diag.status("companion-market-result-total", result.summary.total);
         } else if (done and instance.task_state == raw.PULSE_TASK_COMPLETED and instance.work_error == null and request == .detail and instance.market_outcome.detail != null) {
             instance.market_detail = instance.market_outcome.detail;
             instance.market_status = "素材详情已读取；安装时仍会重新验证";
@@ -2747,6 +2780,7 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
         // Even a rejected/cancelled attempt must not trigger an automatic
         // retry loop. The user can always request a new refresh.
         instance.market_initial_attempted = true;
+        instance.market_render_rejected = false;
         instance.market_query = request.search;
         instance.market_snapshot = .{};
         instance.market_selected = null;
@@ -3012,8 +3046,17 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
-                if (instance.section != .market) instance.market_image_test = false;
-                if ((instance.task_id != 0 or instance.runtime_task_id != 0) and instance.timer == null) pollTasks(instance);
+                diag.status("companion-navigation", n);
+                if (instance.section != .market) {
+                    instance.market_image_test = false;
+                } else {
+                    instance.market_render_rejected = false;
+                    diag.status("companion-market-enter-task", instance.task_id);
+                    diag.status("companion-market-enter-runtime-task", instance.runtime_task_id);
+                }
+                // Reconcile completion on explicit navigation even if a
+                // queued timer dispatch has not yet reached the UI.
+                if (instance.task_id != 0 or instance.runtime_task_id != 0) pollTasks(instance);
                 if (instance.section == .library) {
                     if (instance.search_pending) armTimer(instance);
                     if (!instance.library_loaded and instance.task_id == 0 and !instance.search_pending) startLibrary(instance, false);
@@ -3401,6 +3444,7 @@ test "settings preference validates exact value and duplicate keys" {
 }
 
 fn expectInputLabels(node: ui.Node) !void {
+    if (node.type == ui.NodeKind.button) try std.testing.expectEqual(@as(u32, 0), node.selected.present);
     if (node.type == ui.NodeKind.text_input) {
         try std.testing.expectEqual(@as(u32, 1), node.text.present);
         const caption = abi.slice(node.text.value) orelse return error.TestUnexpectedResult;
@@ -3660,6 +3704,32 @@ test "default market browsing has an empty optional query and never admits insta
     maybeBrowseMarket(instance);
     try std.testing.expect(!instance.market_initial_attempted);
     try std.testing.expect(instance.market_request == null);
+}
+
+test "populated market rows survive navigation without forbidden button attributes" {
+    const instance = try std.testing.allocator.create(Instance);
+    defer std.testing.allocator.destroy(instance);
+    instance.* = .{ .host = undefined, .section = .market };
+    instance.market_snapshot.result = .{ .summary = .{ .total = 1, .written = 1 }, .revision_len = 0, .stale = false, .created_at = 1, .expires_at = 2 };
+    instance.market_snapshot.rows[0] = .{ .id_len = 3, .name_len = 3, .catalog_page = 0 };
+    @memcpy(instance.market_snapshot.rows[0].id[0..3], "cat");
+    @memcpy(instance.market_snapshot.rows[0].name[0..3], "Cat");
+    instance.market_selected = 0;
+    var content: Content = undefined;
+    var tree: ui.Tree = undefined;
+    for ([_]Section{ .market, .library, .market }) |section| {
+        instance.section = section;
+        fill(instance, &content, &tree);
+        try expectInputLabels(content.root);
+        if (section == .market) {
+            try std.testing.expectEqualStrings("已选： Cat · cat", abi.slice(content.children[9].text.value).?);
+            try std.testing.expectEqual(@as(u32, 0), content.children[9].selected.present);
+        }
+    }
+    instance.market_render_rejected = true;
+    fill(instance, &content, &tree);
+    try std.testing.expectEqual(@as(u32, 8), content.root.children.count);
+    try std.testing.expect(instance.market_snapshot.result != null);
 }
 
 test "market panel requires explicit admission and has no implicit install" {

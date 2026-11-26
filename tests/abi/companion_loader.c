@@ -127,6 +127,7 @@ static int same(PulseStringView s, const char *text) {
  * not just the default view. A placeholder is insufficient. */
 static PulseStatus check_input_labels(const PulseUiModelNode *node, unsigned depth) {
     REQUIRE(node && depth <= 32);
+    if (node->type == PULSE_UI_MODEL_BUTTON) REQUIRE(!node->selected.present);
     if (node->type == PULSE_UI_MODEL_TEXT_INPUT) {
         REQUIRE(node->text.present && node->text.value.data && node->text.value.length);
         if (same(node->id, "library.query") || same(node->id, "running.query") ||

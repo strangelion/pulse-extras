@@ -157,3 +157,11 @@ without typing a query. Re-enter after switching pages: no redundant
 automatic request. Search/filter/clear, offline cache and cancel are
 separate cases; verify failure does not automatically retry or download an
 asset. Record cache/network/parse stage, shard count and final outcome.
+
+For market reentry and the Preparing caption use a fresh absolute
+ABI_PROBE_LOG before launch. Capture companion-runtime-phase / ready,
+companion-task-report-id / percent / status, companion-navigation,
+companion-market-enter-task, market stage/shards and update-failed.
+Status 0 means the report was accepted; UINT32_MAX percent means
+indeterminate. Compare actual task status with the host popup caption.
+Do not cancel a running session merely to dismiss its popup.
