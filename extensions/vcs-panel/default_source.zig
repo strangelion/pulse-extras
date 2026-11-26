@@ -60,9 +60,13 @@ fn blob(bytes: []const u8) Blob {
 }
 
 fn transform(bytes: []const u8, decrypt: bool) Error![]u8 {
+    return transformWithEntropy(bytes, decrypt, "pulse-extras-vcs-test-user-approval-v1");
+}
+
+fn transformWithEntropy(bytes: []const u8, decrypt: bool, purpose: []const u8) Error![]u8 {
     if (comptime builtin.os.tag != .windows) return error.Unsupported;
     const input = blob(bytes);
-    const entropy = blob("pulse-extras-vcs-test-user-approval-v1");
+    const entropy = blob(purpose);
     var output: Blob = .{ .length = 0, .data = null };
     const ok = if (decrypt)
         CryptUnprotectData(&input, null, &entropy, null, null, 1, &output)
@@ -313,8 +317,175 @@ pub fn configurePreview(binding: *host_query.Binding) host.Error!void {
         local.environment.deinit();
         allocator.destroy(local);
     }
-    try binding.configureLocalAccess(.{ .ctx = local, .authorize = &LocalSession.authorize, .revoke = &LocalSession.revoke, .finish = &LocalSession.finish, .reset = &LocalSession.reset });
+    try binding.configureLocalAccess(.{ .ctx = local, .authorize = &LocalSession.authorize, .revoke = &LocalSession.revoke, .finish = &LocalSession.finish, .reset = &LocalSession.reset, .forget = &LocalSession.forget, .forget_all = &LocalSession.forgetAll, .revoke_saved = &LocalSession.revokeSavedActive });
 }
+
+// Separate DPAPI namespace from strict single-root Git audit and from the
+// host's project settings. 1024 bounded slots; a live hash-slot collision
+// refuses the write rather than silently replacing another root/provider.
+// A monotonic epoch revokes every record atomically without enumerating paths.
+const SavedLocal = struct {
+    const sub = std.unicode.utf8ToUtf16LeStringLiteral("Software\\Strangelion\\PulseExtras\\VcsLocalTrust\\v1");
+    const epoch_name = std.unicode.utf8ToUtf16LeStringLiteral("Epoch");
+    const entropy = "pulse-extras-vcs-local-trust-v1";
+    const magic = "PVCSLT01";
+    const max_record = 2 * identity.max_path_bytes + 53;
+    const max_envelope = max_record + 4096;
+
+    extern "kernel32" fn CreateMutexW(?*anyopaque, i32, [*:0]const u16) callconv(.winapi) ?*anyopaque;
+    extern "kernel32" fn WaitForSingleObject(*anyopaque, u32) callconv(.winapi) u32;
+    extern "kernel32" fn ReleaseMutex(*anyopaque) callconv(.winapi) i32;
+    extern "kernel32" fn CloseHandle(*anyopaque) callconv(.winapi) i32;
+
+    fn lock() Error!*anyopaque {
+        if (comptime builtin.os.tag != .windows) return error.Unsupported;
+        const mutex = CreateMutexW(null, 0, std.unicode.utf8ToUtf16LeStringLiteral("Local\\Strangelion.PulseExtras.VcsLocalTrust.v1")) orelse return error.Permission;
+        const state = WaitForSingleObject(mutex, 0);
+        if (state != 0 and state != 0x80) {
+            _ = CloseHandle(mutex);
+            return error.Permission;
+        }
+        return mutex;
+    }
+
+    fn unlock(mutex: *anyopaque) void {
+        _ = ReleaseMutex(mutex);
+        _ = CloseHandle(mutex);
+    }
+
+    fn slot(review: *const panel.LocalReview) [4:0]u16 {
+        var hash = Sha256.init(.{});
+        hash.update(review.root.slice());
+        hash.update(&.{ 0, @intFromEnum(review.kind) });
+        const digest = hash.finalResult();
+        const chars = "0123456789abcdef";
+        return .{ 'g', chars[digest[0] & 3], chars[digest[1] >> 4], chars[digest[1] & 15] };
+    }
+
+    fn epoch() Error!u64 {
+        if (comptime builtin.os.tag != .windows) return error.Unsupported;
+        var bytes: [8]u8 = undefined;
+        var len: u32 = bytes.len;
+        const status = RegGetValueW(hkcu, sub, epoch_name, 8, null, &bytes, &len);
+        if (status == 2) return 0;
+        if (status != 0 or len != bytes.len) return error.Permission;
+        return std.mem.readInt(u64, &bytes, .little);
+    }
+
+    fn revokeAll() Error!void {
+        const mutex = try lock();
+        defer unlock(mutex);
+        const next = std.math.add(u64, try epoch(), 1) catch return error.ResourceLimit;
+        var bytes: [8]u8 = undefined;
+        std.mem.writeInt(u64, &bytes, next, .little);
+        if (RegSetKeyValueW(hkcu, sub, epoch_name, 3, &bytes, bytes.len) != 0) return error.Permission;
+    }
+
+    const Record = struct {
+        generation: u64,
+        kind: identity.Kind,
+        root: []const u8,
+        executable: []const u8,
+        fingerprint: [32]u8,
+
+        fn parse(bytes: []const u8) Error!Record {
+            if (bytes.len < 53 or bytes.len > max_record or !std.mem.eql(u8, bytes[0..8], magic)) return error.Parse;
+            const kind: identity.Kind = switch (bytes[16]) {
+                @intFromEnum(identity.Kind.git) => .git,
+                @intFromEnum(identity.Kind.jj) => .jj,
+                @intFromEnum(identity.Kind.svn) => .svn,
+                else => return error.Parse,
+            };
+            const root_len = std.mem.readInt(u16, bytes[17..19], .little);
+            const exe_len = std.mem.readInt(u16, bytes[19..21], .little);
+            if (root_len == 0 or exe_len == 0 or root_len > identity.max_path_bytes or exe_len > identity.max_path_bytes or @as(usize, root_len) + exe_len + 53 != bytes.len) return error.Parse;
+            const root = bytes[53..][0..root_len];
+            const executable = bytes[53 + @as(usize, root_len) ..];
+            if (!approval.strictPath(root) or !approval.strictPath(executable)) return error.Parse;
+            return .{ .generation = std.mem.readInt(u64, bytes[8..16], .little), .kind = kind, .root = root, .executable = executable, .fingerprint = bytes[21..53].* };
+        }
+
+        fn sameScope(self: Record, review: *const panel.LocalReview) bool {
+            return self.kind == review.kind and review.root.eql(self.root);
+        }
+
+        fn matches(self: Record, review: *const panel.LocalReview, generation: u64, fingerprint: [32]u8) bool {
+            return self.generation == generation and self.sameScope(review) and review.executable.eql(self.executable) and std.mem.eql(u8, &self.fingerprint, &fingerprint);
+        }
+    };
+
+    fn encode(review: *const panel.LocalReview, generation: u64, fingerprint: [32]u8, bytes: []u8) Error![]const u8 {
+        const root = review.root.slice();
+        const exe = review.executable.slice();
+        const len = root.len + exe.len + 53;
+        if (len > bytes.len or len > max_record or !approval.strictPath(root) or !approval.strictPath(exe)) return error.Parse;
+        @memcpy(bytes[0..8], magic);
+        std.mem.writeInt(u64, bytes[8..16], generation, .little);
+        bytes[16] = @intFromEnum(review.kind);
+        std.mem.writeInt(u16, bytes[17..19], @intCast(root.len), .little);
+        std.mem.writeInt(u16, bytes[19..21], @intCast(exe.len), .little);
+        @memcpy(bytes[21..53], &fingerprint);
+        @memcpy(bytes[53..][0..root.len], root);
+        @memcpy(bytes[53 + root.len .. len], exe);
+        const encoded = bytes[0..len];
+        _ = try Record.parse(encoded);
+        return encoded;
+    }
+
+    fn loadSlot(review: *const panel.LocalReview) Error!?[]u8 {
+        if (comptime builtin.os.tag != .windows) return error.Unsupported;
+        const name = slot(review);
+        const bytes = allocator.alloc(u8, max_envelope) catch return error.OutOfMemory;
+        defer allocator.free(bytes);
+        var len: u32 = @intCast(bytes.len);
+        const status = RegGetValueW(hkcu, sub, &name, 8, null, bytes.ptr, &len);
+        if (status == 2) return null;
+        if (status != 0 or len == 0 or len > bytes.len) return error.Permission;
+        if (len == 1 and bytes[0] == 0) return null;
+        const decoded = try transformWithEntropy(bytes[0..len], true, entropy);
+        errdefer allocator.free(decoded);
+        _ = try Record.parse(decoded);
+        return decoded;
+    }
+
+    fn require(review: *const panel.LocalReview, generation: u64, fingerprint: [32]u8) Error!void {
+        if (try epoch() != generation) return error.Permission;
+        const bytes = (try loadSlot(review)) orelse return error.Permission;
+        defer allocator.free(bytes);
+        if (!(try Record.parse(bytes)).matches(review, generation, fingerprint) or try epoch() != generation) return error.Permission;
+    }
+
+    fn save(review: *const panel.LocalReview, generation: u64, fingerprint: [32]u8) Error!void {
+        const mutex = try lock();
+        defer unlock(mutex);
+        if (try epoch() != generation) return error.Permission;
+        if (try loadSlot(review)) |previous| {
+            defer allocator.free(previous);
+            const record = try Record.parse(previous);
+            if (record.generation == generation and !record.sameScope(review)) return error.ResourceLimit;
+        }
+        var buffer: [max_record]u8 = undefined;
+        const bytes = try encode(review, generation, fingerprint, &buffer);
+        const sealed = try transformWithEntropy(bytes, false, entropy);
+        defer allocator.free(sealed);
+        if (sealed.len > max_envelope) return error.ResourceLimit;
+        const name = slot(review);
+        if (RegSetKeyValueW(hkcu, sub, &name, 3, sealed.ptr, @intCast(sealed.len)) != 0) return error.Permission;
+    }
+
+    fn forget(review: *const panel.LocalReview) Error!void {
+        const mutex = try lock();
+        defer unlock(mutex);
+        const bytes = (try loadSlot(review)) orelse return;
+        defer allocator.free(bytes);
+        const record = try Record.parse(bytes);
+        if (record.generation != try epoch()) return;
+        if (!record.sameScope(review)) return error.Permission;
+        const name = slot(review);
+        const tombstone = [_]u8{0};
+        if (RegSetKeyValueW(hkcu, sub, &name, 3, &tombstone, tombstone.len) != 0) return error.Permission;
+    }
+};
 
 // Separate, opt-in local trust model. This is not the restricted auditor,
 // an automatic PATH grant, or a sandbox. The user's consent covers the
@@ -327,6 +498,8 @@ const LocalSession = struct {
     io: ?std.Io.Threaded = null,
     runner: ?process.Runner = null,
     pins: ?Pins = null,
+    saved_epoch: ?u64 = null,
+    saved_ready: bool = false,
     neutral: identity.Path = .{},
     git: git_mod.Git = undefined,
     jj: jj_mod.Jj = undefined,
@@ -371,6 +544,21 @@ const LocalSession = struct {
         self.revoked.store(true, .release);
     }
 
+    fn forget(_: *anyopaque, review: *const panel.LocalReview) host.Error!void {
+        SavedLocal.forget(review) catch |err| return hostError(err);
+    }
+
+    fn forgetAll(_: *anyopaque) host.Error!void {
+        SavedLocal.revokeAll() catch |err| return hostError(err);
+    }
+
+    fn revokeSavedActive(user: *anyopaque) host.Error!void {
+        const self: *LocalSession = @ptrCast(@alignCast(user));
+        self.revoked.store(true, .release);
+        const review = if (self.review) |*value| value else return error.State;
+        SavedLocal.forget(review) catch |err| return hostError(err);
+    }
+
     // Called only after both host-owned worker slots have been released.
     fn releaseResources(self: *LocalSession) host.Error!void {
         self.revoked.store(true, .release);
@@ -410,6 +598,29 @@ const LocalSession = struct {
         return a.volume == b.volume and a.index == b.index;
     }
 
+    fn fingerprint(pins: Pins, review: *const panel.LocalReview) [32]u8 {
+        var hash = Sha256.init(.{});
+        hash.update(review.root.slice());
+        hash.update(&.{ 0, @intFromEnum(review.kind) });
+        hash.update(review.executable.slice());
+        hash.update(&.{0});
+        for ([_]evidence.FileIdentity{ pins.executable, pins.root, pins.marker }) |id| {
+            var bytes: [12]u8 = undefined;
+            std.mem.writeInt(u32, bytes[0..4], id.volume, .little);
+            std.mem.writeInt(u64, bytes[4..12], id.index, .little);
+            hash.update(&bytes);
+        }
+        hash.update(&pins.digest);
+        return hash.finalResult();
+    }
+
+    fn checkSaved(self: *LocalSession, review: *const panel.LocalReview) Error!void {
+        if (review.mode == .session) return;
+        const generation = self.saved_epoch orelse return error.Permission;
+        if (try SavedLocal.epoch() != generation) return error.Permission;
+        if (review.mode == .reuse or self.saved_ready) try SavedLocal.require(review, generation, fingerprint(self.pins orelse return error.Permission, review));
+    }
+
     fn checkPins(self: *LocalSession, review: *const panel.LocalReview) Error!void {
         if (self.revoked.load(.acquire)) return error.Permission;
         const pins = self.pins orelse return error.Permission;
@@ -421,8 +632,12 @@ const LocalSession = struct {
     }
 
     fn initialize(self: *LocalSession, review: *const panel.LocalReview) Error!void {
-        if (self.pins != null) return self.checkPins(review);
+        if (self.pins != null) {
+            try self.checkPins(review);
+            return self.checkSaved(review);
+        }
         if (self.revoked.load(.acquire)) return error.Permission;
+        if (review.mode != .session) self.saved_epoch = try SavedLocal.epoch();
         var path: [identity.max_path_bytes]u8 = undefined;
         const marker = try markerPath(review, &path);
         const root_id = try evidence.observeIdentity(review.root.slice(), true);
@@ -451,6 +666,7 @@ const LocalSession = struct {
         runner.configureTree(.windows_job) catch return error.Io;
         self.pins = .{ .executable = exe_id, .root = root_id, .marker = marker_id, .digest = digest };
         try self.checkPins(review);
+        try self.checkSaved(review);
     }
 
     fn argvEqual(actual: []const []const u8, expected: []const []const u8) bool {
@@ -494,6 +710,7 @@ const LocalSession = struct {
             request.environ_map != &self.environment or !self.neutral.eql(request.cwd orelse return error.UnapprovedEnvironment) or
             !allowedCommand(review, request.argv)) return error.UnapprovedExecutable;
         self.checkPins(review) catch return error.UnapprovedExecutable;
+        self.checkSaved(review) catch return error.UnapprovedExecutable;
         // Runner independently rehashes the executable immediately before spawn.
         if (self.revoked.load(.acquire)) return error.UnapprovedExecutable;
     }
@@ -544,7 +761,14 @@ const LocalSession = struct {
             },
             else => return error.Unsupported,
         };
-        return .{ .provider = provider, .workspace = workspace, .tool_version = contract.Text.init(report.lineSlice()) catch return error.Parse };
+        if (review.mode == .remember and !self.saved_ready) {
+            if (self.revoked.load(.acquire)) return error.Permission;
+            const generation = self.saved_epoch orelse return error.Permission;
+            try SavedLocal.save(review, generation, fingerprint(self.pins orelse return error.Permission, review));
+            self.saved_ready = true;
+        }
+        try self.checkSaved(review);
+        return .{ .provider = provider, .workspace = workspace, .tool_version = contract.Text.init(report.lineSlice()) catch return error.Parse, .cache_token = fingerprint(self.pins orelse return error.Permission, review) };
     }
 
     fn reportedPathEqual(actual: []const u8, expected: []const u8) bool {
@@ -906,4 +1130,29 @@ test "trusted local mode queries an actual Windows SVN fixture when provisioned"
     try std.testing.expectEqual(@as(u32, 1), snapshot.changes.modified);
     try std.testing.expectEqual(@as(u32, 1), snapshot.changes.untracked);
     try std.testing.expectEqual(contract.Availability.ready, snapshot.counts.modified);
+}
+
+test "saved local records pin exact root provider executable identity and epoch" {
+    const root = if (builtin.os.tag == .windows) "C:\\work\\repo" else "/work/repo";
+    const exe = if (builtin.os.tag == .windows) "C:\\tools\\git.exe" else "/tools/git";
+    var review: panel.LocalReview = .{ .root = try identity.Path.init(root), .executable = try identity.Path.init(exe), .kind = .git, .generation = 4 };
+    const digest: [32]u8 = @splat(0x5a);
+    var buffer: [SavedLocal.max_record]u8 = undefined;
+    const bytes = try SavedLocal.encode(&review, 9, digest, &buffer);
+    const record = try SavedLocal.Record.parse(bytes);
+    try std.testing.expect(record.matches(&review, 9, digest));
+    try std.testing.expect(!record.matches(&review, 10, digest));
+    try std.testing.expect(!record.matches(&review, 9, @splat(0x5b)));
+    review.kind = .jj;
+    try std.testing.expect(!record.matches(&review, 9, digest));
+    review.kind = .git;
+    try std.testing.expectError(error.Parse, SavedLocal.Record.parse(bytes[0 .. bytes.len - 1]));
+    if (comptime builtin.os.tag == .windows) {
+        const sealed = try transformWithEntropy(bytes, false, SavedLocal.entropy);
+        defer allocator.free(sealed);
+        const decoded = try transformWithEntropy(sealed, true, SavedLocal.entropy);
+        defer allocator.free(decoded);
+        try std.testing.expectEqualSlices(u8, bytes, decoded);
+        try std.testing.expectError(error.Permission, transform(sealed, true));
+    }
 }

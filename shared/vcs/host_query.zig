@@ -127,6 +127,7 @@ pub const Resolved = struct {
     provider: contract.Provider,
     workspace: identity.Workspace,
     tool_version: contract.Text = .{},
+    cache_token: ?[32]u8 = null,
 };
 
 pub const Resolver = struct {
@@ -411,6 +412,42 @@ pub const Controller = struct {
 /// The host synchronously copies the tree and invalidates subscriptions on
 /// close. Failed close retains the handle; no new commands are accepted.
 /// Tool/repository approval and provider lifetime belong to the caller.
+const RecentSnapshots = struct {
+    const Entry = struct { workspace: identity.Workspace, token: [32]u8, snapshot: contract.Snapshot };
+    entries: [8]Entry = undefined,
+    len: usize = 0,
+    next: usize = 0,
+
+    fn same(entry: *const Entry, workspace: *const identity.Workspace, token: [32]u8) bool {
+        return entry.workspace.kind == workspace.kind and entry.workspace.root.eql(workspace.root.slice()) and
+            entry.workspace.repository_root.eql(workspace.repository_root.slice()) and std.mem.eql(u8, &entry.token, &token);
+    }
+
+    fn get(self: *const RecentSnapshots, workspace: *const identity.Workspace, token: [32]u8) ?contract.Snapshot {
+        for (self.entries[0..self.len]) |*entry| {
+            if (same(entry, workspace, token)) return entry.snapshot;
+        }
+        return null;
+    }
+
+    fn put(self: *RecentSnapshots, workspace: *const identity.Workspace, token: [32]u8, snapshot: contract.Snapshot) void {
+        for (self.entries[0..self.len]) |*entry| {
+            if (same(entry, workspace, token)) {
+                entry.snapshot = snapshot;
+                return;
+            }
+        }
+        const index = if (self.len < self.entries.len) self.len else self.next;
+        self.entries[index] = .{ .workspace = workspace.*, .token = token, .snapshot = snapshot };
+        if (self.len < self.entries.len) self.len += 1 else self.next = (self.next + 1) % self.entries.len;
+    }
+
+    fn clear(self: *RecentSnapshots) void {
+        self.len = 0;
+        self.next = 0;
+    }
+};
+
 pub const Binding = struct {
     pub const Navigation = context_mod.Navigation(identity.max_path_bytes);
     pub const Revocation = struct { ctx: *anyopaque, revoke: *const fn (*anyopaque) host_mod.Error!void };
@@ -420,6 +457,9 @@ pub const Binding = struct {
         revoke: *const fn (*anyopaque) host_mod.Error!void,
         finish: *const fn (*anyopaque) host_mod.Error!void,
         reset: ?*const fn (*anyopaque) host_mod.Error!void = null,
+        forget: ?*const fn (*anyopaque, *const panel.LocalReview) host_mod.Error!void = null,
+        forget_all: ?*const fn (*anyopaque) host_mod.Error!void = null,
+        revoke_saved: ?*const fn (*anyopaque) host_mod.Error!void = null,
     };
 
     controller: Controller,
@@ -438,11 +478,14 @@ pub const Binding = struct {
     local_ui: bool = false,
     configured_tools: [3]?identity.Path = .{ null, null, null },
     verified_version: contract.Text = .{},
+    recent: RecentSnapshots = .{},
+    cache_token: ?[32]u8 = null,
     local_review: ?panel.LocalReview = null,
     setup_issue: ?panel.SetupIssue = null,
     revocation: ?Revocation = null,
     approved_root: ?identity.Path = null,
     persistent_revocation: bool = false,
+    saved_trust_selected: bool = false,
     revocation_failed: bool = false,
     destroyed: bool = false,
     accepting: bool = false,
@@ -496,6 +539,8 @@ pub const Binding = struct {
         const action = self.revocation orelse return error.Permission;
         self.approval_locked = true;
         self.verified_version = .{};
+        self.cache_token = null;
+        self.recent.clear();
         action.revoke(action.ctx) catch {
             self.revocation_failed = true;
             self.navigation.pending = false;
@@ -525,6 +570,8 @@ pub const Binding = struct {
         current.metadata_only = self.metadata_only;
         current.local_setup = self.local_ui;
         current.reset_configured = if (self.local_access) |access| access.reset != null else false;
+        current.saved_trust_configured = self.savedTrustAvailable();
+        current.saved_trust_selected = self.saved_trust_selected;
         current.tool_version = self.verified_version;
         if (current.snapshot) |*snapshot| {
             if (self.metadata_only) {
@@ -549,8 +596,8 @@ pub const Binding = struct {
             return error.State;
         }
         self.model = .{ .table = table, .id = id };
-        const commands = [_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check, panel.command_revoke, panel.command_trust_git, panel.command_trust_jj, panel.command_trust_svn, panel.command_trust_confirm, panel.command_trust_cancel, panel.command_trust_reset };
-        for (commands[0..if (self.local_ui) @as(usize, 10) else if (self.revocation != null) @as(usize, 4) else 3]) |name| {
+        const commands = [_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check, panel.command_revoke, panel.command_trust_git, panel.command_trust_jj, panel.command_trust_svn, panel.command_trust_confirm, panel.command_trust_cancel, panel.command_trust_reset, panel.command_trust_remember, panel.command_trust_reuse, panel.command_trust_forget, panel.command_trust_forget_all };
+        for (commands[0..if (self.local_ui and self.savedTrustAvailable()) @as(usize, 14) else if (self.local_ui) @as(usize, 10) else if (self.revocation != null) @as(usize, 4) else 3]) |name| {
             _ = self.model.?.subscribeCommand(name, &onCommand, self) catch |err| {
                 self.last_error = err;
                 // Close invalidates all subscriptions, including any partial
@@ -641,6 +688,7 @@ pub const Binding = struct {
         self.local_review = null;
         self.setup_issue = null;
         self.verified_version = .{};
+        self.cache_token = null;
         var failure: ?host_mod.Error = null;
         self.resolution.cancel() catch |err| {
             failure = err;
@@ -711,19 +759,32 @@ pub const Binding = struct {
         self.local_review = .{ .root = root, .executable = executable, .kind = kind, .generation = latest.generation };
     }
 
-    fn confirmLocalReview(self: *Binding) host_mod.Error!void {
+    fn savedTrustAvailable(self: *const Binding) bool {
+        const access = self.local_access orelse return false;
+        return access.forget != null and access.forget_all != null and access.revoke_saved != null;
+    }
+
+    fn reviewedCurrent(self: *Binding) host_mod.Error!panel.LocalReview {
         const review = self.local_review orelse return error.State;
         const root = try self.currentReviewRoot();
         const latest = self.navigation.latest orelse return error.State;
         if (review.generation != latest.generation or !root.eql(review.root.slice()) or self.local_review == null) return error.State;
+        return review;
+    }
+
+    fn confirmLocalReview(self: *Binding, mode: panel.TrustMode) host_mod.Error!void {
+        var review = try self.reviewedCurrent();
         const access = self.local_access orelse return error.Unavailable;
+        if (mode != .session and !self.savedTrustAvailable()) return error.Unavailable;
+        review.mode = mode;
         // Only the explicit confirmation callback can switch the resolver.
         // Both worker slots are drained, no old preview can publish as status.
         const resolver = try access.authorize(access.ctx, &review);
         self.local_review = null;
         self.metadata_only = false;
         self.approved_root = review.root;
-        self.revocation = .{ .ctx = access.ctx, .revoke = access.revoke };
+        self.saved_trust_selected = mode != .session;
+        self.revocation = .{ .ctx = access.ctx, .revoke = if (self.saved_trust_selected) access.revoke_saved orelse return error.Unavailable else access.revoke };
         self.resolver = resolver;
         self.persistent_revocation = false;
         try self.retryResolution();
@@ -742,12 +803,14 @@ pub const Binding = struct {
         // No old authorized work or result can survive this transition.
         self.approval_locked = true;
         self.verified_version = .{};
+        self.cache_token = null;
         self.local_review = null;
         self.navigation.pending = false;
         try access.revoke(access.ctx);
         try self.controller.clear();
         try reset(access.ctx);
         self.revocation = null;
+        self.saved_trust_selected = false;
         self.revocation_failed = false;
         self.approved_root = null;
         self.resolver = preview;
@@ -755,6 +818,23 @@ pub const Binding = struct {
         self.approval_locked = false;
         if (self.navigation.latest) |latest| {
             if (latest.directory() != null) try self.retryResolution();
+        }
+    }
+
+    fn forgetLocal(self: *Binding, all: bool) host_mod.Error!void {
+        if (!self.savedTrustAvailable() or !self.metadata_only or self.approval_locked) return error.Permission;
+        const access = self.local_access orelse return error.Unavailable;
+        if (all) {
+            try (access.forget_all orelse return error.Unavailable)(access.ctx);
+            self.local_review = null;
+            self.recent.clear();
+            self.setup_issue = .all_forgotten;
+        } else {
+            const review = try self.reviewedCurrent();
+            try (access.forget orelse return error.Unavailable)(access.ctx, &review);
+            self.local_review = null;
+            self.recent.clear();
+            self.setup_issue = .forgotten;
         }
     }
 
@@ -766,10 +846,21 @@ pub const Binding = struct {
                 self.last_error = err;
                 self.setup_issue = if (err == error.Argument) .invalid else if (err == error.State) .busy else .denied;
             };
-        } else if (std.mem.eql(u8, name, panel.command_trust_confirm)) {
-            self.confirmLocalReview() catch |err| {
+        } else if (std.mem.eql(u8, name, panel.command_trust_confirm) or std.mem.eql(u8, name, panel.command_trust_remember) or std.mem.eql(u8, name, panel.command_trust_reuse)) {
+            const mode: panel.TrustMode = if (std.mem.eql(u8, name, panel.command_trust_remember)) .remember else if (std.mem.eql(u8, name, panel.command_trust_reuse)) .reuse else .session;
+            self.confirmLocalReview(mode) catch |err| {
                 self.last_error = err;
                 self.setup_issue = if (err == error.Argument) .invalid else if (err == error.State) .changed else .denied;
+            };
+        } else if (std.mem.eql(u8, name, panel.command_trust_forget)) {
+            self.forgetLocal(false) catch |err| {
+                self.last_error = err;
+                self.setup_issue = .denied;
+            };
+        } else if (std.mem.eql(u8, name, panel.command_trust_forget_all)) {
+            self.forgetLocal(true) catch |err| {
+                self.last_error = err;
+                self.setup_issue = .denied;
             };
         } else if (std.mem.eql(u8, name, panel.command_trust_cancel)) {
             self.local_review = null;
@@ -869,6 +960,7 @@ pub const Binding = struct {
     pub fn clear(self: *Binding) host_mod.Error!void {
         if (!self.accepting) return error.State;
         self.verified_version = .{};
+        self.cache_token = null;
         self.local_review = null;
         if (self.resolver != null) {
             self.navigation.pending = false;
@@ -897,6 +989,7 @@ pub const Binding = struct {
         if (latest.directory() == null) return error.State;
         self.local_review = null;
         self.verified_version = .{};
+        self.cache_token = null;
         self.navigation.pending = true;
         var failure: ?host_mod.Error = null;
         self.resolution.cancel() catch |err| {
@@ -913,6 +1006,7 @@ pub const Binding = struct {
     fn cancelResolution(self: *Binding) host_mod.Error!void {
         self.local_review = null;
         self.verified_version = .{};
+        self.cache_token = null;
         self.navigation.pending = false;
         self.controller.current = .{ .phase = .cancelled };
         var failure: ?host_mod.Error = null;
@@ -937,6 +1031,13 @@ pub const Binding = struct {
                     if (selection) |selected| {
                         try self.controller.select(selected.provider, &selected.workspace);
                         self.verified_version = selected.tool_version;
+                        self.cache_token = if (self.metadata_only) null else selected.cache_token;
+                        if (self.cache_token) |token| {
+                            if (self.recent.get(&selected.workspace, token)) |snapshot| {
+                                self.controller.current.snapshot = snapshot;
+                                self.controller.current.stale = true;
+                            }
+                        }
                     } else self.controller.current = .{ .phase = .empty };
                 } else |err| {
                     self.controller.current = .{ .phase = if (err == error.Cancelled) .cancelled else .failed, .failure = if (err == error.Cancelled) null else err };
@@ -974,6 +1075,14 @@ pub const Binding = struct {
             self.last_error = err;
             return err;
         };
+        if (self.cache_token) |token| {
+            const current = &self.controller.current;
+            if (self.accepting and !self.approval_locked and !self.metadata_only and current.phase == .ready and !current.stale) {
+                if (current.workspace) |*workspace| {
+                    if (current.snapshot) |snapshot| self.recent.put(workspace, token, snapshot);
+                }
+            }
+        }
         self.pumpResolution() catch |err| {
             self.last_error = err;
             if (self.accepting) self.render() catch {};
@@ -1003,6 +1112,8 @@ pub const Binding = struct {
         current.metadata_only = self.metadata_only;
         current.local_setup = self.local_ui;
         current.reset_configured = if (self.local_access) |access| access.reset != null else false;
+        current.saved_trust_configured = self.savedTrustAvailable();
+        current.saved_trust_selected = self.saved_trust_selected;
         current.tool_version = self.verified_version;
         if (current.snapshot) |*snapshot| {
             if (self.metadata_only) {
@@ -1049,6 +1160,8 @@ pub const Binding = struct {
     pub fn requestStop(self: *Binding) host_mod.Error!void {
         if (self.destroyed) return;
         self.accepting = false;
+        self.cache_token = null;
+        self.recent.clear();
         if (self.wake) |*wake| wake.disable();
         var failure: ?host_mod.Error = null;
         // Close admission before requesting cancellation. In a multi-step
@@ -2134,4 +2247,18 @@ test "local consent is two step, navigation bound, and released only after drain
     try binding.finishLocalAccess();
     try binding.finishLocalAccess();
     try std.testing.expectEqual(@as(usize, 1), access.finished);
+}
+
+test "recent snapshots separate provider workspace and revalidated trust fingerprint" {
+    var cache: RecentSnapshots = .{};
+    const git = try identity.Workspace.init(.git, "root", "root/.git");
+    const jj = try identity.Workspace.init(.jj, "root", "root/.jj");
+    const token: [32]u8 = @splat(1);
+    cache.put(&git, token, .{ .workspace = git, .changes = .{ .modified = 4 } });
+    cache.put(&jj, token, .{ .workspace = jj, .changes = .{ .modified = 7 } });
+    try std.testing.expectEqual(@as(u32, 4), cache.get(&git, token).?.changes.modified);
+    try std.testing.expectEqual(@as(u32, 7), cache.get(&jj, token).?.changes.modified);
+    try std.testing.expect(cache.get(&git, @splat(2)) == null);
+    cache.clear();
+    try std.testing.expect(cache.get(&git, token) == null);
 }

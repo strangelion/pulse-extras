@@ -27,16 +27,23 @@ pub const command_trust_svn = "vcs.trust.svn";
 pub const command_trust_confirm = "vcs.trust.confirm";
 pub const command_trust_cancel = "vcs.trust.cancel";
 pub const command_trust_reset = "vcs.trust.reset";
+pub const command_trust_remember = "vcs.trust.remember";
+pub const command_trust_reuse = "vcs.trust.reuse";
+pub const command_trust_forget = "vcs.trust.forget";
+pub const command_trust_forget_all = "vcs.trust.forget-all";
 pub const state_executable = "vcs.executable";
+
+pub const TrustMode = enum { session, remember, reuse };
 
 pub const LocalReview = struct {
     root: identity.Path,
     executable: identity.Path,
     kind: identity.Kind,
     generation: u64,
+    mode: TrustMode = .session,
 };
 
-pub const SetupIssue = enum { invalid, busy, changed, denied };
+pub const SetupIssue = enum { invalid, busy, changed, denied, forgotten, all_forgotten };
 
 pub fn trustKind(name: []const u8) ?identity.Kind {
     if (std.mem.eql(u8, name, command_trust_git)) return .git;
@@ -64,6 +71,8 @@ pub const View = struct {
     metadata_only: bool = false,
     local_setup: bool = false,
     reset_configured: bool = false,
+    saved_trust_configured: bool = false,
+    saved_trust_selected: bool = false,
     local_review: ?LocalReview = null,
     setup_issue: ?SetupIssue = null,
     tool_version: contract.Text = .{},
@@ -226,13 +235,13 @@ fn failureLabel(lang: Language, err: contract.Error) []const u8 {
 /// All visible data is copied; no references into the View or cache remain.
 /// build is read-only; buildInteractive declares the fixed owner commands.
 pub const Content = struct {
-    const capacity = 36;
+    const capacity = 44;
     const line_bytes = identity.max_path_bytes + 64;
     lines: [capacity][line_bytes]u8 = undefined,
     nodes: [capacity]ui.Node = undefined,
     len: usize = 0,
     root: ui.Node = undefined,
-    commands: [10]abi.StringView = undefined,
+    commands: [14]abi.StringView = undefined,
     states: [1]ui.State = undefined,
 
     fn add(self: *Content, id: []const u8, label: []const u8, value: []const u8) void {
@@ -286,6 +295,7 @@ pub const Content = struct {
         } else if (view.local_setup and !view.approval_required) {
             self.add("vcs.local-trust", "", if (view.reset_configured) loc(lang, "Trusted local session (not a sandbox). Change repository or provider only through a fresh review.", "本次会话已信任（非沙箱）。更换仓库或类型需重新确认。") else loc(lang, "Trusted local session (not a sandbox). Close and reopen to change repository or provider.", "本次会话已信任（非沙箱）。更换仓库或类型需关闭后重新打开。"));
         }
+        if (view.saved_trust_selected and !view.approval_required) self.add("vcs.saved-trust", "", loc(lang, "Saved local approval selected; identity and tool digest must match before use.", "已选择持久化本地授权；使用前必须匹配仓库身份与工具摘要。"));
         if (view.approved_root) |root| self.add("vcs.approved-root", loc(lang, "Approved root: ", "授权根目录："), root.slice());
         if (!view.metadata_only and !view.approval_required and view.tool_version.slice().len != 0) self.add("vcs.tool-version", loc(lang, "Verified tool version: ", "已验证工具版本："), view.tool_version.slice());
         if (view.revocation_failed) self.add("vcs.revocation-error", "", loc(lang, "Session locked; permanent revocation failed. Use approval tool to revoke.", "会话已锁定；永久撤销失败，请使用授权工具撤销。"));
@@ -350,15 +360,23 @@ pub const Content = struct {
             .busy => loc(lang, "Wait for the current query to finish; Check result if needed.", "请等待当前查询结束，必要时点击检查结果。"),
             .changed => loc(lang, "Directory or selection changed. Review the current repository again.", "目录或选择已变化，请重新确认当前仓库。"),
             .denied => loc(lang, "Trust setup refused. Review the path and repository.", "授权设置被拒绝，请检查路径和仓库。"),
+            .forgotten => loc(lang, "Saved approval for this root/provider revoked", "已撤销此目录及类型的持久授权"),
+            .all_forgotten => loc(lang, "All saved local approvals revoked", "已撤销所有持久化本地授权"),
         });
+        if (view.saved_trust_configured and view.metadata_only and !view.approval_required) self.addButton("vcs.action.trust-forget-all", loc(lang, "Revoke all saved local approvals", "撤销所有持久化本地授权"), command_trust_forget_all);
         if (!view.metadata_only or view.approval_required) return;
         if (view.phase != .ready or view.workspace == null or view.snapshot == null) return;
         if (view.local_review) |review| {
             self.add("vcs.review-kind", loc(lang, "Tool: ", "工具："), review.kind.displayName());
             self.add("vcs.review-exe", loc(lang, "Executable: ", "程序："), review.executable.slice());
             self.add("vcs.review-root", loc(lang, "Repository: ", "仓库："), review.root.slice());
-            self.add("vcs.review-warning", "", loc(lang, "Trust only a known installation and repository, including their dependencies and configuration. Commands run as you; this is NOT a sandbox. No automatic approval or saved grant.", "仅信任已知的工具安装和仓库（含依赖及配置）。命令以当前用户身份运行，不是沙箱；不会自动授权或保存授权。"));
+            self.add("vcs.review-warning", "", loc(lang, "Trust only known installations and repositories, including dependencies and configuration. Commands run as you; NOT a sandbox. Saved trust pins identities and executable digest, not all dependencies/configuration.", "仅信任已知的工具安装和仓库（含依赖及配置）。命令以当前用户身份运行，不是沙箱。持久授权校验身份和工具摘要，不审核全部依赖及配置。"));
             self.addButton("vcs.action.trust-confirm", loc(lang, "Trust tool and repository for this session", "信任工具及仓库（仅本次会话）"), command_trust_confirm);
+            if (view.saved_trust_configured) {
+                self.addButton("vcs.action.trust-remember", loc(lang, "Trust and remember this root/provider/tool", "信任并记住此仓库、类型及工具"), command_trust_remember);
+                self.addButton("vcs.action.trust-reuse", loc(lang, "Use previously saved approval (exact match only)", "使用已有授权（仅完全匹配）"), command_trust_reuse);
+                self.addButton("vcs.action.trust-forget", loc(lang, "Revoke saved approval for this root/provider", "撤销此仓库及类型的持久授权"), command_trust_forget);
+            }
             self.addButton("vcs.action.trust-cancel", loc(lang, "Cancel review", "取消确认"), command_trust_cancel);
         } else {
             const snapshot = view.snapshot orelse return;
@@ -385,9 +403,9 @@ pub const Content = struct {
     /// The owner still validates commands against current controller state.
     pub fn buildInteractive(self: *Content, lang: Language, view: *const View, tree: *ui.Tree) void {
         self.build(lang, view, tree);
-        self.commands = .{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check), abi.view(command_revoke), abi.view(command_trust_git), abi.view(command_trust_jj), abi.view(command_trust_svn), abi.view(command_trust_confirm), abi.view(command_trust_cancel), abi.view(command_trust_reset) };
+        self.commands = .{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check), abi.view(command_revoke), abi.view(command_trust_git), abi.view(command_trust_jj), abi.view(command_trust_svn), abi.view(command_trust_confirm), abi.view(command_trust_cancel), abi.view(command_trust_reset), abi.view(command_trust_remember), abi.view(command_trust_reuse), abi.view(command_trust_forget), abi.view(command_trust_forget_all) };
         tree.commands = &self.commands;
-        tree.command_count = if (view.local_setup) 10 else if (view.revocation_configured) 4 else 3;
+        tree.command_count = if (view.local_setup and view.saved_trust_configured) 14 else if (view.local_setup) 10 else if (view.revocation_configured) 4 else 3;
         if (view.local_setup) {
             self.states[0] = .{ .key = abi.view(state_executable), .value = abi.view("") };
             tree.states = &self.states;
@@ -404,7 +422,7 @@ pub const Content = struct {
                 }
             }
             self.addButton("vcs.action.check", loc(lang, "Check result", "检查结果"), command_check);
-            if (view.revocation_configured and !view.approval_required) self.addButton("vcs.action.revoke", if (view.persistent_revocation) loc(lang, "Revoke saved approval", "永久撤销授权") else loc(lang, "Revoke session approval", "撤销本次授权"), command_revoke);
+            if (view.revocation_configured and !view.approval_required) self.addButton("vcs.action.revoke", if (view.persistent_revocation or view.saved_trust_selected) loc(lang, "Revoke saved approval", "永久撤销授权") else loc(lang, "Revoke session approval", "撤销本次授权"), command_revoke);
         }
         ui.withChildren(&self.root, self.nodes[0..self.len]);
     }
@@ -595,4 +613,20 @@ test "verified tool version is visible only in an approved view" {
     view.approval_required = true;
     content.buildInteractive(.en, &view, &tree);
     try std.testing.expect(content.textFor("vcs.tool-version") == null);
+}
+
+test "saved local approval commands require an explicit reviewed view" {
+    var content: Content = undefined;
+    var tree: ui.Tree = undefined;
+    const workspace = try identity.Workspace.init(.git, "root", "root");
+    var view: View = .{ .phase = .ready, .workspace = workspace, .snapshot = .{ .workspace = workspace }, .metadata_only = true, .local_setup = true, .saved_trust_configured = true };
+    content.buildInteractive(.en, &view, &tree);
+    try std.testing.expectEqual(@as(u32, 14), tree.command_count);
+    try std.testing.expect(content.textFor("vcs.action.trust-remember") == null);
+    try std.testing.expect(content.textFor("vcs.action.trust-forget-all") != null);
+    view.local_review = .{ .root = workspace.root, .executable = try identity.Path.init("git.exe"), .kind = .git, .generation = 1 };
+    content.buildInteractive(.en, &view, &tree);
+    try std.testing.expect(content.textFor("vcs.action.trust-remember") != null);
+    try std.testing.expect(content.textFor("vcs.action.trust-reuse") != null);
+    try std.testing.expect(content.textFor("vcs.action.trust-forget") != null);
 }

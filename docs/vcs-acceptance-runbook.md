@@ -308,3 +308,32 @@ Run 45849966532 reached the extracted, checksum-verified vendor executable;
 its exact `1.14.5-SlikSvn` version suffix was rejected by the earlier numeric-only
 comparison. Accept the pinned distribution spelling and no other release;
 mandatory SVN query results are still pending.
+
+### P2B durable local trust and deferred final acceptance
+
+Owner decision: advance code stages after exact required CI and consolidate
+all actual Pulse tests in the final round. P2A 4d53927 / 45850831284 full CI
+passed (Windows 686/686 including required SVN); actual host remains DEFERRED.
+
+The project library is independent of consent. The local review now offers
+session-only, remember, use previously saved exact approval, revoke selected
+root/provider, and revoke all local approvals. The dedicated HKCU DPAPI v1
+namespace is distinct from strict saved Git and project settings. Records pin
+exact root/provider/tool path, observed root/marker/executable identities and
+SHA-256 executable digest. Bounded slots refuse live collisions; a nonblocking
+named mutex serializes explicit mutations; a monotonic epoch revokes all
+without enumerating paths. Reuse requires explicit selection, valid current
+identity and exact digest before any CLI, and the record/epoch is rechecked
+before each admitted command. Closing/reset does not erase persistent consent;
+explicit revoke does. Saved consent assumes trusted user, installation,
+repository configuration and dependencies; not a sandbox, not full config or
+TOCTOU audit, not protection against arbitrary same-user/admin code. No automatic
+approval on bookmark save/navigation. No bulk grant creation. Review and revoke
+are by selected repository/provider; no enumeration dashboard yet.
+
+An eight-entry bounded owner cache uses workspace/provider and revalidated
+identity/digest fingerprint. Data is always labeled stale on reuse and never
+skips a fresh policy decision or summary. Clear on explicit revoke and close;
+no cross-provider or cross-identity reuse. Physical alias deduplication and
+selected-folder right-click contribution remain pending; do not claim P2B
+complete until the remaining workflow and exact regression pass.

@@ -24,7 +24,11 @@ usable deliverable, explicit exclusions, and an exit gate. Use the following
 status vocabulary in reports: **IMPLEMENTED** (source only), **CI PASS** (exact
 source and required scope), **HOST PASS** (exact installed artifact and named
 cases), **BLOCKED** (specific dependency/reproduction), **NOT RUN**, **DEFERRED**.
-A stage is **COMPLETE** only when its mandatory exit gate has passed.
+A stage is **COMPLETE** only when its mandatory exit gate has passed. Owner
+policy (2026-11-26): code implementation + exact-source required CI permits
+advancing to the next development stage; actual installed-host cases are queued
+for one final consolidated acceptance round. Label these stages DEV COMPLETE /
+HOST DEFERRED, never HOST PASS or stable release. Safety regressions still block.
 
 When asked to continue, select the earliest incomplete in-scope stage and
 carry it as a coherent vertical slice: review the entire stage, implement
@@ -94,7 +98,12 @@ source. The unsigned 1.0.0 release predates the latter improvements. P2 is **not
 complete**. Finish P2A and P2B as separate complete user-facing stages, in order.
 No new provider or write features until the baseline is usable.
 
-### P2A — Daily-use onboarding and reliable status (active)
+### P2A — Daily-use onboarding and reliable status (DEV COMPLETE / HOST DEFERRED)
+
+[4d53927 / full regression 45850831284](https://github.com/strangelion/pulse-extras/actions/runs/45850831284)
+passed all lanes, including Windows 686/686 tests and pinned SVN 1.14.5 actual
+working-copy provisioning. Actual Pulse UI/ABI/lifecycle is deferred by owner
+to the final installed acceptance round, not inferred from the C harness.
 
 **Outcome:** a normal user installs the extension, opens the current repository
 through Pulse, configures the installed tool and views correct status without a
@@ -131,7 +140,12 @@ disable/exit. Record exact artifacts and results using
 unavailable, complete code and automated work then report the missing case set
 once. No claim that local trust is a filesystem/network sandbox.
 
-### P2B — Project manager and persistent trust
+### P2B — Project manager and persistent trust (active)
+
+4d53927 already contains V2 migrated project bookmarks, 64-record capacity,
+12-row paging, name/tags/favorites/search/accepted-navigation recency, supported
+folder route and in-panel session reset. This follow-up adds explicit saved
+local trust and identity-bound stale snapshot reuse. Exact new CI remains required.
 
 **Outcome:** the project library is a primary, useful VCS entry, not a settings
 appendix; users can manage multiple projects without repeatedly typing paths.
@@ -286,7 +300,7 @@ making the whole provider appear writable.
 
 RT2: all new products reuse the shared runtime contract; extend it only for proven needs, track bundled runtime revisions and rebuild/test/release affected consumers after fixes. Test independent instances and mixed-version coexistence. Recheck upstream source, roadmap, SDK and registry for overlap before implementing each extension. Pulse already has basic Git and SVN status, native lock detection, common previews and archive integration. Coordinate 3D/OCR/remote features with upstream.
 
-Current priority is P2A → P2B → P3A → P3B for VCS. Companion is maintenance/acceptance only unless a user reports a defect or explicitly requests expansion. After the VCS read-only product stages, choose the next independent product (Convert, Inspect, Compare, Data, DevKit) according to demand and verified upstream overlap. Each needs its own complete first-use stage (UI, processing, persistence where needed, errors, tests, packaging/acceptance), not a collection of empty modules. See [product scope](product-scope.md). Do not block usable products on a speculative platform.
+Current priority is P2B → P3A → P3B for VCS; P2A code CI passed and actual host tests are deferred. Companion is maintenance/acceptance only unless a user reports a defect or explicitly requests expansion. After the VCS read-only product stages, choose the next independent product (Convert, Inspect, Compare, Data, DevKit) according to demand and verified upstream overlap. Each needs its own complete first-use stage (UI, processing, persistence where needed, errors, tests, packaging/acceptance), not a collection of empty modules. See [product scope](product-scope.md). Do not block usable products on a speculative platform.
 
 Release follows milestone R and [release.md](release.md). Keep secrets out of Git/CI logs. Project license is AGPL-3.0-only, preserving prior Apache-2.0 grants and upstream/third-party obligations. Zig-first remains unchanged; review source delivery and registry acceptance before distributing.
 
@@ -294,19 +308,22 @@ Release follows milestone R and [release.md](release.md). Keep secrets out of Gi
 
 C0/C1 delivered the standalone/runtime and OpenPets-compatible manager,
 native settings/library/market/running views, import/download and resource
-management; an unsigned 1.0.0 preview is published. The user reports basic
-import/download working after ordinary local packaging/install. Preserve
-those working paths, avoid broad rewrites while VCS is the active priority.
+management; an unsigned 1.0.0 preview is published. The owner accepts ordinary Companion feature development as complete after
+normal local packaging/install and explicitly defers the remaining actual
+host checks to the final round. Preserve those working paths, avoid broad
+rewrites while VCS is the active priority.
 
 ### Companion stage D — packaging and real-host acceptance (planned)
 
 - D0/D1: official package composition and preview release implemented; exact
   isolated package lifecycle/upgrade/rollback still needs recorded evidence.
-- D2/D3/D4: complete the existing [canonical acceptance register](companion-manager.md#d2-real-host-functional-acceptance-matrix)
-  when actual host access is available: image rendering/fallback, concurrent
-  market, 100 visible pets and separately high-count actual managed instances,
-  soak/leak/CPU/memory/handles, crash/recovery and cleanup. User-reported
-  basic import/download is not proof of every case.
+- D2: ordinary functionality marked owner-accepted DEV COMPLETE; final
+  consolidated actual-host smoke/lifecycle remains HOST DEFERRED, not verified.
+- D3/D4: remaining dedicated work is actual 1024-slot workload performance
+  (staged toward the limit only with headroom), long-running memory/handle
+  leaks and image/thumbnail behavior after reviewing the 1.0.61 SDK/host.
+  No performance number or all-host pass inferred from owner acceptance.
+  See [canonical acceptance register](companion-manager.md#d2-real-host-functional-acceptance-matrix).
 - D5: verified formal candidate and separately authorized stable/signing/
   registry decision. No speculative shared-binary runtime in this stage.
 
@@ -355,3 +372,5 @@ or colocated provider without closing the panel. No implicit cross-root grant;
 strict persisted Git approval remains separate. The first project-library CI
 failed only at formatting; its exact correction and additional stale/reparse
 navigation tests are included in the follow-up candidate.
+
+The owner-directed consolidated [final installed acceptance](final-host-acceptance.md) register covers both products. Do not request repeated local installs between development stages.

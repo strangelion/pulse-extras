@@ -12,12 +12,14 @@ See [runtime and IPC](openpets-spike.md), [shared runtime](shared-runtime.md),
 ## Maintenance status (2026-11-26)
 
 Companion 1.0.0 is available as an [unsigned preview](https://github.com/strangelion/pulse-extras/releases/tag/companion/v1.0.0).
-The user reports basic local import and download working after normal local
-packaging/install. This is functional feedback, not an exact-artifact
-acceptance report or an all-cases pass. Preserve existing working paths while
-VCS is the active development stage. Continue the D acceptance matrix as a
-whole when real-host access is available; do not reimplement the manager
-or repeatedly change unrelated UI. See [roadmap](roadmap.md#c--companion-maintenance-previous-feasibility-stages).
+Owner decision (2026-11-26): ordinary Companion functional development is
+accepted complete, including import/download; do not reopen these stages
+for unrelated work. Dedicated open items: actual managed-instance capacity
+up to 1024 with resource measurements, long-running memory/handle leak
+testing, and image/thumbnail/fallback review after verifying Pulse 1.0.61
+SDK behavior. All remaining installed host cases are consolidated into the
+final test round. This is owner acceptance of development scope, not an
+exact-artifact measurement or a claim that every host case was run. See [roadmap](roadmap.md#c--companion-maintenance-previous-feasibility-stages).
 
 ## Current capability and boundary
 
@@ -191,16 +193,16 @@ from implemented tests, a green docs gate or a historical benchmark.
 | Windows native ABI tests | Established; not real Pulse acceptance |
 | IPC communication regression | Established |
 | 100 independent hidden processes | Historical PASS ([recorded data](performance.md#companion-paired-100-process-baseline)) |
-| 100 independent visible pets | NOT VERIFIED |
-| High-count instances managed by Pulse | NOT VERIFIED |
-| Long-running stability and resource leaks | NOT VERIFIED |
+| 100 independent visible pets | Owner-accepted feature scope; included in final staged performance test; no measured PASS |
+| High-count instances managed by Pulse (toward 1024) | OPEN — actual CPU/GPU/memory/handles/frame latency and last safe count required |
+| Long-running stability and resource leaks | OPEN — soak and repeated teardown measurements required |
 | Crash injection and abnormal recovery | Standalone and managed synthetic fixtures passed at 6d63439; real-host abnormal recovery pending |
-| Real market parallel downloads | NOT VERIFIED |
-| SDK image rendering and fallback on actual host | NOT VERIFIED |
-| Complete plugin install, upgrade, rollback and uninstall | NOT VERIFIED |
+| Real market parallel downloads | Owner-accepted development complete; final host regression deferred, no exact measured throughput claim |
+| SDK image rendering, material thumbnails and fallback | DEFERRED — inspect verified 1.0.61 SDK/host first |
+| Complete plugin install, upgrade, rollback and uninstall | HOST DEFERRED — final consolidated package acceptance |
 | Formal packaging and signing | Pending |
 | Open-source licenses and asset authorization review | Pending |
-| Formal Release publication | Not done; separate authorization required |
+| Formal Release publication | Unsigned 1.0.0 preview published; stable signing/registry separately authorized |
 
 **Critical distinction:** 100 independent hidden renderer processes on
 a historical hosted runner do NOT establish performance of 100 visible
@@ -228,12 +230,12 @@ Record Windows/Pulse versions, hardware, build/backend, baseline host
 CPU/private bytes/working set/handles, renderer and watcher metrics
 separately, visible/hidden CPU, first-frame and shutdown latency, disk
 use and repeated lifecycle. Initial checks: 10 start/stop cycles, 30-minute and 2-hour visible/hidden
-soak; increase normal pets from 1/2/4/8 through 16/32/64 toward 100 only
-where measured headroom and responsiveness permit. Separately measure
+soak; increase normal pets from 1/2/4/8 through 16/32/64/100/128/256/512 toward
+1024 only where measured headroom and responsiveness permit. Separately measure
 independent visible pets and the actual Pulse-managed workload, with
 frame-time p50/p95/p99 and GPU/VRAM where available. Record the last safe
-count and explicit resource rejection if 100 cannot be reached; that is
-not a 100-pet PASS. Crash-monitor pairs remain capped at four. Stop
+count and explicit resource rejection if a target cannot be reached; that is
+not a 1024-pet PASS. Crash-monitor pairs remain capped at four. Stop
 escalation for sustained unresponsiveness, resource failure, leak trend
 or unconfirmed cleanup. Do not launch 1024 real pets merely because
 storage supports that many. Agree measured release ceilings from

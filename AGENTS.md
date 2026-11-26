@@ -10,9 +10,11 @@
 
 ## Stage-based delivery (mandatory)
 
-- A request to continue means finish the earliest incomplete in-scope stage
-  defined in the roadmap, not just its first task. Check its full deliverable,
-  exclusions, exit gate and existing evidence before touching code.
+- A request to continue means finish the earliest incomplete in-scope development
+  stage defined in the roadmap, not just its first task. Check its full deliverable,
+  exclusions, exit gate and existing evidence before touching code. The owner
+  explicitly defers actual installed-host tests to one final acceptance round;
+  green required code CI permits advancing, but never implies HOST PASS.
 - Implement the complete usable vertical slice across UI, data/storage,
   provider/runtime, failure handling, tests and docs. Batch related fixes,
   review them together, run local format/build/targeted tests before pushing
@@ -27,8 +29,12 @@
   and provide one consolidated acceptance request. Never mark a partial stage
   COMPLETE, use a docs-only green check as code evidence, or claim an ancestor's
   CI as proof of the final source.
-- Current priority: VCS P2A → P2B → P3A → P3B. Companion basic import/download
-  are reported working; do not change them during unrelated VCS stages.
+- Current priority: VCS P2B → P3A → P3B. P2A code regression passed at 4d53927;
+  final host acceptance is deferred. Companion ordinary feature development is
+  owner-accepted complete; only 1024-instance measured capacity, long-run leak
+  evidence and SDK 1.0.61 image-related review remain specific open work. Bundle
+  install/lifecycle verification into final acceptance. Do not change working
+  Companion code during unrelated VCS stages.
 - Keep the roadmap current at stage boundaries, update the relevant acceptance
   matrix and capability claims, and report the whole stage outcome once.
   No publication or credential use without explicit authorization; writes
