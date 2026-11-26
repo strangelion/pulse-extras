@@ -376,3 +376,16 @@ host and opt-in lifecycle log, and retain existing transaction/cleanup
 rules. WIC is a light activation-test backend; use verified libwebp for
 market format acceptance. Actual cause and successful installation remain
 unverified.
+
+### D2 helper rejection diagnosis
+
+The libwebp smoke-08 log confirms all six market shards, 322 results,
+successful detail read, then stage 8 PackageRejected. Download and ZIP
+extraction were reached successfully; the digest-pinned helper returned
+unsuccessfully during package admission or staging. Its existing bounded
+stderr was previously discarded. Map only known fixed helper diagnostics
+to typed errors (path, metadata, atlas, outfit/activity inventory,
+fingerprint, stage copy/verification/publication). Preserve transaction
+and recovery semantics; do not copy raw stderr or relax validation. If the
+helper does not exit normally, distinguish that case. Exact asset ID and
+specific rejection still require confirmation; do not claim an install fix.

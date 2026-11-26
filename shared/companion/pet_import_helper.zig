@@ -64,6 +64,51 @@ pub fn parseDetail(output: []const u8) !Detail {
     return result;
 }
 
+// Map only fixed diagnostics emitted by the digest-pinned helper. Never
+// forward raw stderr (which may contain local paths or untrusted text).
+// Keep an unrecognized failure distinct from a diagnosed validation stage.
+fn rejection(stderr: []const u8) anyerror {
+    const reasons = [_]struct { marker: []const u8, reason: anyerror }{
+        .{ .marker = "Package import failed at stage-verification (pending directory retained).", .reason = error.PackageStageVerificationFailed },
+        .{ .marker = "Package import failed at stage-copy (pending directory may remain).", .reason = error.PackageStageCopyFailed },
+        .{ .marker = "Package import failed at stage-publish (Win32 ", .reason = error.PackageStagePublishFailed },
+        .{ .marker = "Package path: expected a bounded local DOS directory.", .reason = error.PackagePathInvalid },
+        .{ .marker = "Package path: long-name normalization failed.", .reason = error.PackagePathNormalizationFailed },
+        .{ .marker = "Package admission failed at root.", .reason = error.PackageRootRejected },
+        .{ .marker = "Package admission failed at metadata-open.", .reason = error.PackageMetadataOpenFailed },
+        .{ .marker = "Package admission failed at metadata-read.", .reason = error.PackageMetadataReadFailed },
+        .{ .marker = "Package admission failed at metadata-parse.", .reason = error.PackageMetadataInvalid },
+        .{ .marker = "Package admission failed at base-open.", .reason = error.PackageAtlasOpenFailed },
+        .{ .marker = "Package admission failed at base-read.", .reason = error.PackageAtlasReadFailed },
+        .{ .marker = "Package admission failed at base-header.", .reason = error.PackageAtlasHeaderInvalid },
+        .{ .marker = "Package admission failed at outfit-inventory.", .reason = error.PackageOutfitInventoryInvalid },
+        .{ .marker = "Package admission failed at outfit-read.", .reason = error.PackageOutfitReadFailed },
+        .{ .marker = "Package admission failed at outfit-header.", .reason = error.PackageOutfitHeaderInvalid },
+        .{ .marker = "Package admission failed at activity-inventory.", .reason = error.PackageActivityInventoryInvalid },
+        .{ .marker = "Package admission failed at activity-read.", .reason = error.PackageActivityReadFailed },
+        .{ .marker = "Package admission failed at activity-size.", .reason = error.PackageActivitySizeExceeded },
+        .{ .marker = "Package admission failed at activity-header.", .reason = error.PackageActivityHeaderInvalid },
+        .{ .marker = "Package admission failed at fingerprint.", .reason = error.PackageFingerprintFailed },
+        .{ .marker = "Package admission failed at fingerprint-mismatch.", .reason = error.PackageFingerprintMismatch },
+    };
+    // Stage failures take precedence over nested admission failures.
+    for (reasons) |item| {
+        var lines = std.mem.splitScalar(u8, stderr, '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trimEnd(u8, line, "\r");
+            if (std.mem.eql(u8, trimmed, item.marker)) return item.reason;
+            if (item.reason == error.PackageStagePublishFailed and std.mem.startsWith(u8, trimmed, item.marker)) return item.reason;
+        }
+    }
+    return error.PackageRejected;
+}
+
+fn requireSuccess(result: *const process.Outcome) !void {
+    if (result.succeeded()) return;
+    if (result.status != .exited) return error.PackageHelperDidNotExit;
+    return rejection(result.stderr);
+}
+
 pub const Helper = struct {
     runner: *process.Runner,
     exe: []const u8,
@@ -84,7 +129,7 @@ pub const Helper = struct {
             .stderr_limit = 16 * 1024,
         });
         defer result.deinit();
-        if (!result.succeeded()) return error.PackageRejected;
+        try requireSuccess(&result);
         return parseDigest(result.stdout, prefix);
     }
 
@@ -105,7 +150,7 @@ pub const Helper = struct {
             .stderr_limit = 16 * 1024,
         });
         defer result.deinit();
-        if (!result.succeeded()) return error.PackageRejected;
+        try requireSuccess(&result);
         return parseDetail(result.stdout);
     }
 
@@ -149,4 +194,14 @@ test "detail protocol accepts bounded Unicode and rejects unsafe fields" {
     try std.testing.expectError(error.InvalidHelperOutput, parseDetail("PULSE_PACKAGE_DETAIL_V1 2 0 0 0 00 62"));
     try std.testing.expectError(error.InvalidHelperOutput, parseDetail("PULSE_PACKAGE_DETAIL_V1 2 0 0 0 61 ff"));
     try std.testing.expectError(error.InvalidHelperOutput, parseDetail("PULSE_PACKAGE_DETAIL_V1 2 0 0 0 61 62 extra"));
+}
+
+
+test "helper rejection diagnostics preserve known stages and never forward raw stderr" {
+    try std.testing.expectEqual(error.PackageMetadataInvalid, rejection("Package admission failed at metadata-parse.\r\nClassic package rejected: metadata, path, inventory or WebP header.\n"));
+    try std.testing.expectEqual(error.PackageAtlasHeaderInvalid, rejection("Package admission failed at base-header.\n"));
+    try std.testing.expectEqual(error.PackageStageVerificationFailed, rejection("Package admission failed at metadata-open.\nPackage import failed at stage-verification (pending directory retained).\n"));
+    try std.testing.expectEqual(error.PackageStagePublishFailed, rejection("Package import failed at stage-publish (Win32 5; pending directory retained).\n"));
+    try std.testing.expectEqual(error.PackageRejected, rejection("arbitrary private path or unsupported output"));
+    try std.testing.expectEqual(error.PackageRejected, rejection("prefix Package admission failed at metadata-parse.\n"));
 }
