@@ -334,19 +334,20 @@ fn resolvePreview(user: *anyopaque, directory: *const identity.Path) Error!?host
     detectPreview(user, directory.slice(), &found);
     const candidate = nearestCandidate(&found) orelse return null;
     const workspace = identity.Workspace.init(candidate.kind, candidate.root.slice(), candidate.root.slice()) catch return error.Parse;
+    return .{ .provider = previewProvider(user, candidate.kind), .workspace = workspace };
+}
+
+fn previewProvider(user: *anyopaque, kind: identity.Kind) contract.Provider {
     var set: capabilities.Set = .empty;
     // Internal summary slot only: the panel explicitly distinguishes marker
     // inspection from a measured status. Never expose write capabilities.
     set.insert(.status);
     return .{
-        .provider = .{
-            .kind = candidate.kind,
-            .display_name = candidate.kind.displayName(),
-            .capabilities = set,
-            .vtable = &preview_vtable,
-            .ctx = user,
-        },
-        .workspace = workspace,
+        .kind = kind,
+        .display_name = kind.displayName(),
+        .capabilities = set,
+        .vtable = preview_vtable,
+        .ctx = user,
     };
 }
 
@@ -397,6 +398,20 @@ fn summarizePreview(user: *anyopaque, workspace: *const identity.Workspace) Erro
         parsePreviewHead(head, &snapshot);
     }
     return snapshot;
+}
+
+test "preview provider uses a value vtable for each supported kind" {
+    var context_byte: u8 = 0;
+    for ([_]identity.Kind{ .git, .jj, .svn }) |kind| {
+        const provider = previewProvider(&context_byte, kind);
+        try std.testing.expectEqual(kind, provider.kind);
+        try std.testing.expect(provider.supports(.status));
+        try std.testing.expect(provider.vtable.detect == &detectPreview);
+        try std.testing.expect(provider.vtable.summarize == &summarizePreview);
+        var result: detect.Result = .{};
+        provider.detectInto("", &result);
+        try std.testing.expectEqual(@as(u8, 0), result.len);
+    }
 }
 
 test "metadata preview parses HEAD without following a reference or inventing status" {
