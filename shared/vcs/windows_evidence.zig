@@ -308,7 +308,7 @@ fn canonicalName(handle: Handle, expected: *const Wide) bool {
     return std.mem.eql(u16, final[0..prefix.len], &prefix) and std.mem.eql(u16, final[prefix.len..len], expected.buffer[0..expected.len]);
 }
 
-fn openOne(path: *const Wide, is_directory: bool, read_contents: bool, read_security: bool) Error!Opened {
+fn openOne(path: *const Wide, is_directory: bool, read_contents: bool, read_security: bool, allow_tool_hardlinks: bool) Error!Opened {
     const access: u32 = (if (read_contents) @as(u32, 0x80000000) else 0x80) | (if (read_security) @as(u32, 0x20000) else 0);
     // Read-only file content observation excludes concurrent writers during
     // this open; directory observation does not lock the filesystem tree.
@@ -319,7 +319,7 @@ fn openOne(path: *const Wide, is_directory: bool, read_contents: bool, read_secu
     var info: FileInfo = undefined;
     if (GetFileInformationByHandle(handle, &info) == 0) return error.Permission;
     if (info.attributes & reparse_attribute != 0 or (info.attributes & directory_attribute != 0) != is_directory) return error.Permission;
-    if (!is_directory and info.links != 1) return error.Permission;
+    if (!is_directory and (info.links == 0 or (!allow_tool_hardlinks and info.links != 1))) return error.Permission;
     if (!canonicalName(handle, path)) return error.Permission;
     return .{ .handle = handle, .info = info };
 }
@@ -332,6 +332,10 @@ fn openChecked(path: []const u8, is_directory: bool, read_contents: bool) Error!
 }
 
 fn walkChecked(path: []const u8, is_directory: bool, read_contents: bool, audit: ?*AclWalk) Error!Opened {
+    return walkWithToolLinks(path, is_directory, read_contents, audit, false);
+}
+
+fn walkWithToolLinks(path: []const u8, is_directory: bool, read_contents: bool, audit: ?*AclWalk, allow_tool_hardlinks: bool) Error!Opened {
     if (comptime builtin.os.tag != .windows) return error.Unsupported;
     if (!approval.strictPath(path) or path.len <= 3) return error.Permission;
     var wide = try Wide.init(path);
@@ -340,7 +344,7 @@ fn walkChecked(path: []const u8, is_directory: bool, read_contents: bool, audit:
     var root_wide: Wide = .{ .len = 3 };
     @memcpy(root_wide.buffer[0..3], root[0..3]);
     root_wide.buffer[3] = 0;
-    const root_file = try openOne(&root_wide, true, false, audit != null);
+    const root_file = try openOne(&root_wide, true, false, audit != null, false);
     const volume = root_file.info.volume;
     {
         defer root_file.close();
@@ -354,7 +358,7 @@ fn walkChecked(path: []const u8, is_directory: bool, read_contents: bool, audit:
         const original_len = wide.len;
         wide.buffer[i] = 0;
         wide.len = i;
-        const parent = try openOne(&wide, true, false, audit != null);
+        const parent = try openOne(&wide, true, false, audit != null, false);
         const same_volume = parent.info.volume == volume;
         {
             defer parent.close();
@@ -364,11 +368,21 @@ fn walkChecked(path: []const u8, is_directory: bool, read_contents: bool, audit:
         wide.len = original_len;
         if (!same_volume) return error.Permission;
     }
-    const opened = try openOne(&wide, is_directory, read_contents, audit != null);
+    const opened = try openOne(&wide, is_directory, read_contents, audit != null, allow_tool_hardlinks);
     errdefer opened.close();
     if (opened.info.volume != volume) return error.Permission;
     if (audit) |walk| try walk.inspect(opened);
     return opened;
+}
+
+/// Local session tool candidate only. The user trusts the installation,
+/// and the caller still pins the observed identity and executable SHA-256.
+/// Git for Windows ships hardlinked executables. Do not use this exception
+/// for repository metadata, strict stored grants or generic file reads.
+pub fn observeSessionToolIdentity(path: []const u8) Error!FileIdentity {
+    const opened = try walkWithToolLinks(path, false, false, null, true);
+    defer opened.close();
+    return FileIdentity.from(opened.info);
 }
 
 pub fn observeIdentity(path: []const u8, is_directory: bool) Error!FileIdentity {
@@ -1036,6 +1050,9 @@ test "Windows config bytes are read by checked handle and hardlinks are denied" 
     if (CreateHardLinkW(alias_wide.z(), config_wide.z(), null) == 0) return error.TestUnexpectedResult;
     try std.testing.expectError(error.Permission, configDigest(path));
     try std.testing.expectError(error.Permission, observeIdentity(alias, false));
+    const tool_identity = try observeSessionToolIdentity(path);
+    const alias_identity = try observeSessionToolIdentity(alias);
+    try std.testing.expectEqual(tool_identity, alias_identity);
 }
 
 const system_sid = [_]u8{ 1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0 };

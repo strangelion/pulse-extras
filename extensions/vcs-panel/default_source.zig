@@ -403,7 +403,7 @@ const LocalSession = struct {
         const pins = self.pins orelse return error.Permission;
         var bytes: [identity.max_path_bytes]u8 = undefined;
         const marker = try markerPath(review, &bytes);
-        if (!sameId(pins.executable, try evidence.observeIdentity(review.executable.slice(), false)) or
+        if (!sameId(pins.executable, try evidence.observeSessionToolIdentity(review.executable.slice())) or
             !sameId(pins.root, try evidence.observeIdentity(review.root.slice(), true)) or
             !sameId(pins.marker, try evidence.observeIdentity(marker, true))) return error.Permission;
     }
@@ -415,7 +415,7 @@ const LocalSession = struct {
         const marker = try markerPath(review, &path);
         const root_id = try evidence.observeIdentity(review.root.slice(), true);
         const marker_id = try evidence.observeIdentity(marker, true);
-        const exe_id = evidence.observeIdentity(review.executable.slice(), false) catch return error.CliMissing;
+        const exe_id = evidence.observeSessionToolIdentity(review.executable.slice()) catch return error.CliMissing;
         if (self.io == null) {
             self.io = if (comptime @TypeOf(std.Io.Threaded.init) == fn (std.mem.Allocator) std.Io.Threaded)
                 std.Io.Threaded.init(allocator)
@@ -427,7 +427,7 @@ const LocalSession = struct {
         const file = std.Io.Dir.openFileAbsolute(io, review.executable.slice(), .{ .follow_symlinks = false }) catch return error.CliMissing;
         defer file.close(io);
         const digest = trust.digestFile(io, file) catch return error.Permission;
-        if (!sameId(exe_id, try evidence.observeIdentity(review.executable.slice(), false))) return error.Permission;
+        if (!sameId(exe_id, try evidence.observeSessionToolIdentity(review.executable.slice()))) return error.Permission;
         const system = try evidence.systemDirectory(&path);
         self.neutral = identity.Path.init(system) catch return error.Permission;
         for ([_][]const u8{ "SystemRoot", "WINDIR", "LANG", "LC_ALL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS" }, [_][]const u8{ system, system, "C", "C", "1", "0", "0" }) |key, value| {
@@ -638,7 +638,7 @@ fn suggestTools(snapshot: *contract.Snapshot) void {
             if (!snapshot.previewHas(kind) or snapshot.preview_tools[index] != null) continue;
             const selected = LocalSession.tool(kind) orelse continue;
             const path = std.fmt.bufPrint(&buffer, "{s}\\{s}", .{ directory, selected.exeName() }) catch continue;
-            _ = evidence.observeIdentity(path, false) catch continue;
+            _ = evidence.observeSessionToolIdentity(path) catch continue;
             snapshot.preview_tools[index] = identity.Path.init(path) catch continue;
         }
     }

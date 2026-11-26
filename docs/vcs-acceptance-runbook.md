@@ -207,3 +207,8 @@ Validate persistence across restart, concurrent settings version conflicts,
 folder picker cancellation, stale selections, bookmark removal without
 filesystem modification, no execution on path save and safe browser launch.
 Real-host UI/ABI and picker acceptance remain required.
+
+The local-session executable identity check accepts hardlinks (ordinary Git for
+Windows installations use them), but still checks canonical local paths,
+non-reparse identity and the SHA-256 before execution. The strict persisted
+approval path and repository metadata inspection retain their hardlink denial.
