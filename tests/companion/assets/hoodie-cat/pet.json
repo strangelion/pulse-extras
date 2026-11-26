@@ -1,0 +1,83 @@
+{
+  "id": "hoodie-cat",
+  "displayName": "Hoodie Cat",
+  "description": "OpenPets built-in Classic V2 wardrobe test package.",
+  "spritesheetPath": "spritesheet.webp",
+  "spriteVersionNumber": 2,
+  "wardrobe": {
+    "outfits": [
+      {
+        "id": "pajamas",
+        "displayName": "Pajamas",
+        "spritesheetPath": "outfits/pajamas.webp"
+      },
+      {
+        "id": "weekend",
+        "displayName": "Weekend",
+        "spritesheetPath": "outfits/weekend.webp"
+      },
+      {
+        "id": "halloween",
+        "displayName": "Halloween",
+        "spritesheetPath": "outfits/halloween.webp"
+      },
+      {
+        "id": "holidays",
+        "displayName": "Winter Holidays",
+        "spritesheetPath": "outfits/holidays.webp"
+      },
+      {
+        "id": "summer",
+        "displayName": "Summer",
+        "spritesheetPath": "outfits/summer.webp"
+      }
+    ],
+    "schedule": [
+      {
+        "outfit": "holidays",
+        "when": {
+          "dates": {
+            "from": "12-15",
+            "to": "01-02"
+          }
+        }
+      },
+      {
+        "outfit": "halloween",
+        "when": {
+          "dates": {
+            "from": "10-24",
+            "to": "11-01"
+          }
+        }
+      },
+      {
+        "outfit": "pajamas",
+        "when": {
+          "time": {
+            "from": "22:00",
+            "to": "07:00"
+          }
+        }
+      },
+      {
+        "outfit": "weekend",
+        "when": {
+          "days": [
+            "sun",
+            "sat"
+          ]
+        }
+      },
+      {
+        "outfit": "summer",
+        "when": {
+          "dates": {
+            "from": "06-21",
+            "to": "08-31"
+          }
+        }
+      }
+    ]
+  }
+}

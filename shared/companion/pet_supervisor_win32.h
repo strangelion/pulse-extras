@@ -1,0 +1,134 @@
+#ifndef PULSE_PET_SUPERVISOR_WIN32_H
+#define PULSE_PET_SUPERVISOR_WIN32_H
+#include "pet_state_win32.h"
+
+/* Experimental supervised child committed-memory ceiling. This is not
+ * the 48 MiB application allocator budget or a working-set limit. */
+#define PET_CHILD_COMMIT_LIMIT ((SIZE_T)128u * 1024u * 1024u)
+
+/* Worker-owned, zero-initialized, noncopyable. One child per supervisor.
+ * The host must verify its independently approved executable digest/root
+ * ACLs before launch (shared/process/trust.zig); this is containment,
+ * not an executable approval authority or sandbox. */
+typedef struct {
+    HANDLE job;
+    HANDLE process;
+    HANDLE stop;
+    HANDLE state_mapping;
+    HANDLE state_event;
+    volatile LONG *state_slot;
+    DWORD generation;
+    unsigned reaction;
+    HANDLE ready_event;
+} pet_supervisor;
+
+typedef enum {
+    PET_CHILD_OK = 0, PET_CHILD_INVALID, PET_CHILD_BUSY,
+    PET_CHILD_OS_ERROR, PET_CHILD_CONTAINMENT_FAILED, PET_CHILD_TIMEOUT,
+    PET_CHILD_COUNT_LIMIT, PET_CHILD_STORAGE_LIMIT, PET_CHILD_BUDGET_LIMIT,
+    PET_CHILD_SYSTEM_MEMORY, PET_CHILD_UNAPPROVED_IMAGE
+} pet_child_result;
+
+typedef struct {
+    BOOL smoke; /* hidden test only, no persistent settings */
+    BOOL remember;
+    BOOL reduced;
+    BOOL topmost;
+    unsigned scale;
+} pet_child_options;
+
+pet_child_result pet_child_start(pet_supervisor *owner, const wchar_t *approved_exe,
+    const pet_child_options *options);
+/* Publish a state to the private child channel. Identical states are
+ * coalesced. A successful publish means local admission, NOT rendered
+ * acknowledgment. Must be serialized with start/status/stop on worker. */
+pet_child_result pet_child_publish(pet_supervisor *owner, unsigned reaction);
+/* Nonblocking query. A completed child retains ownership until stop/reap. */
+pet_child_result pet_child_status(const pet_supervisor *owner, BOOL *running, DWORD *exit_code);
+/* Graceful stop, then terminate owned job only. Both waits bounded.
+ * forced and exit_code are valid only on confirmed process exit.
+ * A failed wait retains ownership so caller may retry or abandon. */
+pet_child_result pet_child_stop(pet_supervisor *owner, DWORD grace_ms,
+    BOOL *forced, DWORD *exit_code);
+/* Last-resort release: closing the private job requests kernel cleanup.
+ * No claim of confirmed termination. Safe on a zero owner. */
+void pet_child_abandon(pet_supervisor *owner);
+
+/* One process-wide owner mode: legacy singleton OR one worker-owned group.
+ * The group is noncopyable and must remain alive until close succeeds.
+ * Count includes unconfirmed startup failures and stopping children. */
+#define PET_GROUP_MAX 1024u /* Current storage capacity, not config range. */
+#define PET_GROUP_CONFIG_MAX 2147483647u
+#define PET_GROUP_MEMORY_HEADROOM (512ull * 1024ull * 1024ull)
+typedef struct {
+    uint64_t id;
+    pet_supervisor child;
+    BOOL stopping;
+} pet_group_slot;
+typedef struct {
+    HANDLE job, process, capture_event;
+    uint64_t capture_since;
+} pet_crash_monitor;
+
+#define PET_CRASH_GROUP_MAX 4u
+
+typedef struct {
+    unsigned limit, count;
+    uint64_t next_id;
+    SIZE_T commit_budget;
+    pet_group_slot slots[PET_GROUP_MAX];
+    pet_crash_monitor monitors[PET_GROUP_MAX];
+    BOOL capture_crashes;
+    uint32_t dumps_saved, dumps_failed;
+} pet_supervisor_group;
+
+/* Default off. Enable only before any launches; independently bounded
+ * renderer and monitor jobs count against the same admission budget. */
+pet_child_result pet_group_crash_policy(pet_supervisor_group *group, BOOL enabled);
+pet_child_result pet_group_crash_stats(pet_supervisor_group *group, uint32_t *saved, uint32_t *failed);
+
+pet_child_result pet_group_open(pet_supervisor_group *group, unsigned limit, SIZE_T commit_budget);
+/* Pure policy, using current owned count and caller-supplied system memory
+ * measurements. Does not promise successful process creation. */
+pet_child_result pet_group_admission(const pet_supervisor_group *group,
+    uint64_t available_physical, uint64_t available_commit);
+/* On an error, nonzero id means a possibly live child remains owned;
+ * reap or stop it before reclaiming the reservation. */
+pet_child_result pet_group_start(pet_supervisor_group *group, const wchar_t *approved_exe,
+    const pet_child_options *options, uint64_t *id);
+/* Typed Classic package launch. Caller must validate private asset root;
+ * child revalidates contents. No arbitrary command-line arguments. */
+pet_child_result pet_group_start_package(pet_supervisor_group *group, const wchar_t *approved_exe,
+    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id, uint64_t *id);
+pet_child_result pet_group_start_verified_package(pet_supervisor_group *group, const wchar_t *approved_exe,
+    const pet_child_options *options, const wchar_t *directory, const wchar_t *package_id,
+    const wchar_t *expected_sha, uint64_t *id);
+/* Production-facing group admission: require an independently supplied
+ * executable digest and hash the pinned handle before spawning. Package
+ * arguments are all optional for a synthetic child; asset digest policy
+ * remains the caller's responsibility. Does not approve directory ACLs. */
+pet_child_result pet_group_start_approved(pet_supervisor_group *group, const wchar_t *approved_exe,
+    const uint8_t image_sha[32], const pet_child_options *options, const wchar_t *directory,
+    const wchar_t *package_id, const wchar_t *expected_sha, uint64_t *id);
+pet_child_result pet_group_publish(pet_supervisor_group *group, uint64_t id, unsigned reaction);
+pet_child_result pet_group_status(pet_supervisor_group *group, uint64_t id, BOOL *running, DWORD *exit_code);
+typedef struct {
+    uint64_t private_bytes, working_set, cpu_100ns, sampled_ms;
+    uint32_t handles, pid;
+} pet_group_metrics;
+SIZE_T pet_group_storage_size(void);
+/* First-frame acknowledgment, not ongoing visibility or liveness. */
+pet_child_result pet_group_ready(pet_supervisor_group *group, uint64_t id, BOOL *ready);
+/* Owned process handle only; output valid solely on success. */
+pet_child_result pet_group_sample(pet_supervisor_group *group, uint64_t id, pet_group_metrics *out);
+/* Nonblocking cooperative stop and forced termination requests. Neither
+ * releases the slot. Reap only after the process handle signals. */
+pet_child_result pet_group_request_stop(pet_supervisor_group *group, uint64_t id);
+pet_child_result pet_group_force_stop(pet_supervisor_group *group, uint64_t id);
+pet_child_result pet_group_reap(pet_supervisor_group *group, uint64_t id, DWORD *exit_code);
+/* Close rejects any outstanding children; never silently drops ownership. */
+pet_child_result pet_group_close(pet_supervisor_group *group);
+/* Emergency terminal release; does not confirm child exit. */
+pet_child_result pet_group_abandon(pet_supervisor_group *group);
+
+#endif

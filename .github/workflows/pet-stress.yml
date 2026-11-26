@@ -1,0 +1,79 @@
+name: Companion stress benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: Independent hidden pet processes (1-100)
+        type: number
+        default: 100
+      seconds:
+        description: Sampling duration (5-180 seconds)
+        type: number
+        default: 30
+      profile:
+        description: Independent hidden benchmark (not Pulse-managed)
+        type: choice
+        options: [synthetic-hidden, mixed-hidden]
+        default: mixed-hidden
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: Independent hidden processes
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Restore Zig archive cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/pulse-zig-archives
+          key: zig-archive-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.zig-version', 'scripts/zig-downloads.json') }}
+      - run: python scripts/install_zig.py
+      - name: Stage pinned static WebP decoder
+        if: inputs.profile == 'mixed-hidden'
+        run: python scripts/install_pet_webp.py
+      - name: Build selected companion backend
+        env:
+          PET_PROFILE: ${{ inputs.profile }}
+        shell: pwsh
+        run: |
+          $buildArgs = @('build', 'pet-demo', '-Doptimize=ReleaseSafe', '--summary', 'all')
+          if ($env:PET_PROFILE -eq 'mixed-hidden') {
+            $buildArgs += '-Dpet-libwebp=true'
+          } elseif ($env:PET_PROFILE -ne 'synthetic-hidden') {
+            throw 'Invalid independent benchmark profile'
+          }
+          zig @buildArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Measure independent hidden instances
+        env:
+          PET_PROFILE: ${{ inputs.profile }}
+          PET_COUNT: ${{ inputs.count }}
+          PET_SECONDS: ${{ inputs.seconds }}
+        shell: pwsh
+        run: |
+          $petArgs = @('--count', $env:PET_COUNT, '--seconds', $env:PET_SECONDS, '--output', 'zig-out/pet-stress')
+          if ($env:PET_PROFILE -eq 'mixed-hidden') {
+            python tests/companion/pet_stress_fixtures.py zig-out/stress-fixtures
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $petArgs += @('--package', 'zig-out/stress-fixtures/fixture-v1', 'fixture-v1', '--webp', '2', 'zig-out/stress-fixtures/fixture-v2.webp')
+          }
+          python tests/companion/pet_stress.py @petArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Publish measurements even on benchmark failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-stress-${{ inputs.profile }}
+          path: zig-out/pet-stress/
+          if-no-files-found: warn
+          retention-days: 14

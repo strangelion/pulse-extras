@@ -462,3 +462,137 @@ samples. The Job Object helper rejects null handles (Windows otherwise permits
 querying the caller's job). Package evidence binds the actual verified archive
 member bytes and exact inventory as well as staged files. These checks do not
 replace the official verifier or the product-specific trust/acceptance gates.
+### Companion resource profile — first shared allocator consumer
+
+The experimental standalone companion now owns an instance-local shared
+BoundedAllocator with a provisional 48 MiB requested-live-byte cap.
+Its C callback bridge accounts compressed inputs, RGBA atlas/strip
+allocations and the bounded metadata scratch in one domain. Native
+cleanup precedes checkDrained. This does not count WIC/GDI/OS resources,
+stack memory or handles, and is not a host-wide quota. See the companion
+spike for the switch-peak rationale, remaining handle/log/task gates
+and native verification requirements.
+
+Companion phase 2 adds independent shared Budget quotas for asset and
+enumeration handles, synchronous decode scopes and DIB pixel bytes.
+It uses the existing bounded event_log for quota/cleanup events and
+requires all accounted resources to drain at native exit. Scope counters
+are not measurements of WIC internals, GDI overhead, registry/menu/IPC
+resources or total process memory. See companion spike for limits and
+remaining lifecycle/diagnostic integration.
+
+Companion phase 3 owns a shared Group with one running and one queued
+slot; the native buffer bridge reuses the group's pool. A dedicated
+decode handoff adapter consumes shared LatestTask using copyable
+future results and a stable caller-owned decoded-byte mailbox.
+No owning pointer is returned through the future; stale results are
+freed only after actual join. External resource accounting callbacks
+are synchronized for subsequent worker integration. Native WIC and the
+Windows wait loop are not yet connected to that adapter.
+
+Companion phase 4 connects the shared latest-only handoff to the Win32
+message loop for live Classic package outfit and activity decodes.
+The process entry supplies std.Io; a stable native context notifies
+the UI through an event, joins before mailbox access and stops before
+closing pinned resources. Startup and the explicit diagnostic strip
+path remain synchronous. Foreign WIC execution is not hard-cancellable;
+successful artwork and UI responsiveness require native acceptance.
+
+Companion phase 5 adds object-count budgets for inherited IPC handles
+and mapped view, registry key, native menu tree and argument allocation
+scope. Attached menu ownership follows DestroyMenu recursion. Failed
+native release retains its reservation and produces bounded diagnostics.
+Hidden smoke exercises all five menu objects without a modal popup.
+These counts do not represent Windows-internal memory use.
+
+Companion phase 6 charges the published HWND, owned memory DCs and
+borrowed desktop DC separately, including transactional resize peaks
+and WM_NCDESTROY ownership. Fixed native decode events join the
+existing bounded log. No system-wide allocation accounting or full
+migration of textual diagnostics is claimed.
+
+
+### Shared diagnostics and native-menu consumers
+
+The Companion collector now statically compiles the reusable
+`shared/diagnostics/crash_win32.c` backend. It owns system DbgHelp only in
+the explicitly launched diagnostic process, accepts only a caller-owned
+debugged child and matching second-chance event/thread, enforces a
+256 MiB ceiling and uses exclusive current-user DACL output. The backend
+does not discover processes, install a host filter, choose output paths,
+start a service, or perform automatic deletion. Failed callback writes
+are sticky; partial cleanup failure is reported. The standalone adapter
+retains responsibility for the trusted sibling executable, job, debug
+event loop and user opt-in. DbgHelp calls must be serialized in a
+dedicated process; no cross-DLL singleton or shared pointers.
+
+`shared/runtime/retention.zig` provides allocation-free, caller-owned
+ordered record retention by age and count. Companion's PDH1 history
+uses it without changing record format, private lease, 16-row/30-day
+defaults or existing validation. It does not authorize filesystem
+deletion. The later managed diagnostic persistence consumer below is the candidate
+file adapter; actual managed startup/rotation remains unverified.
+User-selected exports stay user-owned and are never swept.
+
+`shared/pulse/menu_win32.h` provides native checked-radio styling and
+bounded UTF-8 mnemonic escaping, consumed by the actual desktop menu.
+The OS retains accessibility, keyboard navigation and cancellation.
+Companion labels and menu commands remain product-specific. This is a
+public Win32 compatibility backend, not a private Fluent renderer or a
+claim of exact Pulse theme parity. Future consumers can compile these
+sources into their own owner scopes; no mandatory shared DLL. Shared
+path changes require full CI, including existing native crash and menu
+fixtures plus retention tests.
+
+
+### Managed diagnostic persistence consumer
+
+The shared crash backend uses the documented x64 pack(4) DbgHelp I/O
+callback ABI, including output union offset zero; the pinned MinGW
+header's incomplete declaration must not control this layout.
+`shared/diagnostics/store_win32.c` implements fixed-slot, identity-bound
+managed dump retention under a separately ACL-verified, locked private
+root. It never adopts unknown files or user exports. Companion's
+optional out-of-process watchers are the first consumer. They are
+independently job-bounded, require explicit policy opt-in, and are
+charged against the group commit budget. No mandatory resident service
+or host process debugger is introduced. See the Companion manager
+document for caps, failure recovery, compatibility and remaining
+real-host evidence. The public Win32 menu backend retains system
+theme/navigation and invalidates active menus on theme/DPI changes;
+the pinned SDK does not provide native external Fluent rendering.
+
+### Deferred shared binary dependency (multi-add-on coexistence)
+
+Status: PLANNED, not implemented. Keep current source sharing and independent
+runtime ownership until existing Companion and VCS acceptance passes. The
+objective is that multiple separately installed Pulse Extras add-ons can use
+one supported, versioned runtime binary and, when in the same host process,
+one coordinated runtime instance. This is not an external-app SDK project.
+
+Before implementation, verify the pinned/current Pulse SDK and registry's
+actual dependency discovery, installation, activation, upgrade and unload
+contracts with upstream. Do not assume an arbitrary common DLL location,
+load from a writable search path, change registry dependencies, or introduce
+a background service. If the host does not support a safe shared dependency,
+retain the bundled source model; evaluate a supported alternative separately.
+
+Acceptance gates:
+
+- Specify versioned C ABI, capability negotiation, trusted canonical binary
+  identity, immutable version directories and compatible mixed-version loading.
+- Per-add-on owner tokens, quota and failure isolation; optional aggregate
+  budgets and bounded queues, no raw allocator/Zig ABI crossing the DLL.
+- Prove concurrent acquire/release, callback drain and last-consumer unload;
+  reject new work while stopping and retain outstanding resources on failure.
+- Prove install/update/uninstall of one add-on cannot replace or remove a
+  loaded or still-required runtime; rollback without forced hot replacement.
+- Explicit missing/incompatible dependency behavior; no silent unsafe fallback.
+- Same-process shared state only. Different host processes may reuse installed
+  code, but resource coordination would require separate approved IPC design.
+- Real host tests with at least two independently installed add-ons in both
+  load orders, mixed versions, partial failure, update and uninstall; measure
+  memory/handle reduction and test full CI before adopting the binary model.
+
+No shared DLL, central allocator or mandatory new dependency is introduced
+by this plan. Do not expand Companion stage C to implement it.

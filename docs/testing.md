@@ -32,9 +32,11 @@ The same workflow is triggered on every push, pull request and manual dispatch. 
 | --- | --- | --- |
 | docs | Only README.md and Markdown under docs/ | Classifier tests and scope/gate only; no Zig install or functional tests |
 | vcs | Only Zig source under shared/vcs/ plus allowed Markdown | Both OSes: Python checks, Zig format, all unit/real-repository integration tests and ReleaseSafe DLL build; no Windows SDK regeneration or C loader |
+| companion | Only classified companion source/test paths and allowed Markdown | Windows/Linux companion regression, Windows native IPC and desktop lanes, fast ZIP test; no unrelated VCS or SDK/DLL checks |
+| companion-host | Exact allowlisted Companion extension, runtime/store adapters, probe or C loader, optionally with companion paths and allowed Markdown | All companion checks, production DLL builds on both OSes, pinned headers and unbundled Companion C ABI on Windows; no Git/JJ/SVN integration or SDK binding regeneration |
 | full | Everything else, mixed/unknown changes, tags, new/rewritten branches, unavailable/empty diff, manual dispatch | All existing checks including SDK regeneration and Windows C loader |
 
-Push scope uses the entire before-to-after diff, not just the last commit. PR scope compares the checked-out merge tree against its base SHA. Renames are considered as old and new paths; unavailable diffs default to full. The classifier is tested in scripts/test_ci_scope.py. Workflow, build.zig, toolchain/SDK locks, SDK wrappers, process runner, extensions, scripts and test changes always require full CI. A new build dependency on documentation requires revisiting the allowlist.
+Push scope uses the entire before-to-after diff, not just the last commit. PR scope compares the checked-out merge tree against its base SHA. Renames are considered as old and new paths; unavailable diffs default to full. The classifier is tested in scripts/test_ci_scope.py. Workflow, build.zig, toolchain/SDK locks, SDK wrappers, process runner, other extensions, scripts and unclassified test changes always require full CI. The companion-host allowlist is exact, not a wildcard over extensions or shared adapters. Git still checks out the repository in every scope, but JJ installation, VCS tool checks and SVN fixture preparation run only for vcs/full. Manual dispatch remains full. A new build dependency on documentation requires revisiting the allowlist.
 
 A docs-only green gate validates scope only, not earlier commits or code. Reduced VCS checks do not prove the omitted ABI tests. Run the workflow manually (full) before release, after a series of reduced runs, or when a prior code check failed. There is no scheduled cache keepalive or extra periodic workflow. If configuring branch protection, use the stable **Regression gate** check after its first run; do not require an intentionally omitted individual step. Existing protection settings are not changed by this workflow.
 
@@ -52,15 +54,36 @@ Ordinary docs/VCS/full scopes remain unchanged. The future [release workflow](re
 
 New submodules/dependency pins, license changes and build integration are FULL scope under the existing conservative classifier. Fetch only audited dependencies needed by selected builds; reference-only repositories and docs checks must not acquire them. Use real engine/CLI/IPC tests and fixture-based authoring, pet event and recipe tests before advertising support. Keep resource/host/containment and benchmark acceptance separate from lightweight routine CI. Release source and exact dependency/license review follow [product scope](product-scope.md) and [release](release.md).
 
-RT0 candidate adds deterministic output-budget overflow/rollback/drain tests, serialized provider/workspace cache key and stale-generation checks, strict known CLI version prefixes, UTF-8 text validation, and VCS intermediate output lifetime changes. Full CI is required. No Windows real-host cancellation or unload evidence yet.
+Historical RT0 test additions, Windows timeout investigation and detailed
+checkpoint logs are retained in the [pre-consolidation testing document](https://github.com/strangelion/pulse-extras/blob/78a33f1a54cabb6e880687023692a07aba44163c/docs/testing.md).
+Current requirements are the ownership, timeout, quota, leak and lifecycle
+gates above; keep the isolated Windows Job diagnostics and mandatory
+aggregate test deadlines. Formatting failure prints the exact patch in
+the disposable checkout; never mutates the repository.
 
-RT0 allocator/stop candidate: ordinary Windows/Linux tests cover reserve/alloc failure rollback, resize/remap, zero-byte/alignment-sized allocation, independent owners, admission rejection, refusal to stop with live outcomes, real finite single-child timeout and repeated cleanup. Verify all tests against pinned Zig; tests use finite child fixtures, not an unbounded stress workload. Deeper cancellation/descendant, concurrency and mixed-plugin real-host acceptance remain required. Record tracked live bytes/reservations, not an inferred Private Bytes or working-set limit.
+## Parallel native lanes and performance evidence
 
-RT0 async candidate: test owned input copies, busy guards, one-time result transfer, OOM rollback, finite direct-child cancellation, stop/drain and concurrent allocator counters on both CI platforms. A cancellation race must not leak a completed result. A single-child fixture is not process-tree or real-host proof; leave VCS panel disabled until descendant/job-object and callback/worker teardown acceptance. No new workflow or resident service.
+The Windows native IPC and desktop jobs run in parallel with Windows/Linux
+general checks; the stable Regression gate requires every applicable lane.
+The desktop lane owns both standalone and managed crash tests, supervisor,
+private-root/catalog, bundled C ABI, actual import and static WebP
+allocator/mixed two-child/package-admission checks. Reuse its existing
+WebP helper build, supervisor executable and fixture directory; do not
+launch an additional workflow for the same push. The mixed codec probe
+retains diagnostics on failure. The fast ZIP regression precedes the broad
+suite. No failure is converted to a skip.
 
-Formatting preflight runs before VCS tool acquisition, using pinned Zig. On mismatch CI prints the exact `zig fmt` patch in the disposable checkout and exits nonzero; no automatic repository mutation. Run `zig fmt build.zig shared extensions` followed by `zig fmt --check build.zig shared extensions` locally before committing. Runtime adds input validation and async environment ownership/cleanup checks. Test secrets are synthetic values only; do not print real environment maps.
+Only two workflows are needed now: Zig regression (automatic scoped
+correctness, manual full, explicit test-package job after full gate) and Companion stress benchmark (manual independent
+hidden, synthetic or mixed static WebP, 1–100 processes, 5–180 seconds).
+Do not add hosted-visible, WIC-only or separate release workflows merely
+for D; local harness options remain available for diagnosis. Actual
+visible, host-managed, soak, network and package acceptance belong to
+[Stage D](companion-manager.md#stage-d-official-testformal-packaging-and-real-host-acceptance).
+See [performance.md](performance.md) for historical evidence. A docs-only
+green check does not prove an earlier code change passed.
 
-Runtime retention candidate: test actual-output reservations, reuse of unused caps with multiple live results, peak/drain checks, diagnostic nulls during pending work, idle-only configuration, explicit local path/environment admission and maximum deadline. Full CI remains required; no change to test gating, no resident monitoring. Strict-path checks are lexical and do not prove trusted executable or safe process-tree ownership.
+### Test artifact on request
 
 Latest-only slot/session candidate: two slot and three session unit tests plus real Git/JJ/SVN existing repository fixtures through Session. Check bounded coalescing across 1,000 submissions, stale generation and failed refresh, cancellation preserving the newer queued request, stop and drain. No separate workflow. Full CI is required; actual Pulse lifecycle, multi-plugin host acceptance and process resource plateau tests remain deferred with status NOT VERIFIED, not counted as passed.
 
@@ -200,3 +223,12 @@ Regression candidate includes versioned review encoding/decoding and staging too
 New tests cover strict stored-record parsing, restricted Git index/name rejection and approval CLI payload/error handling. Default DLL source now uses the actual Windows manager, while Zig unit tests of the entry explicitly import the locked source. The C loader assumes a clean candidate slot on its disposable CI Windows user. The positive real-host and protected storage acceptance matrix is deferred. No real registry grant is written by unit tests.
 
 Additional tests exercise ancestor-only create rights, target write rejection, inherit-only versus inherited ACEs, and DPAPI round-trip/tamper refusal without modifying the registry. The package remains an isolated acceptance candidate.
+**Companion test package on request.** Manual Zig regression input companion_test_package=true (or an explicit
+[test-package] commit marker on the experimental branch with full scope)
+adds a post-gate package job. The host is the official v1.0.60 installer
+with pinned size/digest and matching upstream source checkout. Only the
+verified unsigned .pulse-ext, evidence and verify log are uploaded for
+14 days. No automatic package generation on ordinary pushes, no signing
+or release write permission, no actual Companion UI acceptance. A failed
+package job remains a failed workflow; the existing regression gate still
+represents correctness only.
