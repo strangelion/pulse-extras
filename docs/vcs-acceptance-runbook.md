@@ -97,3 +97,28 @@ Automated regression coverage includes session wiring and exactly-once source
 release, reviewed environment drift, revoked in-flight summary discard and
 future navigation denial, malformed record and package-tool failure/success.
 The actual host, actual provisioned auditor and installation remain deferred.
+
+### Context-menu entry (candidate)
+
+The VCS extension now registers the public package-local command
+`vcs.open-current` during plugin entry, without opening a panel or loading a
+grant. In Pulse's contributed-command menu, choose **VCS: 查看当前目录**.
+It accepts a loaded directory with zero or more selected files/folders and
+intentionally queries the current directory, not a selected child directory.
+Enter a child directory before invoking the command if that is the target.
+The public 1.0.60 command descriptor allows only file/directory kind bits;
+zero-selection admission is expressed through min_selection=0, not an
+unsupported background flag. Host placement is requested as sidebar; if
+unavailable the existing panel remains. Repeated invocation does not create
+duplicates. Closing/reopening must use the existing drain and approval path;
+a busy teardown requires a retry, never forced retirement. The ordinary
+activation entry remains available. No new approval, Git write operation,
+registry modification or Explorer shell integration is added.
+
+Acceptance: test the file/folder context menu and empty directory menu where
+the installed host exposes contributed commands, repeated invocation, closing
+and reopening, locked/no-grant operation, navigation, reviewed root admission
+and independent Companion coexistence. Verify the actual menu location and
+sidebar placement in installed Pulse. The independent C loader checks
+entry-time registration, null/wrong-ID rejection, repeated invocation,
+reopening after close and host-first shutdown; it is not actual host UI proof.

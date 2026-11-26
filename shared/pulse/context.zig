@@ -311,6 +311,14 @@ pub fn Navigation(comptime capacity: usize) type {
             }
         }
 
+        /// Explicit UI-owner refresh using the same validated, copied
+        /// context path as navigation events. Not an authorization grant.
+        pub fn refreshCurrent(self: *Self) Error!void {
+            if (!self.accepting or self.poisoned) return error.State;
+            const table = self.table orelse return error.State;
+            try table.get(&receive, self);
+        }
+
         /// Consume at most one latest directory; older events are replaced.
         /// A ticket with no directory explicitly instructs the owner to clear.
         pub fn take(self: *Self) ?Ticket {

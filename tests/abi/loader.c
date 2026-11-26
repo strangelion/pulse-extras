@@ -4,6 +4,7 @@
 #include <windows.h>
 #include "pulse/abi.h"
 #include "pulse/context.h"
+#include "pulse/commands.h"
 #include "pulse/tasks.h"
 #include "pulse/ui_model.h"
 #include <string.h>
@@ -41,6 +42,10 @@ typedef struct {
     void *navigation_user;
     uint64_t next_panel, next_subscription, panel, navigation_id;
     unsigned close_attempts;
+    unsigned menu_registered, menu_unregistered;
+    PulseCommandId menu_id;
+    PulseCommandFn menu;
+    void *menu_user;
 } LockedHost;
 
 static PulseStringView sv(const char *value) {
@@ -195,10 +200,41 @@ static PulseStatus PULSE_CALL task_get(void *context, PulseTaskId id, PulseTaskS
     return PULSE_ERROR_STATE;
 }
 
+static PulseStatus PULSE_CALL register_menu(void *context, const PulseCommandDescriptor *descriptor, PulseCommandId *id) {
+    LockedHost *host = context;
+    if (host->stopped || host->menu || !descriptor || !id) return PULSE_ERROR_STATE;
+    if (descriptor->size != sizeof(*descriptor) || !equals(descriptor->id, "vcs.open-current") ||
+        !descriptor->title.data || !descriptor->title.length ||
+        descriptor->kinds != (PULSE_COMMAND_FILES | PULSE_COMMAND_DIRECTORIES) ||
+        descriptor->min_selection != 0 || descriptor->max_selection != 4096 ||
+        descriptor->virtual_key || descriptor->modifiers || !descriptor->invoke || !descriptor->user)
+        return PULSE_ERROR_ARGUMENT;
+    host->menu = descriptor->invoke;
+    host->menu_user = descriptor->user;
+    host->menu_id = 1234;
+    *id = host->menu_id;
+    ++host->menu_registered;
+    return PULSE_OK;
+}
+static PulseStatus PULSE_CALL unregister_menu(void *context, PulseCommandId id) {
+    LockedHost *host = context;
+    if (host->stopped || !host->menu || id != host->menu_id) return PULSE_ERROR_STATE;
+    host->menu = NULL;
+    host->menu_user = NULL;
+    ++host->menu_unregistered;
+    return PULSE_OK;
+}
+
 static PulseStatus PULSE_CALL query_locked(void *context, PulseStringView name, uint32_t version, void *out, uint32_t size) {
     LockedHost *host = context;
     if (host->stopped) return PULSE_ERROR_STATE;
     if (!out || version != 1) return PULSE_ERROR_ABI;
+    if (equals(name, PULSE_COMMANDS_INTERFACE_NAME)) {
+        const PulseCommandsV1 table = { sizeof(table), 1, host, register_menu, unregister_menu };
+        if (size < sizeof(table)) return PULSE_ERROR_ABI;
+        memcpy(out, &table, sizeof(table));
+        return PULSE_OK;
+    }
     if (equals(name, PULSE_TASKS_INTERFACE_NAME)) {
         const PulseTasksV1 table = { sizeof(table), 1, host, task_create, task_cancel, task_get, task_cancel };
         if (size < sizeof(table)) return PULSE_ERROR_ABI;
@@ -228,6 +264,25 @@ static int exercise_locked(PulsePluginEntryV1Fn entry) {
     CHECK(entry(&host, &out) == PULSE_OK);
     CHECK(out.instance && out.activate && out.deactivate && out.destroy);
 
+    /* Menu discovery must not activate the panel or execute tools. */
+    CHECK(state.menu_registered == 1 && state.menu && !state.panel_open && !state.navigation && !state.unexpected_tasks);
+    PulseContextSelectionSnapshot selection = {0};
+    selection.size = sizeof(selection);
+    selection.directory = sv("C:\\fixture");
+    state.menu(state.menu_user, state.menu_id, NULL);
+    state.menu(state.menu_user, state.menu_id + 1, &selection);
+    CHECK(!state.panel_open);
+    state.menu(state.menu_user, state.menu_id, &selection);
+    CHECK(state.panel_open && state.navigation && !state.unexpected_tasks);
+    unsigned menu_created = state.created;
+    state.menu(state.menu_user, state.menu_id, &selection);
+    CHECK(state.created == menu_created && state.panel_open);
+    /* User closes the panel: the next command may reopen only after drain. */
+    forget_panel(&state);
+    state.menu(state.menu_user, state.menu_id, &selection);
+    CHECK(state.panel_open && state.navigation && state.created == menu_created + 1);
+    out.deactivate(out.instance);
+    CHECK(!state.panel_open && !state.navigation);
     /* Roll back a partially activated panel/context; a retry must work. */
     state.fail_get = 1;
     CHECK(out.activate(out.instance) == PULSE_ERROR_PERMISSION);
@@ -266,6 +321,9 @@ static int exercise_locked(PulsePluginEntryV1Fn entry) {
        STATE here means the mock already invalidated the registrations. */
     forget_panel(&state);
     forget_navigation(&state);
+    /* Host stop invalidates command callbacks before final destroy. */
+    state.menu = NULL;
+    state.menu_user = NULL;
     state.stopped = 1;
     out.deactivate(out.instance);
     unsigned attempts = state.close_attempts;

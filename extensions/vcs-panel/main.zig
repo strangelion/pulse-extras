@@ -10,6 +10,9 @@ const host_query = @import("vcs_host_query");
 const diag = @import("pulse_diagnostics");
 const approval = @import("vcs_approval");
 const source = @import("vcs_native_source");
+const commands = @import("pulse_commands");
+const context = @import("pulse_context");
+const mount = @import("pulse_ui_mount");
 
 const allocator = std.heap.page_allocator;
 
@@ -19,6 +22,61 @@ const Instance = struct {
     session: ?approval.NativeSession = null,
     session_revoked: bool = false,
     active: bool = false,
+    menu_table: ?commands.Table = null,
+    menu_id: commands.CommandId = 0,
+    menu_accepting: bool = false,
+    menu_invoking: bool = false,
+
+    // Entry-time registration is required by commands.h: discovering a menu
+    // must not open the panel or acquire the protected Git grant.
+    fn registerMenu(self: *Instance) void {
+        const table = commands.Table.init(self.host) catch |err| {
+            diag.status("vcs-menu-unavailable", @intFromError(err));
+            return;
+        };
+        if (table.raw.unregister_command == null) return;
+        var item = commands.descriptor("vcs.open-current", "VCS: 查看当前目录", &invokeMenu);
+        item.kinds = commands.Kind.files | commands.Kind.directories;
+        item.min_selection = 0;
+        item.max_selection = 4096;
+        item.user = self;
+        self.menu_table = table;
+        self.menu_id = table.register(&item) catch |err| {
+            diag.status("vcs-menu-register-failed", @intFromError(err));
+            return;
+        };
+        // A successful zero ID is unusable; never admit its callbacks.
+        self.menu_accepting = self.menu_id != 0;
+        diag.status("vcs-menu-registered", @intFromBool(self.menu_accepting));
+    }
+
+    fn openFromMenu(self: *Instance) host_mod.Error!void {
+        if (self.active) {
+            if (self.binding) |*binding| {
+                if (binding.accepting) {
+                    // Refresh the owner context synchronously, without using
+                    // selected filenames as an authorization or tool argument.
+                    try binding.navigation.refreshCurrent();
+                    binding.pump() catch |err| {
+                        if (err != error.State or binding.accepting) return err;
+                        // A closed host panel is not proof of drain. Reopen
+                        // only after the existing stop path confirms cleanup.
+                        try self.stop();
+                    };
+                } else try self.stop();
+            } else return error.State;
+        } else if (self.binding != null or self.session != null) {
+            try self.stop();
+        }
+        try self.start();
+        const binding = if (self.binding) |*value| value else return error.State;
+        const model = binding.model orelse return error.State;
+        // Best effort only: the host can refuse an occupied sidebar. The
+        // existing panel remains the fallback and retains its ownership.
+        if (mount.Mount.init(self.host)) |placement| {
+            placement.request(model.id, .sidebar) catch |err| diag.status("vcs-menu-mount-refused", @intFromError(err));
+        } else |err| diag.status("vcs-menu-mount-unavailable", @intFromError(err));
+    }
 
     fn start(self: *Instance) host_mod.Error!void {
         if (self.active) {
@@ -69,6 +127,24 @@ const Instance = struct {
     }
 };
 
+fn invokeMenu(user: ?*anyopaque, id: commands.CommandId, snapshot: [*c]const commands.SelectionSnapshot) callconv(.c) void {
+    const self: *Instance = @ptrCast(@alignCast(user orelse return));
+    if (!self.menu_accepting or self.menu_invoking or id == 0 or id != self.menu_id) return;
+    if (snapshot == null or !context.validSelection(&snapshot.*)) return;
+    if (snapshot.*.entry_count > 4096 or (snapshot.*.entry_count != 0 and snapshot.*.entries == null)) return;
+    const directory = abi.slice(snapshot.*.directory) orelse return;
+    if (directory.len == 0 or directory.len > 32768 or !std.unicode.utf8ValidateSlice(directory) or std.mem.indexOfScalar(u8, directory, 0) != null) return;
+    // Intentionally follow the current loaded directory, not a selected
+    // child or arbitrary path. No borrowed snapshot survives this call.
+    self.menu_invoking = true;
+    defer self.menu_invoking = false;
+    self.openFromMenu() catch |err| {
+        diag.status("vcs-menu-open-failed", @intFromError(err));
+        return;
+    };
+    diag.event("vcs-menu-open");
+}
+
 fn statusOf(err: host_mod.Error) abi.Status {
     return switch (err) {
         error.Argument => abi.error_argument,
@@ -105,6 +181,18 @@ fn deactivate(raw: ?*anyopaque) callconv(.c) void {
 
 fn destroy(raw: ?*anyopaque) callconv(.c) void {
     const self: *Instance = @ptrCast(@alignCast(raw orelse return));
+    self.menu_accepting = false;
+    if (self.menu_id != 0) {
+        if (self.menu_table) |table| {
+            table.unregister(self.menu_id) catch |err| {
+                // Final destroy only: commands.h guarantees host stop
+                // invalidates menu callbacks. STATE is expected host-first.
+                if (err != error.State) diag.status("vcs-menu-unregister-failed", @intFromError(err));
+            };
+        }
+        self.menu_id = 0;
+    }
+    self.menu_table = null;
     self.stop() catch |err| {
         diag.status("vcs-destroy-stop-failed", @intFromError(err));
         // At final destroy the SDK stop boundary suppresses callbacks and
@@ -138,6 +226,7 @@ export fn PulsePluginEntryV1(host_ptr: ?*const abi.HostV1, out_ptr: ?*abi.Plugin
     const validated = host_mod.Host.init(host) catch |err| return statusOf(err);
     const self = allocator.create(Instance) catch return abi.error_initialization;
     self.* = .{ .host = validated };
+    self.registerMenu();
     out.* = .{
         .size = @sizeOf(abi.PluginV1),
         .version = abi.abi_version,
