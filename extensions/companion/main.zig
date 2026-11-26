@@ -29,7 +29,7 @@ const running_page_size: usize = 12;
 const Section = enum { library, running, market, global };
 const TaskKind = enum { runtime_check, builtin_session };
 const names = [_][]const u8{ "素材库", "运行管理", "在线市场", "全局设置" };
-const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version", "companion.market.queue-base", "companion.market.queue-full", "companion.market.queue-start", "companion.market.queue-clear", "companion.market.queue-item-1", "companion.market.queue-item-2", "companion.market.queue-item-3", "companion.market.queue-item-4", "companion.market.queue-item-5", "companion.market.queue-item-6", "companion.market.queue-item-7", "companion.market.queue-item-8", "companion.library.profile-default", "companion.library.profile-alternate", "companion.library.profile-reset", "companion.library.profile-clear", "companion.library.start-alternate", "companion.library.start-custom", "companion.library.detail", "companion.market.image-test", "companion.market.open-gallery", "companion.market.image-fallback", "companion.runtime.policy-save", "companion.runtime.plan-start", "companion.runtime.plan-cancel", "companion.running.hide", "companion.running.show", "companion.running.hide-all", "companion.running.show-all", "companion.runtime.diagnostics" };
+const commands = [_][]const u8{ "companion.library", "companion.running", "companion.market", "companion.global", "companion.settings.refresh", "companion.download.less", "companion.download.more", "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version", "companion.market.queue-base", "companion.market.queue-full", "companion.market.queue-start", "companion.market.queue-clear", "companion.market.queue-item-1", "companion.market.queue-item-2", "companion.market.queue-item-3", "companion.market.queue-item-4", "companion.market.queue-item-5", "companion.market.queue-item-6", "companion.market.queue-item-7", "companion.market.queue-item-8", "companion.library.profile-default", "companion.library.profile-alternate", "companion.library.profile-reset", "companion.library.profile-clear", "companion.library.start-alternate", "companion.library.start-custom", "companion.library.detail", "companion.market.image-test", "companion.market.open-gallery", "companion.market.image-fallback", "companion.runtime.policy-save", "companion.runtime.plan-start", "companion.runtime.plan-cancel", "companion.running.hide", "companion.running.show", "companion.running.hide-all", "companion.running.show-all", "companion.runtime.diagnostics", "companion.library.select", "companion.library.advanced", "companion.library.load-alternate", "companion.library.pick-1", "companion.library.pick-2", "companion.library.pick-3", "companion.library.pick-4", "companion.library.pick-5", "companion.library.pick-6", "companion.library.pick-7", "companion.library.pick-8", "companion.library.pick-9", "companion.library.pick-10", "companion.library.pick-11", "companion.library.pick-12", "companion.library.pick-13", "companion.library.pick-14", "companion.library.pick-15", "companion.library.pick-16" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -131,6 +131,12 @@ const Instance = struct {
     library_loaded: bool = false,
     library_status: []const u8 = "准备读取本地素材清单",
     library_offset: usize = 0,
+    library_selected: ?u64 = null,
+    library_render_ok: bool = false,
+    library_table_rejected: bool = false,
+    library_advanced: bool = false,
+    library_selection_token: u64 = 0,
+    library_selection_revision: u64 = 0,
     query: [256]u8 = undefined,
     query_len: usize = 0,
     // Editable state belongs to the UI thread. query is frozen while the
@@ -161,7 +167,7 @@ const Content = struct {
     import_toolbar: [3]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
-    states: [27]ui.State = undefined,
+    states: [30]ui.State = undefined,
     policy_fields: [16][64]u8 = undefined,
     policy_nodes: [18]ui.Node = undefined,
     policy_numeric: [4]ui.Node = undefined,
@@ -173,6 +179,17 @@ const Content = struct {
     diagnostic_text: [1024]u8 = undefined,
     diagnostic_id: [64]u8 = undefined,
     profile_controls: [4]ui.Node = undefined,
+    profile_fields: [3]ui.Node = undefined,
+    library_rows: [16]raw.PulseUiModelRow = undefined,
+    library_cells: [16][5]abi.StringView = undefined,
+    library_columns: [5]raw.PulseUiModelColumn = undefined,
+    selected_heading: [160]u8 = undefined,
+    selected_heading_id: [64]u8 = undefined,
+    selected_profile_text: [224]u8 = undefined,
+    selected_profile_id: [64]u8 = undefined,
+    selected_default: [96]u8 = undefined,
+    selected_alternate: [96]u8 = undefined,
+    selected_toolbar: [2]ui.Node = undefined,
     profile_launch: [2]ui.Node = undefined,
     profile_group: [5]ui.Node = undefined,
     local_detail_nodes: [4]ui.Node = undefined,
@@ -627,9 +644,68 @@ fn profileText(profile: library.Profile, buffer: []u8) []const u8 {
     return std.fmt.bufPrint(buffer, "{d}% · 置顶{s} · 低动态{s}", .{ profile.scale, if (profile.topmost) "开" else "关", if (profile.reduced) "开" else "关" }) catch unreachable;
 }
 
+fn profileCheck(key: []const u8, caption: []const u8, enabled: bool) ui.Node {
+    var node = ui.node(ui.NodeKind.checkbox);
+    node.id = abi.view(key);
+    node.state = .{ .present = 1, .value = abi.view(key) };
+    node.text = .{ .present = 1, .value = abi.view(caption) };
+    node.enabled = .{ .present = 1, .value = @intFromBool(enabled) };
+    return node;
+}
+
+fn libraryVisibleIndex(instance: *const Instance, id: u64) ?usize {
+    if (!instance.library_loaded or id == 0 or id == library.builtin_asset_id) return null;
+    const snapshot = &instance.library_snapshot;
+    if (snapshot.count > snapshot.rows.len or instance.library_offset > snapshot.count) return null;
+    const end = @min(snapshot.count, instance.library_offset + 16);
+    for (snapshot.rows[instance.library_offset..end], instance.library_offset..) |row, index| {
+        if (row.id == id) return index;
+    }
+    return null;
+}
+
+fn librarySelectedIndex(instance: *const Instance) ?usize {
+    return libraryVisibleIndex(instance, instance.library_selected orelse return null);
+}
+
+fn fillLibraryTable(instance: *const Instance, content: *Content, end: usize) ui.Node {
+    const headers = [_][]const u8{ "素材", "收藏", "标签", "校验记录", "默认缩放" };
+    const widths = [_]i64{ 240, 72, 130, 116, 88 };
+    for (headers, widths, 0..) |heading, width, n| {
+        const keys = [_][]const u8{ "name", "favorite", "tags", "verification", "scale" };
+        content.library_columns[n] = std.mem.zeroes(raw.PulseUiModelColumn);
+        content.library_columns[n].size = @sizeOf(raw.PulseUiModelColumn);
+        content.library_columns[n].id = abi.view(keys[n]);
+        content.library_columns[n].text = abi.view(heading);
+        content.library_columns[n].width = .{ .present = 1, .value = width };
+    }
+    for (instance.library_snapshot.rows[instance.library_offset..end], 0..) |*row, n| {
+        const id = std.fmt.bufPrint(&content.row_ids[n], "{d}", .{row.id}) catch unreachable;
+        const tags = if (row.tag_count == 0) "—" else std.fmt.bufPrint(&content.row_text[n], "{d} · {s}", .{ row.tag_count, row.first_tag[0..row.first_tag_len] }) catch unreachable;
+        const scale = std.fmt.bufPrint(&content.profile_line[n], "{d}%", .{row.default_profile.scale}) catch unreachable;
+        content.library_cells[n] = .{ abi.view(row.sourceId()), abi.view(if (row.favorite) "已收藏" else "—"), abi.view(tags), abi.view(if (row.paired) "双摘要记录" else "待重验"), abi.view(scale) };
+        content.library_rows[n] = std.mem.zeroes(raw.PulseUiModelRow);
+        content.library_rows[n].size = @sizeOf(raw.PulseUiModelRow);
+        content.library_rows[n].id = abi.view(id);
+        content.library_rows[n].command = .{ .present = 1, .value = abi.view(commands[88]) };
+        content.library_rows[n].cells = .{ .present = 1, .data = &content.library_cells[n], .count = 5 };
+    }
+    var table = ui.node(ui.NodeKind.data_table);
+    table.id = abi.view("library.table");
+    table.text = .{ .present = 1, .value = abi.view("本地素材") };
+    table.state = .{ .present = 1, .value = abi.view("library.asset-id") };
+    table.min_height = .{ .present = 1, .value = 176 };
+    table.rows = .{ .present = 1, .data = &content.library_rows, .count = @intCast(end - instance.library_offset) };
+    table.data_columns = .{ .present = 1, .data = &content.library_columns, .count = content.library_columns.len };
+    return table;
+}
+
 fn fillProfileControls(content: *Content, edit_enabled: bool, launch_enabled: bool) ui.Node {
-    content.profile_group[0] = label("library.profile.help", "选定素材 ID 后配置启动效果：缩放50–200:置顶0/1:低动态0/1。例如125:1:0。仅影响新启动的实例。");
-    content.profile_group[1] = inputField("library.profile", "启动效果配置", "100:0:0");
+    content.profile_group[0] = label("library.profile.help", "启动设置 · 仅影响新启动的实例（缩放 50%–200%）");
+    content.profile_fields[0] = policyInput("library.scale", "缩放 (%)", "50–200", edit_enabled);
+    content.profile_fields[1] = profileCheck("library.topmost", "窗口置顶", edit_enabled);
+    content.profile_fields[2] = profileCheck("library.reduced", "低动态模式", edit_enabled);
+    content.profile_group[1] = horizontal("library.profile.fields", &content.profile_fields);
     content.profile_controls[0] = action("library.profile-default", "保存默认配置", commands[70], edit_enabled);
     content.profile_controls[1] = action("library.profile-alternate", "保存备用配置", commands[71], edit_enabled);
     content.profile_controls[2] = action("library.profile-reset", "重置默认", commands[72], edit_enabled);
@@ -846,35 +922,56 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     content.children[count] = horizontal("library.pagination", &content.paging);
                     count += 1;
                 }
-                if (config.helper_sha256.len == 64 and snapshot.count != 0) {
-                    content.asset_toolbar[0] = inputField("library.asset-id", "素材 ID", "输入素材 ID");
-                    const live = runtimeBusy(instance) and instance.task_kind == .builtin_session;
-                    content.asset_toolbar[1] = action("library.start", "启动指定素材", commands[15], instance.preference_edit == null and !instance.stop_requested and (!runtimeBusy(instance) or (live and instance.session.canStart())));
-                    content.children[count] = horizontal("library.start-toolbar", &content.asset_toolbar);
-                    count += 1;
-                    const edit_enabled = config.runtime_sha256.len == 64 and instance.task_id == 0 and !runtimeBusy(instance) and instance.tasks != null;
-                    content.preference_toolbar[0] = inputField("library.tag", "标签", "标签（最多 64 字节）");
-                    content.preference_toolbar[1] = action("library.favorite-toggle", "切换收藏", commands[16], edit_enabled);
-                    content.preference_toolbar[2] = action("library.tag-add", "添加标签", commands[17], edit_enabled);
-                    content.preference_toolbar[3] = action("library.tag-remove", "移除标签", commands[18], edit_enabled);
-                    content.children[count] = horizontal("library.preferences", &content.preference_toolbar);
-                    count += 1;
-                    content.children[count] = fillProfileControls(content, edit_enabled, instance.task_id == 0 and !instance.stop_requested and (!runtimeBusy(instance) or (live and instance.session.canStart())));
-                    count += 1;
-                    if (instance.library_detail) |*detail| {
-                        content.children[count] = fillLocalDetail(content, detail.id, &detail.detail);
+                if (snapshot.count != 0) {
+                    if (instance.library_table_rejected) {
+                        for (snapshot.rows[instance.library_offset..end], 0..) |*row, n| {
+                            const body = std.fmt.bufPrint(&content.row_text[n], "{s} · {s} · {s} · 标签 {d}", .{ row.sourceId(), if (row.favorite) "已收藏" else "未收藏", if (row.paired) "双摘要记录" else "待重验", row.tag_count }) catch unreachable;
+                            const id = std.fmt.bufPrint(&content.row_ids[n], "asset-{x}-{x}", .{ row.id, std.hash.Wyhash.hash(0, body) }) catch unreachable;
+                            content.children[count] = action(id, body, commands[91 + n], instance.task_id == 0);
+                            count += 1;
+                        }
+                    } else {
+                        content.children[count] = fillLibraryTable(instance, content, end);
+                        count += 1;
+                        content.children[count] = action("library.select", "打开所选素材", commands[88], instance.task_id == 0);
                         count += 1;
                     }
-                }
-                for (snapshot.rows[instance.library_offset..end], 0..) |*row, n| {
-                    const suffix = if (instance.recovery_report) |*report| recoverySuffix(report, row.id) else "";
-                    const normal = profileText(row.default_profile, &content.profile_line[n]);
-                    var alternate_buf: [96]u8 = undefined;
-                    const alternate = if (row.alternate_profile) |profile| profileText(profile, &alternate_buf) else "未设置";
-                    const body = std.fmt.bufPrint(&content.row_text[n], "#{d}  {s} · {s} · {s} · 标签 {d} {s}{s} · 默认 {s} · 备用 {s}", .{ row.id, row.sourceId(), if (row.paired) "双摘要记录" else "待重验", if (row.favorite) "已收藏" else "未收藏", row.tag_count, row.first_tag[0..row.first_tag_len], suffix, normal, alternate }) catch unreachable;
-                    const id = std.fmt.bufPrint(&content.row_ids[n], "asset-{x}-{x}", .{ row.id, std.hash.Wyhash.hash(0, body) }) catch unreachable;
-                    content.children[count] = label(id, body);
-                    count += 1;
+                    if (librarySelectedIndex(instance)) |index| {
+                        const row = &snapshot.rows[index];
+                        const heading = std.fmt.bufPrint(&content.selected_heading, "当前素材：{s}（#{d}）", .{ row.sourceId(), row.id }) catch unreachable;
+                        content.children[count] = changingLabel(&content.selected_heading_id, "library.selection", heading);
+                        content.children[count].role = .{ .present = 1, .value = abi.view("section") };
+                        count += 1;
+                        const normal = profileText(row.default_profile, &content.selected_default);
+                        const alternate = if (row.alternate_profile) |profile| profileText(profile, &content.selected_alternate) else "未设置";
+                        const profiles = std.fmt.bufPrint(&content.selected_profile_text, "默认：{s} · 备用：{s}", .{ normal, alternate }) catch unreachable;
+                        content.children[count] = changingLabel(&content.selected_profile_id, "library.saved-profiles", profiles);
+                        count += 1;
+                        const live = runtimeBusy(instance) and instance.task_kind == .builtin_session;
+                        const launch_enabled = config.helper_sha256.len == 64 and row.paired and instance.preference_edit == null and !instance.stop_requested and instance.task_id == 0 and (!runtimeBusy(instance) or (live and instance.session.canStart()));
+                        const edit_enabled = config.runtime_sha256.len == 64 and instance.task_id == 0 and !runtimeBusy(instance) and instance.tasks != null and instance.dispatch != null;
+                        content.selected_toolbar[0] = action("library.start", "启动桌宠（默认配置）", commands[15], launch_enabled);
+                        content.selected_toolbar[1] = action("library.load-alternate", "读取备用配置", commands[90], row.alternate_profile != null and edit_enabled);
+                        content.children[count] = horizontal("library.selected-toolbar", &content.selected_toolbar);
+                        count += 1;
+                        content.preference_toolbar[0] = inputField("library.tag", "标签", "输入标签（最多 64 字节）");
+                        content.preference_toolbar[1] = action("library.favorite-toggle", if (row.favorite) "取消收藏" else "收藏", commands[16], edit_enabled);
+                        content.preference_toolbar[2] = action("library.tag-add", "添加标签", commands[17], edit_enabled);
+                        content.preference_toolbar[3] = action("library.tag-remove", "移除标签", commands[18], edit_enabled);
+                        content.children[count] = horizontal("library.preferences", &content.preference_toolbar);
+                        count += 1;
+                        content.children[count] = fillProfileControls(content, edit_enabled and row.paired, launch_enabled);
+                        count += 1;
+                        if (instance.library_detail) |*detail| {
+                            if (detail.id == row.id) {
+                                content.children[count] = fillLocalDetail(content, detail.id, &detail.detail);
+                                count += 1;
+                            }
+                        }
+                    } else {
+                        content.children[count] = label("library.select-help", "选择素材后查看启动设置、收藏及标签。");
+                        count += 1;
+                    }
                 }
             }
             if (instance.dialogs != null and config.helper_sha256.len == 64 and config.runtime_sha256.len == 64) {
@@ -885,11 +982,16 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 count += 1;
             }
             if (config.runtime_sha256.len == 64) {
+                content.children[count] = action(if (instance.library_advanced) "library.advanced.open" else "library.advanced.closed", if (instance.library_advanced) "收起高级管理" else "高级管理 · 恢复与隔离", commands[89], true);
+                count += 1;
+            }
+            if (config.runtime_sha256.len == 64 and instance.library_advanced) {
                 const can_scan = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and !runtimeBusy(instance) and instance.import_dialog == 0 and instance.picker_request == 0;
                 content.children[count] = action("library.recovery-scan", "扫描恢复状态（只读）", commands[22], can_scan);
                 count += 1;
             }
-            if (instance.recovery_report) |*report| {
+            if (instance.recovery_report != null and instance.library_advanced) {
+                const report = &instance.recovery_report.?;
                 const body = recoveryText(report.summary, &content.recovery_text) catch unreachable;
                 content.children[count] = changingLabel(&content.dynamic_ids[2], "library.recovery-report", body);
                 count += 1;
@@ -897,7 +999,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     content.children[count] = fillQuarantine(report, instance.quarantine_offset, content, canMaintain(instance));
                     count += 1;
                 }
-                if (instance.library_loaded and instance.library_snapshot.count != 0 and instance.dialogs != null and config.runtime_sha256.len == 64 and config.helper_sha256.len == 64) {
+                if (librarySelectedIndex(instance) != null and instance.dialogs != null and config.runtime_sha256.len == 64 and config.helper_sha256.len == 64) {
                     const enabled = canMaintain(instance);
                     content.removal_toolbar[0] = action("library.remove", "隔离移除指定素材", commands[23], enabled);
                     content.removal_toolbar[1] = action("library.restore", "恢复中断移除", commands[24], enabled);
@@ -1078,7 +1180,10 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     content.states[9] = .{ .key = abi.view("library.profile"), .value = abi.view("100:0:0") };
     const policy_value = instance.runtime_policy.encode(&content.policy_text) catch unreachable;
     content.states[10] = .{ .key = abi.view("settings.runtime-policy"), .value = abi.view(policy_value) };
-    policyEditorStates(&instance.runtime_policy, &content.policy_fields, content.states[11..]);
+    policyEditorStates(&instance.runtime_policy, &content.policy_fields, content.states[11..27]);
+    content.states[27] = .{ .key = abi.view("library.scale"), .value = abi.view("100") };
+    content.states[28] = .{ .key = abi.view("library.topmost"), .value = abi.view("false") };
+    content.states[29] = .{ .key = abi.view("library.reduced"), .value = abi.view("false") };
     tree.states = &content.states;
     tree.state_count = content.states.len;
 }
@@ -1094,6 +1199,7 @@ fn refresh(instance: *Instance) void {
         var content: Content = undefined;
         var tree: ui.Tree = undefined;
         fill(instance, &content, &tree);
+        instance.library_render_ok = false;
         panel.update(&tree) catch |err| {
             diag.status("companion-update-failed", @intFromError(err));
             diag.status("companion-update-section", @backingInt(instance.section));
@@ -1110,8 +1216,19 @@ fn refresh(instance: *Instance) void {
                     return;
                 };
                 diag.event("companion-market-fallback-ok");
-            }
+            } else if (instance.section == .library and instance.library_loaded and !instance.library_table_rejected) {
+                instance.library_table_rejected = true;
+                instance.library_selected = null;
+                instance.library_detail = null;
+                fill(instance, &content, &tree);
+                panel.update(&tree) catch |fallback_err| {
+                    diag.status("companion-library-fallback-failed", @intFromError(fallback_err));
+                    return;
+                };
+                diag.event("companion-library-fallback-ok");
+            } else return;
         };
+        instance.library_render_ok = instance.section == .library and instance.library_loaded;
     }
 }
 
@@ -1762,6 +1879,110 @@ fn applySearch(instance: *Instance) void {
     instance.search_ticks = 0;
 }
 
+fn clearLibrarySelection(instance: *Instance) void {
+    instance.library_selected = null;
+    instance.library_detail = null;
+    if (instance.panel) |*panel| {
+        const states = [_]ui.State{.{ .key = abi.view("library.asset-id"), .value = abi.view("") }};
+        panel.setStates(&states) catch |err| diag.status("companion-library-selection-clear", @intFromError(err));
+    }
+}
+
+fn readLibraryState(instance: *const Instance, key: []const u8, buffer: []u8) ![]const u8 {
+    const panel = instance.panel orelse return error.Invalid;
+    const get_state = panel.table.get_state orelse return error.Invalid;
+    var needed: u32 = 0;
+    if (get_state(panel.table.context, panel.id, abi.view(key), buffer.ptr, @intCast(buffer.len), &needed) != abi.ok or needed >= buffer.len) return error.Invalid;
+    return buffer[0..needed];
+}
+
+fn currentLibraryId(instance: *const Instance) ?u64 {
+    if (!instance.active or !instance.library_render_ok or instance.section != .library) return null;
+    const index = librarySelectedIndex(instance) orelse return null;
+    const id = instance.library_snapshot.rows[index].id;
+    var bytes: [32]u8 = undefined;
+    const value = readLibraryState(instance, "library.asset-id", &bytes) catch return null;
+    if ((std.fmt.parseInt(u64, value, 10) catch 0) != id) return null;
+    return id;
+}
+
+fn syncLibraryProfile(instance: *Instance, id: u64, profile: library.Profile, clear_tag: bool) bool {
+    const panel = if (instance.panel) |*value| value else return false;
+    var id_buffer: [32]u8 = undefined;
+    var scale_buffer: [16]u8 = undefined;
+    const id_text = std.fmt.bufPrint(&id_buffer, "{d}", .{id}) catch return false;
+    const scale = std.fmt.bufPrint(&scale_buffer, "{d}", .{profile.scale}) catch return false;
+    const states = [_]ui.State{
+        .{ .key = abi.view("library.asset-id"), .value = abi.view(id_text) },
+        .{ .key = abi.view("library.scale"), .value = abi.view(scale) },
+        .{ .key = abi.view("library.topmost"), .value = abi.view(if (profile.topmost) "true" else "false") },
+        .{ .key = abi.view("library.reduced"), .value = abi.view(if (profile.reduced) "true" else "false") },
+        .{ .key = abi.view("library.tag"), .value = abi.view("") },
+    };
+    panel.setStates(states[0..if (clear_tag) @as(usize, 5) else 4]) catch |err| {
+        diag.status("companion-library-selection-sync", @intFromError(err));
+        return false;
+    };
+    return true;
+}
+
+fn selectLibraryId(instance: *Instance, id: u64) void {
+    if (!instance.active or !instance.library_render_ok or instance.section != .library or instance.task_id != 0 or instance.import_dialog != 0 or instance.removal_dialog != 0 or instance.picker_request != 0) return;
+    const index = libraryVisibleIndex(instance, id) orelse {
+        clearLibrarySelection(instance);
+        refresh(instance);
+        return;
+    };
+    if (instance.library_selected == id) return;
+    instance.library_selected = null;
+    instance.library_detail = null;
+    if (syncLibraryProfile(instance, id, instance.library_snapshot.rows[index].default_profile, true)) {
+        instance.library_selected = id;
+    } else {
+        instance.library_status = "无法同步所选素材；未启用操作";
+    }
+    refresh(instance);
+}
+
+fn selectLibraryFromState(instance: *Instance) void {
+    var bytes: [32]u8 = undefined;
+    const value = readLibraryState(instance, "library.asset-id", &bytes) catch return;
+    const id = std.fmt.parseInt(u64, value, 10) catch 0;
+    selectLibraryId(instance, id);
+}
+
+fn loadAlternateProfile(instance: *Instance) void {
+    const id = currentLibraryId(instance) orelse return;
+    const index = libraryVisibleIndex(instance, id) orelse return;
+    const alternate = instance.library_snapshot.rows[index].alternate_profile orelse return;
+    if (!syncLibraryProfile(instance, id, alternate, false)) {
+        clearLibrarySelection(instance);
+        instance.library_status = "无法同步备用配置；请重新选择素材";
+    }
+    refresh(instance);
+}
+
+fn onLibrarySelectionChanged(user: ?*anyopaque, panel: u64, batch: [*c]const raw.PulseUiStateBatch) callconv(.c) void {
+    const instance: *Instance = @ptrCast(@alignCast(user orelse return));
+    if (!instance.active or panel != instance.page or instance.section != .library or instance.library_selection_token == 0) return;
+    if (batch == null or batch[0].changes == null or batch[0].count > 128) return;
+    for (0..batch[0].count) |n| {
+        const change = batch[0].changes[n];
+        if (change.source_mask & @as(u32, raw.PULSE_UI_STATE_USER) == 0 or change.revision <= instance.library_selection_revision) continue;
+        if (!std.mem.eql(u8, abi.slice(change.key) orelse continue, "library.asset-id")) continue;
+        instance.library_selection_revision = change.revision;
+        const value = abi.slice(change.value) orelse "";
+        if (value.len > 20) return;
+        const id = std.fmt.parseInt(u64, value, 10) catch 0;
+        // CommitValue runs on the UI owner thread. Confirm the live state;
+        // never perform an asset mutation from a selection notification.
+        var current: [32]u8 = undefined;
+        const live = readLibraryState(instance, "library.asset-id", &current) catch return;
+        if (std.mem.eql(u8, live, value)) selectLibraryId(instance, id);
+        return;
+    }
+}
+
 fn onSearchChanged(user: ?*anyopaque, panel: u64, batch: [*c]const raw.PulseUiStateBatch) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
     if (!instance.active or panel != instance.page or instance.section != .library or instance.search_token == 0) return;
@@ -1865,6 +2086,8 @@ fn subscribeSearch(instance: *Instance) void {
     if (subscribe(table.context, instance.page, abi.view("library.query"), @intCast(raw.PULSE_UI_STATE_USER), onSearchChanged, instance, &token) != abi.ok or token == 0) return;
     instance.search_events = table;
     instance.search_token = token;
+    var selection_token: u64 = 0;
+    if (subscribe(table.context, instance.page, abi.view("library.asset-id"), @intCast(raw.PULSE_UI_STATE_USER), onLibrarySelectionChanged, instance, &selection_token) == abi.ok and selection_token != 0) instance.library_selection_token = selection_token;
     var running_token: u64 = 0;
     if (subscribe(table.context, instance.page, abi.view("running.query"), @intCast(raw.PULSE_UI_STATE_USER), onRunningSearchChanged, instance, &running_token) == abi.ok and running_token != 0) instance.running_search_token = running_token;
 }
@@ -2022,6 +2245,7 @@ fn pollLibrary(instance: *Instance) void {
     instance.import_cancel_requested = false;
     const done = instance.work_done.load(.acquire);
     if (instance.task_state == raw.PULSE_TASK_COMPLETED and done and instance.work_error == null) {
+        clearLibrarySelection(instance);
         instance.library_snapshot = instance.work_snapshot;
         instance.library_loaded = true;
         instance.library_offset = 0;
@@ -2291,16 +2515,11 @@ fn startLibraryAsset(instance: *Instance) void {
 
 fn startLibraryProfile(instance: *Instance, choice: library.LaunchProfile) void {
     if (!instance.library_loaded) return;
-    const panel = instance.panel orelse return;
-    const get_state = panel.table.get_state orelse return;
-    var bytes: [32]u8 = undefined;
-    var needed: u32 = 0;
-    if (get_state(panel.table.context, panel.id, abi.view("library.asset-id"), &bytes, bytes.len, &needed) != abi.ok or needed == 0 or needed >= bytes.len) {
-        instance.library_status = "请输入有效素材 ID";
+    const id = currentLibraryId(instance) orelse {
+        instance.library_status = "请先选择当前素材";
         refresh(instance);
         return;
-    }
-    const id = std.fmt.parseInt(u64, bytes[0..needed], 10) catch 0;
+    };
     if (id != 0 and id != library.builtin_asset_id) {
         for (instance.library_snapshot.rows[0..instance.library_snapshot.count]) |row| {
             if (row.id != id or !row.paired) continue;
@@ -2321,12 +2540,7 @@ fn startLibraryProfile(instance: *Instance, choice: library.LaunchProfile) void 
 
 fn startLocalDetail(instance: *Instance) void {
     if (!instance.active or !instance.library_loaded or instance.task_id != 0 or runtimeBusy(instance) or instance.import_dialog != 0 or instance.removal_dialog != 0 or instance.picker_request != 0 or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null) return;
-    const panel = instance.panel orelse return;
-    const get_state = panel.table.get_state orelse return;
-    var bytes: [32]u8 = undefined;
-    var needed: u32 = 0;
-    if (get_state(panel.table.context, panel.id, abi.view("library.asset-id"), &bytes, bytes.len, &needed) != abi.ok or needed == 0 or needed >= bytes.len) return;
-    const id = std.fmt.parseInt(u64, bytes[0..needed], 10) catch 0;
+    const id = currentLibraryId(instance) orelse return;
     instance.library_detail = null;
     for (instance.library_snapshot.rows[0..instance.library_snapshot.count]) |*row| {
         if (row.id != id) continue;
@@ -2346,17 +2560,29 @@ fn startLocalDetail(instance: *Instance) void {
 }
 
 fn readProfile(instance: *Instance) !library.Profile {
-    const panel = instance.panel orelse return error.Invalid;
-    const get_state = panel.table.get_state orelse return error.Invalid;
-    var bytes: [32]u8 = undefined;
-    var needed: u32 = 0;
-    if (get_state(panel.table.context, panel.id, abi.view("library.profile"), &bytes, bytes.len, &needed) != abi.ok or needed == 0 or needed >= bytes.len) return error.Invalid;
-    return library.Profile.parse(bytes[0..needed]);
+    _ = currentLibraryId(instance) orelse return error.Invalid;
+    var scale_buffer: [16]u8 = undefined;
+    var topmost_buffer: [8]u8 = undefined;
+    var reduced_buffer: [8]u8 = undefined;
+    const scale = try readLibraryState(instance, "library.scale", &scale_buffer);
+    const topmost = try readLibraryState(instance, "library.topmost", &topmost_buffer);
+    const reduced = try readLibraryState(instance, "library.reduced", &reduced_buffer);
+    return parseLibraryProfile(scale, topmost, reduced);
+}
+
+fn parseLibraryProfile(scale: []const u8, topmost: []const u8, reduced: []const u8) !library.Profile {
+    if (scale.len == 0 or scale.len > 3) return error.Invalid;
+    for (scale) |ch| if (!std.ascii.isDigit(ch)) return error.Invalid;
+    const top: u8 = if (std.mem.eql(u8, topmost, "true")) 1 else if (std.mem.eql(u8, topmost, "false")) 0 else return error.Invalid;
+    const low: u8 = if (std.mem.eql(u8, reduced, "true")) 1 else if (std.mem.eql(u8, reduced, "false")) 0 else return error.Invalid;
+    var encoded: [16]u8 = undefined;
+    const value = try std.fmt.bufPrint(&encoded, "{s}:{d}:{d}", .{ scale, top, low });
+    return library.Profile.parse(value);
 }
 
 fn startCustomProfile(instance: *Instance) void {
     const profile = readProfile(instance) catch {
-        instance.library_status = "配置无效，请输入例如125:1:0";
+        instance.library_status = "配置无效；缩放须为 50–200 的整数";
         refresh(instance);
         return;
     };
@@ -2368,14 +2594,12 @@ fn startPreference(instance: *Instance, action_kind: library.PreferenceAction) v
     if (!instance.active or !instance.library_loaded or instance.task_id != 0 or runtimeBusy(instance) or config.runtime_sha256.len != 64 or instance.dispatch == null) return;
     const panel = instance.panel orelse return;
     const get_state = panel.table.get_state orelse return;
-    var id_bytes: [32]u8 = undefined;
     var needed: u32 = 0;
-    if (get_state(panel.table.context, panel.id, abi.view("library.asset-id"), &id_bytes, id_bytes.len, &needed) != abi.ok or needed == 0 or needed >= id_bytes.len) {
-        instance.library_status = "请输入有效素材 ID";
+    const id = currentLibraryId(instance) orelse {
+        instance.library_status = "请先选择当前素材";
         refresh(instance);
         return;
-    }
-    const id = std.fmt.parseInt(u64, id_bytes[0..needed], 10) catch 0;
+    };
     for (instance.library_snapshot.rows[0..instance.library_snapshot.count]) |row| {
         if (row.id != id) continue;
         if (action_kind != .toggle_favorite and action_kind != .add_tag and action_kind != .remove_tag and !row.paired) {
@@ -2386,7 +2610,7 @@ fn startPreference(instance: *Instance, action_kind: library.PreferenceAction) v
         var edit: library.PreferenceEdit = .{ .row = row, .action = action_kind };
         if (action_kind == .save_default_profile or action_kind == .save_alternate_profile) {
             edit.profile = readProfile(instance) catch {
-                instance.library_status = "配置无效，请输入例如125:1:0";
+                instance.library_status = "配置无效；缩放须为 50–200 的整数";
                 refresh(instance);
                 return;
             };
@@ -2741,16 +2965,15 @@ fn removalClosed(user: ?*anyopaque, dialog: u64, status: abi.Status, button: abi
 
 fn showRemoval(instance: *Instance, action_kind: library.RemovalAction) void {
     if (config.runtime_sha256.len != 64 or !canMaintain(instance)) return;
-    const panel = instance.panel orelse return;
-    const get_state = panel.table.get_state orelse return;
-    var bytes: [32]u8 = undefined;
-    var needed: u32 = 0;
-    if (get_state(panel.table.context, panel.id, abi.view(if (action_kind == .purge) "quarantine.id" else "library.asset-id"), &bytes, bytes.len, &needed) != abi.ok or needed == 0 or needed >= bytes.len) {
-        instance.library_status = "请输入有效素材 ID";
+    const id = if (action_kind == .purge) blk: {
+        var bytes: [32]u8 = undefined;
+        const value = readLibraryState(instance, "quarantine.id", &bytes) catch return;
+        break :blk std.fmt.parseInt(u64, value, 10) catch 0;
+    } else currentLibraryId(instance) orelse {
+        instance.library_status = "请先选择当前素材";
         refresh(instance);
         return;
-    }
-    const id = std.fmt.parseInt(u64, bytes[0..needed], 10) catch 0;
+    };
     if (action_kind == .purge) {
         const report = &instance.recovery_report.?;
         for (report.quarantine[0..report.quarantine_count]) |*detail| {
@@ -2855,7 +3078,10 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     instance.work_snapshot = .{};
     if (instance.detail_request == null) {
         instance.library_detail = null;
-        if (!instance.fallback_pick and !instance.recovery_scan) instance.library_loaded = false;
+        if (!instance.fallback_pick and !instance.recovery_scan) {
+            clearLibrarySelection(instance);
+            instance.library_loaded = false;
+        }
     }
     const descriptor: raw.PulseTaskDescriptor = .{
         .size = @sizeOf(raw.PulseTaskDescriptor),
@@ -3175,6 +3401,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         if ((n == 80 or n == 81 or n == 87) and instance.section != .global) return;
         if (n == 82 and instance.section != .global and instance.section != .running) return;
         if (n >= 83 and n <= 86 and instance.section != .running) return;
+        if (n >= 88 and instance.section != .library) return;
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
@@ -3204,6 +3431,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             7 => startLibrary(instance, true),
             8 => pollTasks(instance),
             9 => if (instance.library_loaded and instance.library_offset >= 16) {
+                clearLibrarySelection(instance);
                 instance.library_offset -= 16;
                 refresh(instance);
             },
@@ -3212,6 +3440,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
                 startLibrary(instance, true);
             },
             10 => if (instance.library_loaded and instance.library_offset + 16 < instance.library_snapshot.count) {
+                clearLibrarySelection(instance);
                 instance.library_offset += 16;
                 refresh(instance);
             },
@@ -3273,6 +3502,18 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             85 => setVisibility(instance, true, false),
             86 => setVisibility(instance, true, true),
             87 => exportDiagnostic(instance),
+            88 => selectLibraryFromState(instance),
+            89 => {
+                instance.library_advanced = !instance.library_advanced;
+                refresh(instance);
+            },
+            90 => loadAlternateProfile(instance),
+            91...106 => {
+                if (!instance.library_table_rejected or !instance.library_loaded or !instance.library_render_ok) return;
+                const index = instance.library_offset + n - 91;
+                if (index >= instance.library_snapshot.count) return;
+                selectLibraryId(instance, instance.library_snapshot.rows[index].id);
+            },
             55...57 => changeMarketFilter(instance, n - 55),
             58 => queueMarket(instance, false),
             59 => queueMarket(instance, true),
@@ -3303,6 +3544,8 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
 
 fn close(instance: *Instance) host_mod.Error!void {
     instance.active = false;
+    instance.library_render_ok = false;
+    instance.library_selected = null;
     instance.policy_write_pending = false;
     instance.policy_sync_failed = false;
     instance.auto_pending = false;
@@ -3316,6 +3559,16 @@ fn close(instance: *Instance) host_mod.Error!void {
     collectSession(instance, true);
     instance.search_pending = false;
     instance.search_ticks = 0;
+    if (instance.library_selection_token != 0) {
+        const events = instance.search_events orelse return error.State;
+        const unsubscribe = events.unsubscribe orelse return error.Unavailable;
+        host_mod.mapStatus(unsubscribe(events.context, instance.library_selection_token)) catch |err| switch (err) {
+            error.State => {},
+            else => return err,
+        };
+        instance.library_selection_token = 0;
+        instance.library_selection_revision = 0;
+    }
     if (instance.running_search_token != 0) {
         const events = instance.search_events orelse return error.State;
         const unsubscribe = events.unsubscribe orelse return error.Unavailable;
@@ -3489,6 +3742,8 @@ fn open(instance: *Instance) host_mod.Error!void {
     if (instance.task_id == 0 and !runtimeBusy(instance)) {
         instance.library_loaded = false;
         instance.library_offset = 0;
+        instance.library_selected = null;
+        instance.library_table_rejected = false;
         instance.tasks = try instance.host.queryOptional(raw.PulseTasksV1, raw.PULSE_TASKS_INTERFACE_NAME, raw.PULSE_TASKS_VERSION_1);
         if (instance.tasks) |tasks| {
             if (tasks.create == null or tasks.get == null or tasks.release == null or tasks.cancel == null) instance.tasks = null;
@@ -3650,7 +3905,7 @@ test "running view exposes bounded start and stop actions" {
     try std.testing.expectEqual(@as(u64, 1), instance.runtime_task_id);
 }
 
-test "library view bounds rows and uses stable IDs" {
+test "library table bounds rows and selection to the visible page" {
     const instance = try std.testing.allocator.create(Instance);
     defer std.testing.allocator.destroy(instance);
     instance.* = .{ .host = undefined };
@@ -3662,12 +3917,32 @@ test "library view bounds rows and uses stable IDs" {
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     fill(instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 23), content.root.children.count);
-    try std.testing.expect(std.mem.startsWith(u8, abi.slice(content.children[7].id).?, "asset-1-"));
+    try std.testing.expectEqual(ui.NodeKind.data_table, content.children[7].type);
+    try std.testing.expectEqual(@as(u32, 16), content.children[7].rows.count);
+    try std.testing.expectEqualStrings("1", abi.slice(content.library_rows[0].id).?);
+    try std.testing.expectEqual(@as(?usize, 0), libraryVisibleIndex(instance, 1));
+    try std.testing.expectEqual(@as(?usize, null), libraryVisibleIndex(instance, 17));
+    instance.library_selected = 1;
     instance.library_offset = 16;
     fill(instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 8), content.root.children.count);
-    try std.testing.expect(std.mem.startsWith(u8, abi.slice(content.children[7].id).?, "asset-11-"));
+    try std.testing.expectEqual(@as(u32, 1), content.children[7].rows.count);
+    try std.testing.expectEqualStrings("17", abi.slice(content.library_rows[0].id).?);
+    try std.testing.expectEqual(@as(?usize, null), librarySelectedIndex(instance));
+    try std.testing.expectEqual(@as(?usize, 16), libraryVisibleIndex(instance, 17));
+    instance.library_table_rejected = true;
+    fill(instance, &content, &tree);
+    try std.testing.expectEqual(ui.NodeKind.button, content.children[7].type);
+    try std.testing.expectEqualStrings(commands[91], abi.slice(content.children[7].command.value).?);
+    try std.testing.expectEqual(@as(?u64, null), currentLibraryId(instance));
+}
+
+test "library profile fields reject malformed values and preserve exact scale" {
+    const profile = try parseLibraryProfile("123", "true", "false");
+    try std.testing.expectEqual(@as(u16, 123), @as(u16, profile.scale));
+    try std.testing.expect(profile.topmost and !profile.reduced);
+    try std.testing.expectError(error.Invalid, parseLibraryProfile("100", "1", "false"));
+    try std.testing.expectError(error.Invalid, parseLibraryProfile("1:0", "true", "false"));
+    if (parseLibraryProfile("201", "false", "true")) |_| return error.TestUnexpectedResult else |_| {}
 }
 
 test "dynamic labels replace identity only when text changes" {

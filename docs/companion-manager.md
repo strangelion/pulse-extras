@@ -441,3 +441,21 @@ then invokes the same approved helper and inventory transaction. The folder
 picker is retained; ZIP path entry is supported even without a file picker.
 Source ZIP is borrowed read-only. Existing residual scratch is not adopted
 or recursively deleted. Real Windows install and local ZIP require retest.
+
+### Local material library interaction refresh
+
+The library presents a bounded 16-row native DataTable with stable inventory IDs,
+name, favorite, tags, recorded verification and default scale. Single-row state
+events select the asset; the explicit Open selected material action and double
+click remain available. If a host rejects the table model, a bounded clickable
+list is used instead. No row click launches or modifies an asset. Actions require
+the selected ID to still match the current visible snapshot and host state.
+Page changes and refreshed snapshots invalidate old selections. Editor fields
+are synchronized before enabling actions; selection state failures fail closed.
+Scale is an exact 50–200 numeric field (rather than a quantized slider); topmost
+and reduced motion use native checkboxes. Recovery and isolation are under
+advanced management; existing confirmation and identity verification remain.
+No image resource is synthesized or loaded from unverified files. Actual host
+table rendering, keyboard/selection event behavior, DPI and visual acceptance
+must be verified on Pulse; this change does not claim thumbnail support or
+real-host acceptance.
