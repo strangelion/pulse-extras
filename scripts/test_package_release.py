@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import tempfile
@@ -40,15 +41,27 @@ class DeclarationTests(unittest.TestCase):
     def test_plan_binds_declared_flat_names(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for name in ("pulse_companion.dll", "pulse_companion_runtime.dll",
-                         "pulse-pet-demo.exe"):
+            for name in ("pulse_companion_runtime.dll", "pulse-pet-demo.exe"):
                 (root / name).write_bytes(b"x")
+            digests = [hashlib.sha256((root / name).read_bytes()).hexdigest()
+                       for name in ("pulse_companion_runtime.dll", "pulse-pet-demo.exe")]
+            (root / "pulse_companion.dll").write_bytes("--".join(digests).encode())
             plan = package_release.plan("companion", root)
         self.assertEqual(plan["id"], "strangelion.companion")
         self.assertEqual(plan["library"].name, "pulse_companion.dll")
         self.assertEqual([name for _, name in plan["members"]],
                          ["pulse_companion_runtime.dll", "pulse-pet-demo.exe"])
         self.assertTrue(plan["template"].is_file())
+
+    def test_unbound_companion_library_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError) as raised:
+            root = Path(tmp)
+            for name in ("pulse_companion.dll", "pulse_companion_runtime.dll",
+                         "pulse-pet-demo.exe"):
+                (root / name).write_bytes(b"x")
+            package_release.plan("companion", root)
+        self.assertIn("was not built against", str(raised.exception))
+        self.assertIn("-Dcompanion-runtime-sha256=", str(raised.exception))
 
     def test_vcs_has_no_extra_members(self):
         with tempfile.TemporaryDirectory() as tmp:
