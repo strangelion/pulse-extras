@@ -104,6 +104,26 @@ host, user approval store or user data is used by these shared tests.
 The same Regression gate remains mandatory. Do not mark product migration,
 real-host resource/drain behavior, or formal release as passed on this basis.
 
+## Stage regression and acceptance closure
+
+For each stage in [roadmap](roadmap.md), test the complete vertical slice
+rather than only the last edited helper. Run targeted local tests/format/build
+before the combined push where the pinned toolchain is available. Retain
+all existing scope gates; stage completion and release candidates require
+full regression on the exact final code SHA. A docs-only check or green
+ancestor does not satisfy it. Consolidate related CI failures and fixes;
+never skip or weaken a positive provider/negative security fixture.
+
+VCS P2A requires actual Windows Git/JJ/SVN local-session queries (ordinary
+installations), settings/picker/consent/revoke/lifecycle, and exact package
+host acceptance. P2B adds project record persistence/migration/version
+conflict/selection and per-project trust tests. P3A adds real provider
+file/history/diff and bounded malformed data fixtures; P3B adds URL/client/
+optional API consent, redaction, quota and offline fixtures. The authoritative
+installed matrix is [vcs-acceptance-runbook.md](vcs-acceptance-runbook.md).
+If local toolchain/actual host/credential access is missing, state exact
+NOT RUN/BLOCKED cases in one stage report and keep required gates intact.
+
 ## Mandatory Zig safety review
 
 The existing Regression gate includes a dependency-free lexical safety

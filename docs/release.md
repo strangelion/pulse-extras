@@ -1,6 +1,14 @@
 # Unified extension release / 统一增强包发布设计
 
-Status: **manual unsigned preview workflow implemented; first workflow run pending**. Local packaging remains available. No signing, stable release, registry submission or official acceptance is implied. Ordinary regression CI does not package or publish.
+Status (2026-11-26): **manual unsigned preview workflow implemented and used**.
+[Companion 1.0.0](https://github.com/strangelion/pulse-extras/releases/tag/companion/v1.0.0)
+and [VCS 1.0.0](https://github.com/strangelion/pulse-extras/releases/tag/vcs/v1.0.0)
+are independent unsigned prereleases targeting df5009c. Local packaging remains
+available. No signing, stable release, registry submission or complete actual-host
+acceptance is implied. Ordinary regression CI does not package or publish.
+Use the [stage roadmap](roadmap.md) and batch a complete usable update; do not
+publish each tiny implementation change. User-authorized preview testing remains
+possible with exact limitations; no automatic publication on stage completion.
 
 ## 1. Upstream publication contract
 
@@ -90,7 +98,7 @@ and formal packages require separated writable data, verified artifact
 identity and distinct acceptance. No production key or tag for test
 packages. Formal preview/stable publication channels remain separate.
 
-## 3. One manually dispatched workflow
+## 3A. One manually dispatched workflow
 
 Open Actions → Extension release → Run workflow on main.
 
@@ -211,7 +219,12 @@ claim. Local dry-run artifact is not a production release.
 
 Project license is AGPL-3.0-only going forward, preserving prior Apache-2.0 and third-party rights. Review exact dependency revisions, build options and distribution, upstream SDK/host plugin compatibility, contributor rights, assets and registry acceptance; do not infer compliance from a submodule or IPC boundary. Include source access and applicable AGPL section 13 network-interaction requirements. See [product scope / licensing](product-scope.md#4-license-and-distribution-policy). No automatic repository visibility change or production publication.
 
-## 6. Implementation sequence and tests
+## 6. Implementation sequence and tests (R milestone)
+
+R1/R2 packaging and unsigned preview workflow are implemented and exercised;
+R0 isolated installed lifecycle and R3 signing/registry acceptance are not
+complete. R4 coexistence and measured resource evidence remains open. The
+following describes the remaining verification and original stage boundaries.
 
 R0: first real VCS package built and manually verified/installed/upgraded/rolled back with
 official tooling in isolated host; record artifact SHA and evidence.

@@ -6,23 +6,25 @@ Independent modular native extensions for [Pulse File Manager](https://github.co
 
 ## Status
 
-Pre-release. The ABI probe is a test package, not a production extension, but
-its full native lifecycle is now verified on a real Pulse 1.0.61 host: installed
-into an isolated store with the official tools, loaded, activated, deactivated,
-unloaded, and its registered command dispatched from the host UI. See
-[host compatibility](docs/host-compatibility.md) for the evidence and the
-explicit non-claims. Registry acceptance and shipping extensions are still open.
+Unsigned previews of [Companion 1.0.0](https://github.com/strangelion/pulse-extras/releases/tag/companion/v1.0.0)
+and [VCS 1.0.0](https://github.com/strangelion/pulse-extras/releases/tag/vcs/v1.0.0)
+are available. The current main includes newer VCS candidates that are not in
+those packages. Neither stable signing nor official registry acceptance is
+claimed. The ABI Probe and Hello Panel have separate recorded real-host
+evidence; see [host compatibility](docs/host-compatibility.md).
+Current stage order, actual blockers and exit criteria are in the
+[roadmap](docs/roadmap.md); see [VCS installed acceptance](docs/vcs-acceptance-runbook.md).
 
 | Extension | Scope | Status |
 | --- | --- | --- |
 | Hello Panel | Command + `pulse.context` panel, workspace and sidebar placement | Verified on Pulse 1.0.61 (2026-11-24) |
-| VCS | Multi-VCS manager: Git / Jujutsu / Subversion first | Read-only summary providers tested; native VCS panel and production package pending ([architecture](docs/vcs-architecture.md)) |
+| VCS | Multi-VCS manager: Git / Jujutsu / Subversion first | 1.0.0 unsigned preview; newer native tool setup, session trust and initial project/forge bookmarks are source candidates; daily-use acceptance pending ([architecture](docs/vcs-architecture.md), [roadmap](docs/roadmap.md)) |
 | Convert | File conversion | Planned |
 | Inspect | Binary and package inspection | Planned |
 | Data | Database and scientific data preview | Planned |
 | DevKit | Project and toolchain management | Planned |
 | Compare | Recursive directory comparison | Planned |
-| Companion | Optional lightweight desktop pets / OpenPets event bridge | Standalone runtime, managed import and two 100-process hidden benchmarks verified at recorded revisions; experimental native settings contribution, managed multi-instance runtime, recovery/cleanup and serialized online market installation; real-host and live market acceptance pending ([manager](docs/companion-manager.md), [measurements](docs/performance.md)) |
+| Companion | Optional lightweight desktop pets / OpenPets compatibility | 1.0.0 unsigned preview; basic import/download reported working after local packaged install; full host lifecycle, stress and resource acceptance pending ([manager](docs/companion-manager.md), [measurements](docs/performance.md)) |
 | Forge | Reusable authoring components, bounded recipes and maintenance tooling | Design only; external Agents first, independent product conditional ([design](docs/forge-architecture.md)) |
 
 ## Build and test

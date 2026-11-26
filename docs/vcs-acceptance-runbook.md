@@ -1,17 +1,23 @@
-# VCS candidate: deferred real-host acceptance runbook
+# VCS installed acceptance runbook
 
-Status: **NOT VERIFIED — do not release**. Code supports a default protected Windows approval slot
-and locks execution when no valid approval is present. No test
-package is installed or host executed by CI. Published SDK pin v1.0.60,
-installed host 1.0.61; record actual host and binary digest.
+Status (2026-11-26): **P2A/P2B candidate; full installed acceptance NOT VERIFIED**.
+Unsigned preview `vcs/v1.0.0` is published at df5009c; its locked onboarding
+was reported difficult to use. The newer main candidate contains metadata
+preview, session trust, settings and bookmarks. The exact latest code CI and
+installed package must be checked separately. No CI fixture is actual Pulse
+UI acceptance. Published SDK pin v1.0.60; recorded installed host 1.0.61.
+The authoritative stages and exit gates are in [roadmap](roadmap.md#p2--first-real-vcs-extension).
+This document defines execution and evidence, not a second development plan.
 
-## Build and provision
+## Build and provision the strict saved Git profile (separate from ordinary onboarding)
 
 - Run full regression on exact commit: zig build test, then
   zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe.
-- Default build loads a Windows-user approval slot; no saved approval means locked.
-  A trusted compiled provisioning override remains available for fixtures only.
-  The default manager and explicit CLI no longer require rebuilding to grant.
+- The default build can load a Windows-user strict approval slot; without
+  it, supported hosts use non-executing metadata preview and explicit
+  local-session consent. A trusted compiled provisioning override is for
+  fixtures only. The following Python process is for strict-profile testing,
+  not a mandatory ordinary-user setup step.
 - Use a disposable Windows user and a deliberately restricted, independently
   trusted Git bundle (at most 512 files, 256 MiB, 96 KiB total paths, 12 levels). Stock Git for
   Windows installations generally exceed this profile; do not bypass checks.
@@ -71,14 +77,14 @@ diagnostic log (ABI_PROBE_LOG only in an isolated private directory).
 
 | Case | Expected |
 | --- | --- |
-| Default locked package | Panel opens, no tasks/CLI, lock shown |
+| No saved grant, supported host | Metadata discovery only until explicit consent; no CLI; missing dispatch degrades to lock |
 | Reviewed package | Exact approved root only; other directories denied |
 | Git clean/dirty/untracked | Correct counts; compare with same isolated CLI |
 | Navigation A/B/A | Latest generation; stale data suppressed |
 | Manual Check result | Eventual result even if early dispatch wake |
 | Revocation while busy | Future admission denied, old result discarded |
 | Changed executable/config/ACL/dependency | Fresh verification rejects |
-| Missing or invalid approval | Fail closed; no PATH fallback |
+| Missing or invalid approval | No implicit CLI admission; candidate discovery and explicit separate local-session review only |
 | Cancel/disable/unload while busy | All owned processes/tasks/callbacks drained |
 | Reopen and repeated cycles | No retained resources or growth trend |
 | Large tree / quota / error | Bounded time, memory, meaningful failure |
@@ -88,9 +94,9 @@ diagnostic log (ABI_PROBE_LOG only in an isolated private directory).
 Record exact commands, fixture identity, build SHA, package hash, host
 version/hash, peak and idle Private Bytes, working set, commit, handles,
 threads, CPU, child-process count, final exit, log and pass/fail. Record
-NOT RUN for every unexecuted case. Release requires reviewed auditor coverage,
+NOT RUN for every unexecuted case. Stable release requires the applicable reviewed trust coverage,
 actual installed host drain and scoped trust-storage validation, complete verification and
-a separate publication decision. No signature, registry or distribution
+a separate publication decision. Explicit unsigned preview is a separate test channel; No signature, registry or distribution
 is implied by staging.
 
 Automated regression coverage includes session wiring and exactly-once source
@@ -130,13 +136,13 @@ unreadable approval now permits a separate metadata-only resolver, not CLI
 execution. It observes local ordinary directory/file identities through the
 existing bounded worker slots, detects Git, Jujutsu and SVN markers (including
 colocated Git + JJ), and reads only an ordinary bounded Git HEAD file without
-following references or worktree redirects. No PATH search, executable launch,
-config interpretation, approval write, status counts or repository mutation
-occurs in this mode. Nearest markers are presented as discovery, not proof of
+following references or worktree redirects. Bounded non-executing PATH candidate discovery and a literal bounded origin
+hint are permitted; no executable launch, evaluation of config includes or
+rewrites, approval write, status counts or repository mutation occurs in this mode. Nearest markers are presented as discovery, not proof of
 valid repository identity. Missing dispatch keeps the locked legacy model.
-The existing reviewed single-root Git path remains unchanged; normal Git
-distribution onboarding, native review/consent UI, multi-root grants and
-JJ/SVN CLI policy are still open. Verify real host rendering and navigation
+The existing reviewed single-root Git path remains unchanged; native
+local-session consent and CLI policies now exist for Git/JJ/SVN. Persistent
+multi-root grants and actual installed onboarding acceptance remain open. Verify real host rendering and navigation
 before publishing an update. Do not advertise marker discovery as full status.
 
 ### Interactive trusted-local session (candidate)
@@ -212,3 +218,33 @@ The local-session executable identity check accepts hardlinks (ordinary Git for
 Windows installations use them), but still checks canonical local paths,
 non-reparse identity and the SHA-256 before execution. The strict persisted
 approval path and repository metadata inspection retain their hardlink denial.
+
+## Stage-specific installed acceptance register (mandatory; current status)
+
+The roadmap defines the complete delivery scope. Record these cases against
+the exact package/source/host, expected result, actual observation and evidence
+path. All rows below remain NOT VERIFIED unless an exact run is supplied.
+A user can exercise one consolidated package checklist per completed source
+stage rather than reinstalling after each subtask.
+
+| Stage | Case group | Required result | Current evidence |
+| --- | --- | --- | --- |
+| P2A | First install, right-click empty/file/folder, reopen | One reachable panel; no duplicate; current/selected scope clearly distinguished | Native C fixtures only; NOT VERIFIED |
+| P2A | Native tool settings: detect, manual, supported browse, save/reset, restart | Correct separate paths, explicit consent; no execution on save; validated version on probe | Source candidate; NOT VERIFIED |
+| P2A | Ordinary Git for Windows, including hardlinks; clean/dirty/untracked/rename/conflict | Correct query, identity/digest checked; no implicit trust | d3dff85 Windows fixture failed on hardlink; scoped fix awaiting exact regression |
+| P2A | JJ standalone/colocated and SVN ordinary Windows working copy | Correct provider-specific summary, no JJ auto snapshot, no unintended SVN server request | Prior provider CI; Windows SVN local-session case NOT VERIFIED |
+| P2A | Missing tool, invalid version/path, non-repo, declined/revoked consent, rapid navigation | Honest error/unknown; no stale output or unauthorized command | Mock/unit coverage; NOT VERIFIED |
+| P2A | Cancel, close/reopen, disable while busy, exit, older host, theme/DPI/resize and locale | Drain without deadlock, visible fallback, no UI freeze | NOT VERIFIED |
+| P2B | Add/current/manual/edit/remove/relink/search/favorite, migration/restart and conflict | Durable independent project records; record removal never deletes repo | Initial bounded bookmarks source; full workflow pending |
+| P2B | Project jump, provider switch, nested/colocated workspace and stale root | Correct target and isolated cache; supported navigation fallback | NOT VERIFIED |
+| P2B | Persistent multi-root review/revoke/changed tool/root, concurrent windows | Explicit independent grants, revalidation, no cross-project admission | Not implemented |
+| P3A | Changed files/history/file and revision diff/refs for Git/JJ/SVN | Correct paged provider semantics, bounds and no implicit write/network | Not implemented |
+| P3B | Canonical remote pages, external clients, optional API/offline/revocation | Explicit safe handoff, no credential leakage; local use independent of login | Initial browser bookmark links source; remaining pending |
+| R4 | Upgrade/rollback/uninstall, coexistence, repeated cycles/soak/resources | Correct private data, independent owners, measured plateau | NOT VERIFIED |
+
+For each stage, close code + relevant fixtures + full CI first, then exercise
+one combined installed artifact; record skipped cases individually. When the
+host is not available, report a consolidated list of precise remaining cases
+and mark the stage BLOCKED/NOT RUN, not COMPLETE. Do not require the strict
+auditor's Python setup for ordinary P2A local-session testing. Do not change
+ordinary user profiles or disable antivirus/security products for acceptance.

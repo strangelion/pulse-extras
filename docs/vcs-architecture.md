@@ -6,8 +6,38 @@ semantics — a Subversion revision number, a Jujutsu change id and a Perforce
 changelist are not modelled as a Git commit.
 
 This document distinguishes the target contract from the implemented subset.
-The capability matrix is a design target, not an implementation claim; see the
-implementation status below and [roadmap.md](roadmap.md) for remaining work.
+The capability matrix is a design target, not an implementation claim. The
+[roadmap](roadmap.md#p2--first-real-vcs-extension) owns complete development
+stages and exit gates; [installed acceptance](vcs-acceptance-runbook.md) owns
+evidence. Historical paragraphs below record earlier candidate designs, not
+current assertions that their successor implementations are absent.
+
+## Current product boundaries (2026-11-26)
+
+The shipped unsigned 1.0.0 preview and latest source are different. Main has
+native context-menu entry, owner-thread host task/dispatch Binding, strict
+single-Git protected approval and explicit local-session trust for Git/JJ/SVN,
+metadata preview, independent tool settings and initial project bookmarks
+with canonical browser links. These are source candidates pending exact
+regression and installed acceptance; no current complete stage claim.
+
+Keep three separate data domains:
+- Tool preferences: non-executing discovery or user-entered paths; save/reset
+  through versioned package-owned resources. Never imply authorization.
+- Project library: local root/workspace/provider identity plus user metadata
+  and sanitized optional remote links; missing paths remain records, not
+  implicit scans or deletion requests. Migrate the existing bounded bookmarks
+  in P2B. Remote URL is not a unique local identity.
+- Execution grants: strict reviewed Git or explicit scoped session trust today;
+  persistent independently revocable multi-root/provider consent in P2B.
+  Revalidate tool and root identity and fixed admission; do not persist plain
+  authorization as project settings or treat Job Objects as a sandbox.
+
+P3A adds provider-native read-only file/history/diff models and commands;
+P3B adds explicit browser/client handoff and optional least-scope read-only
+forge API. Separate remote/network capability from local Provider behavior;
+no arbitrary command templates or automatic background synchronization.
+P4 mutations require their own operation-level gate.
 
 ## Layers
 
@@ -197,7 +227,7 @@ core logic, and malformed output is a typed error, not an empty result.
 6. Plastic, Sapling, Fossil, and the long tail, only with a real need.
 7. Write operations, one at a time, with plan + confirmation + regression.
 
-## Implementation status (2026-11-24)
+## Historical implementation baseline (2026-11-24)
 
 Implemented and covered by `zig build test`:
 
@@ -234,7 +264,7 @@ Implemented and covered by `zig build test`:
 Not implemented yet: history, file diffs, Hg/P4 providers, any write operation,
 and the provider panel.
 
-### Current capabilities vs target
+### Historical baseline capabilities vs target (not current)
 
 | Capability | Git | JJ | SVN |
 | --- | --- | --- | --- |

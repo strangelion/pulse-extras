@@ -25,19 +25,19 @@ degrade, request upstream support, or drop the feature.
 | Shared Runtime + VCS | Actual read-only multi-VCS panel, JJ/SVN semantics, history/diff/refs as validated | Duplicate Git badges/pull/push, full Git client before real panel |
 | Release | Official pack/verify/sign pipeline with per-extension release selection | Premature production workflow or empty packages |
 | Convert | PNG/JPEG batch output via Windows WIC or audited existing engine; preview plan and staging | Reimplement codecs, generic file organizer, overwrite originals |
-| Companion (candidate) | Existing pet/event integration or small host-supported character prototype | Full desktop pet platform, generic AI chat, forced always-on animation |
+| Companion | Maintain existing optional manager/runtime; complete recorded installed acceptance and resource evidence | Unnecessary rewrite, generic AI chat, forced always-on animation |
 | Inspect | Read-only PE architecture/import/metadata/signature inspection | Execute inspected programs, malware verdicts, common preview duplication |
 | Compare | Recursive content verification, snapshot/report | Native one-level metadata compare/text diff, sync/delete by default |
 | Data | Bounded SQLite schema/rows, NPY/NPZ metadata as needed | Duplicate CSV/XLSX/JSON/XML/Jupyter preview, arbitrary SQL writes |
 | DevKit | Focused project/toolchain inventory and verified environment checks | Full IDE, terminal, general Agent/MCP manager, automatic build/install |
 | Forge | Shared authoring templates/components, constrained recipes, validation/maintenance | Generic coding Agent or AI chat, model management, autonomous unreviewed DLL generation |
 
-Prioritize one end-to-end scenario per product and deliver it before expanding
-coverage. P1.5/RT0 and P2/RT1 remain first; Release follows actual VCS acceptance.
-Convert is the next practical general-user package; Companion is a small feasibility
-experiment, not a commitment to a new game engine. Inspect, Compare, Data and DevKit
-are demand-driven thereafter. Forge grows out of real components, not speculative
-platform abstractions.
+Prioritize complete end-to-end stages per [roadmap](roadmap.md), currently VCS
+P2A/P2B/P3A/P3B. Companion and VCS unsigned previews already exist; stable
+release and registry acceptance remain separate gates. Maintain working Companion
+import/download; avoid speculative rewrites. Convert, Inspect, Compare, Data
+and DevKit are demand-driven after VCS read-only stages. Forge grows from real
+components, not speculative platform abstractions.
 
 ## 2. Reference projects and demand evidence
 
@@ -146,7 +146,11 @@ deployment). Do not assume a private GitHub repository link fulfills recipients'
 source-access rights. Do not make the repo public automatically; resolve an
 accessible compliant source delivery method before public release. See release.md.
 
-## 5. Companion feasibility (candidate, no implementation)
+## 5. Companion scope (historical feasibility and current maintenance)
+
+The manager/runtime and unsigned 1.0.0 preview now exist. The C0–C2 material
+below is the historical feasibility scope and enduring boundaries; use the
+roadmap and companion-manager.md for current maintenance/acceptance stages.
 
 Goal: a lightweight, optional file-manager companion, not another full desktop
 pet simulator. Do not assume most users want pets. Test demand and actual SDK
@@ -182,7 +186,10 @@ actual failing tests; search upstream only for the specific missing API/behavior
 Do not reload the whole repository or reread all documents on each edit. Use
 targeted symbol search, exact source spans, cached verified reference revisions
 and concise implementation/decision summaries. Keep docs as durable source of
-truth; update only affected sections. Do not create AGENTS.md.
+truth; update only affected sections and the existing AGENTS.md when stage
+execution rules change. Complete the entire selected vertical-slice stage
+before starting a new one; batch related implementation, UI, regression and
+documentation instead of reporting every tiny patch as a stage.
 
 A product spike should answer a small set of go/no-go questions: what existing
 feature overlaps, which verified API or external engine supplies the missing

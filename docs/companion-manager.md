@@ -9,6 +9,16 @@ See [runtime and IPC](openpets-spike.md), [shared runtime](shared-runtime.md),
 [host test instructions](companion-host-smoke.md), [CI](testing.md),
 [performance evidence](performance.md) and [release rules](release.md).
 
+## Maintenance status (2026-11-26)
+
+Companion 1.0.0 is available as an [unsigned preview](https://github.com/strangelion/pulse-extras/releases/tag/companion/v1.0.0).
+The user reports basic local import and download working after normal local
+packaging/install. This is functional feedback, not an exact-artifact
+acceptance report or an all-cases pass. Preserve existing working paths while
+VCS is the active development stage. Continue the D acceptance matrix as a
+whole when real-host access is available; do not reimplement the manager
+or repeatedly change unrelated UI. See [roadmap](roadmap.md#c--companion-maintenance-previous-feasibility-stages).
+
 ## Current capability and boundary
 
 | Area | Candidate implementation / remaining boundary |
