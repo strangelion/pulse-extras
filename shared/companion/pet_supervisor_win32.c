@@ -1,9 +1,11 @@
 #include "pet_supervisor_win32.h"
+#include "../process/image_win32.h"
+#include "../process/job_win32.h"
+#include "../process/metrics_win32.h"
 #include <wchar.h>
 #include <stdlib.h>
 #include <string.h>
 #include <psapi.h>
-#include <bcrypt.h>
 
 #define PATH_CAP 1024u
 #define CMD_CAP 2600u
@@ -12,103 +14,6 @@
 /* 0 = none, 1 = legacy singleton, 2 = group. Group identity is worker-owned. */
 static LONG live_owner = 0;
 static pet_supervisor_group *active_group = NULL;
-
-static HANDLE pin_image(const wchar_t *path) {
-    if (!path) return INVALID_HANDLE_VALUE;
-    size_t n = 0;
-    while (n < PATH_CAP && path[n]) ++n;
-    if (n < 8 || n == PATH_CAP || !((path[0] >= L'A' && path[0] <= L'Z') ||
-        (path[0] >= L'a' && path[0] <= L'z')) || path[1] != L':' ||
-        path[2] != L'\\' || CompareStringOrdinal(path + n - 4, 4, L".exe", 4, TRUE) != CSTR_EQUAL)
-        return INVALID_HANDLE_VALUE;
-    size_t component = 3;
-    for (size_t i = 3; i <= n; ++i) {
-        wchar_t c = path[i];
-        if (c == L'\\' || !c) {
-            if (i == component || path[i - 1] == L'.' || path[i - 1] == L' ')
-                return INVALID_HANDLE_VALUE;
-            component = i + 1;
-        } else if (c < 32 || c == L'"' || c == L'/' || c == L':' ||
-            c == L'*' || c == L'?' || c == L'<' || c == L'>' || c == L'|') {
-            return INVALID_HANDLE_VALUE;
-        }
-    }
-    wchar_t root[] = {path[0], L':', L'\\', 0};
-    if (GetDriveTypeW(root) != DRIVE_FIXED) return INVALID_HANDLE_VALUE;
-    HANDLE image = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
-        FILE_FLAG_OPEN_REPARSE_POINT, NULL);
-    if (image == INVALID_HANDLE_VALUE) return image;
-    BY_HANDLE_FILE_INFORMATION info;
-    wchar_t actual[PATH_CAP + 4];
-    DWORD length = GetFinalPathNameByHandleW(image, actual, PATH_CAP + 4,
-        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-    if (GetFileType(image) != FILE_TYPE_DISK || !GetFileInformationByHandle(image, &info) ||
-        info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) ||
-        info.nFileSizeHigh || !info.nFileSizeLow || info.nFileSizeLow > 256u * 1024u * 1024u ||
-        length != n + 4 || length >= PATH_CAP + 4 ||
-        wcsncmp(actual, L"\\\\?\\", 4) != 0 ||
-        CompareStringOrdinal(actual + 4, -1, path, -1, TRUE) != CSTR_EQUAL) {
-        CloseHandle(image);
-        SetLastError(ERROR_BAD_PATHNAME);
-        return INVALID_HANDLE_VALUE;
-    }
-    return image;
-}
-
-/* Use the already pinned handle: no pathname reopen between the hash and
- * process creation. Resolve the OS crypto provider from System32 only,
- * keeping the existing GNU test link commands and MSVC boundary intact. */
-static pet_child_result verify_image(HANDLE image, const uint8_t expected[32]) {
-    typedef NTSTATUS (WINAPI *open_fn)(BCRYPT_ALG_HANDLE *, LPCWSTR, LPCWSTR, ULONG);
-    typedef NTSTATUS (WINAPI *property_fn)(BCRYPT_HANDLE, LPCWSTR, PUCHAR, ULONG, ULONG *, ULONG);
-    typedef NTSTATUS (WINAPI *create_fn)(BCRYPT_ALG_HANDLE, BCRYPT_HASH_HANDLE *, PUCHAR, ULONG, PUCHAR, ULONG, ULONG);
-    typedef NTSTATUS (WINAPI *data_fn)(BCRYPT_HASH_HANDLE, PUCHAR, ULONG, ULONG);
-    typedef NTSTATUS (WINAPI *finish_fn)(BCRYPT_HASH_HANDLE, PUCHAR, ULONG, ULONG);
-    typedef NTSTATUS (WINAPI *destroy_fn)(BCRYPT_HASH_HANDLE);
-    typedef NTSTATUS (WINAPI *close_fn)(BCRYPT_ALG_HANDLE, ULONG);
-    HMODULE module = LoadLibraryExW(L"bcrypt.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    if (!module) return PET_CHILD_OS_ERROR;
-    open_fn open = (open_fn)GetProcAddress(module, "BCryptOpenAlgorithmProvider");
-    property_fn property = (property_fn)GetProcAddress(module, "BCryptGetProperty");
-    create_fn create = (create_fn)GetProcAddress(module, "BCryptCreateHash");
-    data_fn update = (data_fn)GetProcAddress(module, "BCryptHashData");
-    finish_fn finish = (finish_fn)GetProcAddress(module, "BCryptFinishHash");
-    destroy_fn destroy = (destroy_fn)GetProcAddress(module, "BCryptDestroyHash");
-    close_fn close = (close_fn)GetProcAddress(module, "BCryptCloseAlgorithmProvider");
-    pet_child_result result = PET_CHILD_OS_ERROR;
-    BCRYPT_ALG_HANDLE algorithm = NULL;
-    BCRYPT_HASH_HANDLE hash = NULL;
-    PUCHAR object = NULL;
-    DWORD object_size = 0, digest_size = 0, got = 0;
-    unsigned char buffer[16384], digest[32];
-    LARGE_INTEGER size;
-    if (!open || !property || !create || !update || !finish || !destroy || !close ||
-        !GetFileSizeEx(image, &size) || size.QuadPart <= 0 ||
-        size.QuadPart > 256ll * 1024 * 1024) goto done;
-    if (open(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0 ||
-        property(algorithm, BCRYPT_OBJECT_LENGTH, (PUCHAR)&object_size, sizeof(object_size), &got, 0) < 0 ||
-        got != sizeof(object_size) || !object_size || object_size > 65536 ||
-        property(algorithm, BCRYPT_HASH_LENGTH, (PUCHAR)&digest_size, sizeof(digest_size), &got, 0) < 0 ||
-        got != sizeof(digest_size) || digest_size != sizeof(digest)) goto done;
-    object = malloc(object_size);
-    if (!object || create(algorithm, &hash, object, object_size, NULL, 0, 0) < 0) goto done;
-    uint64_t remaining = (uint64_t)size.QuadPart;
-    while (remaining) {
-        DWORD want = remaining > sizeof(buffer) ? (DWORD)sizeof(buffer) : (DWORD)remaining;
-        if (!ReadFile(image, buffer, want, &got, NULL) || got != want ||
-            update(hash, buffer, got, 0) < 0) goto done;
-        remaining -= got;
-    }
-    if (finish(hash, digest, sizeof(digest), 0) < 0) goto done;
-    result = memcmp(digest, expected, sizeof(digest)) == 0 ?
-        PET_CHILD_OK : PET_CHILD_UNAPPROVED_IMAGE;
-done:
-    if (hash && destroy(hash) < 0) result = PET_CHILD_OS_ERROR;
-    free(object);
-    if (algorithm && close(algorithm, 0) < 0) result = PET_CHILD_OS_ERROR;
-    if (!FreeLibrary(module)) result = PET_CHILD_OS_ERROR;
-    return result;
-}
 
 static void release_child(pet_supervisor *owner) {
     if (!owner || !owner->job) return;
@@ -182,14 +87,8 @@ static BOOL start_monitor(pet_crash_monitor *monitor, const wchar_t *image,
     ready = CreateEventW(NULL, TRUE, FALSE, NULL);
     capture_event = CreateEventW(NULL, TRUE, FALSE, NULL);
     job = CreateJobObjectW(NULL, NULL);
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
-        JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_JOB_MEMORY;
-    limits.BasicLimitInformation.ActiveProcessLimit = 1;
-    limits.ProcessMemoryLimit = PET_CHILD_COMMIT_LIMIT;
-    limits.JobMemoryLimit = PET_CHILD_COMMIT_LIMIT;
     if (!ready || !capture_event || !job ||
-        !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
+        !pulse_job_configure(job, 1, PET_CHILD_COMMIT_LIMIT, PET_CHILD_COMMIT_LIMIT) ||
         !DuplicateHandle(GetCurrentProcess(), target, GetCurrentProcess(), &inherited[0],
             PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_DUP_HANDLE | SYNCHRONIZE, TRUE, 0) ||
         !DuplicateHandle(GetCurrentProcess(), ready, GetCurrentProcess(), &inherited[1],
@@ -283,26 +182,22 @@ static pet_child_result start_child(pet_supervisor *owner, const wchar_t *approv
     LPPROC_THREAD_ATTRIBUTE_LIST attributes = NULL;
     BOOL initialized = FALSE;
     PROCESS_INFORMATION child = {0};
-    image = pin_image(approved_exe);
+    image = pulse_image_pin(approved_exe);
     if (image == INVALID_HANDLE_VALUE) { result = PET_CHILD_INVALID; goto cleanup; }
     if (image_sha) {
-        result = verify_image(image, image_sha);
-        if (result != PET_CHILD_OK) goto cleanup;
+        pulse_image_result verified = pulse_image_verify(image, image_sha);
+        if (verified != PULSE_IMAGE_OK) {
+            result = verified == PULSE_IMAGE_MISMATCH ? PET_CHILD_UNAPPROVED_IMAGE : PET_CHILD_OS_ERROR;
+            goto cleanup;
+        }
         result = PET_CHILD_OS_ERROR;
     }
     job = CreateJobObjectW(NULL, NULL);
     if (!job) goto cleanup;
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
     /* Bound committed memory, including decoder/CRT scratch not covered
      * by the application allocator. Configure before creating the child.
      * Failure is fail-closed; never start an unbounded replacement. */
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
-        JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY |
-        JOB_OBJECT_LIMIT_JOB_MEMORY;
-    limits.BasicLimitInformation.ActiveProcessLimit = 1;
-    limits.ProcessMemoryLimit = PET_CHILD_COMMIT_LIMIT;
-    limits.JobMemoryLimit = PET_CHILD_COMMIT_LIMIT;
-    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+    if (!pulse_job_configure(job, 1, PET_CHILD_COMMIT_LIMIT, PET_CHILD_COMMIT_LIMIT)) {
         result = PET_CHILD_CONTAINMENT_FAILED; goto cleanup;
     }
     stop = CreateEventW(NULL, TRUE, FALSE, NULL);
@@ -664,27 +559,17 @@ pet_child_result pet_group_ready(pet_supervisor_group *group, uint64_t id, BOOL 
 
 SIZE_T pet_group_storage_size(void) { return sizeof(pet_supervisor_group); }
 
-static uint64_t filetime_ticks(FILETIME value) {
-    return ((uint64_t)value.dwHighDateTime << 32) | value.dwLowDateTime;
-}
-
 pet_child_result pet_group_sample(pet_supervisor_group *group, uint64_t id, pet_group_metrics *out) {
     pet_group_slot *slot = group_find(group, id);
     if (!slot || !out) return PET_CHILD_INVALID;
     *out = (pet_group_metrics){0};
     HANDLE process = slot->child.process;
     if (WaitForSingleObject(process, 0) != WAIT_TIMEOUT) return PET_CHILD_BUSY;
-    PROCESS_MEMORY_COUNTERS_EX memory = {0};
-    memory.cb = sizeof(memory);
-    DWORD handles = 0, pid = GetProcessId(process);
-    FILETIME created, exited, kernel, user;
-    if (!pid || !GetProcessMemoryInfo(process, (PROCESS_MEMORY_COUNTERS *)&memory, sizeof(memory)) ||
-        !GetProcessHandleCount(process, &handles) ||
-        !GetProcessTimes(process, &created, &exited, &kernel, &user))
-        return PET_CHILD_OS_ERROR;
-    if (WaitForSingleObject(process, 0) != WAIT_TIMEOUT) return PET_CHILD_BUSY;
-    *out = (pet_group_metrics){memory.PrivateUsage, memory.WorkingSetSize,
-        filetime_ticks(kernel) + filetime_ticks(user), GetTickCount64(), handles, pid};
+    pulse_process_metrics sample = {0};
+    if (!pulse_process_sample(process, &sample))
+        return WaitForSingleObject(process, 0) == WAIT_TIMEOUT ? PET_CHILD_OS_ERROR : PET_CHILD_BUSY;
+    *out = (pet_group_metrics){sample.private_bytes, sample.working_set_bytes,
+        sample.cpu_ticks, sample.sample_ms, sample.handles, sample.pid};
     return PET_CHILD_OK;
 }
 

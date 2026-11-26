@@ -286,9 +286,9 @@ jobs:
         shell: pwsh
         timeout-minutes: 8
         run: |
-          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/diagnostics/crash_win32.c shared/diagnostics/store_win32.c shared/companion/pet_crash_watch_win32.c shared/companion/pet_private_root_win32.c tests/companion/pet_managed_crash_fixture.c -lshell32 -ladvapi32 -lole32 -luuid -o zig-out/pet-managed-crash-fixture.exe
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/diagnostics/crash_win32.c shared/diagnostics/store_win32.c shared/companion/pet_crash_watch_win32.c shared/companion/pet_private_root_win32.c shared/fs/private_root_win32.c tests/companion/pet_managed_crash_fixture.c -lshell32 -ladvapi32 -lole32 -luuid -o zig-out/pet-managed-crash-fixture.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_supervisor_win32.c tests/companion/pet_managed_crash_test.c -lshell32 -lpsapi -o zig-out/pet-managed-crash-test.exe
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_supervisor_win32.c shared/process/image_win32.c shared/process/job_win32.c shared/process/metrics_win32.c tests/companion/pet_managed_crash_test.c -lshell32 -lpsapi -o zig-out/pet-managed-crash-test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/companion/pet_managed_crash_test.py zig-out/pet-managed-crash-fixture.exe zig-out/pet-managed-crash-test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -296,7 +296,7 @@ jobs:
         if: matrix.lane == 'desktop'
         shell: pwsh
         run: |
-          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_supervisor_win32.c tests/companion/pet_supervisor_win32_test.c -lshell32 -lpsapi -o zig-out/pet-supervisor-test.exe
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_supervisor_win32.c shared/process/image_win32.c shared/process/job_win32.c shared/process/metrics_win32.c tests/companion/pet_supervisor_win32_test.c -lshell32 -lpsapi -o zig-out/pet-supervisor-test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $demo = (Resolve-Path ./zig-out/bin/pulse-pet-demo.exe).Path
           & ./zig-out/pet-supervisor-test.exe $demo
@@ -306,14 +306,14 @@ jobs:
         shell: pwsh
         timeout-minutes: 4
         run: |
-          zig test shared/companion_host.zig shared/companion/pet_supervisor_win32.c tests/companion/pet_host_fixture.c -target x86_64-windows-gnu -lc -lpsapi
+          zig test shared/companion_host.zig shared/companion/pet_supervisor_win32.c shared/process/image_win32.c shared/process/job_win32.c shared/process/metrics_win32.c tests/companion/pet_host_fixture.c -target x86_64-windows-gnu -lc -lpsapi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exercise multi-instance Zig companion manager
         if: matrix.lane == 'desktop'
         shell: pwsh
         timeout-minutes: 4
         run: |
-          zig test shared/companion/pet_supervisor_win32.c tests/companion/pet_host_fixture.c -target x86_64-windows-gnu -lc -lpsapi --dep runtime_budget --dep process_trust '-Mroot=shared/companion_group_test.zig' '-Mruntime_budget=shared/runtime/budget.zig' '-Mprocess_trust=shared/process/trust.zig'
+          zig test shared/companion/pet_supervisor_win32.c shared/process/image_win32.c shared/process/job_win32.c shared/process/metrics_win32.c tests/companion/pet_host_fixture.c -target x86_64-windows-gnu -lc -lpsapi --dep runtime_budget --dep process_trust '-Mroot=shared/companion_group_test.zig' '-Mruntime_budget=shared/runtime/budget.zig' '-Mprocess_trust=shared/process/trust.zig'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build pinned WebP helper for real managed-pet regression
         if: matrix.lane == 'desktop'
@@ -394,7 +394,7 @@ jobs:
         shell: pwsh
         timeout-minutes: 3
         run: |
-          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_private_root_win32.c tests/companion/pet_private_root_win32_test.c -ladvapi32 -o zig-out/pet-private-root-test.exe
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_private_root_win32.c shared/fs/private_root_win32.c tests/companion/pet_private_root_win32_test.c -ladvapi32 -o zig-out/pet-private-root-test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./zig-out/pet-private-root-test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

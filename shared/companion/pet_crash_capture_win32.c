@@ -6,6 +6,7 @@
 #endif
 #include <windows.h>
 #include "../diagnostics/crash_win32.h"
+#include "../process/job_win32.h"
 #include <shellapi.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -46,15 +47,10 @@ static int collect(const wchar_t *path, BOOL smoke, uint64_t limit) {
     int result = 2;
     HANDLE job = CreateJobObjectW(NULL, NULL);
     PROCESS_INFORMATION child = {0};
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
-        JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
-    limits.BasicLimitInformation.ActiveProcessLimit = 1;
-    limits.ProcessMemoryLimit = (SIZE_T)128u * 1024u * 1024u;
     STARTUPINFOW startup = {0};
     startup.cb = sizeof(startup);
     if (!job ||
-        !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
+        !pulse_job_configure(job, 1, (SIZE_T)128u * 1024u * 1024u, 0) ||
         !CreateProcessW(image, command, NULL, NULL, FALSE,
             DEBUG_ONLY_THIS_PROCESS | CREATE_SUSPENDED, NULL, NULL, &startup, &child))
         goto cleanup;

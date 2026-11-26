@@ -531,6 +531,7 @@ pub fn build(b: *std.Build) void {
             "shared/companion/pet_config_win32.c",
             "shared/companion/pet_crash_watch_win32.c",
             "shared/companion/pet_private_root_win32.c",
+            "shared/fs/private_root_win32.c",
             "shared/diagnostics/crash_win32.c",
             "shared/diagnostics/store_win32.c",
         },
@@ -584,7 +585,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     dump_root.addCSourceFiles(.{
-        .files = &.{ "shared/companion/pet_crash_capture_win32.c", "shared/diagnostics/crash_win32.c" },
+        .files = &.{ "shared/companion/pet_crash_capture_win32.c", "shared/process/job_win32.c", "shared/diagnostics/crash_win32.c" },
         .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
     });
     dump_root.linkSystemLibrary("shell32", .{});
@@ -600,7 +601,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     runtime_root.addCSourceFiles(.{
-        .files = &.{ "shared/companion/pet_supervisor_win32.c", "shared/companion/pet_runtime_bridge_win32.c", "shared/companion/pet_private_root_win32.c", "shared/companion/pet_catalog_store_win32.c", "shared/companion/pet_market_http_win32.c" },
+        .files = &.{ "shared/companion/pet_supervisor_win32.c", "shared/companion/pet_runtime_bridge_win32.c", "shared/companion/pet_private_root_win32.c", "shared/companion/pet_catalog_store_win32.c", "shared/companion/pet_market_http_win32.c", "shared/fs/private_root_win32.c", "shared/process/image_win32.c", "shared/process/job_win32.c", "shared/process/metrics_win32.c", "shared/network/https_win32.c" },
         .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
     });
     runtime_root.linkSystemLibrary("psapi", .{});
@@ -644,7 +645,7 @@ pub fn build(b: *std.Build) void {
             .imports = host_modules.imports(),
         });
         import_root.addCSourceFiles(.{
-            .files = &.{ "shared/companion/pet_catalog_store_win32.c", "tests/companion/pet_catalog_store_fixture.c", "shared/companion/pet_market_http_win32.c", "shared/companion/pet_private_root_win32.c" },
+            .files = &.{ "shared/companion/pet_catalog_store_win32.c", "tests/companion/pet_catalog_store_fixture.c", "shared/companion/pet_market_http_win32.c", "shared/companion/pet_private_root_win32.c", "shared/fs/private_root_win32.c", "shared/network/https_win32.c" },
             .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
         });
         import_root.linkSystemLibrary("winhttp", .{});
