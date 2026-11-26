@@ -1075,7 +1075,8 @@ pub const Binding = struct {
             self.last_error = err;
             return err;
         };
-        if (self.saved_trust_selected and self.controller.current.failure == error.Permission) {
+        const permission_denied = if (self.controller.current.failure) |failure| failure == error.Permission else false;
+        if (self.saved_trust_selected and permission_denied) {
             self.controller.current.snapshot = null;
             self.controller.current.stale = false;
             self.cache_token = null;
@@ -1250,6 +1251,7 @@ const Mock = struct {
     fail_create: bool = false,
     fail_cancel: bool = false,
     fail_query: bool = false,
+    deny_query: bool = false,
     calls: usize = 0,
     wrong_workspace: bool = false,
 
@@ -1313,6 +1315,7 @@ const Mock = struct {
     fn summarize(user: *anyopaque, workspace: *const identity.Workspace) contract.Error!contract.Snapshot {
         const self: *Mock = @ptrCast(@alignCast(user));
         self.calls += 1;
+        if (self.deny_query) return error.Permission;
         if (self.fail_query) return error.Parse;
         var actual = workspace.*;
         if (self.wrong_workspace) actual.root = identity.Path.init("different") catch unreachable;
@@ -1583,6 +1586,45 @@ test "binding registers real SDK commands and updates after task completion" {
     try std.testing.expectError(error.Busy, binding.checkDrained());
     mock.runWork();
     try binding.pump();
+    try binding.checkDrained();
+}
+
+test "saved trust permission denial clears stale snapshot and recent cache" {
+    var mock: Mock = .{};
+    var host_ui: MockUi = .{};
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.openWithTable(host_ui.table());
+    const workspace = try identity.Workspace.init(.git, "repo", "repo");
+    const token: [32]u8 = @splat(1);
+    binding.saved_trust_selected = true;
+    binding.cache_token = token;
+    try binding.select(mock.provider(), &workspace);
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expect(binding.controller.view().snapshot != null);
+    try std.testing.expect(binding.recent.get(&workspace, token) != null);
+
+    // Ordinary query failures retain the stale snapshot and cache.
+    mock.fail_query = true;
+    try binding.controller.refresh();
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expectEqual(error.Parse, binding.controller.view().failure.?);
+    try std.testing.expect(binding.controller.view().stale);
+    try std.testing.expect(binding.recent.get(&workspace, token) != null);
+
+    // A denied saved approval must not expose cached repository data.
+    mock.fail_query = false;
+    mock.deny_query = true;
+    try binding.controller.refresh();
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expectEqual(error.Permission, binding.controller.view().failure.?);
+    try std.testing.expect(binding.controller.view().snapshot == null);
+    try std.testing.expect(!binding.controller.view().stale);
+    try std.testing.expect(binding.cache_token == null);
+    try std.testing.expect(binding.recent.get(&workspace, token) == null);
+    try binding.requestStop();
     try binding.checkDrained();
 }
 
