@@ -542,7 +542,6 @@ const LocalSession = struct {
     }
 };
 
-
 fn previewLookup(_: *anyopaque, path: []const u8) detect.EntryType {
     const name = std.fs.path.basename(path);
     if (!std.mem.eql(u8, name, ".git") and !std.mem.eql(u8, name, ".jj") and !std.mem.eql(u8, name, ".svn")) return .missing;

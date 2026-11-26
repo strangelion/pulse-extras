@@ -1281,6 +1281,7 @@ const MockUi = struct {
     updates: usize = 0,
     subscriptions: usize = 0,
     commands_expected: u32 = 3,
+    executable: []const u8 = "C:\\tools\\git.exe",
     fail_subscribe_at: usize = 0,
     fail_close: bool = false,
     fail_update: bool = false,
@@ -1307,7 +1308,8 @@ const MockUi = struct {
         const self: *MockUi = @ptrCast(@alignCast(user orelse return abi.error_argument));
         if (id != 7 or callback == null or data == null) return abi.error_argument;
         const name = abi.slice(command) orelse return abi.error_argument;
-        if (panel.parseCommand(name) == null and !(self.commands_expected == 4 and std.mem.eql(u8, name, panel.command_revoke))) return abi.error_argument;
+        const local = self.commands_expected == 9 and (panel.trustKind(name) != null or std.mem.eql(u8, name, panel.command_trust_confirm) or std.mem.eql(u8, name, panel.command_trust_cancel));
+        if (panel.parseCommand(name) == null and !(self.commands_expected >= 4 and std.mem.eql(u8, name, panel.command_revoke)) and !local) return abi.error_argument;
         self.subscriptions += 1;
         if (self.subscriptions == self.fail_subscribe_at) return abi.error_permission;
         self.callback = callback;
@@ -1330,6 +1332,15 @@ const MockUi = struct {
         return abi.ok;
     }
 
+    fn getState(user: ?*anyopaque, id: u64, key: abi.StringView, buffer: [*c]u8, capacity: u32, needed: [*c]u32) callconv(.c) abi.Status {
+        const self: *MockUi = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        if (id != 7 or buffer == null or needed == null or !std.mem.eql(u8, abi.slice(key) orelse return abi.error_argument, panel.state_executable)) return abi.error_argument;
+        if (self.executable.len >= capacity) return abi.error_argument;
+        @memcpy(buffer[0..self.executable.len], self.executable);
+        needed.* = @intCast(self.executable.len);
+        return abi.ok;
+    }
+
     fn table(self: *MockUi) ui.TableV1 {
         return .{
             .size = @sizeOf(ui.TableV1),
@@ -1338,6 +1349,7 @@ const MockUi = struct {
             .create = &create,
             .update = &update,
             .subscribe_command = &subscribe,
+            .get_state = if (self.commands_expected == 9) &getState else null,
             .unsubscribe = &unsubscribe,
             .close = &close,
         };
@@ -1414,9 +1426,11 @@ const MockNavigation = struct {
     callback: context_mod.ChangeFn = null,
     data: ?*anyopaque = null,
     fail_close: bool = false,
+    directory: []const u8 = "one",
 
-    fn get(_: ?*anyopaque, callback: context_mod.ChangeFn, data: ?*anyopaque) callconv(.c) abi.Status {
-        var snapshot: context_mod.Snapshot = .{ .size = @sizeOf(context_mod.Snapshot), .directory = abi.view("one") };
+    fn get(user: ?*anyopaque, callback: context_mod.ChangeFn, data: ?*anyopaque) callconv(.c) abi.Status {
+        const self: *MockNavigation = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        var snapshot: context_mod.Snapshot = .{ .size = @sizeOf(context_mod.Snapshot), .directory = abi.view(self.directory) };
         (callback orelse return abi.error_argument)(data, &snapshot);
         return abi.ok;
     }
@@ -1450,6 +1464,7 @@ const MockNavigation = struct {
     }
 
     fn navigate(self: *MockNavigation, path: []const u8) void {
+        self.directory = path;
         var snapshot: context_mod.Snapshot = .{ .size = @sizeOf(context_mod.Snapshot), .directory = abi.view(path) };
         if (self.callback) |callback| callback(self.data, &snapshot);
     }
@@ -1926,4 +1941,84 @@ test "session revoke suppresses raced summary and future navigation admission" {
     try std.testing.expectEqual(@as(usize, 1), revocation.calls);
     try binding.requestStop();
     try binding.checkDrained();
+}
+
+const LocalAccessFixture = struct {
+    resolver: *MockResolver,
+    authorized: usize = 0,
+    revoked: usize = 0,
+    finished: usize = 0,
+
+    fn authorize(user: *anyopaque, review: *const panel.LocalReview) host_mod.Error!Resolver {
+        const self: *LocalAccessFixture = @ptrCast(@alignCast(user));
+        if (review.kind != .git or !review.executable.eql("C:\\tools\\git.exe")) return error.Argument;
+        self.authorized += 1;
+        return self.resolver.resolver();
+    }
+
+    fn revoke(user: *anyopaque) host_mod.Error!void {
+        const self: *LocalAccessFixture = @ptrCast(@alignCast(user));
+        self.revoked += 1;
+    }
+
+    fn finish(user: *anyopaque) host_mod.Error!void {
+        const self: *LocalAccessFixture = @ptrCast(@alignCast(user));
+        self.finished += 1;
+    }
+};
+
+test "local consent is two step, navigation bound, and released only after drain" {
+    var mock: Mock = .{};
+    var preview: MockResolver = .{ .host_task = &mock };
+    var trusted: MockResolver = .{ .host_task = &mock };
+    var access: LocalAccessFixture = .{ .resolver = &trusted };
+    var model: MockUi = .{ .commands_expected = 9 };
+    var navigation: MockNavigation = .{};
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.configureMetadataPreview(preview.resolver());
+    try binding.configureLocalAccess(.{ .ctx = &access, .authorize = &LocalAccessFixture.authorize, .revoke = &LocalAccessFixture.revoke, .finish = &LocalAccessFixture.finish });
+    try binding.openWithTable(model.table());
+    try binding.openNavigationWithTable(navigation.table());
+    try std.testing.expectEqual(@as(usize, 9), model.subscriptions);
+    try binding.pump();
+    mock.runWork();
+    try binding.pump();
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expectEqual(panel.Phase.ready, binding.controller.current.phase);
+    model.click(7, panel.command_trust_confirm);
+    try std.testing.expectEqual(@as(usize, 0), access.authorized);
+    model.click(7, panel.command_trust_git);
+    try std.testing.expect(binding.local_review != null and binding.metadata_only);
+    try std.testing.expectEqual(@as(usize, 0), access.authorized);
+    model.click(7, panel.command_trust_cancel);
+    model.click(7, panel.command_trust_confirm);
+    try std.testing.expectEqual(@as(usize, 0), access.authorized);
+    model.click(7, panel.command_trust_git);
+    navigation.navigate("two");
+    model.click(7, panel.command_trust_confirm);
+    try std.testing.expectEqual(@as(usize, 0), access.authorized);
+    try std.testing.expect(binding.metadata_only and binding.local_review == null);
+    try binding.pump();
+    mock.runWork();
+    try binding.pump();
+    mock.runWork();
+    try binding.pump();
+    model.click(7, panel.command_trust_git);
+    model.click(7, panel.command_trust_confirm);
+    try std.testing.expectEqual(@as(usize, 1), access.authorized);
+    try std.testing.expect(!binding.metadata_only and binding.revocation != null);
+    try std.testing.expectError(error.State, binding.finishLocalAccess());
+    mock.runWork();
+    try binding.pump();
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expectEqual(@as(usize, 1), trusted.calls);
+    model.click(7, panel.command_revoke);
+    try std.testing.expectEqual(@as(usize, 1), access.revoked);
+    try std.testing.expect(binding.approval_locked);
+    try binding.requestStop();
+    try binding.finishLocalAccess();
+    try binding.finishLocalAccess();
+    try std.testing.expectEqual(@as(usize, 1), access.finished);
 }
