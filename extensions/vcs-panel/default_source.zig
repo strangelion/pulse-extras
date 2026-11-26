@@ -13,6 +13,8 @@ const contract = @import("vcs_provider");
 const detect = @import("vcs_detect");
 const host = @import("pulse_host");
 const process = @import("pulse_process");
+const host_query = @import("vcs_host_query");
+const capabilities = @import("vcs_capabilities");
 
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const max_input: usize = 128 * 1024;
@@ -289,6 +291,139 @@ pub fn acquire(_: std.mem.Allocator) host.Error!?approval.NativeInput {
         .release = &Session.release,
         .revoke_persistent = &revokeRecord,
     };
+}
+
+// No CLI, PATH search, config parsing, repository writes or network access.
+// The existing resolver/query slots own all worker lifetimes.
+pub fn configurePreview(binding: *host_query.Binding) host.Error!void {
+    try binding.configureMetadataPreview(.{ .ctx = binding, .resolve = &resolvePreview });
+}
+
+fn previewLookup(_: *anyopaque, path: []const u8) detect.EntryType {
+    const name = std.fs.path.basename(path);
+    if (!std.mem.eql(u8, name, ".git") and !std.mem.eql(u8, name, ".jj") and !std.mem.eql(u8, name, ".svn")) return .missing;
+    _ = evidence.observeIdentity(path, true) catch {
+        // A Git worktree marker can be a file. Never follow its contents.
+        if (!std.mem.eql(u8, name, ".git")) return .missing;
+        _ = evidence.observeIdentity(path, false) catch return .missing;
+        return .file;
+    };
+    return .directory;
+}
+
+fn detectPreview(user: *anyopaque, path: []const u8, out: *detect.Result) void {
+    out.* = if (approval.strictPath(path)) detect.detect(path, .{ .ctx = user, .lookup = &previewLookup }) else .{};
+}
+
+fn nearestCandidate(result: *const detect.Result) ?detect.Candidate {
+    var nearest: ?detect.Candidate = null;
+    for (result.slice()) |candidate| {
+        if (candidate.kind != .git and candidate.kind != .jj and candidate.kind != .svn) continue;
+        if (nearest) |current| {
+            if (candidate.root.len <= current.root.len) continue;
+        }
+        nearest = candidate;
+    }
+    return nearest;
+}
+
+fn resolvePreview(user: *anyopaque, directory: *const identity.Path) Error!?host_query.Resolved {
+    if (!approval.strictPath(directory.slice())) return error.Permission;
+    _ = try evidence.observeIdentity(directory.slice(), true);
+    var found: detect.Result = .{};
+    detectPreview(user, directory.slice(), &found);
+    const candidate = nearestCandidate(&found) orelse return null;
+    const workspace = identity.Workspace.init(candidate.kind, candidate.root.slice(), candidate.root.slice()) catch return error.Parse;
+    var set: capabilities.Set = .empty;
+    // Internal summary slot only: the panel explicitly distinguishes marker
+    // inspection from a measured status. Never expose write capabilities.
+    set.insert(.status);
+    return .{
+        .provider = .{
+            .kind = candidate.kind,
+            .display_name = candidate.kind.displayName(),
+            .capabilities = set,
+            .vtable = &preview_vtable,
+            .ctx = user,
+        },
+        .workspace = workspace,
+    };
+}
+
+const preview_vtable: contract.VTable = .{ .detect = &detectPreview, .summarize = &summarizePreview };
+
+fn parsePreviewHead(bytes: []const u8, snapshot: *contract.Snapshot) void {
+    const line = std.mem.trimEnd(u8, bytes, "\r\n");
+    const prefix = "ref: refs/heads/";
+    if (std.mem.startsWith(u8, line, prefix)) {
+        const name = line[prefix.len..];
+        if (name.len == 0) return;
+        for (name) |byte| if (byte <= 0x20 or byte == 0x7f) return;
+        snapshot.reference = contract.Text.init(name) catch return;
+    } else if (line.len == 40 or line.len == 64) {
+        for (line) |byte| if (!std.ascii.isHex(byte)) return;
+        snapshot.revision = identity.RevisionId.init(.git, line) catch return;
+    }
+}
+
+fn summarizePreview(user: *anyopaque, workspace: *const identity.Workspace) Error!contract.Snapshot {
+    var found: detect.Result = .{};
+    detectPreview(user, workspace.root.slice(), &found);
+    const current = found.find(workspace.kind) orelse return error.Stale;
+    if (!current.root.eql(workspace.root.slice())) return error.Stale;
+    var snapshot: contract.Snapshot = .{ .workspace = workspace.*, .availability = .not_queried };
+    var labels: [96]u8 = undefined;
+    var used: usize = 0;
+    for ([_]identity.Kind{ .git, .jj, .svn }) |kind| {
+        if (found.find(kind)) |candidate| {
+            if (!candidate.root.eql(workspace.root.slice())) continue;
+            const name = kind.displayName();
+            if (used != 0) {
+                @memcpy(labels[used..][0..3], " + ");
+                used += 3;
+            }
+            @memcpy(labels[used..][0..name.len], name);
+            used += name.len;
+        }
+    }
+    var detail: [contract.Text.capacity]u8 = undefined;
+    const description = std.fmt.bufPrint(&detail, "Repository markers: {s}. Working-copy status not queried.", .{labels[0..used]}) catch return error.ResourceLimit;
+    snapshot.detail = contract.Text.init(description) catch return error.Parse;
+    if (workspace.kind == .git) {
+        var path: [identity.max_path_bytes]u8 = undefined;
+        const head_path = std.fmt.bufPrint(&path, "{s}\\.git\\HEAD", .{workspace.root.slice()}) catch return snapshot;
+        var bytes: [512]u8 = undefined;
+        const head = evidence.readPreviewFile(head_path, &bytes) catch return snapshot;
+        parsePreviewHead(head, &snapshot);
+    }
+    return snapshot;
+}
+
+test "metadata preview parses HEAD without following a reference or inventing status" {
+    var snapshot: contract.Snapshot = .{ .availability = .not_queried };
+    parsePreviewHead("ref: refs/heads/main\n", &snapshot);
+    try std.testing.expectEqualStrings("main", snapshot.reference.slice());
+    try std.testing.expect(snapshot.revision == null);
+    try std.testing.expectEqual(contract.Availability.not_queried, snapshot.counts.modified);
+    snapshot = .{};
+    parsePreviewHead("0123456789abcdef0123456789abcdef01234567\r\n", &snapshot);
+    try std.testing.expect(snapshot.revision != null);
+    snapshot = .{};
+    parsePreviewHead("ref: refs/heads/bad\nname\n", &snapshot);
+    try std.testing.expect(snapshot.reference.slice().len == 0 and snapshot.revision == null);
+    parsePreviewHead("gitdir: C:\\other", &snapshot);
+    try std.testing.expect(snapshot.reference.slice().len == 0 and snapshot.revision == null);
+}
+
+test "metadata preview chooses nearest root and retains all colocated markers" {
+    var result: detect.Result = .{};
+    result.add(.{ .kind = .git, .root = try identity.Path.init("root") });
+    result.add(.{ .kind = .jj, .root = try identity.Path.init("root/child") });
+    result.add(.{ .kind = .svn, .root = try identity.Path.init("root/child") });
+    const nearest = nearestCandidate(&result) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(identity.Kind.jj, nearest.kind);
+    try std.testing.expect(result.find(.svn) != null);
+    try std.testing.expect(nearestCandidate(&.{}) == null);
 }
 
 test "stored record rejects unknown schema truncation and oversized input" {

@@ -424,6 +424,7 @@ pub const Binding = struct {
     model: ?ui.Panel = null,
     language: panel.Language,
     approval_locked: bool = false,
+    metadata_only: bool = false,
     revocation: ?Revocation = null,
     approved_root: ?identity.Path = null,
     persistent_revocation: bool = false,
@@ -444,7 +445,16 @@ pub const Binding = struct {
         self.approval_locked = true;
     }
 
+    /// Fixed, non-executing metadata resolver. This is not an approval.
+    /// Keep the preview and reviewed execution sessions mutually exclusive.
+    pub fn configureMetadataPreview(self: *Binding, resolver: Resolver) host_mod.Error!void {
+        if (self.revocation != null or self.approved_root != null or self.model != null) return error.State;
+        try self.configureResolver(resolver);
+        self.metadata_only = true;
+    }
+
     pub fn configureRevocation(self: *Binding, revocation: Revocation) host_mod.Error!void {
+        if (self.metadata_only) return error.Permission;
         if (self.approval_locked or self.revocation != null or self.resolver == null or self.model != null or self.navigation.table != null or self.controller.stopped) return error.State;
         self.revocation = revocation;
     }
@@ -480,6 +490,7 @@ pub const Binding = struct {
         var tree: ui.Tree = undefined;
         var current = self.controller.view();
         current.approval_required = self.approval_locked;
+        current.metadata_only = self.metadata_only;
         current.revocation_configured = self.revocation != null;
         current.approved_root = self.approved_root;
         current.persistent_revocation = self.persistent_revocation;
@@ -825,6 +836,7 @@ pub const Binding = struct {
         var tree: ui.Tree = undefined;
         var current = self.controller.view();
         current.approval_required = self.approval_locked;
+        current.metadata_only = self.metadata_only;
         current.revocation_configured = self.revocation != null;
         current.approved_root = self.approved_root;
         current.persistent_revocation = self.persistent_revocation;

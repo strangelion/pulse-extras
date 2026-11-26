@@ -378,6 +378,23 @@ pub fn observeIdentity(path: []const u8, is_directory: bool) Error!FileIdentity 
     return FileIdentity.from(opened.info);
 }
 
+/// Small fixed-size local metadata preview. No config interpretation, links,
+/// remote volumes, writes or process execution. The caller treats bytes as
+/// untrusted display data; this does not establish authorization evidence.
+pub fn readPreviewFile(path: []const u8, buffer: []u8) Error![]const u8 {
+    if (comptime builtin.os.tag != .windows) return error.Unsupported;
+    if (buffer.len == 0 or buffer.len > 4096) return error.ResourceLimit;
+    const opened = try openChecked(path, false, true);
+    defer opened.close();
+    const size = opened.info.size_low;
+    if (opened.info.size_high != 0 or size == 0 or size > buffer.len) return error.ResourceLimit;
+    var read: u32 = 0;
+    if (ReadFile(opened.handle, buffer.ptr, size, &read, null) == 0 or read != size) return error.Permission;
+    var extra: [1]u8 = undefined;
+    if (ReadFile(opened.handle, &extra, 1, &read, null) == 0 or read != 0) return error.Permission;
+    return buffer[0..size];
+}
+
 fn join(base: []const u8, suffix: []const u8, buffer: []u8) Error![]const u8 {
     return std.fmt.bufPrint(buffer, "{s}\\{s}", .{ base, suffix }) catch return error.ResourceLimit;
 }

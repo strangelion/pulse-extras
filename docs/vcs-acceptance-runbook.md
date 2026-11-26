@@ -122,3 +122,19 @@ and independent Companion coexistence. Verify the actual menu location and
 sidebar placement in installed Pulse. The independent C loader checks
 entry-time registration, null/wrong-ID rejection, repeated invocation,
 reopening after close and host-first shutdown; it is not actual host UI proof.
+
+### No-grant metadata preview
+
+On the default Windows build with the host dispatch interface, a missing or
+unreadable approval now permits a separate metadata-only resolver, not CLI
+execution. It observes local ordinary directory/file identities through the
+existing bounded worker slots, detects Git, Jujutsu and SVN markers (including
+colocated Git + JJ), and reads only an ordinary bounded Git HEAD file without
+following references or worktree redirects. No PATH search, executable launch,
+config interpretation, approval write, status counts or repository mutation
+occurs in this mode. Nearest markers are presented as discovery, not proof of
+valid repository identity. Missing dispatch keeps the locked legacy model.
+The existing reviewed single-root Git path remains unchanged; normal Git
+distribution onboarding, native review/consent UI, multi-root grants and
+JJ/SVN CLI policy are still open. Verify real host rendering and navigation
+before publishing an update. Do not advertise marker discovery as full status.

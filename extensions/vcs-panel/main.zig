@@ -1,5 +1,5 @@
 //! Native VCS candidate. The default source loads one explicitly reviewed
-//! Windows user grant; absent grant locks execution.
+//! Windows user grant; absent grant permits only non-executing metadata preview.
 //! Real-host acceptance and production auditor certification are release gates.
 
 const std = @import("std");
@@ -90,7 +90,13 @@ const Instance = struct {
         errdefer self.stop() catch |err| diag.status("vcs-rollback-failed", @intFromError(err));
         const binding = &self.binding.?;
         if (!self.session_revoked) {
-            if (try source.acquire(allocator)) |input| {
+            const input_value = source.acquire(allocator) catch |err| blk: {
+                if (comptime @hasDecl(source, "configurePreview")) {
+                    diag.status("vcs-approval-unavailable", @intFromError(err));
+                    break :blk null;
+                } else return err;
+            };
+            if (input_value) |input| {
                 self.session = approval.NativeSession.init(input, allocator);
                 try self.session.?.configure(binding);
                 // Supported wake hints only; no polling loop. An unavailable
@@ -98,12 +104,21 @@ const Instance = struct {
                 try binding.configureDispatch(try async_host.Dispatch.init(self.host));
             }
         }
-        if (self.session == null) try binding.lockExecution();
+        if (self.session == null) {
+            if (comptime @hasDecl(source, "configurePreview")) {
+                // The actual host has dispatch; an older/mock host without
+                // it keeps the existing locked, non-executing model.
+                if (async_host.Dispatch.init(self.host)) |dispatch| {
+                    try source.configurePreview(binding);
+                    try binding.configureDispatch(dispatch);
+                } else |_| try binding.lockExecution();
+            } else try binding.lockExecution();
+        }
         try binding.open(self.host);
         try binding.openNavigation(self.host);
         // Start only from the owner after the borrowed initial context call
         // returned. Later navigation uses bounded dispatch/manual Check.
-        if (self.session != null) try binding.pump();
+        if (self.session != null or binding.metadata_only) try binding.pump();
         self.active = true;
     }
 

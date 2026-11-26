@@ -38,6 +38,7 @@ pub const View = struct {
     failure: ?contract.Error = null,
     discovery_available: bool = false,
     approval_required: bool = false,
+    metadata_only: bool = false,
     revocation_configured: bool = false,
     approved_root: ?identity.Path = null,
     persistent_revocation: bool = false,
@@ -247,6 +248,10 @@ pub const Content = struct {
             else
                 loc(lang, "Execution locked: production approval unavailable", "执行已锁定：尚未提供生产授权"));
         }
+        if (view.metadata_only) {
+            self.add("vcs.preview", "", loc(lang, "Repository preview (no external commands)", "仓库预览（不执行外部命令）"));
+            self.add("vcs.preview-help", "", loc(lang, "Full Git status requires explicit approval. JJ/SVN command access is not yet available.", "完整 Git 状态需要明确授权；JJ/SVN 命令查询暂未开放。"));
+        }
         if (view.approved_root) |root| self.add("vcs.approved-root", loc(lang, "Approved root: ", "授权根目录："), root.slice());
         if (view.revocation_failed) self.add("vcs.revocation-error", "", loc(lang, "Session locked; permanent revocation failed. Use approval tool to revoke.", "会话已锁定；永久撤销失败，请使用授权工具撤销。"));
         if (view.failure) |err| self.add("vcs.error", "", failureLabel(lang, err));
@@ -255,19 +260,26 @@ pub const Content = struct {
             self.add("vcs.root", loc(lang, "Workspace: ", "工作区："), workspace.root.slice());
         }
         if (view.snapshot) |snapshot| {
-            self.add("vcs.freshness", "", if (view.stale) loc(lang, "Previous data — stale", "历史数据（已过期）") else availabilityLabel(lang, snapshot.availability));
-            self.add("vcs.reference", loc(lang, "Reference: ", "引用："), if (snapshot.reference.slice().len == 0) loc(lang, "Not reported", "未报告") else snapshot.reference.slice());
-            self.add("vcs.revision", loc(lang, "Revision: ", "版本："), if (snapshot.revision) |revision| revision.slice() else loc(lang, "Not reported", "未报告"));
-            self.count(lang, "vcs.staged", loc(lang, "Staged: ", "暂存："), snapshot.changes.staged, snapshot.counts.staged, snapshot.availability);
-            self.count(lang, "vcs.modified", loc(lang, "Modified: ", "修改："), snapshot.changes.modified, snapshot.counts.modified, snapshot.availability);
-            self.count(lang, "vcs.untracked", loc(lang, "Untracked: ", "未跟踪："), snapshot.changes.untracked, snapshot.counts.untracked, snapshot.availability);
-            self.count(lang, "vcs.conflicted", loc(lang, "Conflict count: ", "冲突数量："), snapshot.changes.conflicted, snapshot.counts.conflicted, snapshot.availability);
-            if (snapshot.availability == .ready) {
-                if (snapshot.has_conflict) |conflict| self.add("vcs.conflict_presence", loc(lang, "Conflicts present: ", "存在冲突："), if (conflict) loc(lang, "Yes", "是") else loc(lang, "No", "否"));
+            if (view.metadata_only) {
+                if (snapshot.reference.slice().len != 0) self.add("vcs.reference", loc(lang, "HEAD branch: ", "HEAD 分支："), snapshot.reference.slice());
+                if (snapshot.revision) |revision| self.add("vcs.revision", loc(lang, "Detached HEAD: ", "分离 HEAD："), revision.slice());
+                self.add("vcs.detail", "", snapshot.detail.slice());
+                self.add("vcs.status-unavailable", "", loc(lang, "Changes, staging and history: not queried", "变更、暂存及历史：未查询"));
+            } else {
+                self.add("vcs.freshness", "", if (view.stale) loc(lang, "Previous data — stale", "历史数据（已过期）") else availabilityLabel(lang, snapshot.availability));
+                self.add("vcs.reference", loc(lang, "Reference: ", "引用："), if (snapshot.reference.slice().len == 0) loc(lang, "Not reported", "未报告") else snapshot.reference.slice());
+                self.add("vcs.revision", loc(lang, "Revision: ", "版本："), if (snapshot.revision) |revision| revision.slice() else loc(lang, "Not reported", "未报告"));
+                self.count(lang, "vcs.staged", loc(lang, "Staged: ", "暂存："), snapshot.changes.staged, snapshot.counts.staged, snapshot.availability);
+                self.count(lang, "vcs.modified", loc(lang, "Modified: ", "修改："), snapshot.changes.modified, snapshot.counts.modified, snapshot.availability);
+                self.count(lang, "vcs.untracked", loc(lang, "Untracked: ", "未跟踪："), snapshot.changes.untracked, snapshot.counts.untracked, snapshot.availability);
+                self.count(lang, "vcs.conflicted", loc(lang, "Conflict count: ", "冲突数量："), snapshot.changes.conflicted, snapshot.counts.conflicted, snapshot.availability);
+                if (snapshot.availability == .ready) {
+                    if (snapshot.has_conflict) |conflict| self.add("vcs.conflict_presence", loc(lang, "Conflicts present: ", "存在冲突："), if (conflict) loc(lang, "Yes", "是") else loc(lang, "No", "否"));
+                }
+                self.count(lang, "vcs.ahead", loc(lang, "Ahead: ", "领先："), snapshot.changes.ahead, snapshot.counts.ahead, snapshot.availability);
+                self.count(lang, "vcs.behind", loc(lang, "Behind: ", "落后："), snapshot.changes.behind, snapshot.counts.behind, snapshot.availability);
+                if (snapshot.detail.slice().len != 0) self.add("vcs.detail", "", snapshot.detail.slice());
             }
-            self.count(lang, "vcs.ahead", loc(lang, "Ahead: ", "领先："), snapshot.changes.ahead, snapshot.counts.ahead, snapshot.availability);
-            self.count(lang, "vcs.behind", loc(lang, "Behind: ", "落后："), snapshot.changes.behind, snapshot.counts.behind, snapshot.availability);
-            if (snapshot.detail.slice().len != 0) self.add("vcs.detail", "", snapshot.detail.slice());
         }
         self.root = ui.node(ui.NodeKind.stack);
         self.root.id = abi.view("vcs.root.stack");
@@ -446,4 +458,16 @@ test "discovery phase offers cancel before a workspace and refresh after failure
         if (std.mem.eql(u8, abi.slice(node.id) orelse continue, "vcs.action.refresh")) found = true;
     }
     try std.testing.expect(found);
+}
+
+test "metadata-only view never presents unqueried changes as status counts" {
+    var content: Content = undefined;
+    var tree: ui.Tree = undefined;
+    const workspace = try identity.Workspace.init(.git, "repo", "repo");
+    const view: View = .{ .phase = .ready, .workspace = workspace, .metadata_only = true, .snapshot = .{ .workspace = workspace, .availability = .not_queried, .reference = try contract.Text.init("main") } };
+    content.buildInteractive(.en, &view, &tree);
+    try std.testing.expectEqualStrings("HEAD branch: main", content.textFor("vcs.reference") orelse return error.TestUnexpectedResult);
+    try std.testing.expect(content.textFor("vcs.preview") != null);
+    try std.testing.expect(content.textFor("vcs.modified") == null);
+    try std.testing.expect(content.textFor("vcs.staged") == null);
 }
