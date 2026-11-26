@@ -38,20 +38,31 @@ isolate native LocalAppData. Do not run writable cases in the regular
 account. Record exact clean source SHA, pinned Zig, actual host/SDK and
 backend. First require current full code CI, not a docs-only gate.
 
-### Restricted-token and sandboxed sessions
+### Restricted-token, sandboxed and image-trust sessions
 
-A host started from a sandboxed agent session, or any process whose
-filesystem writes outside the workspace are denied, cannot create the
-Companion private root or the `pet-<id>.pending` staging directory under
-`%LocalAppData%`. Every attempt fails with `ERROR_ACCESS_DENIED` (Win32
-5) even though the user owns the directory, because the sandbox filters
-writes by path, not by ACL. The package-stage diagnostics report the raw
-code (`pending directory creation failed (Win32 5)`), which is the
-expected marker in that environment, not a product defect. Confirm the
-environment first: a probe that runs `CreateDirectoryW` under
-`%LocalAppData%` and under the workspace must succeed in the workspace and
-fail with 5 outside it. Real-host acceptance requires a normal user
-session, a dedicated Windows test user or a VM.
+Two different environments produce the same stage failure. Both are
+environment conditions, not product defects, and both must be confirmed
+before treating a `PackageStagePendingCreateFailed` as a bug.
+
+- **Path-filtered sandbox** (agent session, job object, container): writes
+  outside the workspace are denied, so the Companion private root and the
+  `pet-<id>.pending` staging directory under `%LocalAppData%` cannot be
+  created. The workspace probe succeeds, the AppData probe fails.
+- **Image-trust restriction** (some security suites, enterprise policies):
+  the denial follows the process image, not the path. A locally built,
+  unsigned helper is refused in every `%LocalAppData%` directory, including
+  one just created by PowerShell with an inherited ACL, while the same
+  helper writes the workspace normally; PowerShell and `cmd.exe` create
+  files there without error. A probe that compares a PowerShell-created
+  directory with a product-created one separates this case from an ACL
+  defect: identical `Win32 5` in both means the policy is image-based.
+
+Observed signature in both cases: `pending directory creation failed
+(Win32 5)`. Since the diagnostics patch the host reports
+`PackageStageAccessDenied` and the library status line asks the user to
+allow the helper in the security software. Real-host acceptance requires a
+normal user session on a machine whose policy allows the shipped,
+signed helper, a dedicated Windows test user, or a VM.
 
 If the artifact is available, local recompilation is unnecessary. In
 the dedicated Windows test account/VM, with the matching official

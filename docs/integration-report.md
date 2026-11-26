@@ -154,19 +154,38 @@ Evidence:
   and `%TEMP%` returns Win32 5 for every variant, including a call with no
   security descriptor, while the same calls succeed inside the workspace.
   Four DACL variants (none, inherited, protected, no owner) all fail
-  identically. The agent sandbox filters writes by path, not by ACL.
-- The same cause explains the fixture failures in `test-companion-import`
+  identically.
+- Reproduced from a normal, non-elevated user session (SID ...-1004, the SID
+  that holds full control on the private root): the denial is not ACL-based
+  and not integrity-label based. It follows the process image — an unsigned,
+  locally built helper is refused in every `%LocalAppData%` directory,
+  including one created by PowerShell with an inherited ACL, while
+  PowerShell and `cmd.exe` create files there normally and the same helper
+  writes the workspace. Windows Defender reports `AMRunningMode: Not
+  running`; Smart App Control is off; the Huorong (火绒) protection log
+  contains no interception for these processes. The enforcing component was
+  not identified and is recorded as an environment restriction.
+- The same denial explains the fixture failures in `test-companion-import`
   (`GetTempFileNameW`, Win32 5) and the earlier host smoke runs.
 
-Product change kept from this investigation (`16d2024`): the pending-directory
-failure now reports the raw Win32 code, an existing pending path is
-distinguished from a denied creation, and outfits/activities creation
-failures are no longer silent. `docs/companion-host-smoke.md` records the
-sandbox signature and the probe that separates environment from defect.
+Product changes kept from this investigation:
+
+- `16d2024`: the pending-directory failure reports the raw Win32 code, an
+  existing pending path is distinguished from a denied creation, and
+  outfits/activities creation failures are no longer silent.
+- Follow-up: a Win32 5 on private-root creation maps to
+  `PackageStageAccessDenied` (`shared/companion/pet_import_helper.zig`), and
+  the library/market status line tells the user to allow the helper in the
+  security software instead of printing a bare error name
+  (`extensions/companion/main.zig`).
+
+`docs/companion-host-smoke.md` records both environment signatures (path
+filter and image-trust policy) and the probe that separates them from a
+product defect.
 
 Real-host functional acceptance (activation, market browse, import, recovery)
-remains BLOCKED: it requires a normal user session, a dedicated Windows test
-user or a VM, per the runbook; it was not executed here.
+remains BLOCKED: it requires a normal user session whose policy allows the
+helper, a dedicated Windows test user or a VM; it was not executed here.
 
 ## 8. VCS real-host acceptance
 
@@ -197,7 +216,7 @@ from one build graph, and no shared module adds a resident thread or service.
 
 | Item | Status | Reason |
 | --- | --- | --- |
-| Real-host Companion D cases | BLOCKED | needs normal user/dedicated VM; sandbox denies %LocalAppData% writes |
+| Real-host Companion D cases | BLOCKED | normal session needed; this machine denies unsigned images writes under %LocalAppData% |
 | VCS real-host acceptance | NOT RUN | same precondition |
 | Multi-add-on coexistence | BLOCKED | same precondition |
 | Performance/resource matrix | BLOCKED | same precondition |
