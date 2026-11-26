@@ -104,6 +104,7 @@ const Instance = struct {
     dialogs: ?raw.PulseDialogsV1 = null,
     import_cancel_requested: bool = false,
     market_request: ?library.MarketRequest = null,
+    market_initial_attempted: bool = false,
     market_query: library.MarketSearch = .{},
     market_snapshot: library.MarketSnapshot = .{},
     market_selected: ?usize = null,
@@ -118,7 +119,7 @@ const Instance = struct {
     market_queue: library.MarketBatch = .{},
     market_queue_done: bool = false,
     market_queue_cleanup: bool = false,
-    market_status: []const u8 = "OpenPets 市场：主动搜索后才联网",
+    market_status: []const u8 = "首次进入市场将加载精选或原创桌宠；搜索可选",
     market_cancel_requested: bool = false,
     work_snapshot: library.Snapshot = .{},
     library_snapshot: library.Snapshot = .{},
@@ -468,14 +469,18 @@ fn marketBrowserIdle(instance: *const Instance) bool {
 fn fillMarket(instance: *const Instance, content: *Content) usize {
     const idle = marketIdle(instance);
     const busy = instance.market_request != null and instance.task_id != 0;
-    content.children[2] = changingLabel(&content.dynamic_ids[0], "market.status", instance.market_status);
-    content.children[3] = searchInput("market.query", "搜索市场", "搜索精选、原创桌宠名称或来源 ID");
+    const status = if (!instance.market_initial_attempted and instance.runtime_task_id != 0)
+        "市场目录等待运行任务释放；停止桌宠后可加载"
+    else
+        instance.market_status;
+    content.children[2] = changingLabel(&content.dynamic_ids[0], "market.status", status);
+    content.children[3] = searchInput("market.query", "搜索市场", "可选：按名称或来源 ID 筛选");
     content.children[3].enabled = .{ .present = 1, .value = @intFromBool(!busy) };
-    content.market_actions[0] = action("market.search", "在线搜索", commands[31], idle);
+    content.market_actions[0] = action("market.search", "刷新 / 搜索", commands[31], idle);
     content.market_actions[1] = action("market.offline", "离线缓存", commands[32], idle);
     content.market_actions[2] = action("market.cancel", "取消任务", commands[37], busy and !instance.market_cancel_requested);
     const can_clear = if (instance.panel) |panel| panel.table.set_states != null else false;
-    content.market_actions[3] = action("market.search-clear", "清空搜索", commands[39], !busy and can_clear);
+    content.market_actions[3] = action("market.search-clear", "恢复默认浏览", commands[39], idle and can_clear);
     content.market_actions[4] = action("market.open-gallery", "浏览器查看图库 ↗", commands[78], marketBrowserIdle(instance));
     content.children[4] = horizontal("market.actions", &content.market_actions);
     content.children[5] = label("market.notice", "图片无法显示时可在浏览器查看官方图库：" ++ library.market_gallery_url ++ "。来源目录未提供明确许可时不得推定授权。");
@@ -516,8 +521,19 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
         const expected = instance.market_progress.http_progress.expected.load(.acquire);
         const pages = instance.market_progress.scan.total.load(.acquire);
         const scanned = @min(pages, instance.market_progress.scan.completed.load(.acquire));
-        const text = if (instance.market_request.? == .search and pages != 0)
-            std.fmt.bufPrint(&content.market_transfer, "目录分片 {d}/{d} 已验证 · 当前请求 {d}/{d} B（0 总量表示未知）", .{ scanned, pages, received, expected }) catch unreachable
+        const stage = instance.market_progress.scan.getStage();
+        const stage_text: []const u8 = switch (stage) {
+            .idle => "准备目录",
+            .cache_read => "读取缓存",
+            .network => "网络读取",
+            .cache_write => "校验并写入缓存",
+            .parse => "解析目录",
+            .finalize => "整理结果",
+        };
+        const text = if (instance.market_request.? == .search and stage == .network)
+            std.fmt.bufPrint(&content.market_transfer, "目录分片 {d}/{d} · {s} · 当前请求 {d}/{d} B（0 总量未知）", .{ scanned, pages, stage_text, received, expected }) catch unreachable
+        else if (instance.market_request.? == .search)
+            std.fmt.bufPrint(&content.market_transfer, "目录分片 {d}/{d} · {s}", .{ scanned, pages, stage_text }) catch unreachable
         else if (expected == 0)
             std.fmt.bufPrint(&content.market_transfer, "当前请求：{d} B（总量未知）", .{received}) catch unreachable
         else
@@ -1575,6 +1591,7 @@ fn pollTasks(instance: *Instance) void {
     pollRuntime(instance);
     pollSearch(instance);
     maybeAutoStart(instance);
+    maybeBrowseMarket(instance);
     if (instance.task_id == 0 and instance.runtime_task_id == 0 and !(instance.section == .library and instance.search_pending)) stopTimer(instance);
 }
 
@@ -2727,6 +2744,9 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
     const tasks = instance.tasks orelse return;
     const create = tasks.create orelse return;
     if (request == .search) {
+        // Even a rejected/cancelled attempt must not trigger an automatic
+        // retry loop. The user can always request a new refresh.
+        instance.market_initial_attempted = true;
         instance.market_query = request.search;
         instance.market_snapshot = .{};
         instance.market_selected = null;
@@ -2755,7 +2775,7 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
     if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
         instance.task_id = id;
         instance.market_status = switch (request) {
-            .search => "正在读取市场目录",
+            .search => if (request.search.len == 0) "正在加载默认市场目录" else "正在读取市场搜索目录",
             .detail => "正在读取素材详情",
             .install => "正在下载、校验并安装素材",
             .batch => "并行下载中；安装按序提交",
@@ -2766,6 +2786,18 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
         instance.market_status = "宿主拒绝市场任务";
     }
     refresh(instance);
+}
+
+fn defaultMarketQuery() library.MarketSearch {
+    return .{}; // Empty query, curated (featured or original), first page.
+}
+
+fn maybeBrowseMarket(instance: *Instance) void {
+    // Explicit navigation is permission to read the public catalog, not to
+    // download/install assets. Once per instance; wait for the shared
+    // worker/private-root owner to become free. Never retry automatically.
+    if (instance.market_initial_attempted or instance.market_snapshot.result != null or !marketIdle(instance)) return;
+    startMarket(instance, .{ .search = defaultMarketQuery() });
 }
 
 fn searchMarket(instance: *Instance, offline: bool) void {
@@ -2805,7 +2837,7 @@ fn pageMarket(instance: *Instance, next: bool) void {
 }
 
 fn clearMarketSearch(instance: *Instance) void {
-    if (instance.market_request != null or instance.task_id != 0) return;
+    if (!marketIdle(instance)) return;
     const panel = if (instance.panel) |*value| value else return;
     const states = [_]ui.State{.{ .key = abi.view("market.query"), .value = abi.view("") }};
     panel.setStates(&states) catch |err| {
@@ -2813,13 +2845,8 @@ fn clearMarketSearch(instance: *Instance) void {
         refresh(instance);
         return;
     };
-    instance.market_query = .{};
     instance.market_filters = .{};
-    instance.market_snapshot = .{};
-    instance.market_selected = null;
-    instance.market_detail = null;
-    instance.market_status = "已清空搜索；主动搜索后才联网";
-    refresh(instance);
+    startMarket(instance, .{ .search = defaultMarketQuery() });
 }
 
 fn selectMarket(instance: *Instance, index: usize) void {
@@ -2953,8 +2980,13 @@ fn changeMarketFilter(instance: *Instance, which: usize) void {
     instance.market_snapshot = .{};
     instance.market_selected = null;
     instance.market_detail = null;
-    instance.market_status = "筛选条件已变更；请主动搜索";
-    refresh(instance);
+    if (filters.mode == .exact_id) {
+        instance.market_status = "请输入完整来源 ID 后搜索";
+        refresh(instance);
+    } else {
+        searchMarket(instance, instance.market_query.offline);
+        refresh(instance);
+    }
 }
 
 fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c) void {
@@ -2987,6 +3019,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
                     if (!instance.library_loaded and instance.task_id == 0 and !instance.search_pending) startLibrary(instance, false);
                 }
                 if (instance.section == .running) startRuntimeCheck(instance);
+                if (instance.section == .market) maybeBrowseMarket(instance);
                 refresh(instance);
             },
             4 => load(instance),
@@ -3299,6 +3332,8 @@ fn open(instance: *Instance) host_mod.Error!void {
         startLibrary(instance, false);
     } else if (instance.section == .running) {
         startRuntimeCheck(instance);
+    } else if (instance.section == .market) {
+        maybeBrowseMarket(instance);
     }
     if (instance.resources != null) {
         load(instance);
@@ -3365,14 +3400,15 @@ test "settings preference validates exact value and duplicate keys" {
     try std.testing.expectError(error.InvalidSettings, readPreference(.{ .values = &values, .count = 1 }));
 }
 
-fn expectInputLabels(node: *const ui.Node) !void {
+fn expectInputLabels(node: ui.Node) !void {
     if (node.type == ui.NodeKind.text_input) {
         try std.testing.expectEqual(@as(u32, 1), node.text.present);
         const caption = abi.slice(node.text.value) orelse return error.TestUnexpectedResult;
         try std.testing.expect(caption.len != 0);
     }
-    if (node.children.present != 0) {
-        for (0..node.children.count) |n| try expectInputLabels(&node.children.data[n]);
+    if (node.children.present != 0 and node.children.count != 0) {
+        try std.testing.expect(node.children.data != null);
+        for (0..node.children.count) |n| try expectInputLabels(node.children.data[n]);
     }
 }
 
@@ -3385,7 +3421,7 @@ test "four section tree declares only real navigation and preference actions" {
     for (0..names.len) |n| {
         instance.section = @fromBackingInt(@intCast(n));
         fill(instance, &content, &tree);
-        try expectInputLabels(&content.root);
+        try expectInputLabels(content.root);
         try std.testing.expectEqual(@as(u32, commands.len), tree.command_count);
         try std.testing.expectEqual(@as(u32, 4), content.children[0].children.count);
         try std.testing.expectEqualStrings(commands[n][10..], abi.slice(content.children[1].id).?);
@@ -3571,7 +3607,7 @@ test "search fields retain natural single-line layout and accessible labels" {
         fill(instance, &content, &tree);
         const search = &content.children[3];
         try std.testing.expectEqual(ui.NodeKind.text_input, search.type);
-        try expectInputLabels(search);
+        try expectInputLabels(search.*);
         try std.testing.expectEqual(@as(u32, 1), search.placeholder.present);
         try std.testing.expectEqual(@as(u32, 0), search.glyph.present);
         try std.testing.expectEqual(@as(u32, 0), search.flex.present);
@@ -3610,6 +3646,20 @@ test "running search matches source and exact IDs without treating missing PID a
     const missing: library.RunningRow = .{ .id = 12, .asset_id = 5 };
     try std.testing.expect(!runningMatches(missing, "cat", "0"));
     try std.testing.expect(runningMatches(missing, "猫", "猫"));
+}
+
+test "default market browsing has an empty optional query and never admits install" {
+    const query = defaultMarketQuery();
+    try std.testing.expectEqual(@as(usize, 0), query.len);
+    try std.testing.expectEqual(@as(usize, 0), query.offset);
+    try std.testing.expect(!query.offline);
+    try std.testing.expectEqual(.curated, query.filters.mode);
+    const instance = try std.testing.allocator.create(Instance);
+    defer std.testing.allocator.destroy(instance);
+    instance.* = .{ .host = undefined, .section = .market };
+    maybeBrowseMarket(instance);
+    try std.testing.expect(!instance.market_initial_attempted);
+    try std.testing.expect(instance.market_request == null);
 }
 
 test "market panel requires explicit admission and has no implicit install" {
@@ -3767,7 +3817,7 @@ test "native policy fields use canonical booleans and reject injected records" {
     try std.testing.expectError(error.InvalidPolicy, decodePolicyFields(&fields));
     var content: Content = undefined;
     const editor = fillPolicyEditor(&content, false);
-    try expectInputLabels(&editor);
+    try expectInputLabels(editor);
     try std.testing.expectEqual(@as(u32, 18), editor.children.count);
     try std.testing.expectEqual(ui.NodeKind.checkbox, content.policy_nodes[0].type);
     try std.testing.expectEqual(@as(u32, 0), content.policy_nodes[0].enabled.value);

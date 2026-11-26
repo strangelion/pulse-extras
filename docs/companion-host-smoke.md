@@ -150,3 +150,10 @@ The GUI process stdout file may be empty; failed activation normally calls
 deactivate/destroy and unloads the module. Rebuild a new verified test
 package after a code fix, retain the previous revision and do not reuse
 its old hash as the fixed package. Actual UI acceptance is still required.
+
+Market default browse: enter Market with no running desktop-pet session;
+expect a single automatic read-only curated directory load, then results
+without typing a query. Re-enter after switching pages: no redundant
+automatic request. Search/filter/clear, offline cache and cancel are
+separate cases; verify failure does not automatically retry or download an
+asset. Record cache/network/parse stage, shard count and final outcome.

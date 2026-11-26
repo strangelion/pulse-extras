@@ -17,10 +17,21 @@ const Budget = @import("runtime_budget").Budget;
 pub const ScanProgress = struct {
     completed: std.atomic.Value(usize) = .init(0),
     total: std.atomic.Value(usize) = .init(0),
+    pub const Stage = enum(u32) { idle, cache_read, network, cache_write, parse, finalize };
+    stage: std.atomic.Value(u32) = .init(@backingInt(Stage.idle)),
+
+    pub fn setStage(self: *ScanProgress, value: Stage) void {
+        self.stage.store(@backingInt(value), .release);
+    }
+
+    pub fn getStage(self: *const ScanProgress) Stage {
+        return @fromBackingInt(@intCast(self.stage.load(.acquire)));
+    }
 
     pub fn reset(self: *ScanProgress) void {
         self.completed.store(0, .release);
         self.total.store(0, .release);
+        self.setStage(.idle);
     }
 };
 
@@ -194,21 +205,26 @@ pub fn ServiceFor(comptime Transport: type, comptime CacheType: type, comptime i
             const key = try request.key();
             const buffer = try self.allocator.alloc(u8, codec.max_record);
             errdefer self.allocator.free(buffer);
+            if (self.scan_progress) |progress| progress.setStage(.cache_read);
             if (try self.cache.load(self.allocator, request, buffer, self.now, self.policy == .offline_only)) |entry| {
                 return .{ .storage = buffer, .payload = entry.payload, .stale = entry.stale, .stored_at = entry.stored_at };
             }
             if (self.policy == .offline_only) return error.OfflineMiss;
+            if (self.scan_progress) |progress| progress.setStage(.network);
             const payload = self.readDownload(request, key.url, buffer) catch |err| {
                 // Never hide malformed responses, cancellation, budget or
                 // cleanup failures behind an apparently successful cache hit.
                 if ((err == error.NetworkFailed or err == error.NetworkTimeout) and self.policy == .stale_on_network_failure) {
+                    if (self.scan_progress) |progress| progress.setStage(.cache_read);
                     if (try self.cache.load(self.allocator, request, buffer, self.now, true)) |entry| {
                         return .{ .storage = buffer, .payload = entry.payload, .stale = true, .stored_at = entry.stored_at };
                     }
                 }
                 return err;
             };
+            try self.cancel.check();
             // save validates before writing; a cache write failure is visible.
+            if (self.scan_progress) |progress| progress.setStage(.cache_write);
             try self.cache.save(self.allocator, request, payload, self.now);
             return .{ .storage = buffer, .payload = payload, .stale = false, .stored_at = self.now };
         }
@@ -244,12 +260,15 @@ pub fn ServiceFor(comptime Transport: type, comptime CacheType: type, comptime i
                 defer body.deinit(self.allocator);
                 stale = stale or body.stale;
                 expires = @min(expires, body.stored_at +| (24 * 60 * 60));
+                try self.cancel.check();
+                if (self.scan_progress) |progress| progress.setStage(.parse);
                 const parsed = try market.parseSearchPage(self.allocator, body.payload, index, search_index.value, number);
                 defer parsed.deinit();
                 try scan.append(parsed.value);
                 if (self.scan_progress) |progress| progress.completed.store(n + 1, .release);
             }
             try self.cancel.check();
+            if (self.scan_progress) |progress| progress.setStage(.finalize);
             var result: Search = .{ .summary = try scan.finish(search_index.value), .revision_len = index.generatedAt.len, .stale = stale, .created_at = self.now, .expires_at = expires };
             @memcpy(result.revision[0..result.revision_len], index.generatedAt);
             for (output[0..result.summary.written], 0..) |*hit, n| {
@@ -478,7 +497,9 @@ test "market service connects real persistent cache, futures, search and package
         try std.testing.expectEqual(@as(usize, 1), result.summary.written);
         try std.testing.expectEqual(@as(usize, 1), scan_progress.total.load(.acquire));
         try std.testing.expectEqual(@as(usize, 1), scan_progress.completed.load(.acquire));
+        try std.testing.expectEqual(ScanProgress.Stage.finalize, scan_progress.getStage());
         scan_progress.reset();
+        try std.testing.expectEqual(ScanProgress.Stage.idle, scan_progress.getStage());
         try std.testing.expectEqual(@as(usize, 0), scan_progress.completed.load(.acquire));
         try std.testing.expectEqualStrings("cat", hits[0].sourceId());
         try std.testing.expectEqual(@as(usize, 3), calls);

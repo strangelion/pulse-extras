@@ -311,3 +311,25 @@ completed until children drain. Host owns its popup; V1 has no public
 programmatic dismiss/background API. User can choose Background continue;
 never close arbitrary host windows or fake terminal success. Actual market
 completion and new status rendering require retest.
+
+### D2 default market browsing and scan diagnosis
+
+The user confirmed three ready instances and corrected search-field layout.
+A search screenshot showed 1/6 validated shards, with one HTTP response
+fully received; the exact stalled operation was not established. Display
+cache read, network, cache validation/write, parsing and finalization
+separately, and preserve the existing search deadline. On explicit first
+navigation into Market, automatically request the empty-query curated first
+page (existing validated cache preferred); no network on plugin activation
+on other pages, no repeated automatic retries, no automatic asset download
+or installation. Search is optional; clearing restores default browsing,
+non-exact filters apply immediately. Existing runtime/private-owner mutual
+exclusion remains; show the waiting reason rather than claim concurrent
+market access. Market results and automatic browsing require real-host
+retest. CI 45725975587 desktop and IPC passed, but both general jobs failed
+on nullable C child-node pointer conversion in a Zig assertion; traverse
+node records by value after validating the child pointer. Host task popup
+now receives runtime status but its own Preparing caption remains. Public
+pinned V1 does not offer a background/dismiss API; use Background continue.
+Installed 1.0.61 task-tail contract must be examined before any further
+popup changes; do not invent ABI fields.
