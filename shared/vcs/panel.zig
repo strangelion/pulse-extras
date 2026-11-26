@@ -357,11 +357,23 @@ pub const Content = struct {
             self.addButton("vcs.action.trust-confirm", loc(lang, "Trust tool and repository for this session", "信任工具及仓库（仅本次会话）"), command_trust_confirm);
             self.addButton("vcs.action.trust-cancel", loc(lang, "Cancel review", "取消确认"), command_trust_cancel);
         } else {
+            const snapshot = view.snapshot orelse return;
             self.addExecutableInput(lang);
-            self.add("vcs.setup-help", "", loc(lang, "Use the full path of the installed tool (where.exe git / jj / svn can help). Choose a provider present in this repository.", "填写已安装工具的完整路径（可用 where.exe git / jj / svn 查找），选择当前仓库具有的类型。"));
-            self.addButton("vcs.action.trust-git", loc(lang, "Review Git access", "确认 Git 访问"), command_trust_git);
-            self.addButton("vcs.action.trust-jj", loc(lang, "Review Jujutsu access", "确认 Jujutsu 访问"), command_trust_jj);
-            self.addButton("vcs.action.trust-svn", loc(lang, "Review SVN access", "确认 SVN 访问"), command_trust_svn);
+            self.add("vcs.setup-help", "", loc(lang, "Leave the path empty to review a detected candidate, or enter an absolute path. Detection never runs or approves a program.", "留空可使用检测到的候选程序，也可填写绝对路径。检测不会运行或授权程序。"));
+            const kinds = [_]identity.Kind{ .git, .jj, .svn };
+            const ids = [_][]const u8{ "vcs.candidate.git", "vcs.candidate.jj", "vcs.candidate.svn" };
+            const button_ids = [_][]const u8{ "vcs.action.trust-git", "vcs.action.trust-jj", "vcs.action.trust-svn" };
+            const labels = [_][]const u8{ "Git: ", "Jujutsu: ", "SVN: " };
+            const en = [_][]const u8{ "Review Git access", "Review Jujutsu access", "Review SVN access" };
+            const zh = [_][]const u8{ "确认 Git 访问", "确认 Jujutsu 访问", "确认 SVN 访问" };
+            const actions = [_][]const u8{ command_trust_git, command_trust_jj, command_trust_svn };
+            for (kinds, ids, button_ids, labels, en, zh, actions) |kind, id, button_id, label, english, chinese, action| {
+                if (!snapshot.previewHas(kind)) continue;
+                if (snapshot.previewTool(kind)) |path| {
+                    self.add(id, label, path.slice());
+                } else self.add(id, label, loc(lang, "Not found; enter the installed path", "未找到，请填写已安装路径"));
+                self.addButton(button_id, loc(lang, english, chinese), action);
+            }
         }
     }
 
@@ -549,12 +561,14 @@ test "local trust setup shows explicit review and never claims status without co
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     const workspace = try identity.Workspace.init(.git, "C:\\repo", "C:\\repo");
-    var view: View = .{ .phase = .ready, .workspace = workspace, .metadata_only = true, .local_setup = true, .snapshot = .{ .workspace = workspace, .availability = .not_queried } };
+    var view: View = .{ .phase = .ready, .workspace = workspace, .metadata_only = true, .local_setup = true, .snapshot = .{ .workspace = workspace, .availability = .not_queried, .preview_kinds = 3, .preview_tools = .{ try identity.Path.init("C:\\tools\\git.exe"), null, null } } };
     content.buildInteractive(.en, &view, &tree);
     try std.testing.expectEqual(@as(u32, 9), tree.command_count);
     try std.testing.expectEqual(@as(u32, 1), tree.state_count);
     try std.testing.expect(content.textFor("vcs.status-unavailable") != null);
     try std.testing.expect(content.textFor("vcs.review-warning") == null);
+    try std.testing.expectEqualStrings("Git: C:\\tools\\git.exe", content.textFor("vcs.candidate.git") orelse return error.TestUnexpectedResult);
+    try std.testing.expect(content.textFor("vcs.action.trust-svn") == null);
     view.local_review = .{ .root = workspace.root, .kind = .jj, .executable = try identity.Path.init("C:\\tools\\jj.exe"), .generation = 1 };
     content.buildInteractive(.en, &view, &tree);
     try std.testing.expectEqualStrings("Executable: C:\\tools\\jj.exe", content.textFor("vcs.review-exe") orelse return error.TestUnexpectedResult);

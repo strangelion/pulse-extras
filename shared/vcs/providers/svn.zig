@@ -203,7 +203,7 @@ pub const Svn = struct {
         var snapshot = contract.Snapshot{ .availability = .ready, .workspace = workspace.* };
         {
             var revision_outcome = try self.query(&.{
-                self.executable.slice(), "info", "--show-item", "revision", workspace.root.slice(),
+                self.executable.slice(), "info", "--non-interactive", "--no-auth-cache", "--show-item", "revision", workspace.root.slice(),
             });
             defer revision_outcome.deinit();
             if (!revision_outcome.succeeded()) return mapFailure(revision_outcome.stderr);
@@ -211,7 +211,7 @@ pub const Svn = struct {
         }
         {
             var url_outcome = try self.query(&.{
-                self.executable.slice(), "info", "--show-item", "relative-url", workspace.root.slice(),
+                self.executable.slice(), "info", "--non-interactive", "--no-auth-cache", "--show-item", "relative-url", workspace.root.slice(),
             });
             defer url_outcome.deinit();
             if (!url_outcome.succeeded()) return mapFailure(url_outcome.stderr);
@@ -219,7 +219,7 @@ pub const Svn = struct {
         }
         {
             var status_outcome = try self.query(&.{
-                self.executable.slice(), "status", "--xml", "--no-ignore", workspace.root.slice(),
+                self.executable.slice(), "status", "--non-interactive", "--no-auth-cache", "--ignore-externals", "--xml", "--no-ignore", workspace.root.slice(),
             });
             defer status_outcome.deinit();
             if (!status_outcome.succeeded()) return mapFailure(status_outcome.stderr);

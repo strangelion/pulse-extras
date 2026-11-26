@@ -39,6 +39,8 @@ extern "advapi32" fn RegSetKeyValueW(key: usize, sub: [*:0]const u16, value: [*:
 extern "crypt32" fn CryptProtectData(input: *const Blob, description: ?[*:0]const u16, entropy: ?*const Blob, reserved: ?*anyopaque, prompt: ?*anyopaque, flags: u32, output: *Blob) callconv(.winapi) i32;
 extern "crypt32" fn CryptUnprotectData(input: *const Blob, description: ?*?[*:0]u16, entropy: ?*const Blob, reserved: ?*anyopaque, prompt: ?*anyopaque, flags: u32, output: *Blob) callconv(.winapi) i32;
 extern "kernel32" fn LocalFree(memory: *anyopaque) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn GetEnvironmentVariableW(name: [*:0]const u16, value: [*]u16, capacity: u32) callconv(.winapi) u32;
+extern "kernel32" fn WideCharToMultiByte(codepage: u32, flags: u32, input: [*]const u16, input_len: i32, output: [*]u8, output_len: i32, default_char: ?*const u8, used_default: ?*i32) callconv(.winapi) i32;
 
 const Error = contract.Error;
 
@@ -461,9 +463,9 @@ const LocalSession = struct {
                 }
                 break :blk argvEqual(argv[0..9], &.{ exe, "--ignore-working-copy", "--no-pager", "--color=never", "-R", root, "diff", "--summary", "-r" });
             },
-            .svn => argvEqual(argv, &.{ exe, "info", "--show-item", "revision", root }) or
-                argvEqual(argv, &.{ exe, "info", "--show-item", "relative-url", root }) or
-                argvEqual(argv, &.{ exe, "status", "--xml", "--no-ignore", root }),
+            .svn => argvEqual(argv, &.{ exe, "info", "--non-interactive", "--no-auth-cache", "--show-item", "revision", root }) or
+                argvEqual(argv, &.{ exe, "info", "--non-interactive", "--no-auth-cache", "--show-item", "relative-url", root }) or
+                argvEqual(argv, &.{ exe, "status", "--non-interactive", "--no-auth-cache", "--ignore-externals", "--xml", "--no-ignore", root }),
             else => false,
         };
     }
@@ -610,6 +612,37 @@ fn parsePreviewHead(bytes: []const u8, snapshot: *contract.Snapshot) void {
     }
 }
 
+// Non-executing discovery, in the existing metadata worker only. Ignore
+// relative, network, reparse and malformed candidates. Bound PATH and probes;
+// a found path is a suggestion, never an approval or version claim.
+fn suggestTools(snapshot: *contract.Snapshot) void {
+    if (comptime builtin.os.tag != .windows) return;
+    const wide = allocator.alloc(u16, 32768) catch return;
+    defer allocator.free(wide);
+    const size = GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("PATH"), wide.ptr, @intCast(wide.len));
+    if (size == 0 or size >= wide.len) return;
+    const utf8 = allocator.alloc(u8, 64 * 1024) catch return;
+    defer allocator.free(utf8);
+    const len = WideCharToMultiByte(65001, 0x80, wide.ptr, @intCast(size), utf8.ptr, @intCast(utf8.len), null, null);
+    if (len <= 0) return;
+    var parts = std.mem.splitScalar(u8, utf8[0..@intCast(len)], ';');
+    var buffer: [identity.max_path_bytes]u8 = undefined;
+    for (0..64) |_| {
+        const raw = parts.next() orelse break;
+        const directory = std.mem.trimEnd(u8, std.mem.trim(u8, raw, " \t\""), "\\");
+        if (!approval.strictPath(directory)) continue;
+        // Observe directory before probing entries; never enumerate or run.
+        _ = evidence.observeIdentity(directory, true) catch continue;
+        for ([_]identity.Kind{ .git, .jj, .svn }, 0..) |kind, index| {
+            if (!snapshot.previewHas(kind) or snapshot.preview_tools[index] != null) continue;
+            const selected = LocalSession.tool(kind) orelse continue;
+            const path = std.fmt.bufPrint(&buffer, "{s}\\{s}", .{ directory, selected.exeName() }) catch continue;
+            _ = evidence.observeIdentity(path, false) catch continue;
+            snapshot.preview_tools[index] = identity.Path.init(path) catch continue;
+        }
+    }
+}
+
 fn summarizePreview(user: *anyopaque, workspace: *const identity.Workspace) Error!contract.Snapshot {
     var found: detect.Result = .{};
     detectPreview(user, workspace.root.slice(), &found);
@@ -621,6 +654,8 @@ fn summarizePreview(user: *anyopaque, workspace: *const identity.Workspace) Erro
     for ([_]identity.Kind{ .git, .jj, .svn }) |kind| {
         if (found.find(kind)) |candidate| {
             if (!candidate.root.eql(workspace.root.slice())) continue;
+            const index = contract.Snapshot.previewIndex(kind) orelse continue;
+            snapshot.preview_kinds |= @as(u8, 1) << @as(u3, @intCast(index));
             const name = kind.displayName();
             if (used != 0) {
                 @memcpy(labels[used..][0..3], " + ");
@@ -633,6 +668,7 @@ fn summarizePreview(user: *anyopaque, workspace: *const identity.Workspace) Erro
     var detail: [contract.Text.capacity]u8 = undefined;
     const description = std.fmt.bufPrint(&detail, "Repository markers: {s}. Working-copy status not queried.", .{labels[0..used]}) catch return error.ResourceLimit;
     snapshot.detail = contract.Text.init(description) catch return error.Parse;
+    suggestTools(&snapshot);
     if (workspace.kind == .git) {
         var path: [identity.max_path_bytes]u8 = undefined;
         const head_path = std.fmt.bufPrint(&path, "{s}\\.git\\HEAD", .{workspace.root.slice()}) catch return snapshot;
@@ -723,6 +759,6 @@ test "local trust command admission is exact for each provider" {
     try std.testing.expect(!LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "--ignore-working-copy", "--no-pager", "--color=never", "-R", root.slice(), "diff", "--summary", "-r", "--config" }));
     review.kind = .svn;
     review.executable = try identity.Path.init("C:\\tools\\svn.exe");
-    try std.testing.expect(LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "status", "--xml", "--no-ignore", root.slice() }));
+    try std.testing.expect(LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "status", "--non-interactive", "--no-auth-cache", "--ignore-externals", "--xml", "--no-ignore", root.slice() }));
     try std.testing.expect(!LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "status", "--xml", "-u", root.slice() }));
 }

@@ -98,6 +98,28 @@ pub const Snapshot = struct {
     has_conflict: ?bool = null,
     /// Human-readable detail for errors and partial states; never parsed.
     detail: Text = .{},
+    /// Metadata preview hints only; none is executable approval.
+    preview_kinds: u8 = 0,
+    preview_tools: [3]?identity.Path = .{ null, null, null },
+
+    pub fn previewIndex(kind: identity.Kind) ?usize {
+        return switch (kind) {
+            .git => 0,
+            .jj => 1,
+            .svn => 2,
+            else => null,
+        };
+    }
+
+    pub fn previewHas(self: *const Snapshot, kind: identity.Kind) bool {
+        const index = previewIndex(kind) orelse return false;
+        return self.preview_kinds & (@as(u8, 1) << @as(u3, @intCast(index))) != 0;
+    }
+
+    pub fn previewTool(self: *const Snapshot, kind: identity.Kind) ?identity.Path {
+        const index = previewIndex(kind) orelse return null;
+        return self.preview_tools[index];
+    }
 };
 
 pub const VTable = struct {

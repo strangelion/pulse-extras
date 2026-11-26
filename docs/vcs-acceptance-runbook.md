@@ -142,8 +142,9 @@ before publishing an update. Do not advertise marker discovery as full status.
 ### Interactive trusted-local session (candidate)
 
 In the no-grant metadata preview, wait for repository detection, enter the
-absolute path of an installed git.exe, jj.exe or svn.exe, then choose the
-corresponding Review action. The confirmation displays the exact copied
+absolute path of an installed git.exe, jj.exe or svn.exe (or leave the field
+empty to use a non-executing bounded PATH candidate), then choose the
+corresponding Review action. Only detected repository kinds are offered. The confirmation displays the exact copied
 executable and root; consent is explicit and session-only. No PATH program
 is automatically trusted. Select a provider present at the displayed root;
 Git and JJ colocated markers may be selected independently. On confirmation,
@@ -163,8 +164,10 @@ downloads or untrusted repositories. Only ordinary fixed-drive canonical
 paths and directory markers are admitted; linked Git worktrees, SVN paths
 with ambiguous peg syntax and unsupported layouts fail closed. Revoke blocks
 future commands; an already-running command is not rolled back. Close/reopen
-for another root/tool. No saved multi-root grant, automatic PATH discovery,
-write actions or history/diff UI are included.
+for another root/tool. PATH discovery is a non-executing suggestion, not automatic approval. No
+saved multi-root grant, write actions or history/diff UI are included. SVN
+queries explicitly disable interactive prompts, auth-cache writes and external
+working-copy traversal in status.
 
 Acceptance still requires positive Git/JJ/SVN execution on ordinary installed
 tools in real Pulse, native text input and confirmation rendering, stale

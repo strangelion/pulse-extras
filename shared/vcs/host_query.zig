@@ -680,8 +680,13 @@ pub const Binding = struct {
         var bytes: [identity.max_path_bytes + 1]u8 = undefined;
         var needed: u32 = 0;
         try host_mod.mapStatus(get(model.table.context, model.id, abi.view(panel.state_executable), &bytes, bytes.len, &needed));
-        if (needed == 0 or needed >= bytes.len) return error.Argument;
-        const executable = identity.Path.init(bytes[0..needed]) catch return error.Argument;
+        if (needed >= bytes.len) return error.Argument;
+        const snapshot = self.controller.current.snapshot orelse return error.State;
+        if (!snapshot.previewHas(kind)) return error.Permission;
+        const executable = if (needed == 0)
+            snapshot.previewTool(kind) orelse return error.Argument
+        else
+            identity.Path.init(bytes[0..needed]) catch return error.Argument;
         // No tool discovery or execution occurs here. Confirmation owns
         // the exact copied path and repository shown in the review.
         const latest = self.navigation.latest orelse return error.State;
@@ -1986,6 +1991,8 @@ test "local consent is two step, navigation bound, and released only after drain
     mock.runWork();
     try binding.pump();
     try std.testing.expectEqual(panel.Phase.ready, binding.controller.current.phase);
+    binding.controller.current.snapshot.?.preview_kinds = 1;
+    binding.controller.current.snapshot.?.preview_tools[0] = try identity.Path.init("C:\\tools\\git.exe");
     model.click(7, panel.command_trust_confirm);
     try std.testing.expectEqual(@as(usize, 0), access.authorized);
     model.click(7, panel.command_trust_git);
@@ -2004,7 +2011,13 @@ test "local consent is two step, navigation bound, and released only after drain
     try binding.pump();
     mock.runWork();
     try binding.pump();
+    binding.controller.current.snapshot.?.preview_kinds = 1;
+    binding.controller.current.snapshot.?.preview_tools[0] = try identity.Path.init("C:\\tools\\git.exe");
+    model.executable = "";
+    model.click(7, panel.command_trust_svn);
+    try std.testing.expect(binding.local_review == null);
     model.click(7, panel.command_trust_git);
+    try std.testing.expect(binding.local_review != null);
     model.click(7, panel.command_trust_confirm);
     try std.testing.expectEqual(@as(usize, 1), access.authorized);
     try std.testing.expect(!binding.metadata_only and binding.revocation != null);
