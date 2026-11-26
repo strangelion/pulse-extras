@@ -328,8 +328,12 @@ const SavedLocal = struct {
     const sub = std.unicode.utf8ToUtf16LeStringLiteral("Software\\Strangelion\\PulseExtras\\VcsLocalTrust\\v1");
     const epoch_name = std.unicode.utf8ToUtf16LeStringLiteral("Epoch");
     const entropy = "pulse-extras-vcs-local-trust-v1";
-    const magic = "PVCSLT01";
-    const max_record = 2 * identity.max_path_bytes + 53;
+    const magic = "PVCSLT02";
+    const header_size = 69;
+    const max_record = 2 * identity.max_path_bytes + header_size;
+    const Nonce = [16]u8;
+
+    extern "advapi32" fn SystemFunction036(*anyopaque, u32) callconv(.winapi) u8;
     const max_envelope = max_record + 4096;
 
     extern "kernel32" fn CreateMutexW(?*anyopaque, i32, [*:0]const u16) callconv(.winapi) ?*anyopaque;
@@ -356,7 +360,7 @@ const SavedLocal = struct {
     fn slot(review: *const panel.LocalReview) [4:0]u16 {
         var hash = Sha256.init(.{});
         hash.update(review.root.slice());
-        hash.update(&.{ 0, @intFromEnum(review.kind) });
+        hash.update(&.{ 0, @backingInt(review.kind) });
         const digest = hash.finalResult();
         const chars = "0123456789abcdef";
         return .{ 'g', chars[digest[0] & 3], chars[digest[1] >> 4], chars[digest[1] & 15] };
@@ -387,22 +391,23 @@ const SavedLocal = struct {
         root: []const u8,
         executable: []const u8,
         fingerprint: [32]u8,
+        nonce: Nonce,
 
         fn parse(bytes: []const u8) Error!Record {
-            if (bytes.len < 53 or bytes.len > max_record or !std.mem.eql(u8, bytes[0..8], magic)) return error.Parse;
+            if (bytes.len < header_size or bytes.len > max_record or !std.mem.eql(u8, bytes[0..8], magic)) return error.Parse;
             const kind: identity.Kind = switch (bytes[16]) {
-                @intFromEnum(identity.Kind.git) => .git,
-                @intFromEnum(identity.Kind.jj) => .jj,
-                @intFromEnum(identity.Kind.svn) => .svn,
+                @backingInt(identity.Kind.git) => .git,
+                @backingInt(identity.Kind.jj) => .jj,
+                @backingInt(identity.Kind.svn) => .svn,
                 else => return error.Parse,
             };
             const root_len = std.mem.readInt(u16, bytes[17..19], .little);
             const exe_len = std.mem.readInt(u16, bytes[19..21], .little);
-            if (root_len == 0 or exe_len == 0 or root_len > identity.max_path_bytes or exe_len > identity.max_path_bytes or @as(usize, root_len) + exe_len + 53 != bytes.len) return error.Parse;
-            const root = bytes[53..][0..root_len];
-            const executable = bytes[53 + @as(usize, root_len) ..];
+            if (root_len == 0 or exe_len == 0 or root_len > identity.max_path_bytes or exe_len > identity.max_path_bytes or @as(usize, root_len) + exe_len + header_size != bytes.len) return error.Parse;
+            const root = bytes[header_size..][0..root_len];
+            const executable = bytes[header_size + @as(usize, root_len) ..];
             if (!approval.strictPath(root) or !approval.strictPath(executable)) return error.Parse;
-            return .{ .generation = std.mem.readInt(u64, bytes[8..16], .little), .kind = kind, .root = root, .executable = executable, .fingerprint = bytes[21..53].* };
+            return .{ .generation = std.mem.readInt(u64, bytes[8..16], .little), .kind = kind, .root = root, .executable = executable, .fingerprint = bytes[21..53].*, .nonce = bytes[53..69].* };
         }
 
         fn sameScope(self: Record, review: *const panel.LocalReview) bool {
@@ -414,19 +419,20 @@ const SavedLocal = struct {
         }
     };
 
-    fn encode(review: *const panel.LocalReview, generation: u64, fingerprint: [32]u8, bytes: []u8) Error![]const u8 {
+    fn encode(review: *const panel.LocalReview, generation: u64, fingerprint: [32]u8, nonce: Nonce, bytes: []u8) Error![]const u8 {
         const root = review.root.slice();
         const exe = review.executable.slice();
-        const len = root.len + exe.len + 53;
+        const len = root.len + exe.len + header_size;
         if (len > bytes.len or len > max_record or !approval.strictPath(root) or !approval.strictPath(exe)) return error.Parse;
         @memcpy(bytes[0..8], magic);
         std.mem.writeInt(u64, bytes[8..16], generation, .little);
-        bytes[16] = @intFromEnum(review.kind);
+        bytes[16] = @backingInt(review.kind);
         std.mem.writeInt(u16, bytes[17..19], @intCast(root.len), .little);
         std.mem.writeInt(u16, bytes[19..21], @intCast(exe.len), .little);
         @memcpy(bytes[21..53], &fingerprint);
-        @memcpy(bytes[53..][0..root.len], root);
-        @memcpy(bytes[53 + root.len .. len], exe);
+        @memcpy(bytes[53..69], &nonce);
+        @memcpy(bytes[header_size..][0..root.len], root);
+        @memcpy(bytes[header_size + root.len .. len], exe);
         const encoded = bytes[0..len];
         _ = try Record.parse(encoded);
         return encoded;
@@ -448,14 +454,19 @@ const SavedLocal = struct {
         return decoded;
     }
 
-    fn require(review: *const panel.LocalReview, generation: u64, fingerprint: [32]u8) Error!void {
+    fn require(review: *const panel.LocalReview, generation: u64, fingerprint: [32]u8, expected: ?Nonce) Error!Nonce {
         if (try epoch() != generation) return error.Permission;
         const bytes = (try loadSlot(review)) orelse return error.Permission;
         defer allocator.free(bytes);
-        if (!(try Record.parse(bytes)).matches(review, generation, fingerprint) or try epoch() != generation) return error.Permission;
+        const record = try Record.parse(bytes);
+        if (!record.matches(review, generation, fingerprint) or try epoch() != generation) return error.Permission;
+        if (expected) |nonce| {
+            if (!std.mem.eql(u8, &nonce, &record.nonce)) return error.Permission;
+        }
+        return record.nonce;
     }
 
-    fn save(review: *const panel.LocalReview, generation: u64, fingerprint: [32]u8) Error!void {
+    fn save(review: *const panel.LocalReview, generation: u64, fingerprint: [32]u8, revoked: *const std.atomic.Value(bool)) Error!Nonce {
         const mutex = try lock();
         defer unlock(mutex);
         if (try epoch() != generation) return error.Permission;
@@ -464,13 +475,17 @@ const SavedLocal = struct {
             const record = try Record.parse(previous);
             if (record.generation == generation and !record.sameScope(review)) return error.ResourceLimit;
         }
+        var nonce: Nonce = undefined;
+        if (SystemFunction036(&nonce, nonce.len) == 0) return error.Permission;
         var buffer: [max_record]u8 = undefined;
-        const bytes = try encode(review, generation, fingerprint, &buffer);
+        const bytes = try encode(review, generation, fingerprint, nonce, &buffer);
         const sealed = try transformWithEntropy(bytes, false, entropy);
         defer allocator.free(sealed);
         if (sealed.len > max_envelope) return error.ResourceLimit;
         const name = slot(review);
+        if (revoked.load(.acquire)) return error.Permission;
         if (RegSetKeyValueW(hkcu, sub, &name, 3, sealed.ptr, @intCast(sealed.len)) != 0) return error.Permission;
+        return nonce;
     }
 
     fn forget(review: *const panel.LocalReview) Error!void {
@@ -499,7 +514,7 @@ const LocalSession = struct {
     runner: ?process.Runner = null,
     pins: ?Pins = null,
     saved_epoch: ?u64 = null,
-    saved_ready: bool = false,
+    saved_nonce: ?SavedLocal.Nonce = null,
     neutral: identity.Path = .{},
     git: git_mod.Git = undefined,
     jj: jj_mod.Jj = undefined,
@@ -535,6 +550,7 @@ const LocalSession = struct {
         const self: *LocalSession = @ptrCast(@alignCast(user));
         if (self.review != null or self.revoked.load(.acquire)) return error.State;
         if (!validReview(review)) return error.Argument;
+        if (review.mode != .session) self.saved_epoch = SavedLocal.epoch() catch |err| return hostError(err);
         self.review = review.*;
         return .{ .ctx = self, .resolve = &resolve };
     }
@@ -601,7 +617,7 @@ const LocalSession = struct {
     fn fingerprint(pins: Pins, review: *const panel.LocalReview) [32]u8 {
         var hash = Sha256.init(.{});
         hash.update(review.root.slice());
-        hash.update(&.{ 0, @intFromEnum(review.kind) });
+        hash.update(&.{ 0, @backingInt(review.kind) });
         hash.update(review.executable.slice());
         hash.update(&.{0});
         for ([_]evidence.FileIdentity{ pins.executable, pins.root, pins.marker }) |id| {
@@ -618,7 +634,7 @@ const LocalSession = struct {
         if (review.mode == .session) return;
         const generation = self.saved_epoch orelse return error.Permission;
         if (try SavedLocal.epoch() != generation) return error.Permission;
-        if (review.mode == .reuse or self.saved_ready) try SavedLocal.require(review, generation, fingerprint(self.pins orelse return error.Permission, review));
+        if (review.mode == .reuse or self.saved_nonce != null) self.saved_nonce = try SavedLocal.require(review, generation, fingerprint(self.pins orelse return error.Permission, review), self.saved_nonce);
     }
 
     fn checkPins(self: *LocalSession, review: *const panel.LocalReview) Error!void {
@@ -637,7 +653,6 @@ const LocalSession = struct {
             return self.checkSaved(review);
         }
         if (self.revoked.load(.acquire)) return error.Permission;
-        if (review.mode != .session) self.saved_epoch = try SavedLocal.epoch();
         var path: [identity.max_path_bytes]u8 = undefined;
         const marker = try markerPath(review, &path);
         const root_id = try evidence.observeIdentity(review.root.slice(), true);
@@ -761,11 +776,10 @@ const LocalSession = struct {
             },
             else => return error.Unsupported,
         };
-        if (review.mode == .remember and !self.saved_ready) {
+        if (review.mode == .remember and self.saved_nonce == null) {
             if (self.revoked.load(.acquire)) return error.Permission;
             const generation = self.saved_epoch orelse return error.Permission;
-            try SavedLocal.save(review, generation, fingerprint(self.pins orelse return error.Permission, review));
-            self.saved_ready = true;
+            self.saved_nonce = try SavedLocal.save(review, generation, fingerprint(self.pins orelse return error.Permission, review), &self.revoked);
         }
         try self.checkSaved(review);
         return .{ .provider = provider, .workspace = workspace, .tool_version = contract.Text.init(report.lineSlice()) catch return error.Parse, .cache_token = fingerprint(self.pins orelse return error.Permission, review) };
@@ -1138,9 +1152,11 @@ test "saved local records pin exact root provider executable identity and epoch"
     var review: panel.LocalReview = .{ .root = try identity.Path.init(root), .executable = try identity.Path.init(exe), .kind = .git, .generation = 4 };
     const digest: [32]u8 = @splat(0x5a);
     var buffer: [SavedLocal.max_record]u8 = undefined;
-    const bytes = try SavedLocal.encode(&review, 9, digest, &buffer);
+    const nonce: SavedLocal.Nonce = @splat(7);
+    const bytes = try SavedLocal.encode(&review, 9, digest, nonce, &buffer);
     const record = try SavedLocal.Record.parse(bytes);
     try std.testing.expect(record.matches(&review, 9, digest));
+    try std.testing.expectEqualSlices(u8, &nonce, &record.nonce);
     try std.testing.expect(!record.matches(&review, 10, digest));
     try std.testing.expect(!record.matches(&review, 9, @splat(0x5b)));
     review.kind = .jj;

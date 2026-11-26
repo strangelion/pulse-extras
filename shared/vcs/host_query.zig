@@ -1075,6 +1075,12 @@ pub const Binding = struct {
             self.last_error = err;
             return err;
         };
+        if (self.saved_trust_selected and self.controller.current.failure == error.Permission) {
+            self.controller.current.snapshot = null;
+            self.controller.current.stale = false;
+            self.cache_token = null;
+            self.recent.clear();
+        }
         if (self.cache_token) |token| {
             const current = &self.controller.current;
             if (self.accepting and !self.approval_locked and !self.metadata_only and current.phase == .ready and !current.stale) {

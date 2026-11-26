@@ -337,3 +337,10 @@ skips a fresh policy decision or summary. Clear on explicit revoke and close;
 no cross-provider or cross-identity reuse. Physical alias deduplication and
 selected-folder right-click contribution remain pending; do not claim P2B
 complete until the remaining workflow and exact regression pass.
+
+Saved-record format v2 additionally carries a random per-approval nonce. A
+revoke followed by an explicit new save does not revive a session holding the
+old nonce. Capture the global epoch at explicit consent, not at delayed worker
+start; epoch changes therefore invalidate pending approvals. Permission failure
+in the saved-trust status path discards any stale cached snapshot. This is
+command admission revalidation, not an atomic process-launch sandbox.
