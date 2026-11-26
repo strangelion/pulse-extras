@@ -383,3 +383,31 @@ CI 45452000441 passed format and reached compilation; Ubuntu rejected the imposs
 ### Windows timeout investigation
 
 Run 45453154189 on 1a62305 passed both format checks and Ubuntu (64/64 build steps, 129/131 tests, two platform skips), but the Windows aggregate test step ran about 29m40s until job cancellation. No individual failing test was identified. Source inspection found a concrete cleanup-order hazard: MultiReader.deinit calls batch.cancel before the outer catch terminates the job. Terminate/drain the job while the reader is still alive, then deinit the reader, then release the child; on failed explicit drain close the kill-on-close job and report containment failure, not success. Add test-only phase markers without user data, and separate child capture, descendant timeout and output-limit cases. CI runs these independently under a short external deadline before VCS setup and still requires the complete suite. This is a candidate fix, not confirmation of root cause; if it hangs in spawn or fill, investigate the pinned stdlib implementation rather than extend timeouts.
+
+## Shared foundation extraction — first integration batch
+
+This candidate brings existing product-tested source into the common build,
+without introducing a shared DLL or changing product behavior. Source
+provenance (exact branch revisions at extraction):
+
+- Companion: `aad90505c1ab699616fd42af06a0c109776691d0` —
+  retention, sealed temporary store, optional picker and dialogs V2 ABI.
+- VCS: `72ec41e9620e0473f8138c422b16d7f13677e635` —
+  task/dispatch ownership, bounded wake hints and navigation mailbox.
+
+The common build registers these modules and their existing tests. The temp
+store adds a sealed-read/quota/cleanup regression. Optional ABI tables retain
+the frozen public SDK baseline; callers must probe interface availability and
+validate returned tables before use. A wake hint is not proof of task
+completion, and final host-destroy retirement is not ordinary cancellation.
+The temp store requires an already verified private directory and a single
+owner; sealed handles are borrowed and must not outlive owner cleanup.
+Retention does not authorize any filesystem deletion.
+
+Validation gate: full Windows/Linux regression on this exact integrated SHA,
+including existing SDK regeneration and C loader checks. Real host acceptance
+and migration of Companion's timer/dispatch implementation remain separate;
+no new host behavior or mixed-extension compatibility is certified by this
+extraction. Do not replace product-specific filesystem authorization,
+supervisor or process policies until the existing acceptance cases pass and
+the common primitive's ownership/error contract is independently reviewed.

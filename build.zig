@@ -21,7 +21,7 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
-    all: [31]std.Build.Module.Import = undefined,
+    all: [35]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
@@ -80,6 +80,31 @@ const Modules = struct {
                 .{ .name = "pulse_host", .module = host },
             },
         });
+        const async_host = b.createModule(.{
+            .root_source_file = b.path("shared/pulse/async_host.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pulse_raw", .module = raw },
+                .{ .name = "pulse_abi", .module = abi },
+                .{ .name = "pulse_host", .module = host },
+            },
+        });
+        const pickers = b.createModule(.{
+            .root_source_file = b.path("shared/pulse/pickers_compat.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "pulse_abi", .module = abi }},
+        });
+        const dialogs_v2 = b.createModule(.{
+            .root_source_file = b.path("shared/pulse/dialogs_v2_compat.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pulse_raw", .module = raw },
+                .{ .name = "pulse_abi", .module = abi },
+            },
+        });
         const ui_mount = b.createModule(.{
             .root_source_file = b.path("shared/pulse/ui_mount.zig"),
             .target = target,
@@ -92,6 +117,11 @@ const Modules = struct {
         });
         const diagnostics = b.createModule(.{
             .root_source_file = b.path("shared/diagnostics/probe_log.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const runtime_retention = b.createModule(.{
+            .root_source_file = b.path("shared/runtime/retention.zig"),
             .target = target,
             .optimize = optimize,
         });
@@ -269,6 +299,9 @@ const Modules = struct {
             .{ .name = "pulse_host", .module = host },
             .{ .name = "pulse_commands", .module = commands },
             .{ .name = "pulse_context", .module = context_mod },
+            .{ .name = "pulse_async_host", .module = async_host },
+            .{ .name = "pulse_pickers", .module = pickers },
+            .{ .name = "pulse_dialogs_v2", .module = dialogs_v2 },
             .{ .name = "pulse_ui_model", .module = ui_model },
             .{ .name = "pulse_ui_mount", .module = ui_mount },
             .{ .name = "pulse_diagnostics", .module = diagnostics },
@@ -279,6 +312,7 @@ const Modules = struct {
             .{ .name = "runtime_fifo_task", .module = runtime_fifo_task },
             .{ .name = "runtime_event_log", .module = runtime_event_log },
             .{ .name = "runtime_temp_store", .module = runtime_temp_store },
+            .{ .name = "runtime_retention", .module = runtime_retention },
             .{ .name = "process_windows_tree", .module = process_windows_tree },
             .{ .name = "process_trust", .module = process_trust },
             .{ .name = "pulse_process", .module = process_mod },
@@ -361,6 +395,7 @@ pub fn build(b: *std.Build) void {
         "shared/runtime/fifo_task.zig",
         "shared/runtime/event_log.zig",
         "shared/runtime/temp_store.zig",
+        "shared/runtime/retention.zig",
         "shared/process/windows_tree.zig",
         "shared/process/trust.zig",
         "shared/pulse/abi.zig",
@@ -368,6 +403,9 @@ pub fn build(b: *std.Build) void {
         "shared/pulse/host.zig",
         "shared/pulse/commands.zig",
         "shared/pulse/context.zig",
+        "shared/pulse/async_host.zig",
+        "shared/pulse/pickers_compat.zig",
+        "shared/pulse/dialogs_v2_compat.zig",
         "shared/pulse/ui_model.zig",
         "shared/pulse/ui_mount.zig",
         "shared/vcs/capabilities.zig",
