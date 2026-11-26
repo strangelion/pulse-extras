@@ -181,9 +181,9 @@ const Content = struct {
             table.data_columns = .{ .present = 1, .data = &self.columns, .count = self.columns.len };
             self.add(table, "settings.project.table");
             self.button(9, "移除选中记录（不删除项目文件）", idle);
-            self.button(10, "在浏览器打开远程仓库", idle and owner.browser != null);
+            self.button(10, "在浏览器打开远程仓库", idle and (if (owner.browser) |*task| !task.occupied() else false));
         } else self.add(ui.text("尚未记录项目（最多 32 项）"), "settings.project.empty");
-        self.button(11, "检查浏览器任务结果", owner.browser != null);
+        self.button(11, "检查浏览器任务结果", if (owner.browser) |*task| task.occupied() else false);
         for (commands, 0..) |command, i| self.vocabulary[i] = abi.view(command);
         self.root = ui.node(ui.NodeKind.stack);
         self.root.id = abi.view("vcs.settings.root");
@@ -225,7 +225,10 @@ pub const Settings = struct {
 
     pub fn open(self: *Settings) host_mod.Error!void {
         if (self.active) return;
-        if (self.page != 0 or self.poisoned) return error.State;
+        if (self.poisoned) return error.State;
+        // A previous deactivate can have removed the page while a browser
+        // worker or callback is still retained. Never overwrite that owner.
+        if (self.page != 0 or self.pending != 0 or self.picker_request != 0 or self.browser != null) try self.close();
         const pages = (try self.host.queryOptional(raw.PulseSettingsPagesV1, raw.PULSE_SETTINGS_PAGES_INTERFACE_NAME, raw.PULSE_SETTINGS_PAGES_VERSION_1)) orelse return;
         const resources = (try self.host.queryOptional(raw.PulseResourcesV1, raw.PULSE_RESOURCES_INTERFACE_NAME, raw.PULSE_RESOURCES_VERSION_1)) orelse return;
         const create = pages.create orelse return error.Unavailable;
@@ -474,6 +477,7 @@ pub const Settings = struct {
                 9 => blk: {
                     const project = self.selected() catch |err| break :blk err;
                     self.save(&project.key, "", true);
+                    break :blk {};
                 },
                 10 => self.openSelected(),
                 11 => self.pollBrowser(),
@@ -513,9 +517,11 @@ pub const Settings = struct {
         }
         if (self.browser) |*task| {
             if (task.occupied()) {
-                try task.cancel();
                 const state = try task.poll();
-                if (!state.terminal()) return error.State;
+                if (!state.terminal()) {
+                    try task.cancel();
+                    return error.State;
+                }
                 try task.releaseTerminal();
             }
         }
