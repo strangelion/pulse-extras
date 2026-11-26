@@ -99,6 +99,7 @@ fn getWith(call: GetFn, kind: download.Kind, url: []const u8, sink: *download.Si
         3 => error.InvalidResponse,
         4 => error.Canceled,
         5 => error.ResourceLimit,
+        7 => error.NetworkTimeout,
         else => error.NetworkFailed,
     };
 }

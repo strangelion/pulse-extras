@@ -19,6 +19,7 @@ extern "kernel32" fn CreateThreadpoolTimer(TimerCallback, ?*anyopaque, ?*anyopaq
 extern "kernel32" fn SetThreadpoolTimer(*anyopaque, ?*const FileTime, u32, u32) callconv(.winapi) void;
 extern "kernel32" fn WaitForThreadpoolTimerCallbacks(*anyopaque, i32) callconv(.winapi) void;
 extern "kernel32" fn CloseThreadpoolTimer(*anyopaque) callconv(.winapi) void;
+extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 
 const allocator = std.heap.page_allocator;
 const title = "Pulse Companion";
@@ -189,7 +190,7 @@ const Content = struct {
     market_rows: [12][576]u8 = undefined,
     market_row_ids: [12][64]u8 = undefined,
     market_info: [256]u8 = undefined,
-    market_transfer: [128]u8 = undefined,
+    market_transfer: [256]u8 = undefined,
     market_transfer_id: [64]u8 = undefined,
     market_selection_text: [640]u8 = undefined,
     market_selection_id: [64]u8 = undefined,
@@ -513,7 +514,14 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
     if (busy and instance.market_request.? != .batch) {
         const received = instance.market_progress.http_progress.received.load(.acquire);
         const expected = instance.market_progress.http_progress.expected.load(.acquire);
-        const text = if (expected == 0) std.fmt.bufPrint(&content.market_transfer, "当前请求：{d} B（总量未知）", .{received}) catch unreachable else std.fmt.bufPrint(&content.market_transfer, "当前请求：{d} / {d} B", .{ received, expected }) catch unreachable;
+        const pages = instance.market_progress.scan.total.load(.acquire);
+        const scanned = @min(pages, instance.market_progress.scan.completed.load(.acquire));
+        const text = if (instance.market_request.? == .search and pages != 0)
+            std.fmt.bufPrint(&content.market_transfer, "目录分片 {d}/{d} 已验证 · 当前请求 {d}/{d} B（0 总量表示未知）", .{ scanned, pages, received, expected }) catch unreachable
+        else if (expected == 0)
+            std.fmt.bufPrint(&content.market_transfer, "当前请求：{d} B（总量未知）", .{received}) catch unreachable
+        else
+            std.fmt.bufPrint(&content.market_transfer, "当前请求：{d} / {d} B", .{ received, expected }) catch unreachable;
         content.children[count] = changingLabel(&content.market_transfer_id, "market.transfer", text);
         count += 1;
     }
@@ -1257,6 +1265,83 @@ fn saveSetting(instance: *Instance, key: []const u8, value: []const u8) void {
 }
 
 // Host-owned worker. Writes only the private result buffer; no UI call.
+// Host report is explicitly worker-safe, valid only during the work call.
+// Keep long-lived runtime tasks indeterminate: reaching first frame is not
+// completion of ownership or cleanup, and counters must not move backward.
+fn reportTask(context: [*c]const raw.PulseTaskContext, message: []const u8) void {
+    const report = context[0].report orelse return;
+    var progress = std.mem.zeroes(raw.PulseTaskProgress);
+    progress.size = @sizeOf(raw.PulseTaskProgress);
+    progress.percent = std.math.maxInt(u32);
+    progress.current_item = abi.view(message);
+    const status = report(context[0].context, &progress);
+    if (status != abi.ok) diag.status("companion-task-report-refused", status);
+}
+
+fn tickMillis() u64 {
+    if (comptime builtin.os.tag == .windows) return GetTickCount64();
+    return 0;
+}
+
+const SearchWatch = struct {
+    context: [*c]const raw.PulseTaskContext,
+    progress: *library.MarketProgress,
+    started: u64,
+    timed_out: bool = false,
+    last_scanned: usize = 0,
+    last_total: usize = 0,
+
+    fn canceled(user: ?*anyopaque) callconv(.c) u32 {
+        const self: *SearchWatch = @ptrCast(@alignCast(user orelse return 1));
+        const host_cancel = self.context[0].cancelled orelse return 1;
+        if (host_cancel(self.context[0].context) != 0) return 1;
+        // Whole-search budget, checked between and within requests. The
+        // synchronous WinHTTP call has its own bounded socket timeouts.
+        if (tickMillis() -| self.started >= 180000) {
+            self.timed_out = true;
+            return 1;
+        }
+        const total = self.progress.scan.total.load(.acquire);
+        const scanned = @min(total, self.progress.scan.completed.load(.acquire));
+        if (scanned != self.last_scanned or total != self.last_total) {
+            self.last_scanned = scanned;
+            self.last_total = total;
+            var buf: [128]u8 = undefined;
+            const text = std.fmt.bufPrint(&buf, "正在验证市场目录分片 {d}/{d}", .{ scanned, total }) catch unreachable;
+            reportTask(self.context, text);
+        }
+        return 0;
+    }
+};
+
+const SessionWatch = struct {
+    context: [*c]const raw.PulseTaskContext,
+    session: *library.Session,
+    last_phase: ?library.Phase = null,
+
+    fn canceled(user: ?*anyopaque) callconv(.c) u32 {
+        const self: *SessionWatch = @ptrCast(@alignCast(user orelse return 1));
+        const host_cancel = self.context[0].cancelled orelse return 1;
+        if (host_cancel(self.context[0].context) != 0) {
+            if (self.last_phase != .stopping) {
+                self.last_phase = .stopping;
+                reportTask(self.context, "正在退出并清理桌宠");
+            }
+            return 1;
+        }
+        const phase: library.Phase = @fromBackingInt(@intCast(self.session.phase.load(.acquire)));
+        if (self.last_phase == null or self.last_phase.? != phase) {
+            self.last_phase = phase;
+            reportTask(self.context, switch (phase) {
+                .idle, .starting => "正在启动桌宠并等待首帧",
+                .running => "桌宠后台运行中；可选择在后台继续",
+                .stopping => "正在退出并清理桌宠",
+            });
+        }
+        return 0;
+    }
+};
+
 fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callconv(.c) raw.PulseTaskState {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return raw.PULSE_TASK_FAILED));
     defer instance.work_done.store(true, .release);
@@ -1301,7 +1386,24 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
         return raw.PULSE_TASK_COMPLETED;
     }
     if (instance.market_request) |*request| {
-        library.marketDefault(config.runtime_sha256, config.helper_sha256, request, &instance.market_outcome, &instance.market_progress, .{ .callback = canceled, .context = context[0].context }) catch |err| {
+        reportTask(context, switch (request.*) {
+            .search => "正在读取市场索引和目录分片",
+            .detail => "正在读取素材详情",
+            .install => "正在下载并验证素材",
+            .batch => "正在处理下载队列",
+        });
+        var watch: SearchWatch = .{ .context = context, .progress = &instance.market_progress, .started = tickMillis() };
+        // Only search uses inline transport on this worker; never send this
+        // borrowed reporting context to parallel batch transfer threads.
+        const cancel: library.ImportCancel = if (request.* == .search)
+            .{ .callback = SearchWatch.canceled, .context = &watch }
+        else
+            .{ .callback = canceled, .context = context[0].context };
+        library.marketDefault(config.runtime_sha256, config.helper_sha256, request, &instance.market_outcome, &instance.market_progress, cancel) catch |err| {
+            if (watch.timed_out and err == error.Canceled) {
+                instance.work_error = error.MarketSearchTimeout;
+                return raw.PULSE_TASK_FAILED;
+            }
             instance.work_error = err;
             if (err == error.Canceled) return raw.PULSE_TASK_CANCELLED;
             return raw.PULSE_TASK_FAILED;
@@ -1381,7 +1483,8 @@ fn runBuiltin(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callco
     if (context == null) return raw.PULSE_TASK_FAILED;
     const canceled = context[0].cancelled orelse return raw.PULSE_TASK_FAILED;
     if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
-    library.runBuiltin(&instance.session, config.runtime_sha256, config.helper_sha256, canceled, context[0].context) catch |err| {
+    var watch: SessionWatch = .{ .context = context, .session = &instance.session };
+    library.runBuiltin(&instance.session, config.runtime_sha256, config.helper_sha256, SessionWatch.canceled, &watch) catch |err| {
         instance.runtime_error = err;
         return raw.PULSE_TASK_FAILED;
     };
@@ -1676,7 +1779,11 @@ fn pollLibrary(instance: *Instance) void {
             instance.market_detail = instance.market_outcome.detail;
             instance.market_status = "素材详情已读取；安装时仍会重新验证";
         } else {
-            instance.market_status = if (instance.task_state == raw.PULSE_TASK_CANCELLED) (if (request == .install) "市场任务已取消；未确认写入请检查本地素材库" else "读取市场信息已取消") else if (done) if (instance.work_error) |err| @errorName(err) else "市场任务未返回有效结果" else "市场任务未完成";
+            instance.market_status = if (instance.task_state == raw.PULSE_TASK_CANCELLED) (if (request == .install) "市场任务已取消；未确认写入请检查本地素材库" else "读取市场信息已取消") else if (done) if (instance.work_error) |err| switch (err) {
+                error.MarketSearchTimeout => "市场目录扫描超过180秒；已停止，重试可复用已验证缓存",
+                error.NetworkTimeout => "网络请求超时；请检查网络或代理后重试",
+                else => @errorName(err),
+            } else "市场任务未返回有效结果" else "市场任务未完成";
             if (request == .install) {
                 instance.library_loaded = false;
                 instance.library_detail = null;
@@ -1774,6 +1881,9 @@ fn pollRuntime(instance: *Instance) void {
     if (!terminal(instance.runtime_task_state)) {
         if (instance.task_kind == .builtin_session) {
             instance.session.copyRows(&instance.running_rows);
+            if (!instance.stop_requested and instance.session.phase.load(.acquire) == @backingInt(library.Phase.running)) {
+                instance.runtime_status = "桌宠后台运行中；Pulse 任务窗口可选择在后台继续";
+            }
             if (instance.section == .running) refresh(instance);
         }
         return;
@@ -2625,7 +2735,7 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
     if (request == .detail) instance.market_detail = null;
     instance.market_request = request;
     instance.market_outcome = .{};
-    if (request == .batch) instance.market_progress.reset() else instance.market_progress.http_progress.reset();
+    if (request == .batch) instance.market_progress.reset() else instance.market_progress.resetTransfer();
     instance.market_cancel_requested = false;
     instance.work_done.store(false, .release);
     instance.work_error = null;

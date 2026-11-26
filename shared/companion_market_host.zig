@@ -42,10 +42,16 @@ pub const JobProgress = struct {
 
 pub const Progress = struct {
     http_progress: http.Progress = .{},
+    scan: service_mod.ScanProgress = .{},
     jobs: [queue_capacity]JobProgress = @splat(.{}),
 
-    pub fn reset(self: *Progress) void {
+    pub fn resetTransfer(self: *Progress) void {
         self.http_progress.reset();
+        self.scan.reset();
+    }
+
+    pub fn reset(self: *Progress) void {
+        self.resetTransfer();
         for (&self.jobs) |*job| {
             job.set(.waiting);
             job.transfer.reset();
@@ -431,6 +437,7 @@ fn runWork(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]c
         .tasks = tasks,
         .cache = .{ .root = root.ptr, .access = .{ .owner = owner } },
         .transport = .{ .call = @ptrCast(try owner.marketSymbol("pet_market_http_get")), .cancel = cancel, .progress = &progress.http_progress },
+        .scan_progress = &progress.scan,
         .policy = switch (request.*) {
             .search => |search| if (search.offline) .offline_only else .stale_on_network_failure,
             .detail => |selected| if (selected.offline) .offline_only else .stale_on_network_failure,

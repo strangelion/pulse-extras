@@ -13,6 +13,17 @@ const installer = @import("companion_market_install.zig");
 const importing = @import("companion/pet_import.zig");
 const Budget = @import("runtime_budget").Budget;
 
+// Counts validated search shards, not bytes of the latest HTTP request.
+pub const ScanProgress = struct {
+    completed: std.atomic.Value(usize) = .init(0),
+    total: std.atomic.Value(usize) = .init(0),
+
+    pub fn reset(self: *ScanProgress) void {
+        self.completed.store(0, .release);
+        self.total.store(0, .release);
+    }
+};
+
 fn hitKey(hit: *const market.Hit) ![32]u8 {
     if (hit.id_len == 0 or hit.id_len > hit.id.len or hit.name_len == 0 or hit.name_len > hit.name.len) return error.InvalidCatalog;
     var hash = std.crypto.hash.sha2.Sha256.init(.{});
@@ -148,6 +159,7 @@ pub fn ServiceFor(comptime Transport: type, comptime CacheType: type, comptime i
         transport: Transport,
         policy: Policy = .online,
         cancel: importing.Cancel = .{},
+        scan_progress: ?*ScanProgress = null,
         // Supplied UTC epoch seconds; refresh from the owner for each user
         // operation. A single search uses a consistent freshness snapshot.
         now: u64,
@@ -189,7 +201,7 @@ pub fn ServiceFor(comptime Transport: type, comptime CacheType: type, comptime i
             const payload = self.readDownload(request, key.url, buffer) catch |err| {
                 // Never hide malformed responses, cancellation, budget or
                 // cleanup failures behind an apparently successful cache hit.
-                if (err == error.NetworkFailed and self.policy == .stale_on_network_failure) {
+                if ((err == error.NetworkFailed or err == error.NetworkTimeout) and self.policy == .stale_on_network_failure) {
                     if (try self.cache.load(self.allocator, request, buffer, self.now, true)) |entry| {
                         return .{ .storage = buffer, .payload = entry.payload, .stale = true, .stored_at = entry.stored_at };
                     }
@@ -225,6 +237,7 @@ pub fn ServiceFor(comptime Transport: type, comptime CacheType: type, comptime i
             var expires = root.stored_at +| (15 * 60);
             const search_index = try self.openSearch(index, &stale, &expires);
             defer search_index.deinit();
+            if (self.scan_progress) |progress| progress.total.store(search_index.value.pages.len, .release);
             for (search_index.value.pages, 0..) |_, n| {
                 const number: u32 = @intCast(n);
                 const body = try self.get(.{ .search_page = .{ .root = index, .index = search_index.value, .number = number } });
@@ -234,7 +247,9 @@ pub fn ServiceFor(comptime Transport: type, comptime CacheType: type, comptime i
                 const parsed = try market.parseSearchPage(self.allocator, body.payload, index, search_index.value, number);
                 defer parsed.deinit();
                 try scan.append(parsed.value);
+                if (self.scan_progress) |progress| progress.completed.store(n + 1, .release);
             }
+            try self.cancel.check();
             var result: Search = .{ .summary = try scan.finish(search_index.value), .revision_len = index.generatedAt.len, .stale = stale, .created_at = self.now, .expires_at = expires };
             @memcpy(result.revision[0..result.revision_len], index.generatedAt);
             for (output[0..result.summary.written], 0..) |*hit, n| {
@@ -446,11 +461,13 @@ test "market service connects real persistent cache, futures, search and package
     var tasks = tasks_mod.Tasks(Fixture).init(io, tmp.dir, &group);
     defer tasks.shutdown() catch @panic("service transfer cleanup failed");
     var calls: usize = 0;
+    var scan_progress: ScanProgress = .{};
     var service: Service(Fixture) = .{
         .allocator = group.allocator(),
         .tasks = &tasks,
         .cache = .{ .root = cache_path },
         .transport = .{ .calls = &calls },
+        .scan_progress = &scan_progress,
         .now = 1000,
     };
     {
@@ -459,6 +476,10 @@ test "market service connects real persistent cache, futures, search and package
         var hits: [1]market.Hit = undefined;
         const result = try service.search(&root, .{ .query = "cute" }, 0, &hits);
         try std.testing.expectEqual(@as(usize, 1), result.summary.written);
+        try std.testing.expectEqual(@as(usize, 1), scan_progress.total.load(.acquire));
+        try std.testing.expectEqual(@as(usize, 1), scan_progress.completed.load(.acquire));
+        scan_progress.reset();
+        try std.testing.expectEqual(@as(usize, 0), scan_progress.completed.load(.acquire));
         try std.testing.expectEqualStrings("cat", hits[0].sourceId());
         try std.testing.expectEqual(@as(usize, 3), calls);
         var wrong = hits[0];

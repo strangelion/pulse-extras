@@ -293,3 +293,21 @@ The previous full CI (45724204710) failed compiling the added Zig label
 assertion; Windows desktop and IPC passed. Correct the optional-slice
 assertion, add layout checks, and force full scope on an explicit
 experimental-branch test-package push so it can actually produce an artifact.
+
+### D2 market and runtime task feedback
+
+Real-host screenshot: single built-in child confirmed first frame, one
+owned/ready, 32500 KiB working set, 16580 KiB private memory, 220 handles
+(one sample, not stress acceptance). Search field now displays naturally.
+Market request received 16384/62471 bytes; search completion not verified.
+Market scans a validated index and all search shards sequentially. Display
+validated shard count and current request separately; cap whole search at
+180 seconds cooperative cancellation plus bounded blocking WinHTTP call,
+retain verified cache, never publish a partial result. Distinguish request
+timeout from explicit cancel and allow validated stale-cache fallback.
+Report market phase and runtime starting/running/stopping via public
+PulseTaskContext.report on the worker; persistent runtime task cannot be
+completed until children drain. Host owns its popup; V1 has no public
+programmatic dismiss/background API. User can choose Background continue;
+never close arbitrary host windows or fake terminal success. Actual market
+completion and new status rendering require retest.
