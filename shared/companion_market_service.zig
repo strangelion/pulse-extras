@@ -15,7 +15,7 @@ const Budget = @import("runtime_budget").Budget;
 
 // Counts validated search shards, not bytes of the latest HTTP request.
 pub const ScanProgress = struct {
-    pub const Stage = enum(u32) { idle, cache_read, network, cache_write, parse, finalize };
+    pub const Stage = enum(u32) { idle, cache_read, network, cache_write, parse, finalize, archive_download, archive_extract, package_import };
 
     completed: std.atomic.Value(usize) = .init(0),
     total: std.atomic.Value(usize) = .init(0),
@@ -331,6 +331,7 @@ pub fn ServiceFor(comptime Transport: type, comptime CacheType: type, comptime i
             if (strict and full and pet.wardrobeZip == null) return error.UnsupportedPackage;
             const url = pet.download(full) orelse return error.UnsupportedPackage;
             try self.cancel.check();
+            if (self.scan_progress) |progress| progress.setStage(.archive_download);
             const id = try self.tasks.start(.zip, url, self.transport);
             var pending: Pending = .{ .id = id, .source_len = pet.id.len };
             @memcpy(pending.source[0..pending.source_len], pet.id);

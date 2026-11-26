@@ -530,15 +530,20 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
             .cache_write => "校验并写入缓存",
             .parse => "解析目录",
             .finalize => "整理结果",
+            .archive_download => "下载素材压缩包",
+            .archive_extract => "校验并解压 ZIP",
+            .package_import => "验证素材并导入",
         };
         const text = if (instance.market_request.? == .search and stage == .network)
             std.fmt.bufPrint(&content.market_transfer, "目录分片 {d}/{d} · {s} · 当前请求 {d}/{d} B（0 总量未知）", .{ scanned, pages, stage_text, received, expected }) catch unreachable
         else if (instance.market_request.? == .search)
             std.fmt.bufPrint(&content.market_transfer, "目录分片 {d}/{d} · {s}", .{ scanned, pages, stage_text }) catch unreachable
+        else if (stage == .archive_extract or stage == .package_import)
+            stage_text
         else if (expected == 0)
-            std.fmt.bufPrint(&content.market_transfer, "当前请求：{d} B（总量未知）", .{received}) catch unreachable
+            std.fmt.bufPrint(&content.market_transfer, "{s} · 当前请求：{d} B（总量未知）", .{ stage_text, received }) catch unreachable
         else
-            std.fmt.bufPrint(&content.market_transfer, "当前请求：{d} / {d} B", .{ received, expected }) catch unreachable;
+            std.fmt.bufPrint(&content.market_transfer, "{s} · 当前请求：{d} / {d} B", .{ stage_text, received, expected }) catch unreachable;
         content.children[count] = changingLabel(&content.market_transfer_id, "market.transfer", text);
         count += 1;
     }
@@ -1365,6 +1370,19 @@ fn reportTask(context: [*c]const raw.PulseTaskContext, message: []const u8, step
     diag.status("companion-task-report-status", status);
 }
 
+// Report only a bounded Zig error name, never downloaded paths, URLs,
+// user query text or arbitrary helper stderr. Keep the existing step.
+fn reportMarketFailure(context: [*c]const raw.PulseTaskContext, err: anyerror) void {
+    diag.event("companion-market-error");
+    diag.event(@errorName(err));
+    const report = context[0].report orelse return;
+    var progress = std.mem.zeroes(raw.PulseTaskProgress);
+    progress.size = @sizeOf(raw.PulseTaskProgress);
+    progress.percent = std.math.maxInt(u32);
+    progress.@"error" = abi.view(@errorName(err));
+    diag.status("companion-market-error-report-status", report(context[0].context, &progress));
+}
+
 fn tickMillis() u64 {
     if (comptime builtin.os.tag == .windows) return GetTickCount64();
     return 0;
@@ -1502,12 +1520,16 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
         else
             .{ .callback = canceled, .context = context[0].context };
         library.marketDefault(config.runtime_sha256, config.helper_sha256, request, &instance.market_outcome, &instance.market_progress, cancel) catch |err| {
+            diag.status("companion-market-failed-task", context[0].id);
+            diag.status("companion-market-failed-stage", @backingInt(instance.market_progress.scan.getStage()));
             if (watch.timed_out and err == error.Canceled) {
                 instance.work_error = error.MarketSearchTimeout;
+                reportMarketFailure(context, error.MarketSearchTimeout);
                 return raw.PULSE_TASK_FAILED;
             }
             instance.work_error = err;
             if (err == error.Canceled) return raw.PULSE_TASK_CANCELLED;
+            reportMarketFailure(context, err);
             return raw.PULSE_TASK_FAILED;
         };
         if (request.* == .search) reportTask(context, "市场目录已验证，正在整理结果", 3);

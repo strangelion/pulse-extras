@@ -363,3 +363,16 @@ the new fields. No automatic popup dismissal is declared in the header;
 actual caption rendering and compatibility require CI/host retest. Market
 while a runtime session owns private resources remains deferred; do not
 remove owner exclusion without auditing the shared storage leases.
+
+### D2 market install failure reporting
+
+User log confirms complete 6/6 catalog scan and 322 results, runtime
+cancellation collected and a later detail task completed, followed by a
+failed installation (terminal 4). Prior log lacks an error name. Do not
+attribute this to WIC, network, archive format or private-store failure
+without evidence. Keep a single install's archive download, ZIP extraction
+and package import stages distinct, report bounded Zig error names to the
+host and opt-in lifecycle log, and retain existing transaction/cleanup
+rules. WIC is a light activation-test backend; use verified libwebp for
+market format acceptance. Actual cause and successful installation remain
+unverified.
