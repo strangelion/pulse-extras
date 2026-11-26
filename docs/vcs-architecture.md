@@ -327,3 +327,12 @@ Native reviewed-session integration candidate: a compile-time trusted provisioni
 Default approval manager: a Windows HKCU single-slot DPAPI record is acquired without command execution, and a separate explicit CLI performs bounded inspection, presents full inventory/fingerprints, requires a typed confirmation token and rechecks evidence before storing. The concrete restricted auditor enumerates installation, worktree and neutral tree, checks ACLs/identity, rejects unsupported Git index/config/metadata, and combines exact file digests. Each command also rechecks the current saved record; native revoke writes a tombstone, locks the session even on persistence failure, and displays the approved root. No arbitrary same-user-code protection, publisher signature, general Git distribution support, or race-free process boundary is claimed. See vcs-acceptance-runbook.md.
 
 Installation inventory uses a packed bounded path arena (512 files, 96 KiB path bytes, 256 MiB contents). Existing ancestor ACLs can allow sibling creation only; all actual selected directories/files still require strict mutation ACLs, and inherit-only ACEs are not effective permissions on the current object. The OS API's exact system Windows directory is an explicit trusted platform dependency. These compatibility adjustments do not permit arbitrary PATH or untrusted target writes.
+
+Project V2 records are bounded optimistic writes (one key per bookmark),
+including user metadata and navigation order; legacy V1 is read-compatible.
+Stable record identity is independent of mutable root or forge URL. The native
+project-first settings surface uses paged rows and explicit selection/edit
+version checks. Directory jump uses the pinned pulse.directories API on host
+workers and existing snapshot entry routing, never arbitrary shell execution.
+Lexical duplicate checks are conservative, not physical identity. Persistent
+execution grants are a separate unfinished security domain.

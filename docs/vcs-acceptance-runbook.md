@@ -277,3 +277,22 @@ published inner SHA-256 (corrected transcription), and execute only the
 verified vendor MSI's administrative extraction. Never run the community
 install script. The new mandatory Windows lane remains unverified until
 its actual result; Ubuntu and Companion lanes passed the earlier run.
+
+### P2B project library checkpoint
+
+The project UI precedes tool settings on the one supported settings page.
+Old two-line records load without mutation; an explicit edit writes V2 with
+stable key, optional name/tags/provider hint, favorite and monotonic recency
+(order of accepted navigation, not a timestamp). 64 records, 12 visible rows;
+case-folded ASCII search and exact/conservative lexical duplicate check.
+Explicit edit binds key and settings version; relink changes only the record,
+not the filesystem or any grant. New ID collision after relink is handled by
+allocating another bounded key. No automatic scan or authorization on startup.
+Navigation uses public pulse.directories parent snapshot/list/open_entry with
+files.readDirectory/files.open declarations and exact folder, no reparse entry.
+Cancellation is best effort, not rollback; a host routing refusal or missing
+path has a visible manual-path fallback. Record last-open order only after
+host accepts the action. Physical alias identity, independently protected
+persistent multi-root consent and per-provider cache remain pending; no stage
+completion claim. Actual installed UI, migration, navigation and lifecycle
+must be verified with the whole candidate package.

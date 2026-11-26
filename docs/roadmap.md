@@ -337,3 +337,15 @@ code validation, or change release tags in an ordinary stage. Historical
 development milestones and failed experiments remain in Git history and
 [testing.md](testing.md); current state belongs in this roadmap and the
 feature-specific acceptance register.
+
+### P2B project manager implementation checkpoint
+
+Project-first native settings surface, up to 64 bounded records, V2 lazy
+migration of legacy bookmarks, stable IDs across explicit relink, name/tags/
+favorites, search, 12-row pages sorted favorites then recorded navigation order,
+explicit add/edit/remove, browse root, and public directory-snapshot navigation
+are implemented candidates. Scope is still not COMPLETE: host navigation,
+physical-identity deduplication, provider/workspace cache isolation and separate
+persistent multi-root grants require remaining implementation/acceptance. No
+new automatic execution permission is inferred from a project record. P2A
+Windows SVN provisioning and actual installed acceptance remain independent gates.

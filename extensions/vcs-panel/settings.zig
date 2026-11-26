@@ -15,17 +15,22 @@ const approval = @import("vcs_approval");
 const cli = @import("vcs_cli");
 const diag = @import("pulse_diagnostics");
 const vcs_panel = @import("vcs_panel");
+const project_route = @import("project_route.zig");
 
-const max_projects = 32;
+const max_projects = 64;
+const page_size = 12;
 const max_value = 1024;
 const keys = [_][]const u8{ "tool.git", "tool.jj", "tool.svn" };
 const names = [_][]const u8{ "Git", "Jujutsu", "Subversion" };
 const tools = [_]cli.Tool{ .git, .jj, .svn };
 const fields = [_][]const u8{ "settings.git", "settings.jj", "settings.svn" };
-const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh" };
+const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump" };
 const root_key = "settings.project.root";
 const url_key = "settings.project.url";
 const selection_key = "settings.project.selected";
+const name_key = "settings.project.name";
+const tags_key = "settings.project.tags";
+const search_key = "settings.project.search";
 const project_prefix = "project.";
 const key_len = project_prefix.len + 32;
 
@@ -84,6 +89,13 @@ const Status = enum {
     browser_failed,
     command_failed,
     render_failed,
+    edit_loaded,
+    new_project,
+    search_applied,
+    route_pending,
+    route_dispatched,
+    route_failed,
+    route_cancelled,
 
     fn label(self: Status, lang: vcs_panel.Language) []const u8 {
         return switch (self) {
@@ -104,42 +116,133 @@ const Status = enum {
             .browser_failed => tr(lang, "Browser task did not complete", "浏览器任务未完成"),
             .command_failed => tr(lang, "Operation failed; check path, selection and pending tasks", "操作未完成：请检查路径、选择及当前任务状态"),
             .render_failed => tr(lang, "Settings model update failed; reload or reopen", "设置界面更新失败；请重新读取或重新打开"),
+            .edit_loaded => tr(lang, "Editing selected bookmark; Update also relinks its root", "已加载选中记录；更新可同时重新关联目录"),
+            .new_project => tr(lang, "New bookmark; fill in the fields then Add", "新建记录；填写后点击添加"),
+            .search_applied => tr(lang, "Search applied", "已应用搜索"),
+            .route_pending => tr(lang, "Looking up the project in Pulse; no VCS command runs", "正在 Pulse 中查找项目；不执行 VCS 命令"),
+            .route_dispatched => tr(lang, "Pulse accepted directory navigation; verify the destination", "Pulse 已接受目录跳转；请确认实际到达目录"),
+            .route_failed => tr(lang, "Cannot navigate to this root; it may be missing, moved, denied or unsupported. Edit/relink or open its path manually.", "无法跳转；目录可能已移动、不存在、被拒绝或不受支持。请编辑重新关联或手动打开路径。"),
+            .route_cancelled => tr(lang, "Directory request cancelled; dispatched navigation is not rolled back", "已取消目录请求；已经提交的跳转不会回滚"),
         };
     }
 };
-pub const Current = struct { root: identity.Path, remote: contract.Text = .{} };
+pub const Current = struct { root: identity.Path, remote: contract.Text = .{}, kind: ?identity.Kind = null };
 
 const Project = struct {
     key: [key_len]u8,
     root: identity.Path,
     remote: contract.Text = .{},
+    name: contract.Text = .{},
+    tags: contract.Text = .{},
+    favorite: bool = false,
+    kind: ?identity.Kind = null,
+    // Monotonic settings version at last accepted navigation, NOT wall time.
+    opened_order: u64 = 0,
 
     fn make(root: []const u8, url: []const u8) !Project {
         if (!approval.strictPath(root)) return error.InvalidSettings;
         const path = identity.Path.init(root) catch return error.InvalidSettings;
         const remote = if (url.len == 0) contract.Text{} else contract.repositoryWebUrl(url) orelse return error.InvalidSettings;
         if (root.len + 1 + remote.slice().len > max_value) return error.InvalidSettings;
+        return .{ .key = keyFor(root), .root = path, .remote = remote };
+    }
+
+    fn keyFor(root: []const u8) [key_len]u8 {
         var digest: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(root, &digest, .{});
         var key: [key_len]u8 = undefined;
         @memcpy(key[0..project_prefix.len], project_prefix);
         const hex = std.fmt.bytesToHex(digest[0..16].*, .lower);
         @memcpy(key[project_prefix.len..], &hex);
-        return .{ .key = key, .root = path, .remote = remote };
+        return key;
+    }
+
+    fn validKey(key: []const u8) bool {
+        if (key.len != key_len or !std.mem.startsWith(u8, key, project_prefix)) return false;
+        for (key[project_prefix.len..]) |c| {
+            if (!(std.ascii.isDigit(c) or (c >= 'a' and c <= 'f'))) return false;
+        }
+        return true;
+    }
+
+    fn field(value: []const u8, limit: usize) !contract.Text {
+        if (value.len > limit) return error.InvalidSettings;
+        for (value) |c| {
+            if (c < 0x20 or c == 0x7f) return error.InvalidSettings;
+        }
+        return contract.Text.init(value) catch error.InvalidSettings;
+    }
+
+    fn parseKind(value: []const u8) !?identity.Kind {
+        if (std.mem.eql(u8, value, "-")) return null;
+        for ([_]identity.Kind{ .git, .jj, .svn }) |kind| {
+            if (std.mem.eql(u8, value, @tagName(kind))) return kind;
+        }
+        return error.InvalidSettings;
+    }
+
+    fn displayName(self: *const Project) []const u8 {
+        return if (self.name.slice().len == 0) std.fs.path.basename(self.root.slice()) else self.name.slice();
     }
 
     fn encode(self: *const Project, buffer: []u8) ![]const u8 {
-        return std.fmt.bufPrint(buffer, "{s}\n{s}", .{ self.root.slice(), self.remote.slice() });
+        return std.fmt.bufPrint(buffer, "v2\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{d}", .{
+            self.root.slice(), self.remote.slice(), self.name.slice(), self.tags.slice(),
+            if (self.favorite) "1" else "0", if (self.kind) |kind| @tagName(kind) else "-", self.opened_order,
+        });
     }
 
     fn decode(key: []const u8, value: []const u8) !Project {
-        if (value.len > max_value) return error.InvalidSettings;
-        const split = std.mem.indexOfScalar(u8, value, '\n') orelse return error.InvalidSettings;
-        const item = try make(value[0..split], value[split + 1 ..]);
-        if (!std.mem.eql(u8, key, &item.key) or !item.remote.eql(value[split + 1 ..])) return error.InvalidSettings;
+        if (value.len > max_value or !validKey(key)) return error.InvalidSettings;
+        if (!std.mem.startsWith(u8, value, "v2\n")) {
+            const split = std.mem.indexOfScalar(u8, value, '\n') orelse return error.InvalidSettings;
+            const item = try make(value[0..split], value[split + 1 ..]);
+            if (!std.mem.eql(u8, key, &item.key) or !item.remote.eql(value[split + 1 ..])) return error.InvalidSettings;
+            return item;
+        }
+        var lines = std.mem.splitScalar(u8, value[3..], '\n');
+        const root = lines.next() orelse return error.InvalidSettings;
+        const remote = lines.next() orelse return error.InvalidSettings;
+        var item = try make(root, remote);
+        if (!item.remote.eql(remote)) return error.InvalidSettings;
+        item.name = try field(lines.next() orelse return error.InvalidSettings, 96);
+        item.tags = try field(lines.next() orelse return error.InvalidSettings, 160);
+        const favorite = lines.next() orelse return error.InvalidSettings;
+        item.favorite = if (std.mem.eql(u8, favorite, "1")) true else if (std.mem.eql(u8, favorite, "0")) false else return error.InvalidSettings;
+        item.kind = try parseKind(lines.next() orelse return error.InvalidSettings);
+        const order = lines.next() orelse return error.InvalidSettings;
+        if (order.len == 0) return error.InvalidSettings;
+        for (order) |c| {
+            if (!std.ascii.isDigit(c)) return error.InvalidSettings;
+        }
+        item.opened_order = std.fmt.parseInt(u64, order, 10) catch return error.InvalidSettings;
+        if (item.opened_order > (1 << 53) - 1 or lines.next() != null) return error.InvalidSettings;
+        // V2 keys survive explicit relink. The new root never conveys trust.
+        @memcpy(&item.key, key);
         return item;
     }
+
+    fn matches(self: *const Project, query: []const u8) bool {
+        if (query.len == 0) return true;
+        for ([_][]const u8{ self.displayName(), self.root.slice(), self.tags.slice(), self.remote.slice(), if (self.kind) |kind| kind.displayName() else "" }) |value| {
+            if (containsFold(value, query)) return true;
+        }
+        return false;
+    }
 };
+
+fn containsFold(value: []const u8, query: []const u8) bool {
+    if (query.len > value.len) return false;
+    for (0..value.len - query.len + 1) |i| {
+        if (std.ascii.eqlIgnoreCase(value[i .. i + query.len], query)) return true;
+    }
+    return false;
+}
+
+fn sameRoot(a: []const u8, b: []const u8) bool {
+    // Conservative lexical duplicate check, not a physical identity claim.
+    return if (builtin.os.tag == .windows) std.ascii.eqlIgnoreCase(a, b) else std.mem.eql(u8, a, b);
+}
 
 fn toolPath(index: usize, value: []const u8) !?identity.Path {
     if (index >= tools.len or value.len > max_value) return error.InvalidSettings;
@@ -160,6 +263,27 @@ const Stored = struct {
             if (std.mem.eql(u8, key, &project.key)) return index;
         }
         return null;
+    }
+
+    fn findRoot(self: *const Stored, root: []const u8) ?usize {
+        for (self.projects[0..self.count], 0..) |*project, index| {
+            if (sameRoot(project.root.slice(), root)) return index;
+        }
+        return null;
+    }
+
+    fn newKey(self: *const Stored, root: []const u8) ![key_len]u8 {
+        const first = Project.keyFor(root);
+        if (self.find(&first) == null) return first;
+        // A relink may retain the old root's ID. Allocate a different
+        // deterministic candidate without overwriting that existing record.
+        var buffer: [max_value + 64]u8 = undefined;
+        for (0..max_projects) |attempt| {
+            const salted = try std.fmt.bufPrint(&buffer, "{s}\n{d}\n{d}", .{ root, self.version, attempt });
+            const key = Project.keyFor(salted);
+            if (self.find(&key) == null) return key;
+        }
+        return error.InvalidSettings;
     }
 
     fn decode(value: raw.PulseSettings, out: *Stored) !void {
@@ -187,21 +311,25 @@ const Stored = struct {
             if (!std.mem.startsWith(u8, key, project_prefix)) continue;
             if (out.count == max_projects or out.find(key) != null) return error.InvalidSettings;
             const data = abi.slice(pair.value) orelse return error.InvalidSettings;
-            out.projects[out.count] = try Project.decode(key, data);
+            const item = try Project.decode(key, data);
+            if (out.findRoot(item.root.slice()) != null or item.opened_order > value.version) return error.InvalidSettings;
+            out.projects[out.count] = item;
             out.count += 1;
         }
     }
 };
 
 const Content = struct {
-    nodes: [40]ui.Node = undefined,
+    nodes: [56]ui.Node = undefined,
     len: usize = 0,
     root: ui.Node = undefined,
-    states: [6]ui.State = undefined,
+    states: [9]ui.State = undefined,
     vocabulary: [commands.len]abi.StringView = undefined,
-    rows: [max_projects]raw.PulseUiModelRow = undefined,
-    cells: [max_projects][3]abi.StringView = undefined,
-    columns: [3]raw.PulseUiModelColumn = undefined,
+    rows: [page_size]raw.PulseUiModelRow = undefined,
+    cells: [page_size][6]abi.StringView = undefined,
+    columns: [6]raw.PulseUiModelColumn = undefined,
+    page_label: [96]u8 = undefined,
+    edit_label: [128]u8 = undefined,
 
     fn add(self: *Content, node: ui.Node, id: []const u8) void {
         std.debug.assert(self.len < self.nodes.len);
@@ -226,11 +354,75 @@ const Content = struct {
 
     fn build(self: *Content, owner: *const Settings, tree: *ui.Tree) void {
         self.len = 0;
-        const idle = owner.loaded and owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned;
+        const idle = owner.loaded and owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned and !owner.route.busy();
         const lang = owner.stored.locale.language();
-        self.add(ui.text(tr(lang, "VCS tools · Saving a path does not authorize execution", "版本控制工具 · 保存路径不等于执行授权")), "settings.tools");
         self.add(ui.text(owner.status.label(lang)), "settings.status");
-        self.button(0, tr(lang, "Reload settings", "重新读取设置"), owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned);
+        self.button(0, tr(lang, "Reload settings", "重新读取设置"), owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned and !owner.route.busy());
+        self.add(ui.text(tr(lang, "Projects · bookmarks only; no execution or trust", "项目库 · 记录项目，不自动授予权限")), "settings.projects");
+        const visible = owner.visible();
+        self.input(search_key, tr(lang, "Search name, path, tags or remote", "搜索名称、路径、标签或远程地址"), idle);
+        self.button(19, tr(lang, "Search / clear search", "搜索 / 清除搜索"), idle);
+        const page_text = std.fmt.bufPrint(&self.page_label, "{d}/{d} · {d} / {d}", .{ owner.project_page + 1, @max(1, (visible.total + page_size - 1) / page_size), visible.total, owner.stored.count }) catch "";
+        self.add(ui.text(page_text), "settings.project.page");
+        self.button(20, tr(lang, "Previous page", "上一页"), idle and owner.project_page > 0);
+        self.button(21, tr(lang, "Next page", "下一页"), idle and (owner.project_page + 1) * page_size < visible.total);
+        self.states[3] = .{ .key = abi.view(root_key), .value = abi.view("") };
+        self.states[4] = .{ .key = abi.view(url_key), .value = abi.view("") };
+        self.states[5] = .{ .key = abi.view(selection_key), .value = abi.view("") };
+        self.states[6] = .{ .key = abi.view(name_key), .value = abi.view("") };
+        self.states[7] = .{ .key = abi.view(tags_key), .value = abi.view("") };
+        self.states[8] = .{ .key = abi.view(search_key), .value = abi.view(owner.search.slice()) };
+        const headers = [_][]const u8{ tr(lang, "Favorite", "收藏"), tr(lang, "Project", "项目"), tr(lang, "Provider hint", "类型提示"), tr(lang, "Local directory", "本地目录"), tr(lang, "Tags", "标签"), tr(lang, "Remote", "远程仓库") };
+        const ids = [_][]const u8{ "favorite", "name", "provider", "path", "tags", "remote" };
+        for (headers, ids, 0..) |heading, id, i| {
+            self.columns[i] = std.mem.zeroes(raw.PulseUiModelColumn);
+            self.columns[i].size = @sizeOf(raw.PulseUiModelColumn);
+            self.columns[i].id = abi.view(id);
+            self.columns[i].text = abi.view(heading);
+        }
+        for (visible.indices[0..visible.count], 0..) |index, i| {
+            const project = &owner.stored.projects[index];
+            self.cells[i] = .{
+                abi.view(if (project.favorite) tr(lang, "Yes", "是") else ""),
+                abi.view(project.displayName()),
+                abi.view(if (project.kind) |kind| kind.displayName() else tr(lang, "Unknown", "未知")),
+                abi.view(project.root.slice()), abi.view(project.tags.slice()), abi.view(project.remote.slice()),
+            };
+            self.rows[i] = std.mem.zeroes(raw.PulseUiModelRow);
+            self.rows[i].size = @sizeOf(raw.PulseUiModelRow);
+            self.rows[i].id = abi.view(&project.key);
+            self.rows[i].cells = .{ .present = 1, .data = &self.cells[i], .count = self.cells[i].len };
+        }
+        if (visible.count != 0) {
+            var table = ui.node(ui.NodeKind.data_table);
+            table.state = .{ .present = 1, .value = abi.view(selection_key) };
+            table.min_height = .{ .present = 1, .value = 176 };
+            table.rows = .{ .present = 1, .data = &self.rows, .count = @intCast(visible.count) };
+            table.data_columns = .{ .present = 1, .data = &self.columns, .count = self.columns.len };
+            self.add(table, "settings.project.table");
+            self.button(16, tr(lang, "Edit selected / show path", "编辑选中项目 / 查看路径"), idle);
+            self.button(18, tr(lang, "Toggle favorite", "切换收藏"), idle);
+            self.button(9, tr(lang, "Remove selected bookmark (keep files)", "移除选中记录（不删除项目文件）"), idle);
+            if (owner.route.table != null) {
+                self.button(22, tr(lang, "Open selected project in Pulse", "在 Pulse 中打开选中项目"), idle);
+            } else self.add(ui.text(tr(lang, "Host navigation unavailable: edit selected and open its path manually.", "宿主不支持跳转：编辑选中项目并手动打开路径。")), "settings.project.route-fallback");
+            self.button(10, tr(lang, "Open remote repository in browser", "在浏览器打开远程仓库"), idle and (if (owner.browser) |*task| !task.occupied() else false));
+        } else self.add(ui.text(tr(lang, "No matching projects (up to 64 records)", "没有匹配项目（最多 64 项）")), "settings.project.empty");
+        if (owner.route.busy()) self.button(24, tr(lang, "Cancel directory lookup", "取消目录查找"), true);
+        self.button(11, tr(lang, "Check browser task result", "检查浏览器任务结果"), if (owner.browser) |*task| task.occupied() else false);
+        const edit_text = if (owner.edit_key) |key| std.fmt.bufPrint(&self.edit_label, "{s}: {s}", .{ tr(lang, "Editing", "编辑"), &key }) catch "" else tr(lang, "New project", "新建项目");
+        self.add(ui.text(edit_text), "settings.project.edit-mode");
+        self.button(15, tr(lang, "New project / clear form", "新建项目 / 清空表单"), idle);
+        self.input(root_key, tr(lang, "Project root (absolute path)", "项目根目录（绝对路径）"), idle);
+        self.input(name_key, tr(lang, "Project name (optional)", "项目名称（可选）"), idle);
+        self.input(tags_key, tr(lang, "Tags (optional)", "标签（可选）"), idle);
+        self.input(url_key, tr(lang, "Remote repository (optional: GitHub / GitLab / Bitbucket)", "远程仓库地址（可选：GitHub / GitLab / Bitbucket）"), idle);
+        if (owner.picker != null) self.button(23, tr(lang, "Browse project folder", "浏览项目文件夹"), idle);
+        self.button(7, tr(lang, "Fill current VCS repository", "填入当前 VCS 仓库"), idle);
+        if (owner.edit_key != null) {
+            self.button(17, tr(lang, "Update / relink selected record", "更新 / 重新关联记录"), idle);
+        } else self.button(8, tr(lang, "Add project", "添加项目"), idle);
+        self.add(ui.text(tr(lang, "VCS tools · Saving a path does not authorize execution", "版本控制工具 · 保存路径不等于执行授权")), "settings.tools");
         self.add(ui.text(tr(lang, "Language / 语言", "语言 / Language")), "settings.locale");
         self.button(12, tr(lang, "System language (Auto)", "跟随系统 (Auto)"), idle and owner.stored.locale != .auto);
         self.button(13, "English", idle and owner.stored.locale != .en);
@@ -241,40 +433,6 @@ const Content = struct {
             if (owner.picker != null) self.button(4 + i, tr(lang, "Browse tool folder", "浏览工具所在文件夹"), idle);
             self.states[i] = .{ .key = abi.view(field), .value = abi.view(if (owner.stored.tools[i]) |*path| path.slice() else "") };
         }
-        self.add(ui.text(tr(lang, "Projects · bookmarks only; no execution or trust", "项目库 · 仅记录位置，不自动授予权限或运行命令")), "settings.projects");
-        self.input(root_key, tr(lang, "Project root (absolute path)", "项目根目录（绝对路径）"), idle);
-        self.input(url_key, tr(lang, "Remote repository (optional: GitHub / GitLab / Bitbucket)", "远程仓库地址（可选：GitHub / GitLab / Bitbucket）"), idle);
-        self.button(7, tr(lang, "Fill current VCS repository", "填入当前 VCS 仓库"), idle);
-        self.button(8, tr(lang, "Save project / update remote", "保存项目 / 更新远程地址"), idle);
-        self.states[3] = .{ .key = abi.view(root_key), .value = abi.view("") };
-        self.states[4] = .{ .key = abi.view(url_key), .value = abi.view("") };
-        self.states[5] = .{ .key = abi.view(selection_key), .value = abi.view("") };
-        const headers = [_][]const u8{ tr(lang, "Project", "项目"), tr(lang, "Local directory", "本地目录"), tr(lang, "Remote repository", "远程仓库") };
-        const ids = [_][]const u8{ "name", "path", "remote" };
-        for (headers, ids, 0..) |heading, id, i| {
-            self.columns[i] = std.mem.zeroes(raw.PulseUiModelColumn);
-            self.columns[i].size = @sizeOf(raw.PulseUiModelColumn);
-            self.columns[i].id = abi.view(id);
-            self.columns[i].text = abi.view(heading);
-        }
-        for (owner.stored.projects[0..owner.stored.count], 0..) |*project, i| {
-            self.cells[i] = .{ abi.view(std.fs.path.basename(project.root.slice())), abi.view(project.root.slice()), abi.view(project.remote.slice()) };
-            self.rows[i] = std.mem.zeroes(raw.PulseUiModelRow);
-            self.rows[i].size = @sizeOf(raw.PulseUiModelRow);
-            self.rows[i].id = abi.view(&project.key);
-            self.rows[i].cells = .{ .present = 1, .data = &self.cells[i], .count = 3 };
-        }
-        if (owner.stored.count != 0) {
-            var table = ui.node(ui.NodeKind.data_table);
-            table.state = .{ .present = 1, .value = abi.view(selection_key) };
-            table.min_height = .{ .present = 1, .value = 176 };
-            table.rows = .{ .present = 1, .data = &self.rows, .count = @intCast(owner.stored.count) };
-            table.data_columns = .{ .present = 1, .data = &self.columns, .count = self.columns.len };
-            self.add(table, "settings.project.table");
-            self.button(9, tr(lang, "Remove selected bookmark (keep files)", "移除选中记录（不删除项目文件）"), idle);
-            self.button(10, tr(lang, "Open remote repository in browser", "在浏览器打开远程仓库"), idle and (if (owner.browser) |*task| !task.occupied() else false));
-        } else self.add(ui.text(tr(lang, "No saved projects (up to 32)", "尚未记录项目（最多 32 项）")), "settings.project.empty");
-        self.button(11, tr(lang, "Check browser task result", "检查浏览器任务结果"), if (owner.browser) |*task| task.occupied() else false);
         for (commands, 0..) |command, i| self.vocabulary[i] = abi.view(command);
         self.root = ui.node(ui.NodeKind.stack);
         self.root.id = abi.view("vcs.settings.root");
@@ -315,13 +473,58 @@ pub const Settings = struct {
     picker_index: usize = 0,
     browser: ?async_host.Task = null,
     browser_url: contract.Text = .{},
+    route: project_route.Route = .{},
+    route_key: ?[key_len]u8 = null,
+    route_version: u64 = 0,
+    search: contract.Text = .{},
+    project_page: usize = 0,
+    edit_key: ?[key_len]u8 = null,
+    edit_version: u64 = 0,
+    form_kind: ?identity.Kind = null,
+    form_root: identity.Path = .{},
+
+    const Visible = struct {
+        indices: [page_size]usize = undefined,
+        count: usize = 0,
+        total: usize = 0,
+    };
+
+    fn visible(self: *const Settings) Visible {
+        var ordered: [max_projects]usize = undefined;
+        var count: usize = 0;
+        for (self.stored.projects[0..self.stored.count], 0..) |*project, index| {
+            if (!project.matches(self.search.slice())) continue;
+            var pos = count;
+            while (pos > 0) {
+                const previous = &self.stored.projects[ordered[pos - 1]];
+                if (previous.favorite and !project.favorite) break;
+                if (previous.favorite == project.favorite and previous.opened_order >= project.opened_order) break;
+                ordered[pos] = ordered[pos - 1];
+                pos -= 1;
+            }
+            ordered[pos] = index;
+            count += 1;
+        }
+        var result: Visible = .{ .total = count };
+        const start = @min(self.project_page * page_size, count);
+        const end = @min(start + page_size, count);
+        result.count = end - start;
+        @memcpy(result.indices[0..result.count], ordered[start..end]);
+        return result;
+    }
+
+    fn clampPage(self: *Settings) void {
+        const total = self.visible().total;
+        const last = if (total == 0) 0 else (total - 1) / page_size;
+        self.project_page = @min(self.project_page, last);
+    }
 
     pub fn open(self: *Settings) host_mod.Error!void {
         if (self.active) return;
         if (self.poisoned) return error.State;
         // A previous deactivate can have removed the page while a browser
         // worker or callback is still retained. Never overwrite that owner.
-        if (self.page != 0 or self.pending != 0 or self.picker_request != 0 or self.browser != null) try self.close();
+        if (self.page != 0 or self.pending != 0 or self.picker_request != 0 or self.browser != null or self.route.busy()) try self.close();
         const pages = (try self.host.queryOptional(raw.PulseSettingsPagesV1, raw.PULSE_SETTINGS_PAGES_INTERFACE_NAME, raw.PULSE_SETTINGS_PAGES_VERSION_1)) orelse return;
         const resources = (try self.host.queryOptional(raw.PulseResourcesV1, raw.PULSE_RESOURCES_INTERFACE_NAME, raw.PULSE_RESOURCES_VERSION_1)) orelse return;
         const create = pages.create orelse return error.Unavailable;
@@ -329,6 +532,7 @@ pub const Settings = struct {
         if (pages.remove == null or resources.settings_get == null or resources.settings_set == null or resources.cancel_request == null) return error.Unavailable;
         self.pages = pages;
         self.resources = resources;
+        self.route.configure(self.host);
         if (self.host.queryOptional(pickers.Table, pickers.name, pickers.version)) |optional| {
             if (optional) |picker| {
                 if (picker.pick_folders != null and picker.cancel != null) self.picker = picker;
@@ -388,7 +592,7 @@ pub const Settings = struct {
             count += 1;
         }
         // Selection state belongs to the visible project table only.
-        if (mask & 8 != 0 and self.stored.count != 0) {
+        if (mask & 8 != 0 and self.visible().count != 0) {
             states[count] = .{ .key = abi.view(selection_key), .value = abi.view("") };
             count += 1;
         }
@@ -414,7 +618,11 @@ pub const Settings = struct {
             self.status = .conflict;
         } else if (Stored.decode(reply.*.settings, &self.scratch)) |_| {
             self.stored = self.scratch;
+            self.clampPage();
             self.loaded = true;
+            // An edit draft is bound to the version from which it was loaded.
+            // Do not silently rebase it over a concurrent change.
+            if (mask & 8 != 0) self.edit_key = null;
             self.status = if (operation == raw.PULSE_RESOURCES_SETTINGS_GET) .loaded else .saved;
             self.updated(self.user, self.stored.tools, self.stored.locale.language());
             self.render();
@@ -439,7 +647,7 @@ pub const Settings = struct {
     }
 
     fn reload(self: *Settings) void {
-        if (!self.active or self.pending != 0 or self.picker_request != 0 or self.poisoned) return;
+        if (!self.active or self.pending != 0 or self.picker_request != 0 or self.poisoned or self.route.busy()) return;
         const resources = self.resources orelse return;
         const get = resources.settings_get orelse return;
         var id: u64 = 0;
@@ -477,32 +685,150 @@ pub const Settings = struct {
         self.save(keys[index], value, value.len == 0);
     }
 
-    fn fillCurrent(self: *Settings) !void {
-        const current = self.current(self.user) orelse return error.State;
+    fn fillForm(self: *Settings, root: []const u8, remote: []const u8, name: []const u8, tags: []const u8) !void {
         const model = if (self.panel) |*value| value else return error.State;
         const states = [_]ui.State{
-            .{ .key = abi.view(root_key), .value = abi.view(current.root.slice()) },
-            .{ .key = abi.view(url_key), .value = abi.view(current.remote.slice()) },
+            .{ .key = abi.view(root_key), .value = abi.view(root) },
+            .{ .key = abi.view(url_key), .value = abi.view(remote) },
+            .{ .key = abi.view(name_key), .value = abi.view(name) },
+            .{ .key = abi.view(tags_key), .value = abi.view(tags) },
         };
         try model.setStates(&states);
+    }
+
+    fn newProject(self: *Settings) !void {
+        try self.fillForm("", "", "", "");
+        self.edit_key = null;
+        self.form_kind = null;
+        self.form_root = .{};
+        self.status = .new_project;
+    }
+
+    fn fillCurrent(self: *Settings) !void {
+        const current = self.current(self.user) orelse return error.State;
+        try self.fillForm(current.root.slice(), current.remote.slice(), "", "");
+        self.edit_key = null;
+        self.form_kind = current.kind;
+        self.form_root = current.root;
         self.status = .filled;
     }
 
-    fn saveProject(self: *Settings) !void {
+    fn editProject(self: *Settings) !void {
+        const project = (try self.selected()).*;
+        try self.fillForm(project.root.slice(), project.remote.slice(), project.name.slice(), project.tags.slice());
+        self.edit_key = project.key;
+        self.edit_version = self.stored.version;
+        self.form_kind = project.kind;
+        self.form_root = project.root;
+        self.status = .edit_loaded;
+    }
+
+    fn saveProject(self: *Settings, update: bool) !void {
         var root: [max_value + 1]u8 = undefined;
         var url: [513]u8 = undefined;
-        const item = try Project.make(try self.read(root_key, &root), try self.read(url_key, &url));
-        if (self.stored.find(&item.key)) |index| {
-            if (!self.stored.projects[index].root.eql(item.root.slice())) return error.InvalidSettings;
-        } else if (self.stored.count == max_projects) return error.InvalidSettings;
+        var name: [97]u8 = undefined;
+        var tags: [161]u8 = undefined;
+        var item = try Project.make(try self.read(root_key, &root), try self.read(url_key, &url));
+        item.name = try Project.field(try self.read(name_key, &name), 96);
+        item.tags = try Project.field(try self.read(tags_key, &tags), 160);
+        if (self.form_root.eql(item.root.slice())) item.kind = self.form_kind;
+        if (update) {
+            const key = self.edit_key orelse return error.State;
+            if (self.edit_version != self.stored.version) return error.State;
+            const index = self.stored.find(&key) orelse return error.State;
+            if (self.stored.findRoot(item.root.slice())) |duplicate| {
+                if (duplicate != index) return error.InvalidSettings;
+            }
+            const old = &self.stored.projects[index];
+            item.key = old.key;
+            item.favorite = old.favorite;
+            item.opened_order = old.opened_order;
+        } else {
+            if (self.edit_key != null or self.stored.count == max_projects or self.stored.findRoot(item.root.slice()) != null) return error.InvalidSettings;
+            item.key = try self.stored.newKey(item.root.slice());
+        }
+        try self.saveRecord(&item);
+    }
+
+    fn saveRecord(self: *Settings, item: *const Project) !void {
         var bytes: [max_value]u8 = undefined;
         self.save(&item.key, try item.encode(&bytes), false);
     }
 
+    fn favorite(self: *Settings) !void {
+        var item = (try self.selected()).*;
+        item.favorite = !item.favorite;
+        try self.saveRecord(&item);
+    }
+
     fn selected(self: *const Settings) !*const Project {
         var key: [key_len + 1]u8 = undefined;
-        const index = self.stored.find(try self.read(selection_key, &key)) orelse return error.State;
-        return &self.stored.projects[index];
+        const value = try self.read(selection_key, &key);
+        const view = self.visible();
+        for (view.indices[0..view.count]) |index| {
+            const project = &self.stored.projects[index];
+            if (std.mem.eql(u8, value, &project.key)) return project;
+        }
+        return error.State;
+    }
+
+    fn clearSelection(self: *Settings) !void {
+        self.render();
+        if (!self.render_ok or self.visible().count == 0) return;
+        const model = if (self.panel) |*value| value else return error.State;
+        const states = [_]ui.State{.{ .key = abi.view(selection_key), .value = abi.view("") }};
+        model.setStates(&states) catch |err| {
+            self.render_ok = false;
+            self.loaded = false;
+            return err;
+        };
+    }
+
+    fn applySearch(self: *Settings) !void {
+        var bytes: [257]u8 = undefined;
+        self.search = try Project.field(try self.read(search_key, &bytes), 256);
+        self.project_page = 0;
+        self.status = .search_applied;
+        try self.clearSelection();
+    }
+
+    fn pageBy(self: *Settings, forward: bool) !void {
+        if (forward) {
+            if ((self.project_page + 1) * page_size >= self.visible().total) return error.State;
+            self.project_page += 1;
+        } else {
+            if (self.project_page == 0) return error.State;
+            self.project_page -= 1;
+        }
+        try self.clearSelection();
+    }
+
+    fn jump(self: *Settings) !void {
+        const project = (try self.selected()).*;
+        self.route_key = project.key;
+        self.route_version = self.stored.version;
+        try self.route.begin(project.root.slice(), self, &routeDone);
+        self.status = .route_pending;
+    }
+
+    fn routeDone(user: *anyopaque, accepted: bool) void {
+        const self: *Settings = @ptrCast(@alignCast(user));
+        const key = self.route_key;
+        self.route_key = null;
+        if (!self.active) return;
+        self.status = if (accepted) .route_dispatched else .route_failed;
+        // Store recency only for the same current record/version, after the
+        // host accepted navigation. A concurrent change cannot be overwritten.
+        if (accepted and self.loaded and self.pending == 0 and self.route_version == self.stored.version and self.stored.version < (1 << 53) - 1) {
+            if (key) |id| {
+                if (self.stored.find(&id)) |index| {
+                    var item = self.stored.projects[index];
+                    item.opened_order = self.stored.version + 1;
+                    self.saveRecord(&item) catch |err| diag.status("vcs-project-recency", @intFromError(err));
+                }
+            }
+        }
+        self.render();
     }
 
     fn pickerCompleted(user: ?*anyopaque, result: [*c]const pickers.Result) callconv(.c) void {
@@ -514,10 +840,18 @@ pub const Settings = struct {
         if (result.*.outcome == pickers.accepted and result.*.path_count == 1 and result.*.paths != null) blk: {
             const path = abi.slice(result.*.paths[0]) orelse break :blk;
             var bytes: [max_value]u8 = undefined;
-            const candidate = std.fmt.bufPrint(&bytes, "{s}" ++ std.fs.path.sep_str ++ "{s}", .{ std.mem.trimEnd(u8, path, "\\/"), tools[self.picker_index].exeName() }) catch break :blk;
-            _ = toolPath(self.picker_index, candidate) catch break :blk;
+            const candidate = if (self.picker_index == tools.len) root: {
+                if (!approval.strictPath(path) or path.len > max_value) break :blk;
+                break :root path;
+            } else tool: {
+                if (self.picker_index >= tools.len) break :blk;
+                const value = std.fmt.bufPrint(&bytes, "{s}" ++ std.fs.path.sep_str ++ "{s}", .{ std.mem.trimEnd(u8, path, "\\/"), tools[self.picker_index].exeName() }) catch break :blk;
+                _ = toolPath(self.picker_index, value) catch break :blk;
+                break :tool value;
+            };
             const model = if (self.panel) |*value| value else break :blk;
-            const states = [_]ui.State{.{ .key = abi.view(fields[self.picker_index]), .value = abi.view(candidate) }};
+            const field = if (self.picker_index == tools.len) root_key else fields[self.picker_index];
+            const states = [_]ui.State{.{ .key = abi.view(field), .value = abi.view(candidate) }};
             model.setStates(&states) catch break :blk;
             self.status = .picker_candidate;
         }
@@ -530,7 +864,7 @@ pub const Settings = struct {
         self.picker_index = index;
         var id: u64 = 0;
         const lang = self.stored.locale.language();
-        const request: pickers.Request = .{ .title = abi.view(tr(lang, "Select the folder containing the executable", "选择工具可执行文件所在文件夹")), .ok_label = abi.view(tr(lang, "Select", "选择")) };
+        const request: pickers.Request = .{ .title = abi.view(if (index == tools.len) tr(lang, "Select project directory", "选择项目目录") else tr(lang, "Select the folder containing the executable", "选择工具可执行文件所在文件夹")), .ok_label = abi.view(tr(lang, "Select", "选择")) };
         try host_mod.mapStatus(pick(picker.context, &request, pickerCompleted, self, &id));
         if (id == 0) {
             self.poisoned = true;
@@ -584,14 +918,26 @@ pub const Settings = struct {
             self.reload();
             return;
         }
-        if (!self.loaded or !self.render_ok or self.pending != 0 or self.picker_request != 0) return;
+        if (std.mem.eql(u8, name, commands[24])) {
+            self.route.stop() catch |err| {
+                self.status = .route_failed;
+                diag.status("vcs-project-route-cancel", @intFromError(err));
+                self.render();
+                return;
+            };
+            self.route_key = null;
+            self.status = .route_cancelled;
+            self.render();
+            return;
+        }
+        if (!self.loaded or !self.render_ok or self.pending != 0 or self.picker_request != 0 or self.route.busy()) return;
         for (commands[1..], 1..) |key, index| {
             if (!std.mem.eql(u8, name, key)) continue;
             const result: anyerror!void = switch (index) {
                 1...3 => self.saveTool(index - 1),
                 4...6 => self.browse(index - 4),
                 7 => self.fillCurrent(),
-                8 => self.saveProject(),
+                8 => self.saveProject(false),
                 9 => blk: {
                     const project = self.selected() catch |err| break :blk err;
                     self.save(&project.key, "", true);
@@ -600,6 +946,15 @@ pub const Settings = struct {
                 10 => self.openSelected(),
                 11 => self.pollBrowser(),
                 12...14 => self.save(locale_key, @tagName(([_]Locale{ .auto, .en, .zh })[index - 12]), false),
+                15 => self.newProject(),
+                16 => self.editProject(),
+                17 => self.saveProject(true),
+                18 => self.favorite(),
+                19 => self.applySearch(),
+                20 => self.pageBy(false),
+                21 => self.pageBy(true),
+                22 => self.jump(),
+                23 => self.browse(tools.len),
                 else => return,
             };
             result catch |err| {
@@ -615,6 +970,8 @@ pub const Settings = struct {
         self.active = false;
         self.render_ok = false;
         if (self.poisoned) return error.State;
+        try self.route.stop();
+        self.route_key = null;
         if (self.picker_request != 0) {
             const picker = self.picker orelse return error.State;
             const cancel = picker.cancel orelse return error.Unavailable;
@@ -649,6 +1006,7 @@ pub const Settings = struct {
         self.pages = null;
         self.resources = null;
         self.picker = null;
+        self.route.table = null;
         self.loaded = false;
     }
 
@@ -656,6 +1014,7 @@ pub const Settings = struct {
         // Host stop suppresses resource/picker/UI callbacks and joins tasks.
         self.active = false;
         self.render_ok = false;
+        self.route.retire();
         if (self.browser) |*task| task.retireAtHostDestroy();
         self.browser = null;
         self.panel = null;
@@ -880,4 +1239,61 @@ test "picker callback rejects stale request and only fills a matching candidate"
     Settings.pickerCompleted(owner, &reply);
     try std.testing.expectEqual(Status.picker_cancel, owner.status);
     try std.testing.expectEqual(@as(usize, 1), fixture.synced);
+}
+
+test "legacy project migrates to a stable V2 record and relinks without implicit grant" {
+    const root = if (builtin.os.tag == .windows) "C:\\work\\repo" else "/work/repo";
+    const moved = if (builtin.os.tag == .windows) "C:\\work\\moved" else "/work/moved";
+    const original = try Project.make(root, "https://github.com/owner/repo");
+    var legacy: [max_value]u8 = undefined;
+    const value = try std.fmt.bufPrint(&legacy, "{s}\n{s}", .{ root, original.remote.slice() });
+    var record = try Project.decode(&original.key, value);
+    try std.testing.expect(record.root.eql(root));
+    record.root = try identity.Path.init(moved);
+    record.name = try Project.field("Example", 96);
+    record.tags = try Project.field("zig, favorite", 160);
+    record.favorite = true;
+    record.kind = .jj;
+    record.opened_order = 3;
+    var buffer: [max_value]u8 = undefined;
+    const encoded = try record.encode(&buffer);
+    const parsed = try Project.decode(&original.key, encoded);
+    try std.testing.expectEqual(original.key, parsed.key);
+    try std.testing.expect(parsed.root.eql(moved));
+    try std.testing.expect(parsed.matches("ZIG"));
+    try std.testing.expect(parsed.favorite and parsed.kind == .jj);
+    try std.testing.expectEqual(@as(u64, 3), parsed.opened_order);
+    try std.testing.expectError(error.InvalidSettings, Project.field("bad\nfield", 96));
+    var stored: Stored = .{ .version = 4 };
+    stored.projects[0] = parsed;
+    stored.count = 1;
+    try std.testing.expect(stored.findRoot(moved) != null);
+    try std.testing.expect(stored.findRoot(root) == null);
+    const new_key = try stored.newKey(root);
+    try std.testing.expect(!std.mem.eql(u8, &new_key, &original.key));
+}
+
+test "project view prioritizes favorites and recency and bounds page selection" {
+    const owner = try std.testing.allocator.create(Settings);
+    defer std.testing.allocator.destroy(owner);
+    owner.* = .{ .host = undefined, .user = undefined, .current = undefined, .updated = undefined };
+    for (0..page_size + 1) |index| {
+        var path: [96]u8 = undefined;
+        const root = try std.fmt.bufPrint(&path, if (builtin.os.tag == .windows) "C:\\projects\\repo-{d}" else "/projects/repo-{d}", .{index});
+        var item = try Project.make(root, "");
+        item.opened_order = @intCast(index);
+        item.favorite = index == 0;
+        owner.stored.projects[index] = item;
+        owner.stored.count += 1;
+    }
+    const first = owner.visible();
+    try std.testing.expectEqual(@as(usize, page_size), first.count);
+    try std.testing.expectEqual(@as(usize, 0), first.indices[0]);
+    try std.testing.expectEqual(@as(usize, page_size), first.indices[1]);
+    owner.project_page = 1;
+    try std.testing.expectEqual(@as(usize, 1), owner.visible().count);
+    owner.search = try Project.field("repo-0", 256);
+    owner.clampPage();
+    try std.testing.expectEqual(@as(usize, 0), owner.project_page);
+    try std.testing.expectEqual(@as(usize, 1), owner.visible().count);
 }

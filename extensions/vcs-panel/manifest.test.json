@@ -1,5 +1,11 @@
 {
   "apiVersion": 1,
   "id": "strangelion.vcs-test",
-  "name": "VCS Panel (isolated acceptance candidate)"
+  "name": "VCS Panel (isolated acceptance candidate)",
+  "resources": [
+    "settings.own",
+    "context.read",
+    "files.readDirectory",
+    "files.open"
+  ]
 }

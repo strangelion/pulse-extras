@@ -105,7 +105,7 @@ const Instance = struct {
         if (binding.navigation.pending or binding.controller.current.phase != .ready or binding.controller.current.stale) return null;
         const workspace = binding.controller.current.workspace orelse return null;
         const snapshot = binding.controller.current.snapshot orelse return null;
-        return .{ .root = workspace.root, .remote = snapshot.remote_web };
+        return .{ .root = workspace.root, .remote = snapshot.remote_web, .kind = workspace.kind };
     }
 
     fn start(self: *Instance) host_mod.Error!void {
