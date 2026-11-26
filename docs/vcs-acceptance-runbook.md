@@ -303,3 +303,8 @@ I/O and identity pins are retired before returning to non-executing preview.
 Busy reset refuses rather than silently racing a worker; cancel/Check then
 retry. The strict persisted Git grant remains separate. This is session
 switching, not persistent multi-root trust or a per-project cache.
+
+Run 45849966532 reached the extracted, checksum-verified vendor executable;
+its exact `1.14.5-SlikSvn` version suffix was rejected by the earlier numeric-only
+comparison. Accept the pinned distribution spelling and no other release;
+mandatory SVN query results are still pending.

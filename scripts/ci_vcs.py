@@ -110,6 +110,11 @@ def download_svn_archive(root: Path, name: str) -> Path:
     return archive
 
 
+def valid_svn_version(output: str) -> bool:
+    # The pinned vendor binaries report a distribution suffix on Windows.
+    return output.strip() in (SVN_VERSION, f"{SVN_VERSION}-SlikSvn")
+
+
 def install_windows_svn():
     if platform.system() != "Windows":
         raise SystemExit("Windows SVN provisioning must run on Windows")
@@ -134,7 +139,7 @@ def install_windows_svn():
     for name in ("svn.exe", "svnadmin.exe"):
         version = subprocess.check_output([str(binary.parent / name), "--version", "--quiet"],
                                           text=True, timeout=30).strip()
-        if version != SVN_VERSION:
+        if not valid_svn_version(version):
             raise SystemExit(f"Unexpected {name} version: {version!r}")
     print(f"Verified pinned SVN archive and both {SVN_VERSION} tools", flush=True)
     with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as out:

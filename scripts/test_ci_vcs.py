@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
-from ci_vcs import download_archive, download_svn_archive, extract_named_zip_member, valid_jj_version
+from ci_vcs import download_archive, download_svn_archive, extract_named_zip_member, valid_jj_version, valid_svn_version
 
 
 class JjVersionTests(unittest.TestCase):
@@ -83,6 +83,12 @@ class JjDownloadTests(unittest.TestCase):
 
 
 class SvnArchiveTests(unittest.TestCase):
+    def test_exact_vendor_version(self):
+        self.assertTrue(valid_svn_version('1.14.5-SlikSvn\n'))
+        self.assertTrue(valid_svn_version('1.14.5'))
+        for value in ('1.14.6-SlikSvn', '1.14.5-dev', '1.14.5-SlikSvn-other', '1.14.05'):
+            self.assertFalse(valid_svn_version(value))
+
     def test_extracts_only_named_member(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
