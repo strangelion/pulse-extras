@@ -4,10 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       extensions:
-        description: 'companion, vcs, companion,vcs or all'
+        description: 'Select which extension(s) to release'
         required: true
         default: companion
-        type: string
+        type: choice
+        options:
+          - companion
+          - vcs
+          - all
       companion_version:
         description: 'Companion SemVer (empty if not selected)'
         required: false

@@ -96,7 +96,7 @@ Open Actions → Extension release → Run workflow on main.
 
 | Input | Values / meaning |
 | --- | --- |
-| extensions | companion, vcs, companion,vcs or all |
+| extensions | Dropdown: companion, vcs, all |
 | companion_version | Independent SemVer; blank when Companion not selected |
 | vcs_version | Independent SemVer; blank when VCS not selected |
 | mode | dry-run (default), draft, publish-preview |

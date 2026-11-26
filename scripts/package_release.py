@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Package a Pulse extension release candidate with the pinned official tool.
 
-Local, explicit invocation only: the official author tool remains
+Explicit local or manual-release workflow invocation: the official author tool remains
 authoritative for manifest generation, archive layout and verification.
 This script declares each product's package contents, binds every input by
 digest, renames the verified archive to its release asset name and writes
 evidence. It performs no signing, publication, registry or host install, and
-CI never runs it (see docs/release.md).
+ordinary regression CI never runs it (see docs/release.md).
 """
 from __future__ import annotations
 
