@@ -30,7 +30,8 @@ typedef char preview3_table_size[(sizeof(PulseUiModelV1) == 72) ? 1 : -1];
 static const char *commands[] = {
     "companion.library", "companion.running", "companion.market", "companion.global",
     "companion.settings.refresh", "companion.download.less", "companion.download.more",
-    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version", "companion.market.queue-base", "companion.market.queue-full", "companion.market.queue-start", "companion.market.queue-clear", "companion.market.queue-item-1", "companion.market.queue-item-2", "companion.market.queue-item-3", "companion.market.queue-item-4", "companion.market.queue-item-5", "companion.market.queue-item-6", "companion.market.queue-item-7", "companion.market.queue-item-8", "companion.library.profile-default", "companion.library.profile-alternate", "companion.library.profile-reset", "companion.library.profile-clear", "companion.library.start-alternate", "companion.library.start-custom", "companion.library.detail", "companion.market.image-test", "companion.market.open-gallery", "companion.market.image-fallback", "companion.runtime.policy-save", "companion.runtime.plan-start", "companion.runtime.plan-cancel", "companion.running.hide", "companion.running.show", "companion.running.hide-all", "companion.running.show-all", "companion.runtime.diagnostics"
+    "companion.library.reload", "companion.library.poll", "companion.library.previous", "companion.library.next", "companion.library.favorites", "companion.running.start", "companion.running.stop", "companion.running.stop-one", "companion.library.start", "companion.library.favorite-toggle", "companion.library.tag-add", "companion.library.tag-remove", "companion.library.import", "companion.library.import-cancel", "companion.library.browse", "companion.library.recovery-scan", "companion.library.remove", "companion.library.restore", "companion.quarantine.previous", "companion.quarantine.next", "companion.quarantine.purge", "companion.library.search-clear", "companion.running.search", "companion.running.search-clear", "companion.market.search", "companion.market.offline", "companion.market.previous", "companion.market.next", "companion.market.install-base", "companion.market.install-full", "companion.market.cancel", "companion.market.poll", "companion.market.search-clear", "companion.market.select-1", "companion.market.select-2", "companion.market.select-3", "companion.market.select-4", "companion.market.select-5", "companion.market.select-6", "companion.market.select-7", "companion.market.select-8", "companion.market.select-9", "companion.market.select-10", "companion.market.select-11", "companion.market.select-12", "companion.runtime.limits-save", "companion.running.previous", "companion.running.next", "companion.market.filter-mode", "companion.market.filter-category", "companion.market.filter-version", "companion.market.queue-base", "companion.market.queue-full", "companion.market.queue-start", "companion.market.queue-clear", "companion.market.queue-item-1", "companion.market.queue-item-2", "companion.market.queue-item-3", "companion.market.queue-item-4", "companion.market.queue-item-5", "companion.market.queue-item-6", "companion.market.queue-item-7", "companion.market.queue-item-8", "companion.library.profile-default", "companion.library.profile-alternate", "companion.library.profile-reset", "companion.library.profile-clear", "companion.library.start-alternate", "companion.library.start-custom", "companion.library.detail", "companion.market.image-test", "companion.market.open-gallery", "companion.market.image-fallback", "companion.runtime.policy-save", "companion.runtime.plan-start", "companion.runtime.plan-cancel", "companion.running.hide", "companion.running.show", "companion.running.hide-all", "companion.running.show-all", "companion.runtime.diagnostics",
+    "companion.library.select", "companion.library.advanced", "companion.library.load-alternate", "companion.library.pick-1", "companion.library.pick-2", "companion.library.pick-3", "companion.library.pick-4", "companion.library.pick-5", "companion.library.pick-6", "companion.library.pick-7", "companion.library.pick-8", "companion.library.pick-9", "companion.library.pick-10", "companion.library.pick-11", "companion.library.pick-12", "companion.library.pick-13", "companion.library.pick-14", "companion.library.pick-15", "companion.library.pick-16"
 };
 #define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
 /* Optional 1.0.61 picker ABI: independent C layout matching the supplied
@@ -105,7 +106,10 @@ typedef struct {
     void *dialog_command_user;
     uint64_t dialog_command_subscription;
     unsigned dialog_states_updated;
-    uint64_t search_token, running_search_token;
+    uint64_t search_token, running_search_token, library_selection_token;
+    PulseUiStateChangedFn library_selection_changed;
+    void *library_selection_user;
+    unsigned advanced_visible;
     PulseUiStateChangedFn running_search_changed;
     void *running_search_user;
     PulseUiStateChangedFn search_changed;
@@ -163,7 +167,10 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
     if (f->global) {
         REQUIRE(root->children.count == 13);
         REQUIRE(same(root->children.data[7].command.value, commands[52]));
-        REQUIRE(t->state_count == 27);
+        REQUIRE(t->state_count == 30);
+        REQUIRE(same(t->states[27].key, "library.scale"));
+        REQUIRE(same(t->states[28].key, "library.topmost"));
+        REQUIRE(same(t->states[29].key, "library.reduced"));
         REQUIRE(same(t->states[11].key, "policy.automatic"));
         REQUIRE(same(t->states[23].key, "policy.entry.8"));
         REQUIRE(same(t->states[24].key, "policy.hide-on-minimize"));
@@ -268,19 +275,49 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
             const PulseUiModelNode *node = root->children.data + i;
             if (!same(node->id, "library.profile.group")) continue;
             REQUIRE(node->children.present && node->children.count == 5);
-            REQUIRE(same(node->children.data[1].state.value, "library.profile"));
+            const PulseUiModelNode *fields = node->children.data + 1;
+            REQUIRE(fields->children.present && fields->children.data && fields->children.count == 3);
+            REQUIRE(fields->children.data[0].type == PULSE_UI_MODEL_TEXT_INPUT);
+            REQUIRE(same(fields->children.data[0].state.value, "library.scale"));
+            REQUIRE(fields->children.data[1].type == PULSE_UI_MODEL_CHECKBOX);
+            REQUIRE(same(fields->children.data[1].state.value, "library.topmost"));
+            REQUIRE(fields->children.data[2].type == PULSE_UI_MODEL_CHECKBOX);
+            REQUIRE(same(fields->children.data[2].state.value, "library.reduced"));
             REQUIRE(same(node->children.data[4].command.value, commands[76]));
             ++profile_groups;
         }
         REQUIRE(profile_groups <= 1);
-        unsigned recovery_buttons = 0;
+        unsigned recovery_buttons = 0, advanced_buttons = 0, advanced_open = 0;
+        unsigned tables = 0;
+        for (unsigned i = 0; i < root->children.count; ++i) {
+            const PulseUiModelNode *node = root->children.data + i;
+            if (same(node->id, "library.advanced.open") || same(node->id, "library.advanced.closed")) {
+                REQUIRE(node->type == PULSE_UI_MODEL_BUTTON && node->command.present && same(node->command.value, commands[89]));
+                ++advanced_buttons;
+                advanced_open += same(node->id, "library.advanced.open");
+            }
+            if (!same(node->id, "library.table")) continue;
+            ++tables;
+            REQUIRE(node->type == PULSE_UI_MODEL_DATA_TABLE && node->state.present && same(node->state.value, "library.asset-id"));
+            REQUIRE(node->data_columns.present && node->data_columns.data && node->data_columns.count == 5);
+            REQUIRE(node->rows.present && node->rows.data && node->rows.count > 0 && node->rows.count <= 16);
+            for (unsigned n = 0; n < node->rows.count; ++n) {
+                const PulseUiModelRow *row = node->rows.data + n;
+                REQUIRE(row->size == sizeof(*row) && row->id.data && row->id.length);
+                REQUIRE(row->command.present && same(row->command.value, commands[88]));
+                REQUIRE(row->cells.present && row->cells.data && row->cells.count == 5);
+            }
+        }
+        REQUIRE(tables <= 1);
+        REQUIRE(advanced_buttons == (f->bundled ? 1u : 0u));
+        f->advanced_visible = advanced_open;
         for (unsigned i = 0; i < root->children.count; ++i) {
             const PulseUiModelNode *node = root->children.data + i;
             if (!same(node->id, "library.recovery-scan")) continue;
             REQUIRE(node->type == PULSE_UI_MODEL_BUTTON && node->command.present && same(node->command.value, commands[22]));
             ++recovery_buttons;
         }
-        REQUIRE(recovery_buttons == (f->bundled ? 1u : 0u));
+        REQUIRE(recovery_buttons == advanced_open);
     }
     return PULSE_OK;
 }
@@ -335,6 +372,9 @@ static PulseStatus PULSE_CALL get_state(void *ctx, uint64_t page, PulseStringVie
     if (same(key, "settings.commit-mib")) {
         memcpy(buffer, "512", 4); *needed = 3; return PULSE_OK;
     }
+    if (same(key, "library.asset-id")) {
+        buffer[0] = 0; *needed = 0; return PULSE_OK;
+    }
     REQUIRE(same(key, "library.query"));
     memcpy(buffer, "test", 5);
     *needed = 4;
@@ -356,6 +396,14 @@ static PulseStatus PULSE_CALL subscribe_search(void *ctx, uint64_t page, PulseSt
         *token = f->running_search_token;
         return PULSE_OK;
     }
+    if (same(key, "library.asset-id")) {
+        REQUIRE(!f->library_selection_token);
+        f->library_selection_token = ++f->next;
+        f->library_selection_changed = cb;
+        f->library_selection_user = user;
+        *token = f->library_selection_token;
+        return PULSE_OK;
+    }
     REQUIRE(!f->search_token && same(key, "library.query"));
     f->search_token = ++f->next; f->search_changed = cb; f->search_user = user;
     *token = f->search_token;
@@ -365,6 +413,12 @@ static PulseStatus PULSE_CALL unsubscribe_search(void *ctx, uint64_t token) {
     Fixture *f = ctx;
     if (token && token == f->running_search_token) {
         f->running_search_token = 0; f->running_search_changed = NULL; f->running_search_user = NULL;
+        return PULSE_OK;
+    }
+    if (token && token == f->library_selection_token) {
+        f->library_selection_token = 0;
+        f->library_selection_changed = NULL;
+        f->library_selection_user = NULL;
         return PULSE_OK;
     }
     REQUIRE(token && token == f->search_token);
@@ -798,7 +852,7 @@ static int automatic(PulsePluginEntryV1Fn entry) {
     CHECK(cancel_task(&f, f.task) == PULSE_OK);
     for (unsigned i = 0; i < 100 && f.task; ++i) { Sleep(20); pump(&f); }
     CHECK(!f.task && f.task_released == 1);
-    CHECK(f.search_token && f.search_changed);
+    CHECK(f.search_token && f.search_changed && f.library_selection_token && f.library_selection_changed);
     PulseUiStateChange change = {.key=view("library.query"), .value=view("c"), .revision=1, .source_mask=PULSE_UI_STATE_USER};
     PulseUiStateBatch batch = {.revision=1, .changes=&change, .count=1};
     f.search_changed(f.search_user, f.page, &batch);
@@ -810,7 +864,7 @@ static int automatic(PulsePluginEntryV1Fn entry) {
     out.deactivate(out.instance);
     out.destroy(out.instance);
     pump(&f);
-    CHECK(!f.queued && !f.search_token && !f.running_search_token);
+    CHECK(!f.queued && !f.search_token && !f.running_search_token && !f.library_selection_token);
     DeleteCriticalSection(&f.dispatch_lock);
     return 0;
 }
@@ -866,6 +920,9 @@ static int bundled_session(PulsePluginEntryV1Fn entry) {
     CHECK(cancel_task(&f, f.task) == PULSE_OK);
     for (unsigned i = 0; i < 100 && f.task; ++i) { Sleep(20); pump(&f); }
     CHECK(!f.task);
+    CHECK(!f.advanced_visible);
+    CHECK(click(&f, 89) == 0 && f.advanced_visible && !f.task);
+    CHECK(click(&f, 89) == 0 && !f.advanced_visible && !f.task);
     /* No diagnostic snapshot/selection: direct mutation commands must do nothing. */
     CHECK(click(&f, 23) == 0 && !f.dialog && !f.task);
     CHECK(click(&f, 24) == 0 && !f.dialog && !f.task);

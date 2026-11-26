@@ -969,7 +969,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                             }
                         }
                     } else {
-                        content.children[count] = label("library.select-help", "选择素材后查看启动设置、收藏及标签。");
+                        content.children[count] = label("library.select-help", if (nativePolicyEditor(instance)) "选择素材后查看启动设置、收藏及标签。" else "宿主缺少状态同步接口；素材仅供查看。");
                         count += 1;
                     }
                 }
@@ -3942,7 +3942,7 @@ test "library profile fields reject malformed values and preserve exact scale" {
     try std.testing.expect(profile.topmost and !profile.reduced);
     try std.testing.expectError(error.Invalid, parseLibraryProfile("100", "1", "false"));
     try std.testing.expectError(error.Invalid, parseLibraryProfile("1:0", "true", "false"));
-    if (parseLibraryProfile("201", "false", "true")) |_| return error.TestUnexpectedResult else |_| {}
+    try std.testing.expectError(error.Invalid, parseLibraryProfile("201", "false", "true"));
 }
 
 test "dynamic labels replace identity only when text changes" {
