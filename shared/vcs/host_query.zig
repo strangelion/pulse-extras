@@ -433,6 +433,7 @@ pub const Binding = struct {
     metadata_only: bool = false,
     local_access: ?LocalAccess = null,
     local_ui: bool = false,
+    configured_tools: [3]?identity.Path = .{ null, null, null },
     local_review: ?panel.LocalReview = null,
     setup_issue: ?panel.SetupIssue = null,
     revocation: ?Revocation = null,
@@ -517,6 +518,13 @@ pub const Binding = struct {
         current.approval_required = self.approval_locked;
         current.metadata_only = self.metadata_only;
         current.local_setup = self.local_ui;
+        if (current.snapshot) |*snapshot| {
+            if (self.metadata_only) {
+                for (self.configured_tools, 0..) |configured, index| {
+                    if (configured) |path| snapshot.preview_tools[index] = path;
+                }
+            }
+        }
         current.local_review = self.local_review;
         current.setup_issue = self.setup_issue;
         current.revocation_configured = self.revocation != null;
@@ -683,8 +691,9 @@ pub const Binding = struct {
         if (needed >= bytes.len) return error.Argument;
         const snapshot = self.controller.current.snapshot orelse return error.State;
         if (!snapshot.previewHas(kind)) return error.Permission;
+        const index = contract.Snapshot.previewIndex(kind) orelse return error.Argument;
         const executable = if (needed == 0)
-            snapshot.previewTool(kind) orelse return error.Argument
+            self.configured_tools[index] orelse snapshot.previewTool(kind) orelse return error.Argument
         else
             identity.Path.init(bytes[0..needed]) catch return error.Argument;
         // No tool discovery or execution occurs here. Confirmation owns
@@ -943,6 +952,13 @@ pub const Binding = struct {
         current.approval_required = self.approval_locked;
         current.metadata_only = self.metadata_only;
         current.local_setup = self.local_ui;
+        if (current.snapshot) |*snapshot| {
+            if (self.metadata_only) {
+                for (self.configured_tools, 0..) |configured, index| {
+                    if (configured) |path| snapshot.preview_tools[index] = path;
+                }
+            }
+        }
         current.local_review = self.local_review;
         current.setup_issue = self.setup_issue;
         current.revocation_configured = self.revocation != null;

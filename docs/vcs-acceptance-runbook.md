@@ -180,3 +180,30 @@ the configured tool is required. SVN local-trust integration requires a
 Windows SVN working-copy fixture; do not substitute Ubuntu provider tests
 for that result. Closing the binding revokes future local CLI admissions
 before cancellation and drain.
+
+### Package-owned VCS settings and project bookmarks (candidate)
+
+The independent VCS settings page uses the pinned public settings-pages and
+resources interfaces. Tool paths for Git/JJ/SVN are saved independently
+with the host's expected-version check; an empty path restores discovery.
+The optional verified 1.0.61 folder picker fills the expected executable
+name but does not save, validate a version or grant execution. A configured
+path takes precedence over the non-executing PATH hint in the review only.
+
+Projects are explicit bookmarks (up to 32, exact path keys, max 1024 UTF-8
+bytes per stored record), not trusted grants. Fill the detected current VCS
+root or type an absolute path; save and remove only the bookmark. An ordinary
+Git metadata preview may suggest the literal origin from a bounded regular
+.git/config; includes and rewrites are not evaluated. Manual remote entry
+accepts only canonical GitHub/GitLab/Bitbucket repository locations, including
+standard git@ SSH spellings; credentials, arbitrary hosts/schemes, queries
+and fragments are refused. The explicit website button hands the canonical
+HTTPS URL to the default browser on a host-owned task. No API token, network
+sync, remote Git operation, custom executable launch or automatic trust.
+Check task result and reopen after drain if needed. Native direct navigation
+to a saved path and external desktop clients remain follow-up work.
+
+Validate persistence across restart, concurrent settings version conflicts,
+folder picker cancellation, stale selections, bookmark removal without
+filesystem modification, no execution on path save and safe browser launch.
+Real-host UI/ABI and picker acceptance remain required.

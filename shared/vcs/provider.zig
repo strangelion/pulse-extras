@@ -99,7 +99,8 @@ pub const Snapshot = struct {
     /// Human-readable detail for errors and partial states; never parsed.
     detail: Text = .{},
     /// Metadata preview hints only; none is executable approval.
-    preview_kinds: u8 = 0,
+    remote_web: Text = .{},
+    preview_kinds: u8 = 0;
     preview_tools: [3]?identity.Path = .{ null, null, null },
 
     pub fn previewIndex(kind: identity.Kind) ?usize {
@@ -121,6 +122,51 @@ pub const Snapshot = struct {
         return self.preview_tools[index];
     }
 };
+
+/// Convert only literal, public forge repository locations to a canonical
+/// HTTPS landing page. No credentials, ports, query, fragment, escaping,
+/// arbitrary schemes or arbitrary hosts. Not a claim of repository existence.
+pub fn repositoryWebUrl(input: []const u8) ?Text {
+    if (input.len == 0 or input.len > 512) return null;
+    const hosts = [_][]const u8{ "github.com", "gitlab.com", "bitbucket.org" };
+    for (hosts) |name| {
+        var prefix: [96]u8 = undefined;
+        var body: ?[]const u8 = null;
+        for ([_][]const u8{ "https://", "git@", "ssh://git@" }) |scheme| {
+            const separator = if (std.mem.eql(u8, scheme, "git@")) ":" else "/";
+            const start = std.fmt.bufPrint(&prefix, "{s}{s}{s}", .{ scheme, name, separator }) catch return null;
+            if (std.mem.startsWith(u8, input, start)) {
+                body = input[start.len..];
+                break;
+            }
+        }
+        var path = body orelse continue;
+        if (std.mem.endsWith(u8, path, ".git")) path = path[0 .. path.len - 4];
+        var components = std.mem.splitScalar(u8, path, '/');
+        var count: usize = 0;
+        while (components.next()) |component| {
+            if (component.len == 0 or component.len > 100 or component[0] == '.' or component[component.len - 1] == '.') return null;
+            for (component) |c| {
+                if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_' and c != '.') return null;
+            }
+            count += 1;
+        }
+        if (count != 2 and (!std.mem.eql(u8, name, "gitlab.com") or count < 2 or count > 8)) return null;
+        var buffer: [Text.capacity]u8 = undefined;
+        const url = std.fmt.bufPrint(&buffer, "https://{s}/{s}", .{ name, path }) catch return null;
+        return Text.init(url) catch null;
+    }
+    return null;
+}
+
+test "forge links reject credentials, redirects and non-repository paths" {
+    const good = repositoryWebUrl("git@github.com:owner/project.git") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(good.eql("https://github.com/owner/project"));
+    try std.testing.expect(repositoryWebUrl("https://gitlab.com/group/sub/project.git") != null);
+    for ([_][]const u8{ "https://github.com.evil.test/a/b", "https://user:token@github.com/a/b", "https://github.com/a/../b", "https://github.com/a/b?x=1", "https://github.com/a/b/issues", "file:///C:/test", "https://github.com/a/%2e%2e" }) |bad| {
+        try std.testing.expect(repositoryWebUrl(bad) == null);
+    }
+}
 
 pub const VTable = struct {
     /// Fills `out` with the workspaces this provider recognises at or above

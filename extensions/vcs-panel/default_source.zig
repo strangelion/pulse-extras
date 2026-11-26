@@ -644,6 +644,35 @@ fn suggestTools(snapshot: *contract.Snapshot) void {
     }
 }
 
+// Only a literal origin in a small regular .git/config. No include, URL
+// rewrite, config evaluation, worktree traversal or remote connection.
+fn previewOrigin(bytes: []const u8) ?contract.Text {
+    var origin = false;
+    var result: ?contract.Text = null;
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0 or line[0] == '#' or line[0] == ';') continue;
+        if (line[0] == '[') {
+            origin = std.ascii.eqlIgnoreCase(line, "[remote \"origin\"]");
+            continue;
+        }
+        if (!origin) continue;
+        const equals = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, line[0..equals], " \t"), "url")) continue;
+        if (result != null) return null;
+        result = contract.repositoryWebUrl(std.mem.trim(u8, line[equals + 1 ..], " \t")) orelse return null;
+    }
+    return result;
+}
+
+test "preview remote is a literal forge hint, never credentials" {
+    const remote = previewOrigin("[remote \"origin\"]\n url = git@github.com:owner/repo.git\n") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(remote.eql("https://github.com/owner/repo"));
+    try std.testing.expect(previewOrigin("[remote \"origin\"]\n url = https://token@github.com/owner/repo\n") == null);
+    try std.testing.expect(previewOrigin("[remote \"origin\"]\nurl = https://github.com/a/b\nurl = https://github.com/c/d\n") == null);
+}
+
 fn summarizePreview(user: *anyopaque, workspace: *const identity.Workspace) Error!contract.Snapshot {
     var found: detect.Result = .{};
     detectPreview(user, workspace.root.slice(), &found);
@@ -670,6 +699,15 @@ fn summarizePreview(user: *anyopaque, workspace: *const identity.Workspace) Erro
     const description = std.fmt.bufPrint(&detail, "Repository markers: {s}. Working-copy status not queried.", .{labels[0..used]}) catch return error.ResourceLimit;
     snapshot.detail = contract.Text.init(description) catch return error.Parse;
     suggestTools(&snapshot);
+    if (snapshot.previewHas(.git)) {
+        var path: [identity.max_path_bytes]u8 = undefined;
+        var bytes: [4096]u8 = undefined;
+        if (std.fmt.bufPrint(&path, "{s}\\.git\\config", .{workspace.root.slice()})) |config_path| {
+            if (evidence.readPreviewFile(config_path, &bytes)) |config| {
+                snapshot.remote_web = previewOrigin(config) orelse .{};
+            } else |_| {}
+        } else |_| {}
+    }
     if (workspace.kind == .git) {
         var path: [identity.max_path_bytes]u8 = undefined;
         const head_path = std.fmt.bufPrint(&path, "{s}\\.git\\HEAD", .{workspace.root.slice()}) catch return snapshot;

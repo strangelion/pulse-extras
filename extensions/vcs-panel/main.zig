@@ -13,11 +13,13 @@ const source = @import("vcs_native_source");
 const commands = @import("pulse_commands");
 const context = @import("pulse_context");
 const mount = @import("pulse_ui_mount");
+const settings_mod = @import("settings.zig");
 
 const allocator = std.heap.page_allocator;
 
 const Instance = struct {
     host: host_mod.Host,
+    settings: ?settings_mod.Settings = null,
     binding: ?host_query.Binding = null,
     session: ?approval.NativeSession = null,
     session_revoked: bool = false,
@@ -78,7 +80,34 @@ const Instance = struct {
         } else |err| diag.status("vcs-menu-mount-unavailable", @intFromError(err));
     }
 
+    fn openSettings(self: *Instance) void {
+        if (self.settings == null) self.settings = .{ .host = self.host, .user = self, .current = &currentProject, .updated = &settingsUpdated };
+        if (self.settings) |*settings| settings.open() catch |err| diag.status("vcs-settings-open", @intFromError(err));
+    }
+
+    fn settingsUpdated(user: *anyopaque, tools: settings_mod.Tools) void {
+        const self: *Instance = @ptrCast(@alignCast(user));
+        if (self.binding) |*binding| {
+            binding.configured_tools = tools;
+            binding.local_review = null;
+            if (binding.accepting) binding.render() catch |err| diag.status("vcs-settings-view", @intFromError(err));
+        }
+    }
+
+    fn currentProject(user: *anyopaque) ?settings_mod.Current {
+        const self: *Instance = @ptrCast(@alignCast(user));
+        const binding = if (self.binding) |*value| value else return null;
+        if (!binding.accepting) return null;
+        binding.navigation.refreshCurrent() catch return null;
+        binding.render() catch return null;
+        if (binding.navigation.pending or binding.controller.current.phase != .ready or binding.controller.current.stale) return null;
+        const workspace = binding.controller.current.workspace orelse return null;
+        const snapshot = binding.controller.current.snapshot orelse return null;
+        return .{ .root = workspace.root, .remote = snapshot.remote_web };
+    }
+
     fn start(self: *Instance) host_mod.Error!void {
+        self.openSettings();
         if (self.active) {
             if (self.binding) |*binding| {
                 if (binding.accepting) return;
@@ -89,6 +118,9 @@ const Instance = struct {
         self.binding = try host_query.Binding.init(try async_host.taskTable(self.host), .en);
         errdefer self.stop() catch |err| diag.status("vcs-rollback-failed", @intFromError(err));
         const binding = &self.binding.?;
+        if (self.settings) |*settings| {
+            if (settings.loaded) binding.configured_tools = settings.stored.tools;
+        }
         if (!self.session_revoked) {
             const input_value = source.acquire(allocator) catch |err| blk: {
                 if (comptime @hasDecl(source, "configurePreview")) {
@@ -188,6 +220,7 @@ fn activate(raw: ?*anyopaque) callconv(.c) abi.Status {
 
 fn deactivate(raw: ?*anyopaque) callconv(.c) void {
     const self: *Instance = @ptrCast(@alignCast(raw orelse return));
+    if (self.settings) |*settings| settings.close() catch |err| diag.status("vcs-settings-deactivate", @intFromError(err));
     self.stop() catch |err| {
         diag.status("vcs-deactivate-failed", @intFromError(err));
         return;
@@ -198,6 +231,7 @@ fn deactivate(raw: ?*anyopaque) callconv(.c) void {
 fn destroy(raw: ?*anyopaque) callconv(.c) void {
     const self: *Instance = @ptrCast(@alignCast(raw orelse return));
     self.menu_accepting = false;
+    if (self.settings) |*settings| settings.retireAtHostDestroy();
     if (self.menu_id != 0) {
         if (self.menu_table) |table| {
             table.unregister(self.menu_id) catch |err| {
@@ -247,6 +281,7 @@ export fn PulsePluginEntryV1(host_ptr: ?*const abi.HostV1, out_ptr: ?*abi.Plugin
     const self = allocator.create(Instance) catch return abi.error_initialization;
     self.* = .{ .host = validated };
     self.registerMenu();
+    self.openSettings();
     out.* = .{
         .size = @sizeOf(abi.PluginV1),
         .version = abi.abi_version,
