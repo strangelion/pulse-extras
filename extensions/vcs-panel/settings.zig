@@ -187,8 +187,13 @@ const Project = struct {
 
     fn encode(self: *const Project, buffer: []u8) ![]const u8 {
         return std.fmt.bufPrint(buffer, "v2\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{d}", .{
-            self.root.slice(), self.remote.slice(), self.name.slice(), self.tags.slice(),
-            if (self.favorite) "1" else "0", if (self.kind) |kind| @tagName(kind) else "-", self.opened_order,
+            self.root.slice(),
+            self.remote.slice(),
+            self.name.slice(),
+            self.tags.slice(),
+            if (self.favorite) "1" else "0",
+            if (self.kind) |kind| @tagName(kind) else "-",
+            self.opened_order,
         });
     }
 
@@ -386,7 +391,9 @@ const Content = struct {
                 abi.view(if (project.favorite) tr(lang, "Yes", "是") else ""),
                 abi.view(project.displayName()),
                 abi.view(if (project.kind) |kind| kind.displayName() else tr(lang, "Unknown", "未知")),
-                abi.view(project.root.slice()), abi.view(project.tags.slice()), abi.view(project.remote.slice()),
+                abi.view(project.root.slice()),
+                abi.view(project.tags.slice()),
+                abi.view(project.remote.slice()),
             };
             self.rows[i] = std.mem.zeroes(raw.PulseUiModelRow);
             self.rows[i].size = @sizeOf(raw.PulseUiModelRow);
@@ -476,6 +483,7 @@ pub const Settings = struct {
     route: project_route.Route = .{},
     route_key: ?[key_len]u8 = null,
     route_version: u64 = 0,
+    recency_write: bool = false,
     search: contract.Text = .{},
     project_page: usize = 0,
     edit_key: ?[key_len]u8 = null,
@@ -609,6 +617,8 @@ pub const Settings = struct {
         if (reply == null or reply.*.size < @sizeOf(raw.PulseResourcesReply) or self.pending == 0 or reply.*.request_id != self.pending) return;
         const operation = self.operation;
         const mask = self.sync_mask;
+        const recency = self.recency_write;
+        self.recency_write = false;
         self.sync_mask = 0;
         self.pending = 0;
         self.operation = 0;
@@ -623,7 +633,7 @@ pub const Settings = struct {
             // An edit draft is bound to the version from which it was loaded.
             // Do not silently rebase it over a concurrent change.
             if (mask & 8 != 0) self.edit_key = null;
-            self.status = if (operation == raw.PULSE_RESOURCES_SETTINGS_GET) .loaded else .saved;
+            self.status = if (operation == raw.PULSE_RESOURCES_SETTINGS_GET) .loaded else if (recency) .route_dispatched else .saved;
             self.updated(self.user, self.stored.tools, self.stored.locale.language());
             self.render();
             self.syncTools(mask);
@@ -824,7 +834,9 @@ pub const Settings = struct {
                 if (self.stored.find(&id)) |index| {
                     var item = self.stored.projects[index];
                     item.opened_order = self.stored.version + 1;
+                    self.recency_write = true;
                     self.saveRecord(&item) catch |err| diag.status("vcs-project-recency", @intFromError(err));
+                    if (self.pending == 0) self.recency_write = false;
                 }
             }
         }
@@ -984,6 +996,7 @@ pub const Settings = struct {
             host_mod.mapStatus(cancel(resources.context, self.pending)) catch |err| if (err != error.State) return err;
             self.pending = 0;
             self.operation = 0;
+            self.recency_write = false;
         }
         if (self.page != 0) {
             const pages = self.pages orelse return error.State;

@@ -26,6 +26,7 @@ pub const command_trust_jj = "vcs.trust.jj";
 pub const command_trust_svn = "vcs.trust.svn";
 pub const command_trust_confirm = "vcs.trust.confirm";
 pub const command_trust_cancel = "vcs.trust.cancel";
+pub const command_trust_reset = "vcs.trust.reset";
 pub const state_executable = "vcs.executable";
 
 pub const LocalReview = struct {
@@ -62,6 +63,7 @@ pub const View = struct {
     approval_required: bool = false,
     metadata_only: bool = false,
     local_setup: bool = false,
+    reset_configured: bool = false,
     local_review: ?LocalReview = null,
     setup_issue: ?SetupIssue = null,
     tool_version: contract.Text = .{},
@@ -230,7 +232,7 @@ pub const Content = struct {
     nodes: [capacity]ui.Node = undefined,
     len: usize = 0,
     root: ui.Node = undefined,
-    commands: [9]abi.StringView = undefined,
+    commands: [10]abi.StringView = undefined,
     states: [1]ui.State = undefined,
 
     fn add(self: *Content, id: []const u8, label: []const u8, value: []const u8) void {
@@ -282,7 +284,7 @@ pub const Content = struct {
             else
                 loc(lang, "External command access requires explicit approval.", "外部命令访问需要明确授权。"));
         } else if (view.local_setup and !view.approval_required) {
-            self.add("vcs.local-trust", "", loc(lang, "Trusted local session (not a sandbox). To change tool, provider or root, close and reopen VCS from the context menu.", "本次会话已信任（非沙箱）。若要更换工具、类型或仓库，请关闭后从右键菜单重新打开 VCS。"));
+            self.add("vcs.local-trust", "", if (view.reset_configured) loc(lang, "Trusted local session (not a sandbox). Change repository or provider only through a fresh review.", "本次会话已信任（非沙箱）。更换仓库或类型需重新确认。") else loc(lang, "Trusted local session (not a sandbox). Close and reopen to change repository or provider.", "本次会话已信任（非沙箱）。更换仓库或类型需关闭后重新打开。"));
         }
         if (view.approved_root) |root| self.add("vcs.approved-root", loc(lang, "Approved root: ", "授权根目录："), root.slice());
         if (!view.metadata_only and !view.approval_required and view.tool_version.slice().len != 0) self.add("vcs.tool-version", loc(lang, "Verified tool version: ", "已验证工具版本："), view.tool_version.slice());
@@ -383,14 +385,15 @@ pub const Content = struct {
     /// The owner still validates commands against current controller state.
     pub fn buildInteractive(self: *Content, lang: Language, view: *const View, tree: *ui.Tree) void {
         self.build(lang, view, tree);
-        self.commands = .{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check), abi.view(command_revoke), abi.view(command_trust_git), abi.view(command_trust_jj), abi.view(command_trust_svn), abi.view(command_trust_confirm), abi.view(command_trust_cancel) };
+        self.commands = .{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check), abi.view(command_revoke), abi.view(command_trust_git), abi.view(command_trust_jj), abi.view(command_trust_svn), abi.view(command_trust_confirm), abi.view(command_trust_cancel), abi.view(command_trust_reset) };
         tree.commands = &self.commands;
-        tree.command_count = if (view.local_setup) 9 else if (view.revocation_configured) 4 else 3;
+        tree.command_count = if (view.local_setup) 10 else if (view.revocation_configured) 4 else 3;
         if (view.local_setup) {
             self.states[0] = .{ .key = abi.view(state_executable), .value = abi.view("") };
             tree.states = &self.states;
             tree.state_count = self.states.len;
             self.addLocalSetup(lang, view);
+            if (view.reset_configured and (!view.metadata_only or view.approval_required)) self.addButton("vcs.action.trust-reset", loc(lang, "Choose repository / provider again", "重新选择仓库 / 版本控制类型"), command_trust_reset);
         }
         if (view.phase != .stopped) {
             if (!view.approval_required and (view.workspace != null or view.discovery_available)) {
@@ -565,7 +568,7 @@ test "local trust setup shows explicit review and never claims status without co
     const workspace = try identity.Workspace.init(.git, "C:\\repo", "C:\\repo");
     var view: View = .{ .phase = .ready, .workspace = workspace, .metadata_only = true, .local_setup = true, .snapshot = .{ .workspace = workspace, .availability = .not_queried, .preview_kinds = 3, .preview_tools = .{ try identity.Path.init("C:\\tools\\git.exe"), null, null } } };
     content.buildInteractive(.en, &view, &tree);
-    try std.testing.expectEqual(@as(u32, 9), tree.command_count);
+    try std.testing.expectEqual(@as(u32, 10), tree.command_count);
     try std.testing.expectEqual(@as(u32, 1), tree.state_count);
     try std.testing.expect(content.textFor("vcs.status-unavailable") != null);
     try std.testing.expect(content.textFor("vcs.review-warning") == null);

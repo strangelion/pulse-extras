@@ -349,3 +349,9 @@ physical-identity deduplication, provider/workspace cache isolation and separate
 persistent multi-root grants require remaining implementation/acceptance. No
 new automatic execution permission is inferred from a project record. P2A
 Windows SVN provisioning and actual installed acceptance remain independent gates.
+
+P2B follow-up: local-session reset after drain supports choosing another root
+or colocated provider without closing the panel. No implicit cross-root grant;
+strict persisted Git approval remains separate. The first project-library CI
+failed only at formatting; its exact correction and additional stale/reparse
+navigation tests are included in the follow-up candidate.

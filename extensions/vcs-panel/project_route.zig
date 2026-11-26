@@ -269,3 +269,33 @@ test "project navigation only opens an exact folder snapshot entry and drains" {
     Route.completed(&route, &reply);
     try std.testing.expectEqual(@as(usize, 1), mock.completed_calls);
 }
+
+test "project navigation refuses a reparse entry and a stale snapshot" {
+    var mock: Fixture = .{};
+    var route: Route = .{ .table = mock.table() };
+    const root = if (@import("builtin").os.tag == .windows) "C:\\work\\repo" else "/work/repo";
+    const parent = std.fs.path.dirname(root).?;
+    try route.begin(root, &mock, &Fixture.done);
+    var reply: raw.PulseDirectoryReply = .{ .size = @sizeOf(raw.PulseDirectoryReply), .status = abi.ok, .operation = raw.PULSE_DIRECTORY_OPEN, .request_id = 11, .directory_id = 21, .snapshot_id = 31, .total = 1, .path = abi.view(parent) };
+    Route.completed(&route, &reply);
+    const rows = [_]raw.PulseDirectoryRow{.{ .entry_id = 41, .name = abi.view("repo"), .flags = raw.PULSE_DIRECTORY_ENTRY_FOLDER | raw.PULSE_DIRECTORY_ENTRY_REPARSE }};
+    reply.operation = raw.PULSE_DIRECTORY_LIST;
+    reply.request_id = 12;
+    reply.rows = &rows;
+    reply.count = 1;
+    reply.next_offset = std.math.maxInt(u32);
+    Route.completed(&route, &reply);
+    try std.testing.expectEqual(@as(usize, 0), mock.entry_calls);
+    try std.testing.expect(!mock.success and !route.busy());
+    try route.begin(root, &mock, &Fixture.done);
+    reply.operation = raw.PULSE_DIRECTORY_OPEN;
+    reply.request_id = 11;
+    reply.snapshot_id = 31;
+    Route.completed(&route, &reply);
+    reply.operation = raw.PULSE_DIRECTORY_LIST;
+    reply.request_id = 12;
+    reply.snapshot_id = 32;
+    Route.completed(&route, &reply);
+    try std.testing.expectEqual(@as(usize, 0), mock.entry_calls);
+    try std.testing.expectEqual(@as(usize, 2), mock.closed);
+}

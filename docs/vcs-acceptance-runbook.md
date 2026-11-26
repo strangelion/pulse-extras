@@ -296,3 +296,10 @@ host accepts the action. Physical alias identity, independently protected
 persistent multi-root consent and per-provider cache remain pending; no stage
 completion claim. Actual installed UI, migration, navigation and lifecycle
 must be verified with the whole candidate package.
+
+Explicit local-session reset now offers a fresh repository/provider review in
+the same panel after tasks release. The old grant is revoked and local Runner,
+I/O and identity pins are retired before returning to non-executing preview.
+Busy reset refuses rather than silently racing a worker; cancel/Check then
+retry. The strict persisted Git grant remains separate. This is session
+switching, not persistent multi-root trust or a per-project cache.

@@ -419,11 +419,13 @@ pub const Binding = struct {
         authorize: *const fn (*anyopaque, *const panel.LocalReview) host_mod.Error!Resolver,
         revoke: *const fn (*anyopaque) host_mod.Error!void,
         finish: *const fn (*anyopaque) host_mod.Error!void,
+        reset: ?*const fn (*anyopaque) host_mod.Error!void = null,
     };
 
     controller: Controller,
     resolution: Resolution,
     resolver: ?Resolver = null,
+    preview_resolver: ?Resolver = null,
     wake: ?async_host.Wake = null,
     pumping: bool = false,
     navigation: Navigation = .{},
@@ -463,6 +465,7 @@ pub const Binding = struct {
     pub fn configureMetadataPreview(self: *Binding, resolver: Resolver) host_mod.Error!void {
         if (self.revocation != null or self.approved_root != null or self.model != null) return error.State;
         try self.configureResolver(resolver);
+        self.preview_resolver = resolver;
         self.metadata_only = true;
     }
 
@@ -521,6 +524,7 @@ pub const Binding = struct {
         current.approval_required = self.approval_locked;
         current.metadata_only = self.metadata_only;
         current.local_setup = self.local_ui;
+        current.reset_configured = if (self.local_access) |access| access.reset != null else false;
         current.tool_version = self.verified_version;
         if (current.snapshot) |*snapshot| {
             if (self.metadata_only) {
@@ -545,8 +549,8 @@ pub const Binding = struct {
             return error.State;
         }
         self.model = .{ .table = table, .id = id };
-        const commands = [_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check, panel.command_revoke, panel.command_trust_git, panel.command_trust_jj, panel.command_trust_svn, panel.command_trust_confirm, panel.command_trust_cancel };
-        for (commands[0..if (self.local_ui) @as(usize, 9) else if (self.revocation != null) @as(usize, 4) else 3]) |name| {
+        const commands = [_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check, panel.command_revoke, panel.command_trust_git, panel.command_trust_jj, panel.command_trust_svn, panel.command_trust_confirm, panel.command_trust_cancel, panel.command_trust_reset };
+        for (commands[0..if (self.local_ui) @as(usize, 10) else if (self.revocation != null) @as(usize, 4) else 3]) |name| {
             _ = self.model.?.subscribeCommand(name, &onCommand, self) catch |err| {
                 self.last_error = err;
                 // Close invalidates all subscriptions, including any partial
@@ -725,6 +729,35 @@ pub const Binding = struct {
         try self.retryResolution();
     }
 
+    /// Explicit session change, never automatic trust of a new directory.
+    /// Worker slots and provider pointers must be completely released first.
+    fn resetLocalSession(self: *Binding) host_mod.Error!void {
+        if (!self.accepting or !self.local_ui or self.persistent_revocation or (self.metadata_only and !self.approval_locked)) return error.Permission;
+        const access = self.local_access orelse return error.Unavailable;
+        const reset = access.reset orelse return error.Unavailable;
+        const preview = self.preview_resolver orelse return error.State;
+        try self.navigation.refreshCurrent();
+        try self.invalidateNavigation();
+        if (self.resolution.task.occupied() or self.controller.query.task.occupied() or self.controller.queued != null) return error.State;
+        // No old authorized work or result can survive this transition.
+        self.approval_locked = true;
+        self.verified_version = .{};
+        self.local_review = null;
+        self.navigation.pending = false;
+        try access.revoke(access.ctx);
+        try self.controller.clear();
+        try reset(access.ctx);
+        self.revocation = null;
+        self.revocation_failed = false;
+        self.approved_root = null;
+        self.resolver = preview;
+        self.metadata_only = true;
+        self.approval_locked = false;
+        if (self.navigation.latest) |latest| {
+            if (latest.directory() != null) try self.retryResolution();
+        }
+    }
+
     fn localCommand(self: *Binding, name: []const u8) bool {
         if (!self.local_ui) return false;
         self.setup_issue = null;
@@ -740,6 +773,11 @@ pub const Binding = struct {
             };
         } else if (std.mem.eql(u8, name, panel.command_trust_cancel)) {
             self.local_review = null;
+        } else if (std.mem.eql(u8, name, panel.command_trust_reset)) {
+            self.resetLocalSession() catch |err| {
+                self.last_error = err;
+                self.setup_issue = if (err == error.State) .busy else .denied;
+            };
         } else return false;
         self.render() catch |err| {
             self.last_error = err;
@@ -964,6 +1002,7 @@ pub const Binding = struct {
         current.approval_required = self.approval_locked;
         current.metadata_only = self.metadata_only;
         current.local_setup = self.local_ui;
+        current.reset_configured = if (self.local_access) |access| access.reset != null else false;
         current.tool_version = self.verified_version;
         if (current.snapshot) |*snapshot| {
             if (self.metadata_only) {
@@ -1053,6 +1092,7 @@ pub const Binding = struct {
         self.model = null;
         self.poisoned = false;
         self.resolver = null;
+        self.preview_resolver = null;
         self.revocation = null;
         self.navigation_generation = null;
         self.resolution.stopped = true;
@@ -1349,7 +1389,7 @@ const MockUi = struct {
         const self: *MockUi = @ptrCast(@alignCast(user orelse return abi.error_argument));
         if (id != 7 or callback == null or data == null) return abi.error_argument;
         const name = abi.slice(command) orelse return abi.error_argument;
-        const local = self.commands_expected == 9 and (panel.trustKind(name) != null or std.mem.eql(u8, name, panel.command_trust_confirm) or std.mem.eql(u8, name, panel.command_trust_cancel));
+        const local = self.commands_expected == 10 and (panel.trustKind(name) != null or std.mem.eql(u8, name, panel.command_trust_confirm) or std.mem.eql(u8, name, panel.command_trust_cancel) or std.mem.eql(u8, name, panel.command_trust_reset));
         if (panel.parseCommand(name) == null and !(self.commands_expected >= 4 and std.mem.eql(u8, name, panel.command_revoke)) and !local) return abi.error_argument;
         self.subscriptions += 1;
         if (self.subscriptions == self.fail_subscribe_at) return abi.error_permission;
@@ -1390,7 +1430,7 @@ const MockUi = struct {
             .create = &create,
             .update = &update,
             .subscribe_command = &subscribe,
-            .get_state = if (self.commands_expected == 9) &getState else null,
+            .get_state = if (self.commands_expected == 10) &getState else null,
             .unsubscribe = &unsubscribe,
             .close = &close,
         };
@@ -1989,6 +2029,7 @@ const LocalAccessFixture = struct {
     authorized: usize = 0,
     revoked: usize = 0,
     finished: usize = 0,
+    resets: usize = 0,
 
     fn authorize(user: *anyopaque, review: *const panel.LocalReview) host_mod.Error!Resolver {
         const self: *LocalAccessFixture = @ptrCast(@alignCast(user));
@@ -2002,6 +2043,11 @@ const LocalAccessFixture = struct {
         self.revoked += 1;
     }
 
+    fn reset(user: *anyopaque) host_mod.Error!void {
+        const self: *LocalAccessFixture = @ptrCast(@alignCast(user));
+        self.resets += 1;
+    }
+
     fn finish(user: *anyopaque) host_mod.Error!void {
         const self: *LocalAccessFixture = @ptrCast(@alignCast(user));
         self.finished += 1;
@@ -2013,14 +2059,14 @@ test "local consent is two step, navigation bound, and released only after drain
     var preview: MockResolver = .{ .host_task = &mock };
     var trusted: MockResolver = .{ .host_task = &mock };
     var access: LocalAccessFixture = .{ .resolver = &trusted };
-    var model: MockUi = .{ .commands_expected = 9 };
+    var model: MockUi = .{ .commands_expected = 10 };
     var navigation: MockNavigation = .{};
     var binding = try Binding.init(mock.table(), .en);
     try binding.configureMetadataPreview(preview.resolver());
-    try binding.configureLocalAccess(.{ .ctx = &access, .authorize = &LocalAccessFixture.authorize, .revoke = &LocalAccessFixture.revoke, .finish = &LocalAccessFixture.finish });
+    try binding.configureLocalAccess(.{ .ctx = &access, .authorize = &LocalAccessFixture.authorize, .revoke = &LocalAccessFixture.revoke, .finish = &LocalAccessFixture.finish, .reset = &LocalAccessFixture.reset });
     try binding.openWithTable(model.table());
     try binding.openNavigationWithTable(navigation.table());
-    try std.testing.expectEqual(@as(usize, 9), model.subscriptions);
+    try std.testing.expectEqual(@as(usize, 10), model.subscriptions);
     try binding.pump();
     mock.runWork();
     try binding.pump();
@@ -2075,6 +2121,15 @@ test "local consent is two step, navigation bound, and released only after drain
     model.click(7, panel.command_revoke);
     try std.testing.expectEqual(@as(usize, 1), access.revoked);
     try std.testing.expect(binding.approval_locked);
+    model.click(7, panel.command_trust_reset);
+    try std.testing.expectEqual(@as(usize, 1), access.resets);
+    try std.testing.expect(binding.metadata_only and !binding.approval_locked and binding.approved_root == null);
+    mock.runWork();
+    try binding.pump();
+    mock.runWork();
+    try binding.pump();
+    try std.testing.expectEqual(@as(usize, 1), access.authorized);
+    try std.testing.expectEqual(@as(usize, 1), trusted.calls);
     try binding.requestStop();
     try binding.finishLocalAccess();
     try binding.finishLocalAccess();

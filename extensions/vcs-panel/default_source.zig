@@ -313,7 +313,7 @@ pub fn configurePreview(binding: *host_query.Binding) host.Error!void {
         local.environment.deinit();
         allocator.destroy(local);
     }
-    try binding.configureLocalAccess(.{ .ctx = local, .authorize = &LocalSession.authorize, .revoke = &LocalSession.revoke, .finish = &LocalSession.finish });
+    try binding.configureLocalAccess(.{ .ctx = local, .authorize = &LocalSession.authorize, .revoke = &LocalSession.revoke, .finish = &LocalSession.finish, .reset = &LocalSession.reset });
 }
 
 // Separate, opt-in local trust model. This is not the restricted auditor,
@@ -371,8 +371,8 @@ const LocalSession = struct {
         self.revoked.store(true, .release);
     }
 
-    fn finish(user: *anyopaque) host.Error!void {
-        const self: *LocalSession = @ptrCast(@alignCast(user));
+    // Called only after both host-owned worker slots have been released.
+    fn releaseResources(self: *LocalSession) host.Error!void {
         self.revoked.store(true, .release);
         if (self.runner) |*runner| {
             runner.requestStop();
@@ -380,7 +380,19 @@ const LocalSession = struct {
             self.runner = null;
         }
         if (self.io) |*threaded| threaded.deinit();
+        self.io = null;
         self.environment.deinit();
+    }
+
+    fn reset(user: *anyopaque) host.Error!void {
+        const self: *LocalSession = @ptrCast(@alignCast(user));
+        try self.releaseResources();
+        self.* = .{ .environment = std.process.Environ.Map.init(allocator) };
+    }
+
+    fn finish(user: *anyopaque) host.Error!void {
+        const self: *LocalSession = @ptrCast(@alignCast(user));
+        try self.releaseResources();
         allocator.destroy(self);
     }
 
