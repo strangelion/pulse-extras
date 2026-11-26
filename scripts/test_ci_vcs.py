@@ -1,12 +1,14 @@
 """Regression tests for CI tool version validation; no network needed."""
 import io
+import hashlib
+from zipfile import ZipFile
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
-from ci_vcs import download_archive, valid_jj_version
+from ci_vcs import download_archive, download_svn_archive, extract_named_zip_member, valid_jj_version
 
 
 class JjVersionTests(unittest.TestCase):
@@ -78,6 +80,40 @@ class JjDownloadTests(unittest.TestCase):
         download_archive(self.url, self.archive)
         self.assertEqual(self.archive.read_bytes(), b"complete")
         self.assertEqual(urlopen.call_count, 2)
+
+
+class SvnArchiveTests(unittest.TestCase):
+    def test_extracts_only_named_member(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "source.zip"
+            with ZipFile(archive, "w") as z:
+                z.writestr("tools/vendor.zip", b"expected")
+                z.writestr("../outside.txt", b"not extracted")
+            target = root / "vendor.zip"
+            extract_named_zip_member(archive, "tools/vendor.zip", target)
+            self.assertEqual(target.read_bytes(), b"expected")
+            self.assertFalse((root.parent / "outside.txt").exists())
+            with self.assertRaises(SystemExit):
+                extract_named_zip_member(archive, "missing", root / "missing")
+
+    def test_pinned_inner_digest_is_required(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            name = "vendor"
+
+            def download(_, target):
+                with ZipFile(target, "w") as z:
+                    z.writestr("tools/vendor.zip", b"vendor bytes")
+                    z.writestr("tools/chocolateyInstall.ps1", b"never execute")
+
+            with patch("ci_vcs.download_archive", side_effect=download):
+                with patch("ci_vcs.SVN_ARCHIVE_SHA256", hashlib.sha256(b"vendor bytes").hexdigest()):
+                    self.assertEqual(download_svn_archive(root, name).read_bytes(), b"vendor bytes")
+                (root / "vendor.zip").unlink()
+                with patch("ci_vcs.SVN_ARCHIVE_SHA256", "0" * 64):
+                    with self.assertRaises(SystemExit):
+                        download_svn_archive(root, name)
 
 
 if __name__ == "__main__":

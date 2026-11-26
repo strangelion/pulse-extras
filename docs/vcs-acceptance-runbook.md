@@ -269,3 +269,11 @@ existing 1.0.0 preview is unchanged. No exact-file picker ABI was available in
 the pinned public SDK, so the verified folder picker plus manual absolute path
 remains the supported route. Check result remains a deliberate fallback when
 the dispatch wake precedes host task terminal publication.
+
+Windows SVN provisioning correction: run 45848217684 failed before the tests
+because the vendor download returned HTTP 403. The versioned Chocolatey
+package contains the vendor ZIP; extract that exact member, verify the
+published inner SHA-256 (corrected transcription), and execute only the
+verified vendor MSI's administrative extraction. Never run the community
+install script. The new mandatory Windows lane remains unverified until
+its actual result; Ubuntu and Companion lanes passed the earlier run.

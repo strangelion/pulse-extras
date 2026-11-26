@@ -83,7 +83,31 @@ def install_jj():
 # independently recorded SHA-256:
 # https://community.chocolatey.org/packages/sliksvn/1.14.5 (VERIFICATION.txt)
 SVN_VERSION = "1.14.5"
-SVN_ARCHIVE_SHA256 = "77d4fe02999da3bdc3a20e86243ae6ede99aaf072b4c12b0cdedb54d88e954a"
+SVN_ARCHIVE_SHA256 = "77d4fe02999dda3bdc3a20e86243ae6ede99aaf072b4c12b0cdedb54d88e954a"
+
+
+def extract_named_zip_member(source: Path, member: str, target: Path) -> None:
+    """Only extract the exact bounded member; never run NuGet package scripts."""
+    with ZipFile(source) as z:
+        matches = [item for item in z.infolist() if item.filename == member]
+        if len(matches) != 1 or matches[0].is_dir() or not 0 < matches[0].file_size <= 128 * 1024 * 1024:
+            raise SystemExit("Unexpected SVN archive member")
+        with z.open(matches[0]) as src, target.open("xb") as out:
+            shutil.copyfileobj(src, out)
+
+
+def download_svn_archive(root: Path, name: str) -> Path:
+    archive = root / f"{name}.zip"
+    # The vendor rejected the hosted runner with HTTP 403. Chocolatey's
+    # versioned package embeds the original vendor ZIP, whose independently
+    # documented SHA-256 is checked before any extraction or execution.
+    package = root / f"sliksvn.{SVN_VERSION}.nupkg"
+    download_archive(f"https://community.chocolatey.org/api/v2/package/sliksvn/{SVN_VERSION}", package)
+    extract_named_zip_member(package, f"tools/{name}.zip", archive)
+    with archive.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != SVN_ARCHIVE_SHA256:
+            raise SystemExit("SVN archive checksum mismatch")
+    return archive
 
 
 def install_windows_svn():
@@ -91,19 +115,9 @@ def install_windows_svn():
         raise SystemExit("Windows SVN provisioning must run on Windows")
     root = Path(tempfile.mkdtemp(prefix="pulse-svn-tools-", dir=os.environ["RUNNER_TEMP"]))
     name = f"Slik-Subversion-{SVN_VERSION}-x64"
-    archive = root / f"{name}.zip"
-    download_archive(f"https://sliksvn.com/pub/{name}.zip", archive)
-    with archive.open("rb") as stream:
-        if hashlib.file_digest(stream, "sha256").hexdigest() != SVN_ARCHIVE_SHA256:
-            raise SystemExit("SVN archive checksum mismatch")
-    # Do not unpack unneeded files or execute a community installation script.
+    archive = download_svn_archive(root, name)
     msi = root / f"{name}.msi"
-    with ZipFile(archive) as z:
-        matches = [item for item in z.infolist() if item.filename == msi.name]
-        if len(matches) != 1 or not 0 < matches[0].file_size <= 128 * 1024 * 1024:
-            raise SystemExit("Unexpected SVN installer archive")
-        with z.open(matches[0]) as src, msi.open("xb") as out:
-            shutil.copyfileobj(src, out)
+    extract_named_zip_member(archive, msi.name, msi)
     target = root / "installed"
     # Administrative extraction only into the ephemeral runner's private
     # directory. No PATH or registry mutation by a third-party package script.

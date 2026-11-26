@@ -257,3 +257,11 @@ Native settings fixtures exercise optimistic version conflicts, exact path
 precedence, stale picker completion, draft preservation and render failure.
 Installed Pulse acceptance is still separate. No production SDK or CLI is
 bundled by this fixture.
+
+Windows SVN provisioning correction: run 45848217684 failed before the tests
+because the vendor download returned HTTP 403. The versioned Chocolatey
+package contains the vendor ZIP; extract that exact member, verify the
+published inner SHA-256 (corrected transcription), and execute only the
+verified vendor MSI's administrative extraction. Never run the community
+install script. The new mandatory Windows lane remains unverified until
+its actual result; Ubuntu and Companion lanes passed the earlier run.
