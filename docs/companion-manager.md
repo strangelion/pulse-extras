@@ -425,3 +425,19 @@ helper admission fixture with synthetic V2 header (no third-party art
 committed). User also confirmed persistent session popup removed and
 builtin launch works; full teardown and actual market install/launch
 remain to be tested. The preceding Windows/Ubuntu/IPC/desktop gate passed.
+
+### D2 local ZIP and transaction failure separation
+
+Smoke-11: metadata no longer rejected; stage 8 MarketCleanupFailed.
+User saw inventory.pci updated, an existing market-work directory, and
+no pending/final asset directory. Folder import also failed. Exact
+transaction cause unconfirmed: persist the original coordinator fault,
+error and reserved ID separately from temporary stage/transfer cleanup.
+Keep private transaction failures distinct from successful scratch deletion;
+stop batch on an ambiguous transaction. Never delete pending/final assets.
+Local ZIP import now accepts a typed absolute path or selected ZIP context,
+uses the existing strict bounded ZIP extraction in local-import-work,
+then invokes the same approved helper and inventory transaction. The folder
+picker is retained; ZIP path entry is supported even without a file picker.
+Source ZIP is borrowed read-only. Existing residual scratch is not adopted
+or recursively deleted. Real Windows install and local ZIP require retest.

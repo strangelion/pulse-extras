@@ -1371,6 +1371,29 @@ fn reportTask(context: [*c]const raw.PulseTaskContext, message: []const u8, step
 
 // Report only a bounded Zig error name, never downloaded paths, URLs,
 // user query text or arbitrary helper stderr. Keep the existing step.
+fn logImportReport(report: library.ImportReport) void {
+    if (report.fault) |fault| {
+        diag.event("companion-import-fault");
+        diag.event(@tagName(fault));
+    }
+    if (report.recovery_id) |id| diag.status("companion-import-recovery-id", id);
+    if (report.committed) |result| {
+        const id = switch (result) {
+            .existing => |value| value,
+            .imported => |value| value,
+        };
+        diag.status("companion-import-committed-id", id);
+    }
+    if (report.cause) |err| {
+        diag.event("companion-import-cause");
+        diag.event(@errorName(err));
+    }
+    if (report.cleanup) |err| {
+        diag.event("companion-import-cleanup");
+        diag.event(@errorName(err));
+    }
+}
+
 fn reportMarketFailure(context: [*c]const raw.PulseTaskContext, err: anyerror) void {
     diag.event("companion-market-error");
     diag.event(@errorName(err));
@@ -1510,6 +1533,18 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
         library.marketDefault(config.runtime_sha256, config.helper_sha256, request, &instance.market_outcome, &instance.market_progress, cancel) catch |err| {
             diag.status("companion-market-failed-task", context[0].id);
             diag.status("companion-market-failed-stage", @backingInt(instance.market_progress.scan.getStage()));
+            logImportReport(instance.market_outcome.import_report);
+            if (request.* == .install and instance.market_outcome.installed == null) {
+                instance.market_outcome.installed = instance.market_outcome.import_report.committed;
+            }
+            if (instance.market_outcome.stage_cleanup) |failure| {
+                diag.event("companion-market-stage-cleanup");
+                diag.event(@errorName(failure));
+            }
+            if (instance.market_outcome.transfer_cleanup) |failure| {
+                diag.event("companion-market-transfer-cleanup");
+                diag.event(@errorName(failure));
+            }
             if (watch.timed_out and err == error.Canceled) {
                 instance.work_error = error.MarketSearchTimeout;
                 reportMarketFailure(context, error.MarketSearchTimeout);
@@ -1562,9 +1597,13 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
         };
     }
     if (instance.import_request) |*request| {
-        instance.import_result = library.importDefault(config.runtime_sha256, config.helper_sha256, request, .{ .callback = canceled, .context = context[0].context }) catch |err| {
+        var report: library.ImportReport = .{};
+        instance.import_result = library.importDefaultReported(config.runtime_sha256, config.helper_sha256, request, .{ .callback = canceled, .context = context[0].context }, &report) catch |err| {
+            logImportReport(report);
+            instance.import_result = report.committed;
             if (err == error.Canceled) return raw.PULSE_TASK_CANCELLED;
             instance.work_error = err;
+            reportMarketFailure(context, err);
             return raw.PULSE_TASK_FAILED;
         };
     }
@@ -2374,7 +2413,8 @@ const Selection = struct {
         if (path.len < 4 or path.len > self.path.len or !std.ascii.isAlphabetic(path[0]) or path[1] != ':' or path[2] != '\\' or !std.unicode.utf8ValidateSlice(path) or std.mem.indexOfAny(u8, path, "\x00\r\n") != null) return;
         @memcpy(self.path[0..path.len], path);
         self.len = path.len;
-        const leaf = if (std.mem.lastIndexOfScalar(u8, path, '\\')) |last| path[last + 1 ..] else path;
+        const name = if (std.mem.lastIndexOfScalar(u8, path, '\\')) |last| path[last + 1 ..] else path;
+        const leaf = if (library.isArchivePath(name)) name[0 .. name.len - 4] else name;
         if (library.validSourceId(leaf)) {
             @memcpy(self.id[0..leaf.len], leaf);
             self.id_len = leaf.len;
@@ -2385,8 +2425,12 @@ const Selection = struct {
         const self: *Selection = @ptrCast(@alignCast(user orelse return));
         if (snapshot == null or snapshot[0].size < @sizeOf(raw.PulseContextSelectionSnapshot) or snapshot[0].entry_count != 1 or snapshot[0].entries == null) return;
         const entry = &snapshot[0].entries[0];
-        if (entry.size < @sizeOf(raw.PulseContextSelectionEntry) or (entry.flags & raw.PULSE_CONTEXT_ENTRY_DIRECTORY) == 0) return;
+        if (entry.size < @sizeOf(raw.PulseContextSelectionEntry)) return;
         const path = abi.slice(entry.path) orelse return;
+        if ((entry.flags & raw.PULSE_CONTEXT_ENTRY_DIRECTORY) == 0) {
+            if (library.isArchivePath(path)) self.fromPath(path);
+            return;
+        }
         if (path.len < 4 or path.len > self.path.len or !std.unicode.utf8ValidateSlice(path) or std.mem.indexOfScalar(u8, path, 0) != null) return;
         @memcpy(self.path[0..path.len], path);
         self.len = path.len;
@@ -2429,7 +2473,7 @@ fn importClosed(user: ?*anyopaque, dialog: u64, status: abi.Status, button: abi.
         if (std.mem.eql(u8, key, "import.path") and path == null) path = abi.slice(state.value) else if (std.mem.eql(u8, key, "import.id") and id == null) id = abi.slice(state.value);
     }
     instance.import_request = library.ImportRequest.init(path orelse "", id orelse "") catch {
-        instance.library_status = "请输入本地绝对目录及 pet.json 中的有效素材 ID";
+        instance.library_status = "请输入本地绝对目录或 ZIP 路径及 pet.json 中的有效素材 ID";
         refresh(instance);
         return;
     };
@@ -2563,7 +2607,7 @@ fn showImportWithSelection(instance: *Instance, selection: *const Selection) voi
     if (!instance.active or instance.section != .library or instance.task_id != 0 or runtimeBusy(instance) or instance.import_dialog != 0 or instance.picker_request != 0) return;
     const dialogs = instance.dialogs orelse return;
     const embedded_picker = instance.dialog_v2_table != null and instance.picker_api != null and !instance.dialog_picker_disabled;
-    var fields = [_]ui.Node{ inputField("import.path", "素材文件夹", "本地绝对路径，例如 C:\\Pets\\cat"), inputField("import.id", "来源 ID", "pet.json 中的 id"), ui.node(ui.NodeKind.button) };
+    var fields = [_]ui.Node{ inputField("import.path", "素材文件夹或 ZIP", "本地绝对路径，例如 C:\\Pets\\cat.zip"), inputField("import.id", "来源 ID", "pet.json 中的 id"), ui.node(ui.NodeKind.button) };
     var root = ui.node(ui.NodeKind.stack);
     root.id = abi.view("import.form");
     root.gap = .{ .present = 1, .value = 8 };
@@ -2590,7 +2634,7 @@ fn showImportWithSelection(instance: *Instance, selection: *const Selection) voi
     const request: raw.PulseDialogRequest = .{
         .size = @sizeOf(raw.PulseDialogRequest),
         .title = abi.view("导入 OpenPets 素材"),
-        .message = abi.view("选择含 pet.json 的文件夹，确认来源 ID。仅复制到私有素材库，不修改源文件。"),
+        .message = abi.view("选择含 pet.json 的文件夹，或填写 ZIP 路径。确认来源 ID；仅复制至私有库，不修改源文件。"),
         .width = 560,
         .height = 160,
         .default_button = 0,

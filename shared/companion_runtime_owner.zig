@@ -229,9 +229,17 @@ pub const Owner = struct {
     // Exclusive create: interrupted work stays on disk and blocks future
     // operations; never adopt or recursively remove a preexisting directory.
     pub fn createMarketWork(self: *Owner) ![:0]const u16 {
-        if (!self.market_lease_opened or self.market_work_handle != invalid) return error.OwnerUnavailable;
-        const root = std.mem.sliceTo(&self.market_lease.path, 0);
-        const tail = std.unicode.wtf8ToWtf16LeStringLiteral("\\market-work");
+        if (!self.market_lease_opened) return error.OwnerUnavailable;
+        return self.createWork(std.mem.sliceTo(&self.market_lease.path, 0), std.unicode.wtf8ToWtf16LeStringLiteral("\\market-work"));
+    }
+
+    pub fn createLocalImportWork(self: *Owner) ![:0]const u16 {
+        if (!self.lease_opened or self.market_lease_opened or self.store_faulted) return error.OwnerUnavailable;
+        return self.createWork(std.mem.sliceTo(&self.lease.path, 0), std.unicode.wtf8ToWtf16LeStringLiteral("\\local-import-work"));
+    }
+
+    fn createWork(self: *Owner, root: []const u16, tail: []const u16) ![:0]const u16 {
+        if (self.market_work_handle != invalid) return error.OwnerUnavailable;
         const len = root.len + tail.len;
         if (len >= self.market_work_path.len) return error.InvalidRoot;
         @memcpy(self.market_work_path[0..root.len], root);

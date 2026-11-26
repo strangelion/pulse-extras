@@ -299,6 +299,17 @@ pub const ImportRequest = struct {
 };
 
 pub const validSourceId = inventory.validSource;
+pub const ImportReport = local_import.Report;
+
+pub fn isArchivePath(path: []const u8) bool {
+    return path.len >= 4 and std.ascii.eqlIgnoreCase(path[path.len - 4 ..], ".zip");
+}
+
+test "local archive suffix is case insensitive and does not match directory names without suffix" {
+    try std.testing.expect(isArchivePath("C:\\Pets\\cat.ZIP"));
+    try std.testing.expect(!isArchivePath("C:\\Pets\\cat.zip.exe"));
+    try std.testing.expect(!isArchivePath("C:\\Pets\\cat"));
+}
 
 pub const PickedFolder = struct {
     path: [4096]u8 = undefined,
@@ -367,6 +378,12 @@ test "picker output is bounded and distinguishes cancellation" {
 }
 
 pub fn importDefault(runtime_hex: []const u8, helper_hex: []const u8, request: *const ImportRequest, cancel: ImportCancel) !ImportResult {
+    var report: ImportReport = .{};
+    return importDefaultReported(runtime_hex, helper_hex, request, cancel, &report);
+}
+
+pub fn importDefaultReported(runtime_hex: []const u8, helper_hex: []const u8, request: *const ImportRequest, cancel: ImportCancel, report: *ImportReport) !ImportResult {
+    report.* = .{};
     if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
     const digest = try parseDigest(runtime_hex);
     const helper_digest = try parseDigest(helper_hex);
@@ -386,7 +403,12 @@ pub fn importDefault(runtime_hex: []const u8, helper_hex: []const u8, request: *
     const outcome = blk: {
         owner.open(root, digest, 1, 128 * 1024 * 1024) catch |err| break :blk @as(anyerror!ImportResult, err);
         const private = openPrivateDefault(owner) catch |err| break :blk @as(anyerror!ImportResult, err);
-        break :blk local_import.runControlled(threaded.io(), owner, private, exe[0..len :0], helper_digest, request.source[0..request.source_len], request.source_id[0..request.id_len], cancel);
+        const source = request.source[0..request.source_len];
+        const source_id = request.source_id[0..request.id_len];
+        break :blk if (isArchivePath(source))
+            local_import.runArchive(threaded.io(), owner, private, exe[0..len :0], helper_digest, source, source_id, cancel, report)
+        else
+            local_import.runReported(threaded.io(), owner, private, exe[0..len :0], helper_digest, source, source_id, cancel, report);
     };
     owner.close() catch return error.CleanupFailed;
     std.heap.page_allocator.destroy(owner);

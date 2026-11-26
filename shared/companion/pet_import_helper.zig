@@ -70,6 +70,10 @@ pub fn parseDetail(output: []const u8) !Detail {
 fn rejection(stderr: []const u8) anyerror {
     const reasons = [_]struct { marker: []const u8, reason: anyerror }{
         .{ .marker = "Package import failed at stage-verification (pending directory retained).", .reason = error.PackageStageVerificationFailed },
+        .{ .marker = "Package stage: root normalization failed.", .reason = error.PackageStageRootInvalid },
+        .{ .marker = "Package stage: root pin failed.", .reason = error.PackageStageRootPinFailed },
+        .{ .marker = "Package stage: final path occupied or inaccessible.", .reason = error.PackageStageFinalPathBlocked },
+        .{ .marker = "Package stage: pending directory creation failed.", .reason = error.PackageStagePendingCreateFailed },
         .{ .marker = "Package import failed at stage-copy (pending directory may remain).", .reason = error.PackageStageCopyFailed },
         .{ .marker = "Package import failed at stage-publish (Win32 ", .reason = error.PackageStagePublishFailed },
         .{ .marker = "Package path: expected a bounded local DOS directory.", .reason = error.PackagePathInvalid },
@@ -199,6 +203,8 @@ test "detail protocol accepts bounded Unicode and rejects unsafe fields" {
 test "helper rejection diagnostics preserve known stages and never forward raw stderr" {
     try std.testing.expectEqual(error.PackageMetadataInvalid, rejection("Package admission failed at metadata-parse.\r\nClassic package rejected: metadata, path, inventory or WebP header.\n"));
     try std.testing.expectEqual(error.PackageAtlasHeaderInvalid, rejection("Package admission failed at base-header.\n"));
+    try std.testing.expectEqual(error.PackageStageRootPinFailed, rejection("Package stage: root pin failed.\nPackage import failed at stage-copy (pending directory may remain).\n"));
+    try std.testing.expectEqual(error.PackageStagePendingCreateFailed, rejection("Package stage: pending directory creation failed.\nPackage import failed at stage-copy (pending directory may remain).\n"));
     try std.testing.expectEqual(error.PackageStageVerificationFailed, rejection("Package admission failed at metadata-open.\nPackage import failed at stage-verification (pending directory retained).\n"));
     try std.testing.expectEqual(error.PackageStagePublishFailed, rejection("Package import failed at stage-publish (Win32 5; pending directory retained).\n"));
     try std.testing.expectEqual(error.PackageRejected, rejection("arbitrary private path or unsupported output"));

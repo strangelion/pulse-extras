@@ -386,20 +386,34 @@ BOOL pet_package_stage(const pet_memory *memory, const pet_package *package,
     }
     wchar_t full[1020], root[1024] = L"\\\\?\\";
     DWORD n = GetFullPathNameW(asset_root, 1020, full, NULL);
-    if (n < 4 || n >= 960 || full[1] != L':' || full[2] != L'\\') return FALSE;
+    if (n < 4 || n >= 960 || full[1] != L':' || full[2] != L'\\') {
+        fputs("Package stage: root normalization failed.\n", stderr);
+        return FALSE;
+    }
     n = GetLongPathNameW(full, root + 4, 1020);
-    if (n < 4 || n >= 900 || root[n + 3] == L'\\') return FALSE;
+    if (n < 4 || n >= 900 || root[n + 3] == L'\\') {
+        fputs("Package stage: root normalization failed.\n", stderr);
+        return FALSE;
+    }
     /* The private destination parent must allow directory mutations during
      * publication, unlike immutable source package files. Still deny delete
      * sharing on the parent itself. Caller controls the directory ACL. */
     *root_pin = package_handle_shared(memory, root, TRUE, FILE_SHARE_READ | FILE_SHARE_WRITE);
-    if (!*root_pin) return FALSE;
+    if (!*root_pin) {
+        fputs("Package stage: root pin failed.\n", stderr);
+        return FALSE;
+    }
     int a = swprintf(stage, 1024, L"%ls\\pet-%ls.pending", root + 4, id_hex);
     int b = swprintf(final, 1024, L"%ls\\pet-%ls", root + 4, id_hex);
     if (a <= 0 || a >= 1024 || b <= 0 || b >= 1024) return FALSE;
-    if (GetFileAttributesW(final) != INVALID_FILE_ATTRIBUTES || GetLastError() != ERROR_FILE_NOT_FOUND)
+    if (GetFileAttributesW(final) != INVALID_FILE_ATTRIBUTES || GetLastError() != ERROR_FILE_NOT_FOUND) {
+        fputs("Package stage: final path occupied or inaccessible.\n", stderr);
         return FALSE;
-    if (!CreateDirectoryW(stage, NULL)) return FALSE;
+    }
+    if (!CreateDirectoryW(stage, NULL)) {
+        fputs("Package stage: pending directory creation failed.\n", stderr);
+        return FALSE;
+    }
     wchar_t dest[1024], folder[1024], leaf[80];
     if (!join_path(dest, 1024, stage, L"pet.json") ||
         !stage_copy(memory, package->metadata, dest, 128u * 1024u) ||

@@ -8,6 +8,15 @@ const importing = @import("companion/pet_import.zig");
 const helper_mod = @import("companion/pet_import_helper.zig");
 const inventory = @import("companion/pet_inventory.zig");
 const process = @import("pulse_process");
+const zip = @import("companion/pet_zip.zig");
+
+pub const Report = struct {
+    fault: ?importing.Fault = null,
+    cause: ?anyerror = null,
+    recovery_id: ?u64 = null,
+    cleanup: ?anyerror = null,
+    committed: ?Result = null,
+};
 
 extern "kernel32" fn GetWindowsDirectoryW([*]u16, u32) callconv(.winapi) u32;
 
@@ -19,6 +28,12 @@ pub fn run(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]c
 }
 
 pub fn runControlled(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, source: []const u8, source_id: []const u8, cancel: Cancel) !Result {
+    var report: Report = .{};
+    return runReported(io, owner, private, exe, digest, source, source_id, cancel, &report);
+}
+
+pub fn runReported(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, source: []const u8, source_id: []const u8, cancel: Cancel, report: *Report) !Result {
+    report.* = .{};
     try cancel.check();
     if (!owner.opened or !owner.lease_opened or !inventory.validSource(source_id)) return error.Invalid;
     if (source.len < 4 or source.len > 4096 or !std.ascii.isAlphabetic(source[0]) or source[1] != ':' or source[2] != '\\' or
@@ -53,8 +68,63 @@ pub fn runControlled(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, 
     coordinator.* = .{};
     _ = try store.loadInventory(owner, &coordinator.index);
     const outcome = store.importPackageControlled(owner, coordinator, &helper, source, source_id, cancel);
-    try runner.checkDrained();
+    report.fault = coordinator.fault;
+    report.recovery_id = coordinator.recovery_id;
+    if (outcome) |result| {
+        report.committed = result;
+    } else |err| {
+        report.cause = err;
+    }
+    runner.checkDrained() catch |err| {
+        report.cleanup = err;
+        return error.CleanupFailed;
+    };
     if (coordinator.fault != null) return error.RecoveryRequired;
+    return outcome;
+}
+
+// A user-selected ZIP is borrowed read-only. All extracted files are
+// created exclusively in a private staging directory, never beside the ZIP.
+// Reuse the same bounded ZIP parser and durable import as the market.
+pub fn runArchive(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, source: []const u8, source_id: []const u8, cancel: Cancel, report: *Report) !Result {
+    report.* = .{};
+    try cancel.check();
+    const archive = try std.Io.Dir.openFileAbsolute(io, source, .{ .follow_symlinks = false });
+    defer archive.close(io);
+    const stat = try archive.stat(io);
+    if (stat.kind != .file or stat.size == 0 or stat.size > zip.max_archive_bytes) return error.InvalidArchive;
+    const work = try owner.createLocalImportWork();
+    var path_buf: [4096]u8 = undefined;
+    const len = try std.unicode.utf16LeToUtf8(&path_buf, work);
+    const path = path_buf[0..len];
+    const stage = try std.heap.page_allocator.create(zip.Stage);
+    defer std.heap.page_allocator.destroy(stage);
+    stage.* = .{};
+    var extracted_buf: [4096]u8 = undefined;
+    const extracted = try std.fmt.bufPrint(&extracted_buf, "{s}\\unpacked", .{path});
+    const outcome: anyerror!Result = blk: {
+        const scratch = std.Io.Dir.cwd().openDir(io, path, .{ .follow_symlinks = false }) catch |err| break :blk err;
+        defer scratch.close(io);
+        const result: anyerror!Result = inner: {
+            stage.extract(io, archive, scratch) catch |err| break :inner err;
+            cancel.check() catch |err| break :inner err;
+            break :inner runReported(io, owner, private, exe, digest, extracted, source_id, cancel, report);
+        };
+        if (result) |_| {} else |err| {
+            if (report.cause == null) report.cause = err;
+        }
+        stage.cleanup(io, scratch) catch |err| {
+            report.cleanup = err;
+            break :blk error.CleanupFailed;
+        };
+        break :blk result;
+    };
+    if (report.cleanup == null) {
+        owner.finishMarketWork() catch |err| {
+            report.cleanup = err;
+            return error.CleanupFailed;
+        };
+    }
     return outcome;
 }
 

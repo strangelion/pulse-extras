@@ -174,6 +174,9 @@ pub const Snapshot = struct {
 pub const Outcome = struct {
     snapshot: Snapshot = .{},
     installed: ?importing.Result = null,
+    import_report: local_import.Report = .{},
+    stage_cleanup: ?anyerror = null,
+    transfer_cleanup: ?anyerror = null,
     detail: ?Detail = null,
     batch_committed: usize = 0,
     batch_existing: usize = 0,
@@ -216,6 +219,7 @@ const Consumer = struct {
     cancel: importing.Cancel,
     stage: *installer.Install,
     scan_progress: ?*service_mod.ScanProgress = null,
+    report: *local_import.Report,
     budget: Budget = Budget.init(640 * 1024 * 1024),
 
     pub fn run(self: *Consumer, archive: download.Result, source: []const u8) !importing.Result {
@@ -225,8 +229,10 @@ const Consumer = struct {
         const unpacked = try self.stage.unpack(self.io, self.scratch, self.scratch_path, &self.budget, archive, &path);
         try self.cancel.check();
         if (self.scan_progress) |progress| progress.setStage(.package_import);
-        return local_import.runControlled(self.io, self.owner, self.private, self.exe, self.digest, unpacked, source, self.cancel) catch |err| {
-            if (err == error.RecoveryRequired or err == error.CleanupFailed) self.stage.recovery_required = true;
+        // A private inventory transaction fault is distinct from scratch
+        // cleanup. Its pending/final directories are never owned by Stage.
+        return local_import.runReported(self.io, self.owner, self.private, self.exe, self.digest, unpacked, source, self.cancel, self.report) catch |err| {
+            if (err == error.CleanupFailed) self.stage.recovery_required = true;
             return err;
         };
     }
@@ -255,6 +261,8 @@ fn execute(service: *Service, consumer: *Consumer, request: *const Request, out:
             // stale revisions, copied-row mismatches and expiry are refused.
             const id = try service.startPackageStrict(&root, &selected.result, &selected.hit, selected.full);
             const finish = try service.finishPackageUsing(id, consumer);
+            out.stage_cleanup = finish.stage_cleanup;
+            out.transfer_cleanup = finish.transfer_cleanup;
             if (finish.result) |installed| {
                 out.installed = installed;
             } else |err| {
@@ -343,7 +351,10 @@ fn executeBatch(service: *BatchService, consumer: *Consumer, batch: *const Batch
             job.set(.installing);
             var job_cancel: JobCancel = .{ .host = host_cancel, .job = job };
             consumer.cancel = .{ .callback = JobCancel.check, .context = &job_cancel };
+            out.import_report = .{};
             const finish = try service.finishPackageUsing(id, consumer);
+            out.stage_cleanup = finish.stage_cleanup;
+            out.transfer_cleanup = finish.transfer_cleanup;
             consumer.cancel = host_cancel;
             ids[n] = null;
             active -= 1;
@@ -366,6 +377,12 @@ fn executeBatch(service: *BatchService, consumer: *Consumer, batch: *const Batch
                 safe.* = false;
                 return error.MarketCleanupFailed;
             }
+            if (out.import_report.fault != null) {
+                // Stop the queue at an ambiguous durable transaction.
+                // Already committed rows remain valid; never auto-retry.
+                job.set(.cleanup_required);
+                return error.RecoveryRequired;
+            }
         }
         if (!progressed and active != 0) Sleep(25);
     }
@@ -385,7 +402,7 @@ fn runBatchWork(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: 
     const stage = try std.heap.page_allocator.create(installer.Install);
     defer std.heap.page_allocator.destroy(stage);
     stage.* = .{};
-    var consumer: Consumer = .{ .io = io, .owner = owner, .private = private, .exe = exe, .digest = digest, .scratch = scratch, .scratch_path = work_path, .cancel = cancel, .stage = stage };
+    var consumer: Consumer = .{ .io = io, .owner = owner, .private = private, .exe = exe, .digest = digest, .scratch = scratch, .scratch_path = work_path, .cancel = cancel, .stage = stage, .report = &out.import_report };
     var service: BatchService = .{
         .allocator = group.allocator(),
         .tasks = tasks,
@@ -434,7 +451,7 @@ fn runWork(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]c
     const stage = try std.heap.page_allocator.create(installer.Install);
     defer std.heap.page_allocator.destroy(stage);
     stage.* = .{};
-    var consumer: Consumer = .{ .io = io, .owner = owner, .private = private, .exe = exe, .digest = digest, .scratch = scratch, .scratch_path = work_path, .cancel = cancel, .stage = stage, .scan_progress = &progress.scan };
+    var consumer: Consumer = .{ .io = io, .owner = owner, .private = private, .exe = exe, .digest = digest, .scratch = scratch, .scratch_path = work_path, .cancel = cancel, .stage = stage, .report = &out.import_report, .scan_progress = &progress.scan };
     var service: Service = .{
         .allocator = group.allocator(),
         .tasks = tasks,
