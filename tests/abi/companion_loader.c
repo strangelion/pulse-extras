@@ -422,9 +422,21 @@ static uint32_t PULSE_CALL worker_cancelled(void *ctx) {
     Fixture *f = ctx;
     return InterlockedCompareExchange(&f->cancel_flag, 0, 0) != 0;
 }
+static PulseStatus PULSE_CALL worker_report(void *ctx, const PulseTaskProgress *progress) {
+    (void)ctx;
+    REQUIRE(progress && progress->size >= sizeof(*progress));
+    if (progress->size == 192) {
+        uint32_t step = 0;
+        memcpy(&step, (const char *)progress + 72, sizeof(step));
+        REQUIRE(step >= 1 && step <= 3 && progress->percent == UINT32_MAX);
+    } else {
+        REQUIRE(progress->size == sizeof(*progress));
+    }
+    return PULSE_OK;
+}
 static DWORD WINAPI work_thread(void *ctx) {
     Fixture *f = ctx;
-    PulseTaskContext task = {.id=f->task, .context=f, .cancelled=worker_cancelled};
+    PulseTaskContext task = {.id=f->task, .context=f, .report=worker_report, .cancelled=worker_cancelled};
     return f->task_work(f->task_user, &task);
 }
 static void observe_worker(Fixture *f) {
@@ -435,7 +447,16 @@ static void observe_worker(Fixture *f) {
 }
 static PulseStatus PULSE_CALL create_task(void *ctx, const PulseTaskDescriptor *desc, PulseTaskId *id) {
     Fixture *f = ctx;
-    REQUIRE(desc && desc->size == sizeof(*desc) && desc->work && desc->user && id);
+    REQUIRE(desc && desc->size >= sizeof(*desc) && desc->work && desc->user && id);
+    if (same(desc->type, "companion.session")) {
+        /* Read the optional tail independently of the Zig declaration. */
+        const PulseStringView *steps = NULL;
+        uint32_t count = 0;
+        REQUIRE(desc->size == 128);
+        memcpy(&steps, (const char *)desc + 96, sizeof(steps));
+        memcpy(&count, (const char *)desc + 104, sizeof(count));
+        REQUIRE(steps && count == 3 && steps[0].length && steps[1].length && steps[2].length);
+    }
     if (f->bundled && f->worker && same(desc->type, "companion.library")) {
         REQUIRE(!f->aux_task);
         f->aux_task = ++f->next; f->aux_work = desc->work; f->aux_user = desc->user;

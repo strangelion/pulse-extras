@@ -250,10 +250,18 @@ not verifiable (host did not ship that header): 25 structs
 prefix compatible: 56 public structs from 12 host headers
 ```
 
-The only growth found is `PulseTaskProgress` (added `step`, `actions`, `note`,
-`detail`, `assurance`, `log`, `result`, `result_path`), guarded by
-`PULSE_TASK_PROGRESS_SIZE_V1` and embedded as the last field of
-`PulseTaskSnapshot`, so parent offsets remain stable.
+The subsequently supplied installed 1.0.61 tasks.h confirms append-only
+growth of both PulseTaskProgress (step, action_count, linked_operation,
+note, detail, assurance, actions, log, result, result_path) and
+PulseTaskDescriptor (source, destination, steps, step_count, on_action,
+action_user). The size macros guard the 72-byte progress and 64-byte
+descriptor prefixes; the x64 full sizes are 192 and 128 respectively.
+PulseTaskSnapshot embeds progress as its last field. The previous prefix
+check did not identify the descriptor tail; do not replace the pinned
+baseline. The pinned host checks minimum sizes and ignores appended data.
+Companion declares three static step names for runtime sessions and market
+search, and reports their 1-based indices without inventing completion.
+Actual 1.0.61 rendering requires retest.
 
 `abi.h` is not published by the host at all, so `PulseHostV1`/`PulsePluginV1`
 layout is covered by compile-time asserts and runtime validation, not by this

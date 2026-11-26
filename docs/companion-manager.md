@@ -348,3 +348,18 @@ no false completion or undocumented popup control. Market stage and shard
 counts are opt-in via ABI_PROBE_LOG, without query text or credentials.
 Fix CI 45732356968: ScanProgress declaration between fields. Actual host
 reentry, report behavior and regression are not yet verified.
+
+### D2 task steps from installed SDK
+
+User log confirmed 6/6 market shards, 322 curated results, terminal state
+2, navigation back to market without recorded update errors, runtime
+phase 2 with one ready child, and task report status 0 with indeterminate
+percent. The supplied tasks.h defines optional descriptor steps (<=3)
+and progress step (1-based). Add size-tagged append-only structs using
+verified x64 layout, keep pinned generated V1 bindings and interface
+version, and report monotonic runtime stages and market scan stages.
+The 1.0.60 pinned adapter accepts prefix-or-larger sizes; older host ignores
+the new fields. No automatic popup dismissal is declared in the header;
+actual caption rendering and compatibility require CI/host retest. Market
+while a runtime session owns private resources remains deferred; do not
+remove owner exclusion without auditing the shared storage leases.

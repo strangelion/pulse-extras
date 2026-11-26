@@ -1292,22 +1292,76 @@ fn saveSetting(instance: *Instance, key: []const u8, value: []const u8) void {
     refresh(instance);
 }
 
+// Optional append-only task ABI from installed Pulse 1.0.61 tasks.h.
+// The pinned 1.0.60 host accepts size >= its prefix and ignores the tail.
+// Do not change the generated baseline or the version of pulse.tasks.
+const TaskDescriptor61 = extern struct {
+    base: raw.PulseTaskDescriptor,
+    source: abi.StringView,
+    destination: abi.StringView,
+    steps: [*c]const abi.StringView,
+    step_count: u32,
+    on_action: ?*const fn (?*anyopaque, u64, abi.StringView) callconv(.c) void,
+    action_user: ?*anyopaque,
+};
+
+const TaskProgress61 = extern struct {
+    base: raw.PulseTaskProgress,
+    step: u32,
+    action_count: u32,
+    linked_operation: u64,
+    note: abi.StringView,
+    detail: abi.StringView,
+    assurance: abi.StringView,
+    actions: ?*const anyopaque,
+    log: abi.StringView,
+    result: abi.StringView,
+    result_path: abi.StringView,
+};
+
+comptime {
+    if (@sizeOf(raw.PulseTaskDescriptor) != 64 or @offsetOf(TaskDescriptor61, "source") != 64 or @offsetOf(TaskDescriptor61, "steps") != 96 or @offsetOf(TaskDescriptor61, "step_count") != 104 or @sizeOf(TaskDescriptor61) != 128) @compileError("task descriptor 1.0.61 x64 ABI mismatch");
+    if (@sizeOf(raw.PulseTaskProgress) != 72 or @offsetOf(TaskProgress61, "step") != 72 or @offsetOf(TaskProgress61, "linked_operation") != 80 or @sizeOf(TaskProgress61) != 192) @compileError("task progress 1.0.61 x64 ABI mismatch");
+}
+
+const session_steps = [_]abi.StringView{ abi.view("启动桌宠"), abi.view("后台运行"), abi.view("停止与清理") };
+const market_steps = [_]abi.StringView{ abi.view("读取目录索引"), abi.view("验证目录分片"), abi.view("整理搜索结果") };
+
+fn steppedDescriptor(base: raw.PulseTaskDescriptor, steps: []const abi.StringView) TaskDescriptor61 {
+    var descriptor = std.mem.zeroes(TaskDescriptor61);
+    descriptor.base = base;
+    descriptor.base.size = @sizeOf(TaskDescriptor61);
+    descriptor.steps = steps.ptr;
+    descriptor.step_count = @intCast(steps.len);
+    return descriptor;
+}
+
+fn sessionStep(previous: u32, phase: library.Phase) u32 {
+    return @max(previous, @as(u32, switch (phase) {
+        .idle, .starting => 1,
+        .running => 2,
+        .stopping => 3,
+    }));
+}
+
 // Host-owned worker. Writes only the private result buffer; no UI call.
 // Host report is explicitly worker-safe, valid only during the work call.
 // Keep long-lived runtime tasks indeterminate: reaching first frame is not
 // completion of ownership or cleanup, and counters must not move backward.
-fn reportTask(context: [*c]const raw.PulseTaskContext, message: []const u8) void {
+fn reportTask(context: [*c]const raw.PulseTaskContext, message: []const u8, step: u32) void {
     const report = context[0].report orelse {
         diag.event("companion-task-report-unavailable");
         return;
     };
-    var progress = std.mem.zeroes(raw.PulseTaskProgress);
-    progress.size = @sizeOf(raw.PulseTaskProgress);
-    progress.percent = std.math.maxInt(u32);
-    progress.current_item = abi.view(message);
-    const status = report(context[0].context, &progress);
+    var progress = std.mem.zeroes(TaskProgress61);
+    progress.base.size = if (step == 0) @sizeOf(raw.PulseTaskProgress) else @sizeOf(TaskProgress61);
+    progress.base.percent = std.math.maxInt(u32);
+    progress.base.current_item = abi.view(message);
+    progress.step = step;
+    const status = report(context[0].context, &progress.base);
     diag.status("companion-task-report-id", context[0].id);
-    diag.status("companion-task-report-percent", progress.percent);
+    diag.status("companion-task-report-percent", progress.base.percent);
+    diag.status("companion-task-report-step", step);
     diag.status("companion-task-report-status", status);
 }
 
@@ -1350,7 +1404,7 @@ const SearchWatch = struct {
             diag.status("companion-market-shards-total", total);
             var buf: [128]u8 = undefined;
             const text = std.fmt.bufPrint(&buf, "正在验证市场目录分片 {d}/{d}", .{ scanned, total }) catch unreachable;
-            reportTask(self.context, text);
+            reportTask(self.context, text, 2);
         }
         return 0;
     }
@@ -1360,6 +1414,7 @@ const SessionWatch = struct {
     context: [*c]const raw.PulseTaskContext,
     session: *library.Session,
     last_phase: ?library.Phase = null,
+    step: u32 = 0,
 
     fn canceled(user: ?*anyopaque) callconv(.c) u32 {
         const self: *SessionWatch = @ptrCast(@alignCast(user orelse return 1));
@@ -1368,7 +1423,8 @@ const SessionWatch = struct {
             if (self.last_phase != .stopping) {
                 self.last_phase = .stopping;
                 diag.event("companion-runtime-cancel-observed");
-                reportTask(self.context, "正在退出并清理桌宠");
+                self.step = 3;
+                reportTask(self.context, "正在退出并清理桌宠", self.step);
             }
             return 1;
         }
@@ -1377,11 +1433,12 @@ const SessionWatch = struct {
             self.last_phase = phase;
             diag.status("companion-runtime-phase", @backingInt(phase));
             diag.status("companion-runtime-ready", self.session.ready.load(.acquire));
+            self.step = sessionStep(self.step, phase);
             reportTask(self.context, switch (phase) {
                 .idle, .starting => "正在启动桌宠并等待首帧",
                 .running => "桌宠后台运行中；可选择在后台继续",
                 .stopping => "正在退出并清理桌宠",
-            });
+            }, self.step);
         }
         return 0;
     }
@@ -1436,7 +1493,7 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
             .detail => "正在读取素材详情",
             .install => "正在下载并验证素材",
             .batch => "正在处理下载队列",
-        });
+        }, if (request.* == .search) 1 else 0);
         var watch: SearchWatch = .{ .context = context, .progress = &instance.market_progress, .started = tickMillis() };
         // Only search uses inline transport on this worker; never send this
         // borrowed reporting context to parallel batch transfer threads.
@@ -1453,6 +1510,7 @@ fn readLibrary(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callc
             if (err == error.Canceled) return raw.PULSE_TASK_CANCELLED;
             return raw.PULSE_TASK_FAILED;
         };
+        if (request.* == .search) reportTask(context, "市场目录已验证，正在整理结果", 3);
         return raw.PULSE_TASK_COMPLETED;
     }
     if (instance.detail_request) |request| {
@@ -2055,15 +2113,14 @@ fn startSession(instance: *Instance, asset_id: u64, choice: library.LaunchProfil
     instance.running_rows = .{};
     instance.stop_requested = false;
     instance.task_kind = .builtin_session;
-    const descriptor: raw.PulseTaskDescriptor = .{
-        .size = @sizeOf(raw.PulseTaskDescriptor),
+    const descriptor = steppedDescriptor(.{
         .title = abi.view("运行桌宠"),
         .type = abi.view("companion.session"),
         .work = runBuiltin,
         .user = instance,
-    };
+    }, &session_steps);
     var id: u64 = 0;
-    if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
+    if (create(tasks.context, &descriptor.base, &id) == abi.ok and id != 0) {
         instance.runtime_task_id = id;
         instance.runtime_status = "桌宠任务已提交";
         armTimer(instance);
@@ -2805,8 +2862,9 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
         .work = readLibrary,
         .user = instance,
     };
+    const extended = steppedDescriptor(descriptor, &market_steps);
     var id: u64 = 0;
-    if (create(tasks.context, &descriptor, &id) == abi.ok and id != 0) {
+    if (create(tasks.context, if (request == .search) &extended.base else &descriptor, &id) == abi.ok and id != 0) {
         instance.task_id = id;
         instance.market_status = switch (request) {
             .search => if (request.search.len == 0) "正在加载默认市场目录" else "正在读取市场搜索目录",
@@ -3704,6 +3762,18 @@ test "default market browsing has an empty optional query and never admits insta
     maybeBrowseMarket(instance);
     try std.testing.expect(!instance.market_initial_attempted);
     try std.testing.expect(instance.market_request == null);
+}
+
+test "append-only task phase ABI and monotonic runtime step" {
+    const desc = steppedDescriptor(.{}, &session_steps);
+    try std.testing.expectEqual(@as(u32, 128), desc.base.size);
+    try std.testing.expectEqual(@as(u32, 3), desc.step_count);
+    try std.testing.expectEqualStrings("后台运行", abi.slice(desc.steps[1]).?);
+    try std.testing.expectEqual(@as(u32, 1), sessionStep(0, .starting));
+    try std.testing.expectEqual(@as(u32, 2), sessionStep(1, .running));
+    try std.testing.expectEqual(@as(u32, 2), sessionStep(2, .starting));
+    try std.testing.expectEqual(@as(u32, 3), sessionStep(2, .stopping));
+    try std.testing.expectEqual(@as(u32, 3), sessionStep(3, .running));
 }
 
 test "populated market rows survive navigation without forbidden button attributes" {
