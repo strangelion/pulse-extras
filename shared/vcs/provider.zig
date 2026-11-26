@@ -100,7 +100,7 @@ pub const Snapshot = struct {
     detail: Text = .{},
     /// Metadata preview hints only; none is executable approval.
     remote_web: Text = .{},
-    preview_kinds: u8 = 0;
+    preview_kinds: u8 = 0,
     preview_tools: [3]?identity.Path = .{ null, null, null },
 
     pub fn previewIndex(kind: identity.Kind) ?usize {
