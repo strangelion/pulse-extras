@@ -1,0 +1,6 @@
+---
+# GitHub Actions steps legitimately exceed 80 columns (shell one-liners,
+# `if:` expressions, matrix keys). Keep the rest of the default rules.
+extends: default
+rules:
+  line-length: disable

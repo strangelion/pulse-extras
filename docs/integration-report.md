@@ -208,9 +208,11 @@ from one build graph, and no shared module adds a resident thread or service.
 - P1: real-host Companion acceptance; VCS real-host acceptance; coexistence
   and performance acceptance. All blocked on an isolated Windows user/VM.
 - P2: Companion's `GetFileInformationByHandle` predicates are not expressed
-  through the shared identity helper; the CI package trigger is still
-  hard-coded to `experiment/openpets-ipc` (manual `companion_test_package`
-  input works on any branch).
+  through the shared identity helper. Resolved after the initial merge: the CI
+  package trigger hard-coded to `experiment/openpets-ipc` was removed together
+  with the CI packaging job; releases are packaged locally with
+  `scripts/package_release.py` and the pinned official tool, and the archive is
+  unsigned and unpublished by design.
 
 ## 11. Not executed / blocked
 

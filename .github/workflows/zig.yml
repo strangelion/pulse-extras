@@ -4,11 +4,6 @@ on:
   push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      companion_test_package:
-        description: Build verified unsigned Companion test package after full regression
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -455,92 +450,3 @@ jobs:
               exit 1
               ;;
           esac
-
-  companion_test_package:
-    name: Companion official test package
-    needs: [scope, gate]
-    # Explicit maintainer request only. No extra host download/build on normal
-    # pushes, PRs, or docs-only changes. Manual dispatch always selects full CI.
-    if: ${{ needs.scope.outputs.level == 'full' && ((github.event_name == 'workflow_dispatch' && inputs.companion_test_package) || (github.event_name == 'push' && github.ref == 'refs/heads/experiment/openpets-ipc' && contains(github.event.head_commit.message, '[test-package]'))) }}
-    runs-on: windows-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Restore Zig archive cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ runner.temp }}/pulse-zig-archives
-          key: zig-archive-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.zig-version', 'scripts/zig-downloads.json') }}
-      - name: Install pinned Zig
-        run: python scripts/install_zig.py
-      - name: Checkout matching official Pulse author tools
-        uses: actions/checkout@v6
-        with:
-          repository: jimmgreen/pulse
-          ref: b32436831a066e18448b2810bef4bf989024fc68
-          path: .local/pulse-author
-          persist-credentials: false
-      - name: Prepare pinned official Pulse host in test mode
-        shell: pwsh
-        timeout-minutes: 5
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $setup = Join-Path $env:RUNNER_TEMP 'PulseSetup-1.0.60.exe'
-          $install = Join-Path $env:RUNNER_TEMP 'pulse-author-test'
-          if ((Test-Path -LiteralPath $setup) -or (Test-Path -LiteralPath $install)) {
-            throw 'Expected fresh installer and test host paths'
-          }
-          Invoke-WebRequest -Uri 'https://github.com/jimmgreen/pulse/releases/download/v1.0.60/PulseSetup-1.0.60.exe' -OutFile $setup -TimeoutSec 90
-          if ((Get-Item -LiteralPath $setup).Length -ne 12240072 -or
-              (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant() -ne '827aebcb14a9e4f4ec8281cf89e339cc887ec6f541ff6e80518ac463732c5234') {
-            throw 'Official Pulse installer size/hash differs from pinned release'
-          }
-          # Upstream setup_options.h: /PULSETEST is isolated, non-elevating
-          # test install. Explicitly disable optional services/startup/tasks.
-          $setupArgs = @('/PULSETEST', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$install`"", '/TASKS=!indexservice,!globalsearch,!aiassistant,!startup,!desktopicon')
-          $result = Start-Process -FilePath $setup -ArgumentList $setupArgs -Wait -PassThru
-          if ($result.ExitCode -ne 0) { throw "Official test setup failed: $($result.ExitCode)" }
-          $pulse = Join-Path $install 'pulse.exe'
-          if (-not (Test-Path -LiteralPath $pulse -PathType Leaf)) { throw 'Expected official test host executable' }
-          "PULSE_AUTHOR_HOST=$pulse" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-      - name: Stage pinned WebP backend
-        run: python scripts/install_pet_webp.py
-      - name: Generate and verify official test package
-        shell: pwsh
-        timeout-minutes: 12
-        run: |
-          python scripts/companion_host_smoke.py --pulse "$env:PULSE_AUTHOR_HOST" --sdk-root ".local/pulse-author" --out "zig-out/companion-test-package" --prepare-helper libwebp --bundle-runtime
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $evidence = Get-Content -Raw zig-out/companion-test-package/build-evidence.json | ConvertFrom-Json
-          if ($evidence.source_revision -ne $env:GITHUB_SHA -or $evidence.source_dirty -or -not $evidence.bundled_runtime -or $evidence.real_host_accepted) {
-            throw 'Unexpected package evidence'
-          }
-          $digest = (Get-FileHash -Algorithm SHA256 zig-out/companion-test-package/companion-dev.pulse-ext).Hash.ToLowerInvariant()
-          if ($digest -ne $evidence.package_sha256) { throw 'Package hash differs from evidence' }
-          "### Unsigned Companion development package" >> $env:GITHUB_STEP_SUMMARY
-          "Source: $env:GITHUB_SHA" >> $env:GITHUB_STEP_SUMMARY
-          "SHA-256: $digest" >> $env:GITHUB_STEP_SUMMARY
-          "Official v1.0.60 author verification; real-host acceptance NOT RUN. Download the test artifact only for isolated native testing." >> $env:GITHUB_STEP_SUMMARY
-      - name: Upload verified test package
-        uses: actions/upload-artifact@v4
-        with:
-          name: companion-dev-test-${{ github.sha }}
-          path: |
-            zig-out/companion-test-package/companion-dev.pulse-ext
-            zig-out/companion-test-package/build-evidence.json
-            zig-out/companion-test-package/08-verify.log
-          if-no-files-found: error
-          retention-days: 14
-      - name: Preserve package preparation failure logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: companion-test-package-failure
-          path: zig-out/companion-test-package/*.log
-          if-no-files-found: ignore
-          retention-days: 7

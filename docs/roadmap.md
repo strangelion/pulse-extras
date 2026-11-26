@@ -92,7 +92,7 @@ Release follows milestone R and [release.md](release.md). Keep secrets out of Gi
 
 ### Companion stage D — packaging and real-host acceptance (planned)
 
-- [ ] D0–D1: official native v2 test package with existing development ID, verified exact artifact, isolated Windows test account/VM and host store/profile; green full code CI first. Exact-artifact reuse and evidence checks passed automatic regression at 6d63439; explicit official test-package job added to the existing CI, first artifact and actual installation remain to verify.
+- [ ] D0–D1: official native v2 test package with existing development ID, verified exact artifact, isolated Windows test account/VM and host store/profile; green full code CI first. Exact-artifact reuse and evidence checks passed automatic regression at 6d63439; package composition is now local-only (`scripts/package_release.py`, see [release](release.md#2-packaging-local-official-tool)); first artifact and actual installation remain to verify.
 - [ ] D2–D4: use the [canonical D acceptance register](companion-manager.md#d2-real-host-functional-acceptance-matrix): 100 independent visible pets, separately high-count actual Pulse-managed instances, long soak/leak checks, crash/recovery, live market, image fallback and install/update/uninstall. Escalate safely; repair and repeat affected tests with exact-artifact evidence.
 - [ ] D5: independently verified formal candidate, official manifest and signing/release eligibility; separate publication approval. No shared-binary runtime implementation in this stage.
 

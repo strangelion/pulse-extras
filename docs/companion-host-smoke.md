@@ -8,21 +8,24 @@ own the status. Earlier smoke experiments are preserved in
 
 ## 1. Obtain the test package
 
-The existing Zig regression workflow accepts the manual input
-companion_test_package=true. After the full required gate passes, the
-Windows package job fetches the exact official v1.0.60 installer pinned
-by size and SHA-256, checks out matching author tools at b324368, uses
-the upstream /PULSETEST mode without optional startup/services, and
-runs the existing package-only script with pinned static libwebp.
-An explicit [test-package] commit marker on the experimental branch
-also requests this job for full-scope changes. Ordinary pushes/PRs do
-not package. On success download companion-dev-test-<source SHA> from
-the Actions run's Artifacts (14 days): companion-dev.pulse-ext,
-build-evidence.json and the official verification log. No release/tag
-or signing. Do not install an artifact from a failed/incomplete run.
+Packages are no longer produced by CI. Build and package locally with the
+pinned official author tool:
 
-Check the exact downloaded archive SHA-256 against the Actions summary
-and evidence. The package was verified against official Pulse 1.0.60,
+```powershell
+zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe
+python scripts/package_release.py --product companion --version 0.1.0 --sdk-root .local/sdk
+```
+
+The script requires a clean tree, runs native-manifest → pack → official
+verify, and writes `dist/strangelion.companion-<version>.pulse-ext`,
+`release-evidence.json` and `SHA256SUMS.txt`. Nothing is signed or
+published, and CI correctness is not package evidence. For the
+`[PULSETEST]` official mode (host 1.0.60, pinned static libwebp), run
+`scripts/companion_host_smoke.py --prepare-helper libwebp --bundle-runtime`
+as documented in [release](release.md#2-packaging-local-official-tool).
+
+Check the exact archive SHA-256 against `SHA256SUMS.txt` and the
+evidence file. The package is verified against official Pulse 1.0.60,
 not every host version. For another host version, use its matching
 official author tool to verify the same archive before an explicitly
 consented isolated install; record both host identities. The script's

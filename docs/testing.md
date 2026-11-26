@@ -74,7 +74,7 @@ retains diagnostics on failure. The fast ZIP regression precedes the broad
 suite. No failure is converted to a skip.
 
 Only two workflows are needed now: Zig regression (automatic scoped
-correctness, manual full, explicit test-package job after full gate) and Companion stress benchmark (manual independent
+correctness, manual full) and Companion stress benchmark (manual independent
 hidden, synthetic or mixed static WebP, 1–100 processes, 5–180 seconds).
 Do not add hosted-visible, WIC-only or separate release workflows merely
 for D; local harness options remain available for diagnosis. Actual
@@ -223,12 +223,8 @@ Regression candidate includes versioned review encoding/decoding and staging too
 New tests cover strict stored-record parsing, restricted Git index/name rejection and approval CLI payload/error handling. Default DLL source now uses the actual Windows manager, while Zig unit tests of the entry explicitly import the locked source. The C loader assumes a clean candidate slot on its disposable CI Windows user. The positive real-host and protected storage acceptance matrix is deferred. No real registry grant is written by unit tests.
 
 Additional tests exercise ancestor-only create rights, target write rejection, inherit-only versus inherited ACEs, and DPAPI round-trip/tamper refusal without modifying the registry. The package remains an isolated acceptance candidate.
-**Companion test package on request.** Manual Zig regression input companion_test_package=true (or an explicit
-[test-package] commit marker on the experimental branch with full scope)
-adds a post-gate package job. The host is the official v1.0.60 installer
-with pinned size/digest and matching upstream source checkout. Only the
-verified unsigned .pulse-ext, evidence and verify log are uploaded for
-14 days. No automatic package generation on ordinary pushes, no signing
-or release write permission, no actual Companion UI acceptance. A failed
-package job remains a failed workflow; the existing regression gate still
-represents correctness only.
+**No packaging in CI.** Neither workflow produces or uploads a package. Release
+candidates are packaged locally with the pinned official author tool through
+scripts/package_release.py (native-manifest, pack, verify, evidence) as described
+in [release](release.md#packaging-local-official-tool). CI only builds and tests;
+a green run is not package, signature or real-host evidence.

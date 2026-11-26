@@ -18,7 +18,32 @@ register the publisher public key/fingerprint and extension version metadata via
 jimmgreen/pulse-extensions. Its maintainer verifies and signs the official catalog. Publishing
 here does not automatically make the package available in the store.
 
-## 2. Independent package versions
+## 2. Packaging (local official tool)
+
+Packages are built locally, never in CI. Build the ReleaseSafe DLLs first:
+
+    zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe
+
+Then run the product composer (it calls the pinned official author tool):
+
+    python scripts/package_release.py --product companion --version 0.1.0 --sdk-root .local/sdk
+    python scripts/package_release.py --product vcs --version 0.1.0 --sdk-root .local/sdk
+
+`--dry-run` prints the plan without resolving the host or tool. Each run requires a
+clean tree, records the source revision in `release-evidence.json`, and executes
+native-manifest → pack → official verify → digest-bound rename. Output is
+`dist/<id>-<version>.pulse-ext`, `release-evidence.json` and `SHA256SUMS.txt`.
+The archive is unsigned and unpublished; evidence states `signed: false`,
+`published: false` and `real_host_accepted: false`. Registry publication is the
+separate manual step in section 1; real-host acceptance remains the gate in
+[Companion stage D](companion-manager.md#stage-d-official-testformal-packaging-and-real-host-acceptance).
+
+Composition is declared per product in `extensions/<name>/manifest.release.json`
+(official schema, native-free) and in the `PRODUCTS` table of
+scripts/package_release.py (library DLL, bundled files, install paths). Add a new
+product there rather than copying the script.
+
+## 3. Independent package versions
 
 One monorepo, independent packages and SemVer. Example IDs: strangelion.vcs, strangelion.convert,
 strangelion.inspect, strangelion.data, strangelion.devkit, strangelion.compare,

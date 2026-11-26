@@ -1,0 +1,9 @@
+{
+  "apiVersion": 1,
+  "id": "strangelion.companion",
+  "name": "Pulse Companion",
+  "resources": [
+    "settings.own",
+    "context.read"
+  ]
+}

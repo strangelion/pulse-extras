@@ -137,7 +137,7 @@ expected SHA-256, official re-verification, manifest/entry/member evidence
 binding and exclusive bounded copy. Clean build evidence records pinned Zig,
 SDK pin, host/catalog and author-tool digests. Launch requires explicit
 dedicated-test-user acknowledgement; this flag is not OS isolation.
-Portable fixture tests passed with full regression at 6d63439. An explicit test-package request in the existing Zig regression workflow now prepares the pinned official v1.0.60 host/author tools after the full gate, runs the same script in package-only mode and uploads the verified archive and evidence. First package run remains to be verified; no host installation of Companion or real-host acceptance in CI.
+Portable fixture tests passed with full regression at 6d63439. CI no longer produces packages: composition and packaging are local via scripts/package_release.py with the pinned official tool, and the archive is unsigned/unpublished with evidence stating it. First documented package run and real-host installation remain to verify; no host installation of Companion or real-host acceptance in CI.
 
 IMPORTANT: isolated Pulse --store/--profile alone does NOT isolate
 native data. The entry/runtime use real Windows LocalAppData
