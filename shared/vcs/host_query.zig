@@ -413,6 +413,12 @@ pub const Controller = struct {
 pub const Binding = struct {
     pub const Navigation = context_mod.Navigation(identity.max_path_bytes);
     pub const Revocation = struct { ctx: *anyopaque, revoke: *const fn (*anyopaque) host_mod.Error!void };
+    pub const LocalAccess = struct {
+        ctx: *anyopaque,
+        authorize: *const fn (*anyopaque, *const panel.LocalReview) host_mod.Error!Resolver,
+        revoke: *const fn (*anyopaque) host_mod.Error!void,
+        finish: *const fn (*anyopaque) host_mod.Error!void,
+    };
 
     controller: Controller,
     resolution: Resolution,
@@ -425,6 +431,10 @@ pub const Binding = struct {
     language: panel.Language,
     approval_locked: bool = false,
     metadata_only: bool = false,
+    local_access: ?LocalAccess = null,
+    local_ui: bool = false,
+    local_review: ?panel.LocalReview = null,
+    setup_issue: ?panel.SetupIssue = null,
     revocation: ?Revocation = null,
     approved_root: ?identity.Path = null,
     persistent_revocation: bool = false,
@@ -451,6 +461,20 @@ pub const Binding = struct {
         if (self.revocation != null or self.approved_root != null or self.model != null) return error.State;
         try self.configureResolver(resolver);
         self.metadata_only = true;
+    }
+
+    pub fn configureLocalAccess(self: *Binding, access: LocalAccess) host_mod.Error!void {
+        if (!self.metadata_only or self.local_access != null or self.model != null) return error.State;
+        self.local_access = access;
+    }
+
+    /// Only after successful normal drain or the final host destroy boundary.
+    pub fn finishLocalAccess(self: *Binding) host_mod.Error!void {
+        self.checkDrained() catch return error.State;
+        if (self.local_access) |access| {
+            try access.finish(access.ctx);
+            self.local_access = null;
+        }
     }
 
     pub fn configureRevocation(self: *Binding, revocation: Revocation) host_mod.Error!void {
@@ -486,11 +510,15 @@ pub const Binding = struct {
         const create = table.create orelse return error.Unavailable;
         if (table.update == null or table.close == null or table.subscribe_command == null or table.unsubscribe == null) return error.Unavailable;
         self.last_error = null;
+        self.local_ui = self.local_access != null and table.get_state != null;
         var content: panel.Content = undefined;
         var tree: ui.Tree = undefined;
         var current = self.controller.view();
         current.approval_required = self.approval_locked;
         current.metadata_only = self.metadata_only;
+        current.local_setup = self.local_ui;
+        current.local_review = self.local_review;
+        current.setup_issue = self.setup_issue;
         current.revocation_configured = self.revocation != null;
         current.approved_root = self.approved_root;
         current.persistent_revocation = self.persistent_revocation;
@@ -505,8 +533,8 @@ pub const Binding = struct {
             return error.State;
         }
         self.model = .{ .table = table, .id = id };
-        const commands = [_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check, panel.command_revoke };
-        for (commands[0..if (self.revocation != null) @as(usize, 4) else 3]) |name| {
+        const commands = [_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check, panel.command_revoke, panel.command_trust_git, panel.command_trust_jj, panel.command_trust_svn, panel.command_trust_confirm, panel.command_trust_cancel };
+        for (commands[0..if (self.local_ui) @as(usize, 9) else if (self.revocation != null) @as(usize, 4) else 3]) |name| {
             _ = self.model.?.subscribeCommand(name, &onCommand, self) catch |err| {
                 self.last_error = err;
                 // Close invalidates all subscriptions, including any partial
@@ -594,6 +622,8 @@ pub const Binding = struct {
         if (!self.navigation.accepting) return;
         const latest = if (self.navigation.latest) |*value| value else return;
         if (self.navigation_generation == latest.generation) return;
+        self.local_review = null;
+        self.setup_issue = null;
         var failure: ?host_mod.Error = null;
         self.resolution.cancel() catch |err| {
             failure = err;
@@ -629,6 +659,75 @@ pub const Binding = struct {
         try self.selectAuthorized(provider, workspace);
     }
 
+    fn currentReviewRoot(self: *Binding) host_mod.Error!identity.Path {
+        if (!self.accepting or !self.local_ui or !self.metadata_only or self.approval_locked) return error.Permission;
+        // Read the actual current context before approving, rather than
+        // relying on a deferred navigation notification or stale tree.
+        try self.navigation.refreshCurrent();
+        try self.invalidateNavigation();
+        if (self.navigation.pending or self.resolution.task.occupied() or self.controller.query.task.occupied() or self.controller.queued != null) return error.State;
+        const current = self.controller.current;
+        if (current.phase != .ready or current.snapshot == null) return error.State;
+        const workspace = current.workspace orelse return error.State;
+        return workspace.root;
+    }
+
+    fn beginLocalReview(self: *Binding, kind: identity.Kind) host_mod.Error!void {
+        self.local_review = null;
+        const root = try self.currentReviewRoot();
+        const model = self.model orelse return error.State;
+        const get = model.table.get_state orelse return error.Unavailable;
+        var bytes: [identity.max_path_bytes + 1]u8 = undefined;
+        var needed: u32 = 0;
+        try host_mod.mapStatus(get(model.table.context, model.id, abi.view(panel.state_executable), &bytes, bytes.len, &needed));
+        if (needed == 0 or needed >= bytes.len) return error.Argument;
+        const executable = identity.Path.init(bytes[0..needed]) catch return error.Argument;
+        // No tool discovery or execution occurs here. Confirmation owns
+        // the exact copied path and repository shown in the review.
+        const latest = self.navigation.latest orelse return error.State;
+        self.local_review = .{ .root = root, .executable = executable, .kind = kind, .generation = latest.generation };
+    }
+
+    fn confirmLocalReview(self: *Binding) host_mod.Error!void {
+        const review = self.local_review orelse return error.State;
+        const root = try self.currentReviewRoot();
+        const latest = self.navigation.latest orelse return error.State;
+        if (review.generation != latest.generation or !root.eql(review.root.slice()) or self.local_review == null) return error.State;
+        const access = self.local_access orelse return error.Unavailable;
+        // Only the explicit confirmation callback can switch the resolver.
+        // Both worker slots are drained, no old preview can publish as status.
+        const resolver = try access.authorize(access.ctx, &review);
+        self.local_review = null;
+        self.metadata_only = false;
+        self.approved_root = review.root;
+        self.revocation = .{ .ctx = access.ctx, .revoke = access.revoke };
+        self.resolver = resolver;
+        self.persistent_revocation = false;
+        try self.retryResolution();
+    }
+
+    fn localCommand(self: *Binding, name: []const u8) bool {
+        if (!self.local_ui) return false;
+        self.setup_issue = null;
+        if (panel.trustKind(name)) |kind| {
+            self.beginLocalReview(kind) catch |err| {
+                self.last_error = err;
+                self.setup_issue = if (err == error.Argument) .invalid else if (err == error.State) .busy else .denied;
+            };
+        } else if (std.mem.eql(u8, name, panel.command_trust_confirm)) {
+            self.confirmLocalReview() catch |err| {
+                self.last_error = err;
+                self.setup_issue = if (err == error.Argument) .invalid else if (err == error.State) .changed else .denied;
+            };
+        } else if (std.mem.eql(u8, name, panel.command_trust_cancel)) {
+            self.local_review = null;
+        } else return false;
+        self.render() catch |err| {
+            self.last_error = err;
+        };
+        return true;
+    }
+
     /// Only the registered panel and declared vocabulary may invoke actions.
     /// Errors are retained for the owner; do not throw across C ABI.
     fn onCommand(user: ?*anyopaque, id: u64, command: abi.StringView) callconv(.c) void {
@@ -638,6 +737,7 @@ pub const Binding = struct {
         if (model.id != id) return;
         const name = abi.slice(command) orelse return;
         self.last_error = null;
+        if (self.localCommand(name)) return;
         if (std.mem.eql(u8, name, panel.command_revoke)) {
             self.revokeApproval() catch |err| {
                 self.last_error = err;
@@ -837,6 +937,9 @@ pub const Binding = struct {
         var current = self.controller.view();
         current.approval_required = self.approval_locked;
         current.metadata_only = self.metadata_only;
+        current.local_setup = self.local_ui;
+        current.local_review = self.local_review;
+        current.setup_issue = self.setup_issue;
         current.revocation_configured = self.revocation != null;
         current.approved_root = self.approved_root;
         current.persistent_revocation = self.persistent_revocation;

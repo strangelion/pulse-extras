@@ -21,7 +21,7 @@ pub const limit = 2 * 1024 * 1024;
 
 /// Tab-separated template; `\t` is inside the template string, not the argv
 /// separator, so paths with spaces stay unambiguous.
-const revision_template =
+pub const revision_template =
     "change_id.short() ++ \"\\t\" ++ commit_id ++ \"\\t\" ++ bookmarks.join(\" \") ++ \"\\t\" ++ if(conflict, \"conflict\", \"ok\")";
 
 pub const Revision = struct {

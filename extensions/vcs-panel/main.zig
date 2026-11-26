@@ -128,6 +128,7 @@ const Instance = struct {
         if (self.binding) |*binding| {
             try binding.requestStop();
             binding.checkDrained() catch return error.State;
+            try binding.finishLocalAccess();
             if (binding.approval_locked and self.session != null) self.session_revoked = true;
             self.binding = null;
         }
@@ -219,6 +220,10 @@ fn destroy(raw: ?*anyopaque) callconv(.c) void {
                 return;
             };
             binding.checkDrained() catch return;
+            binding.finishLocalAccess() catch |finish_err| {
+                diag.status("vcs-local-session-finish-failed", @intFromError(finish_err));
+                return;
+            };
             self.binding = null;
         }
         self.finishSession() catch |finish_err| {

@@ -138,3 +138,35 @@ The existing reviewed single-root Git path remains unchanged; normal Git
 distribution onboarding, native review/consent UI, multi-root grants and
 JJ/SVN CLI policy are still open. Verify real host rendering and navigation
 before publishing an update. Do not advertise marker discovery as full status.
+
+### Interactive trusted-local session (candidate)
+
+In the no-grant metadata preview, wait for repository detection, enter the
+absolute path of an installed git.exe, jj.exe or svn.exe, then choose the
+corresponding Review action. The confirmation displays the exact copied
+executable and root; consent is explicit and session-only. No PATH program
+is automatically trusted. Select a provider present at the displayed root;
+Git and JJ colocated markers may be selected independently. On confirmation,
+the same bounded worker slots switch from metadata-only to provider queries
+after the old tasks have drained. The existing strict protected Git approval
+path is unchanged; this alternate mode assumes the user independently
+trusts the installation, dependencies, repository and their configuration.
+
+The local trust path pins the executable SHA-256, observed executable/root/
+marker identities, fixed arguments and exact root, uses a restricted
+environment, absolute executable path, neutral Windows directory and
+Windows Job Object process containment. Git uses the existing no-optional-locks
+status with submodules ignored, JJ uses --ignore-working-copy and SVN uses
+local info/status. It does NOT sandbox filesystem/network access, audit
+all dependencies/configurations or eliminate TOCTOU; do not trust arbitrary
+downloads or untrusted repositories. Only ordinary fixed-drive canonical
+paths and directory markers are admitted; linked Git worktrees, SVN paths
+with ambiguous peg syntax and unsupported layouts fail closed. Revoke blocks
+future commands; an already-running command is not rolled back. Close/reopen
+for another root/tool. No saved multi-root grant, automatic PATH discovery,
+write actions or history/diff UI are included.
+
+Acceptance still requires positive Git/JJ/SVN execution on ordinary installed
+tools in real Pulse, native text input and confirmation rendering, stale
+navigation/review, cancellation, revocation and teardown tests. No real-host
+acceptance or stable release claim is made.

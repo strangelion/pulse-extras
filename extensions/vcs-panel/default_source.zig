@@ -13,6 +13,12 @@ const contract = @import("vcs_provider");
 const detect = @import("vcs_detect");
 const host = @import("pulse_host");
 const process = @import("pulse_process");
+const trust = @import("process_trust");
+const cli = @import("vcs_cli");
+const panel = @import("vcs_panel");
+const git_mod = @import("vcs_git");
+const jj_mod = @import("vcs_jj");
+const svn_mod = @import("vcs_svn");
 const host_query = @import("vcs_host_query");
 const capabilities = @import("vcs_capabilities");
 
@@ -297,7 +303,245 @@ pub fn acquire(_: std.mem.Allocator) host.Error!?approval.NativeInput {
 // The existing resolver/query slots own all worker lifetimes.
 pub fn configurePreview(binding: *host_query.Binding) host.Error!void {
     try binding.configureMetadataPreview(.{ .ctx = binding, .resolve = &resolvePreview });
+    if (comptime builtin.os.tag != .windows) return;
+    const local = allocator.create(LocalSession) catch return error.Initialization;
+    local.* = .{ .environment = std.process.Environ.Map.init(allocator) };
+    errdefer {
+        local.environment.deinit();
+        allocator.destroy(local);
+    }
+    try binding.configureLocalAccess(.{ .ctx = local, .authorize = &LocalSession.authorize, .revoke = &LocalSession.revoke, .finish = &LocalSession.finish });
 }
+
+// Separate, opt-in local trust model. This is not the restricted auditor,
+// an automatic PATH grant, or a sandbox. The user's consent covers the
+// selected installation, repository configuration and their dependencies.
+// All external commands remain fixed, bounded and Job-contained.
+const LocalSession = struct {
+    environment: std.process.Environ.Map,
+    review: ?panel.LocalReview = null,
+    revoked: std.atomic.Value(bool) = .init(false),
+    io: ?std.Io.Threaded = null,
+    runner: ?process.Runner = null,
+    pins: ?Pins = null,
+    neutral: identity.Path = .{},
+    git: git_mod.Git = undefined,
+    jj: jj_mod.Jj = undefined,
+    svn: svn_mod.Svn = undefined,
+
+    const Pins = struct {
+        executable: evidence.FileIdentity,
+        root: evidence.FileIdentity,
+        marker: evidence.FileIdentity,
+        digest: approval.Digest,
+    };
+
+    fn tool(kind: identity.Kind) ?cli.Tool {
+        return switch (kind) {
+            .git => .git,
+            .jj => .jj,
+            .svn => .svn,
+            else => null,
+        };
+    }
+
+    fn validReview(review: *const panel.LocalReview) bool {
+        const selected = tool(review.kind) orelse return false;
+        if (!approval.strictPath(review.root.slice()) or !approval.strictPath(review.executable.slice())) return false;
+        if (!std.ascii.eqlIgnoreCase(std.fs.path.basename(review.executable.slice()), selected.exeName())) return false;
+        // SVN treats @ in a target as a peg revision. This candidate only
+        // admits unambiguous ordinary local paths.
+        if (review.kind == .svn and std.mem.indexOfScalar(u8, review.root.slice(), '@') != null) return false;
+        return true;
+    }
+
+    fn authorize(user: *anyopaque, review: *const panel.LocalReview) host.Error!host_query.Resolver {
+        const self: *LocalSession = @ptrCast(@alignCast(user));
+        if (self.review != null or self.revoked.load(.acquire)) return error.State;
+        if (!validReview(review)) return error.Argument;
+        self.review = review.*;
+        return .{ .ctx = self, .resolve = &resolve };
+    }
+
+    fn revoke(user: *anyopaque) host.Error!void {
+        const self: *LocalSession = @ptrCast(@alignCast(user));
+        self.revoked.store(true, .release);
+    }
+
+    fn finish(user: *anyopaque) host.Error!void {
+        const self: *LocalSession = @ptrCast(@alignCast(user));
+        self.revoked.store(true, .release);
+        if (self.runner) |*runner| {
+            runner.requestStop();
+            runner.finishStop() catch return error.State;
+            self.runner = null;
+        }
+        if (self.io) |*threaded| threaded.deinit();
+        self.environment.deinit();
+        allocator.destroy(self);
+    }
+
+    fn markerPath(review: *const panel.LocalReview, bytes: []u8) Error![]const u8 {
+        const marker = switch (review.kind) {
+            .git => ".git",
+            .jj => ".jj",
+            .svn => ".svn",
+            else => return error.Unsupported,
+        };
+        return std.fmt.bufPrint(bytes, "{s}\\{s}", .{ review.root.slice(), marker }) catch error.ResourceLimit;
+    }
+
+    fn sameId(a: evidence.FileIdentity, b: evidence.FileIdentity) bool {
+        return a.volume == b.volume and a.index == b.index;
+    }
+
+    fn checkPins(self: *LocalSession, review: *const panel.LocalReview) Error!void {
+        if (self.revoked.load(.acquire)) return error.Permission;
+        const pins = self.pins orelse return error.Permission;
+        var bytes: [identity.max_path_bytes]u8 = undefined;
+        const marker = try markerPath(review, &bytes);
+        if (!sameId(pins.executable, try evidence.observeIdentity(review.executable.slice(), false)) or
+            !sameId(pins.root, try evidence.observeIdentity(review.root.slice(), true)) or
+            !sameId(pins.marker, try evidence.observeIdentity(marker, true))) return error.Permission;
+    }
+
+    fn initialize(self: *LocalSession, review: *const panel.LocalReview) Error!void {
+        if (self.pins != null) return self.checkPins(review);
+        if (self.revoked.load(.acquire)) return error.Permission;
+        var path: [identity.max_path_bytes]u8 = undefined;
+        const marker = try markerPath(review, &path);
+        const root_id = try evidence.observeIdentity(review.root.slice(), true);
+        const marker_id = try evidence.observeIdentity(marker, true);
+        const exe_id = evidence.observeIdentity(review.executable.slice(), false) catch return error.CliMissing;
+        if (self.io == null) {
+            self.io = if (comptime @TypeOf(std.Io.Threaded.init) == fn (std.mem.Allocator) std.Io.Threaded)
+                std.Io.Threaded.init(allocator)
+            else
+                std.Io.Threaded.init(allocator, .{});
+        }
+        const threaded = if (self.io) |*value| value else return error.Io;
+        const io = threaded.io();
+        const file = std.Io.Dir.openFileAbsolute(io, review.executable.slice(), .{ .follow_symlinks = false }) catch return error.CliMissing;
+        defer file.close(io);
+        const digest = trust.digestFile(io, file) catch return error.Permission;
+        if (!sameId(exe_id, try evidence.observeIdentity(review.executable.slice(), false))) return error.Permission;
+        const system = try evidence.systemDirectory(&path);
+        self.neutral = identity.Path.init(system) catch return error.Permission;
+        for ([_][]const u8{ "SystemRoot", "WINDIR", "LANG", "LC_ALL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS" }, [_][]const u8{ system, system, "C", "C", "1", "0", "0" }) |key, value| {
+            self.environment.put(key, value) catch return error.OutOfMemory;
+        }
+        if (self.runner == null) self.runner = process.Runner.init(allocator, io);
+        const runner = if (self.runner) |*value| value else return error.Io;
+        runner.configureApproved(.{ .path = review.executable.slice(), .digest = digest }, 15 * std.time.ns_per_s) catch return error.Permission;
+        runner.configureTree(.windows_job) catch return error.Io;
+        self.pins = .{ .executable = exe_id, .root = root_id, .marker = marker_id, .digest = digest };
+        try self.checkPins(review);
+    }
+
+    fn argvEqual(actual: []const []const u8, expected: []const []const u8) bool {
+        if (actual.len != expected.len) return false;
+        for (actual, expected) |a, b| {
+            if (!std.mem.eql(u8, a, b)) return false;
+        }
+        return true;
+    }
+
+    fn allowedCommand(review: *const panel.LocalReview, argv: []const []const u8) bool {
+        const exe = review.executable.slice();
+        const root = review.root.slice();
+        if (argvEqual(argv, &.{ exe, "--version" })) return true;
+        return switch (review.kind) {
+            .git => argvEqual(argv, &.{ exe, "--no-optional-locks", "-C", root, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--absolute-git-dir" }) or
+                argvEqual(argv, &.{ exe, "--no-optional-locks", "-C", root, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all" }),
+            .jj => blk: {
+                if (argvEqual(argv, &.{ exe, "--ignore-working-copy", "--no-pager", "--color=never", "-R", root, "log", "-r", "@", "--no-graph", "-T", jj_mod.revision_template })) break :blk true;
+                if (argv.len != 10 or argv[9].len != 40) break :blk false;
+                for (argv[9]) |byte| {
+                    if (!std.ascii.isHex(byte)) break :blk false;
+                }
+                break :blk argvEqual(argv[0..9], &.{ exe, "--ignore-working-copy", "--no-pager", "--color=never", "-R", root, "diff", "--summary", "-r" });
+            },
+            .svn => argvEqual(argv, &.{ exe, "info", "--show-item", "revision", root }) or
+                argvEqual(argv, &.{ exe, "info", "--show-item", "relative-url", root }) or
+                argvEqual(argv, &.{ exe, "status", "--xml", "--no-ignore", root }),
+            else => false,
+        };
+    }
+
+    fn checkRequest(user: *anyopaque, runner: *process.Runner, request: process.Request) process.Error!void {
+        const self: *LocalSession = @ptrCast(@alignCast(user));
+        const review = if (self.review) |*value| value else return error.UnapprovedExecutable;
+        const owned = if (self.runner) |*value| value else return error.UnapprovedExecutable;
+        const pins = self.pins orelse return error.UnapprovedExecutable;
+        const approved = runner.approval orelse return error.UnapprovedExecutable;
+        if (runner != owned or runner.policy != .approved_local or runner.tree_policy != .windows_job or
+            !std.mem.eql(u8, approved.slice(), review.executable.slice()) or !std.mem.eql(u8, &approved.digest, &pins.digest) or
+            request.environ_map != &self.environment or !self.neutral.eql(request.cwd orelse return error.UnapprovedEnvironment) or
+            !allowedCommand(review, request.argv)) return error.UnapprovedExecutable;
+        self.checkPins(review) catch return error.UnapprovedExecutable;
+        // Runner independently rehashes the executable immediately before spawn.
+        if (self.revoked.load(.acquire)) return error.UnapprovedExecutable;
+    }
+
+    fn resolve(user: *anyopaque, directory: *const identity.Path) Error!?host_query.Resolved {
+        const self: *LocalSession = @ptrCast(@alignCast(user));
+        const review = if (self.review) |*value| value else return error.Permission;
+        if (self.revoked.load(.acquire) or !approval.strictPath(directory.slice())) return error.Permission;
+        _ = try evidence.observeIdentity(directory.slice(), true);
+        var detected: detect.Result = .{};
+        detectPreview(user, directory.slice(), &detected);
+        const candidate = detected.find(review.kind) orelse return null;
+        if (!candidate.root.eql(review.root.slice())) return error.Permission;
+        try self.initialize(review);
+        const runner = if (self.runner) |*value| value else return error.Io;
+        const execution: cli.Execution = .{ .approved = .{
+            .cwd = self.neutral,
+            .environment = &self.environment,
+            .gate = .{ .ctx = self, .check = &checkRequest },
+        } };
+        _ = cli.probeApproved(tool(review.kind) orelse return error.Unsupported, &review.executable, &execution, runner) catch |err| return switch (err) {
+            error.UnsupportedVersion => error.CliTooOld,
+            error.InvalidVersion => error.Parse,
+            error.UnapprovedExecutable, error.UnapprovedEnvironment, error.PermissionDenied => error.Permission,
+            error.SpawnFailed => error.CliMissing,
+            error.TimedOut => error.Timeout,
+            error.Cancelled => error.Cancelled,
+            else => error.Io,
+        };
+        var bytes: [identity.max_path_bytes]u8 = undefined;
+        const marker = try markerPath(review, &bytes);
+        const workspace = identity.Workspace.init(review.kind, review.root.slice(), marker) catch return error.Parse;
+        const probe: detect.Probe = .{ .ctx = self, .lookup = &previewLookup };
+        const provider = switch (review.kind) {
+            .git => blk: {
+                self.git = git_mod.Git.initApproved(runner, review.executable, probe, execution) catch return error.Permission;
+                const reported = try self.git.resolveWorkspace(review.root.slice());
+                if (reported.shared_metadata or !reportedPathEqual(reported.root.slice(), review.root.slice()) or !reportedPathEqual(reported.repository_root.slice(), marker)) return error.Permission;
+                break :blk self.git.provider();
+            },
+            .jj => blk: {
+                self.jj = jj_mod.Jj.initApproved(runner, review.executable, probe, execution) catch return error.Permission;
+                break :blk self.jj.provider();
+            },
+            .svn => blk: {
+                self.svn = svn_mod.Svn.initApproved(runner, review.executable, probe, execution) catch return error.Permission;
+                break :blk self.svn.provider();
+            },
+            else => return error.Unsupported,
+        };
+        return .{ .provider = provider, .workspace = workspace };
+    }
+
+    fn reportedPathEqual(actual: []const u8, expected: []const u8) bool {
+        if (actual.len != expected.len) return false;
+        for (actual, expected) |a, b| {
+            if (a == b or (a == '/' and b == '\\')) continue;
+            return false;
+        }
+        return true;
+    }
+};
+
 
 fn previewLookup(_: *anyopaque, path: []const u8) detect.EntryType {
     const name = std.fs.path.basename(path);
@@ -464,4 +708,22 @@ test "Windows DPAPI approval envelope round trip rejects tampering without writi
     try std.testing.expectEqualStrings(original, restored);
     sealed[sealed.len - 1] ^= 0x80;
     try std.testing.expectError(error.Permission, transform(sealed, true));
+}
+
+test "local trust command admission is exact for each provider" {
+    const root = try identity.Path.init("C:\\repo");
+    var review: panel.LocalReview = .{ .root = root, .executable = try identity.Path.init("C:\\tools\\git.exe"), .kind = .git, .generation = 1 };
+    const exe = review.executable.slice();
+    try std.testing.expect(LocalSession.allowedCommand(&review, &.{ exe, "--version" }));
+    try std.testing.expect(LocalSession.allowedCommand(&review, &.{ exe, "--no-optional-locks", "-C", root.slice(), "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all" }));
+    try std.testing.expect(!LocalSession.allowedCommand(&review, &.{ exe, "-C", root.slice(), "commit" }));
+    try std.testing.expect(!LocalSession.allowedCommand(&review, &.{ exe, "--no-optional-locks", "-C", "C:\\other", "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all" }));
+    review.kind = .jj;
+    review.executable = try identity.Path.init("C:\\tools\\jj.exe");
+    try std.testing.expect(LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "--ignore-working-copy", "--no-pager", "--color=never", "-R", root.slice(), "diff", "--summary", "-r", "0123456789abcdef0123456789abcdef01234567" }));
+    try std.testing.expect(!LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "--ignore-working-copy", "--no-pager", "--color=never", "-R", root.slice(), "diff", "--summary", "-r", "--config" }));
+    review.kind = .svn;
+    review.executable = try identity.Path.init("C:\\tools\\svn.exe");
+    try std.testing.expect(LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "status", "--xml", "--no-ignore", root.slice() }));
+    try std.testing.expect(!LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "status", "--xml", "-u", root.slice() }));
 }

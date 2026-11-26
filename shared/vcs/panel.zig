@@ -21,6 +21,28 @@ pub const command_refresh = "vcs.refresh";
 pub const command_cancel = "vcs.cancel";
 pub const command_check = "vcs.check";
 pub const command_revoke = "vcs.revoke";
+pub const command_trust_git = "vcs.trust.git";
+pub const command_trust_jj = "vcs.trust.jj";
+pub const command_trust_svn = "vcs.trust.svn";
+pub const command_trust_confirm = "vcs.trust.confirm";
+pub const command_trust_cancel = "vcs.trust.cancel";
+pub const state_executable = "vcs.executable";
+
+pub const LocalReview = struct {
+    root: identity.Path,
+    executable: identity.Path,
+    kind: identity.Kind,
+    generation: u64,
+};
+
+pub const SetupIssue = enum { invalid, busy, changed, denied };
+
+pub fn trustKind(name: []const u8) ?identity.Kind {
+    if (std.mem.eql(u8, name, command_trust_git)) return .git;
+    if (std.mem.eql(u8, name, command_trust_jj)) return .jj;
+    if (std.mem.eql(u8, name, command_trust_svn)) return .svn;
+    return null;
+}
 pub const Command = enum { refresh, cancel, check };
 
 pub fn parseCommand(name: []const u8) ?Command {
@@ -39,6 +61,9 @@ pub const View = struct {
     discovery_available: bool = false,
     approval_required: bool = false,
     metadata_only: bool = false,
+    local_setup: bool = false,
+    local_review: ?LocalReview = null,
+    setup_issue: ?SetupIssue = null,
     revocation_configured: bool = false,
     approved_root: ?identity.Path = null,
     persistent_revocation: bool = false,
@@ -198,13 +223,14 @@ fn failureLabel(lang: Language, err: contract.Error) []const u8 {
 /// All visible data is copied; no references into the View or cache remain.
 /// build is read-only; buildInteractive declares the fixed owner commands.
 pub const Content = struct {
-    const capacity = 24;
+    const capacity = 36;
     const line_bytes = identity.max_path_bytes + 64;
     lines: [capacity][line_bytes]u8 = undefined,
     nodes: [capacity]ui.Node = undefined,
     len: usize = 0,
     root: ui.Node = undefined,
-    commands: [4]abi.StringView = undefined,
+    commands: [9]abi.StringView = undefined,
+    states: [1]ui.State = undefined,
 
     fn add(self: *Content, id: []const u8, label: []const u8, value: []const u8) void {
         std.debug.assert(self.len < capacity);
@@ -250,7 +276,12 @@ pub const Content = struct {
         }
         if (view.metadata_only) {
             self.add("vcs.preview", "", loc(lang, "Repository preview (no external commands)", "仓库预览（不执行外部命令）"));
-            self.add("vcs.preview-help", "", loc(lang, "Full Git status requires explicit approval. JJ/SVN command access is not yet available.", "完整 Git 状态需要明确授权；JJ/SVN 命令查询暂未开放。"));
+            self.add("vcs.preview-help", "", if (view.local_setup)
+                loc(lang, "To query changes, select an installed tool and explicitly trust this repository.", "如需查询变更，请指定已安装的工具，并明确确认信任当前仓库。")
+            else
+                loc(lang, "External command access requires explicit approval.", "外部命令访问需要明确授权。"));
+        } else if (view.local_setup and !view.approval_required) {
+            self.add("vcs.local-trust", "", loc(lang, "Trusted local session (not a sandbox). Close the panel and reopen to select another repository or tool.", "本次会话已信任（非沙箱）。关闭并重新打开面板可选择其他仓库或工具。"));
         }
         if (view.approved_root) |root| self.add("vcs.approved-root", loc(lang, "Approved root: ", "授权根目录："), root.slice());
         if (view.revocation_failed) self.add("vcs.revocation-error", "", loc(lang, "Session locked; permanent revocation failed. Use approval tool to revoke.", "会话已锁定；永久撤销失败，请使用授权工具撤销。"));
@@ -298,13 +329,55 @@ pub const Content = struct {
         self.len += 1;
     }
 
+    fn addExecutableInput(self: *Content, lang: Language) void {
+        std.debug.assert(self.len < capacity);
+        var node = ui.node(ui.NodeKind.text_input);
+        node.id = abi.view(state_executable);
+        node.state = .{ .present = 1, .value = abi.view(state_executable) };
+        node.text = .{ .present = 1, .value = abi.view(loc(lang, "Trusted executable (absolute path)", "受信任工具（绝对路径）")) };
+        node.placeholder = .{ .present = 1, .value = abi.view("C:\\Program Files\\Git\\cmd\\git.exe") };
+        self.nodes[self.len] = node;
+        self.len += 1;
+    }
+
+    fn addLocalSetup(self: *Content, lang: Language, view: *const View) void {
+        if (view.setup_issue) |issue| self.add("vcs.setup-error", "", switch (issue) {
+            .invalid => loc(lang, "Enter the absolute path to the matching git.exe, jj.exe or svn.exe.", "请输入对应 git.exe、jj.exe 或 svn.exe 的绝对路径。"),
+            .busy => loc(lang, "Wait for the current query to finish; Check result if needed.", "请等待当前查询结束，必要时点击检查结果。"),
+            .changed => loc(lang, "Directory or selection changed. Review the current repository again.", "目录或选择已变化，请重新确认当前仓库。"),
+            .denied => loc(lang, "Trust setup refused. Review the path and repository.", "授权设置被拒绝，请检查路径和仓库。"),
+        });
+        if (!view.metadata_only or view.approval_required) return;
+        if (view.phase != .ready or view.workspace == null or view.snapshot == null) return;
+        if (view.local_review) |review| {
+            self.add("vcs.review-kind", loc(lang, "Tool: ", "工具："), review.kind.displayName());
+            self.add("vcs.review-exe", loc(lang, "Executable: ", "程序："), review.executable.slice());
+            self.add("vcs.review-root", loc(lang, "Repository: ", "仓库："), review.root.slice());
+            self.add("vcs.review-warning", "", loc(lang, "Trust only a known installation and repository, including their dependencies and configuration. Commands run as you; this is NOT a sandbox. No automatic approval or saved grant.", "仅信任已知的工具安装和仓库（含依赖及配置）。命令以当前用户身份运行，不是沙箱；不会自动授权或保存授权。"));
+            self.addButton("vcs.action.trust-confirm", loc(lang, "Trust tool and repository for this session", "信任工具及仓库（仅本次会话）"), command_trust_confirm);
+            self.addButton("vcs.action.trust-cancel", loc(lang, "Cancel review", "取消确认"), command_trust_cancel);
+        } else {
+            self.addExecutableInput(lang);
+            self.add("vcs.setup-help", "", loc(lang, "Use the full path of the installed tool (where.exe git / jj / svn can help). Choose a provider present in this repository.", "填写已安装工具的完整路径（可用 where.exe git / jj / svn 查找），选择当前仓库具有的类型。"));
+            self.addButton("vcs.action.trust-git", loc(lang, "Review Git access", "确认 Git 访问"), command_trust_git);
+            self.addButton("vcs.action.trust-jj", loc(lang, "Review Jujutsu access", "确认 Jujutsu 访问"), command_trust_jj);
+            self.addButton("vcs.action.trust-svn", loc(lang, "Review SVN access", "确认 SVN 访问"), command_trust_svn);
+        }
+    }
+
     /// Declare a stable vocabulary so subscriptions survive model updates.
     /// The owner still validates commands against current controller state.
     pub fn buildInteractive(self: *Content, lang: Language, view: *const View, tree: *ui.Tree) void {
         self.build(lang, view, tree);
-        self.commands = .{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check), abi.view(command_revoke) };
+        self.commands = .{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check), abi.view(command_revoke), abi.view(command_trust_git), abi.view(command_trust_jj), abi.view(command_trust_svn), abi.view(command_trust_confirm), abi.view(command_trust_cancel) };
         tree.commands = &self.commands;
-        tree.command_count = if (view.revocation_configured) 4 else 3;
+        tree.command_count = if (view.local_setup) 9 else if (view.revocation_configured) 4 else 3;
+        if (view.local_setup) {
+            self.states[0] = .{ .key = abi.view(state_executable), .value = abi.view("") };
+            tree.states = &self.states;
+            tree.state_count = self.states.len;
+            self.addLocalSetup(lang, view);
+        }
         if (view.phase != .stopped) {
             if (!view.approval_required and (view.workspace != null or view.discovery_available)) {
                 if (view.phase == .queued or view.phase == .refreshing) {
@@ -470,4 +543,20 @@ test "metadata-only view never presents unqueried changes as status counts" {
     try std.testing.expect(content.textFor("vcs.preview") != null);
     try std.testing.expect(content.textFor("vcs.modified") == null);
     try std.testing.expect(content.textFor("vcs.staged") == null);
+}
+
+test "local trust setup shows explicit review and never claims status without consent" {
+    var content: Content = undefined;
+    var tree: ui.Tree = undefined;
+    const workspace = try identity.Workspace.init(.git, "C:\\repo", "C:\\repo");
+    var view: View = .{ .phase = .ready, .workspace = workspace, .metadata_only = true, .local_setup = true, .snapshot = .{ .workspace = workspace, .availability = .not_queried } };
+    content.buildInteractive(.en, &view, &tree);
+    try std.testing.expectEqual(@as(u32, 9), tree.command_count);
+    try std.testing.expectEqual(@as(u32, 1), tree.state_count);
+    try std.testing.expect(content.textFor("vcs.status-unavailable") != null);
+    try std.testing.expect(content.textFor("vcs.review-warning") == null);
+    view.local_review = .{ .root = workspace.root, .kind = .jj, .executable = try identity.Path.init("C:\\tools\\jj.exe"), .generation = 1 };
+    content.buildInteractive(.en, &view, &tree);
+    try std.testing.expectEqualStrings("Executable: C:\\tools\\jj.exe", content.textFor("vcs.review-exe") orelse return error.TestUnexpectedResult);
+    try std.testing.expect(content.textFor("vcs.review-warning") != null);
 }
