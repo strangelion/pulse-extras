@@ -1,9 +1,6 @@
 # Unified extension release / 统一增强包发布设计
 
-Status: **design only**. No release workflow, production manifest, publisher key,
-registry submission or official acceptance is implied. Implement a reusable packaging
-pipeline after the first real VCS candidate passes isolated Pulse acceptance, then add
-manual release automation. Preserve change-aware CI for ordinary development.
+Status: **manual unsigned preview workflow implemented; first workflow run pending**. Local packaging remains available. No signing, stable release, registry submission or official acceptance is implied. Ordinary regression CI does not package or publish.
 
 ## 1. Upstream publication contract
 
@@ -18,9 +15,9 @@ register the publisher public key/fingerprint and extension version metadata via
 jimmgreen/pulse-extensions. Its maintainer verifies and signs the official catalog. Publishing
 here does not automatically make the package available in the store.
 
-## 2. Packaging (local official tool)
+## 2. Packaging (official tool)
 
-Packages are built locally, never in CI.
+Ordinary regression CI does not package. The separate manual preview workflow can build and package on an ephemeral Windows runner; local packaging remains supported.
 
 Companion bundles a runtime DLL and a helper executable, so the entry DLL must
 be compiled against their exact digests; otherwise the panel reports
@@ -72,11 +69,7 @@ and conditional candidates strangelion.companion and strangelion.forge.
 The ABI Probe and Hello Panel remain test/example packages and are not released as products
 by default. No placeholder or incomplete extension is publishable.
 
-Each actual package should have an authoritative release descriptor (proposed
-`extensions/<name>/extension.toml`), official manifest template, changelog, build target,
-required capability/SDK/host constraints, resources, notices and acceptance evidence.
-Determine the exact schema during implementation; do not duplicate version truth across files.
-The descriptor records independent version, release eligibility and channel policy. Tag example:
+The current authoritative product composition is the PRODUCTS table in scripts/package_release.py. Each manual preview dispatch supplies its own SemVer for each selected product. A committed release descriptor/changelog remains a future stable-channel improvement; do not duplicate version truth. The pinned official manifest schema rejects a product version field, so product SemVer belongs in release tag, asset name and evidence, not native.version (which is the ABI format version). Tag example:
 `vcs/v0.1.0`; asset: `strangelion.vcs-0.1.0.pulse-ext`. Treat published versions/tags as immutable.
 Shared library changes may require new versions of affected packages, never a forced version bump
 for unaffected ones. Each build records its bundled [Shared Runtime](shared-runtime.md) source/API
@@ -99,34 +92,49 @@ packages. Formal preview/stable publication channels remain separate.
 
 ## 3. One manually dispatched workflow
 
-Proposed `.github/workflows/release.yml`, manually triggered with workflow_dispatch.
-No automatic publication on a normal push, pull request or documentation update.
+Open Actions → Extension release → Run workflow on main.
 
 | Input | Values / meaning |
 | --- | --- |
-| scope | single, selected, all |
-| extensions | one short ID or comma-separated IDs; ignored/empty for all |
-| version | optional single-package override only if it matches the committed descriptor; batch uses per-package versions |
-| channel | preview, stable (map to prerelease policy; do not rewrite SemVer silently) |
-| mode | dry-run (default), draft, publish |
+| extensions | companion, vcs, companion,vcs or all |
+| companion_version | Independent SemVer; blank when Companion not selected |
+| vcs_version | Independent SemVer; blank when VCS not selected |
+| mode | dry-run (default), draft, publish-preview |
 
-GitHub's native workflow form does not provide dynamic multi-select. Use a string for selected
-IDs and validate against discovered, allowlisted package descriptors; never interpolate inputs
-as shell source or filesystem paths. Choices in docs/UI are illustrative. Reject unknown IDs,
-duplicates, inconsistent inputs, zero eligible packages, version/tag collisions, incompatible
-dependencies and release-ineligible explicit selections. All mode selects eligible real
-packages with unpublished versions; report skipped unchanged/ineligible packages and why.
-No implicit release of examples or placeholders. Preview/stable eligibility must be explicit;
-do not promote an unverified build to stable.
+Examples: companion / 0.1.0 / blank, or all / 0.1.0 / 0.2.0.
+Each selected extension receives its own tag and Release; no global version.
+SemVer build metadata is currently rejected for publication to avoid GitHub
+asset-name normalization. Unknown, duplicate and unselected version inputs
+are rejected. Existing tags or releases (including drafts visible to the
+publisher) block the batch; no overwrite or automatic deletion.
 
-Dry run compiles/tests/packages/verifies and uploads bounded short-lived CI artifacts if needed,
-without tag, signing secrets, registry changes or Release creation. Draft creates a reviewable
-GitHub Release with verified signed assets and explicit draft state (not a public publication).
-Publish requires approved protected release authority and complete gates. Validate effective
-permissions/settings before enabling publish; if GitHub plan or environment policy cannot enforce
-the required approval, keep publication manual instead of bypassing it.
+The workflow requires main and a clean immutable checkout, calls the existing
+full regression workflow once, then builds selected packages on Windows.
+The public author checkout is pinned to the SDK revision. The official
+Pulse 1.0.60 installer is pinned by exact size and SHA-256, installed using
+upstream /PULSETEST on an ephemeral runner. The local 1.0.61 SDK/host is not
+redistributed. Companion builds helper/runtime before embedding both hashes
+in its entry DLL; this release composition uses WIC, not bundled libwebp.
+The official native-manifest, pack and verify commands remain authoritative.
+Build and regression jobs have read-only tokens. Only the separate publication
+job receives contents:write. It revalidates artifact inventory, digests,
+manifest, source and collision state before creating per-product drafts.
+It compares the GitHub-returned asset digests before any explicit
+publish-preview operation. A partial failure leaves existing drafts/releases
+for inspection; the batch cannot be atomic. Do not delete or replace published
+versions. Use a new version or manually review exact retained drafts.
 
-## 4. Release phases
+Dry-run builds and verifies, retaining seven-day artifacts; no tag/release.
+Draft creates private reviewable unsigned preview drafts.
+Publish-preview explicitly publishes unsigned GitHub prereleases, never
+marks one latest and does not claim real-host acceptance. A release exposes
+native code: recipients must review its source and trust before installation.
+No stable channel, signing keys or official registry submission are automated.
+The stable release design below remains a separate future gate.
+
+## 4. Future stable release phases
+
+The following are the additional requirements for production/stable or signed registry releases, not claims made by the unsigned preview workflow.
 
 1. Plan: resolve immutable source commit, selection, descriptors, dependency impact, versions,
    tag/asset names and acceptance policy. Preflight every selected package and fail before any
@@ -182,7 +190,9 @@ official signature/policy options; consult the tool version's help rather than g
 
 ## 5. Release assets and evidence
 
-Each product release includes at minimum:
+Unsigned preview releases include the archive, raw manifest, release evidence, SHA256SUMS.txt, AGPL license and retained Apache license. The exact public source tag/commit is linked in the notes; the current composition uses the system WIC backend and no bundled libwebp or third-party pet assets. Before any composition change, review dependency notices and corresponding-source obligations. Stable/registry releases must additionally satisfy the following.
+
+Each stable product release includes at minimum:
 
 - strangelion.<name>-<version>.pulse-ext
 - strangelion.<name>-<version>.sig.json

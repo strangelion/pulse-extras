@@ -1,0 +1,121 @@
+name: Extension release
+
+on:
+  workflow_dispatch:
+    inputs:
+      extensions:
+        description: 'companion, vcs, companion,vcs or all'
+        required: true
+        default: companion
+        type: string
+      companion_version:
+        description: 'Companion SemVer (empty if not selected)'
+        required: false
+        type: string
+      vcs_version:
+        description: 'VCS SemVer (empty if not selected)'
+        required: false
+        type: string
+      mode:
+        description: 'Unsigned preview only; dry-run does not create releases'
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - draft
+          - publish-preview
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extension-release
+  cancel-in-progress: false
+
+env:
+  RELEASE_SELECTION: ${{ inputs.extensions }}
+  COMPANION_VERSION: ${{ inputs.companion_version }}
+  VCS_VERSION: ${{ inputs.vcs_version }}
+  RELEASE_MODE: ${{ inputs.mode }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Validate selection and remote collision state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/release_workflow.py plan
+
+  regression:
+    needs: plan
+    uses: ./.github/workflows/zig.yml
+    permissions:
+      contents: read
+
+  package:
+    needs: regression
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Restore pinned Zig archive
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/pulse-zig-archives
+          key: zig-archive-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.zig-version', 'scripts/zig-downloads.json') }}
+      - name: Install and verify pinned Zig
+        run: python scripts/install_zig.py
+      - name: Checkout pinned public author tools
+        uses: actions/checkout@v6
+        with:
+          repository: jimmgreen/pulse
+          ref: b32436831a066e18448b2810bef4bf989024fc68
+          path: .local/sdk
+          persist-credentials: false
+      - name: Build and verify selected packages
+        run: python scripts/release_workflow.py build
+      - name: Preserve exact verified candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-release-candidates
+          path: .local/release-output/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: package
+    if: inputs.mode != 'dry-run'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension-release-candidates
+          path: .local/release-output/
+      - name: Revalidate candidates and create independent preview releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/release_workflow.py publish
