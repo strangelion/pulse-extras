@@ -73,7 +73,10 @@ fn rejection(stderr: []const u8) anyerror {
         .{ .marker = "Package stage: root normalization failed.", .reason = error.PackageStageRootInvalid },
         .{ .marker = "Package stage: root pin failed.", .reason = error.PackageStageRootPinFailed },
         .{ .marker = "Package stage: final path occupied or inaccessible.", .reason = error.PackageStageFinalPathBlocked },
-        .{ .marker = "Package stage: pending directory creation failed.", .reason = error.PackageStagePendingCreateFailed },
+        .{ .marker = "Package stage: pending directory creation failed (Win32 ", .reason = error.PackageStagePendingCreateFailed },
+        .{ .marker = "Package stage: pending path already exists.", .reason = error.PackageStagePendingExists },
+        .{ .marker = "Package stage: outfits directory creation failed (Win32 ", .reason = error.PackageStageSubdirCreateFailed },
+        .{ .marker = "Package stage: activities directory creation failed (Win32 ", .reason = error.PackageStageSubdirCreateFailed },
         .{ .marker = "Package import failed at stage-copy (pending directory may remain).", .reason = error.PackageStageCopyFailed },
         .{ .marker = "Package import failed at stage-publish (Win32 ", .reason = error.PackageStagePublishFailed },
         .{ .marker = "Package path: expected a bounded local DOS directory.", .reason = error.PackagePathInvalid },
@@ -101,7 +104,10 @@ fn rejection(stderr: []const u8) anyerror {
         while (lines.next()) |line| {
             const trimmed = std.mem.trimEnd(u8, line, "\r");
             if (std.mem.eql(u8, trimmed, item.marker)) return item.reason;
-            if (item.reason == error.PackageStagePublishFailed and std.mem.startsWith(u8, trimmed, item.marker)) return item.reason;
+            if ((item.reason == error.PackageStagePublishFailed or
+                item.reason == error.PackageStagePendingCreateFailed or
+                item.reason == error.PackageStageSubdirCreateFailed) and
+                std.mem.startsWith(u8, trimmed, item.marker)) return item.reason;
         }
     }
     return error.PackageRejected;
@@ -204,7 +210,9 @@ test "helper rejection diagnostics preserve known stages and never forward raw s
     try std.testing.expectEqual(error.PackageMetadataInvalid, rejection("Package admission failed at metadata-parse.\r\nClassic package rejected: metadata, path, inventory or WebP header.\n"));
     try std.testing.expectEqual(error.PackageAtlasHeaderInvalid, rejection("Package admission failed at base-header.\n"));
     try std.testing.expectEqual(error.PackageStageRootPinFailed, rejection("Package stage: root pin failed.\nPackage import failed at stage-copy (pending directory may remain).\n"));
-    try std.testing.expectEqual(error.PackageStagePendingCreateFailed, rejection("Package stage: pending directory creation failed.\nPackage import failed at stage-copy (pending directory may remain).\n"));
+    try std.testing.expectEqual(error.PackageStagePendingCreateFailed, rejection("Package stage: pending directory creation failed (Win32 5).\nPackage import failed at stage-copy (pending directory may remain).\n"));
+    try std.testing.expectEqual(error.PackageStagePendingExists, rejection("Package stage: pending path already exists.\n"));
+    try std.testing.expectEqual(error.PackageStageSubdirCreateFailed, rejection("Package stage: outfits directory creation failed (Win32 3).\n"));
     try std.testing.expectEqual(error.PackageStageVerificationFailed, rejection("Package admission failed at metadata-open.\nPackage import failed at stage-verification (pending directory retained).\n"));
     try std.testing.expectEqual(error.PackageStagePublishFailed, rejection("Package import failed at stage-publish (Win32 5; pending directory retained).\n"));
     try std.testing.expectEqual(error.PackageRejected, rejection("arbitrary private path or unsupported output"));

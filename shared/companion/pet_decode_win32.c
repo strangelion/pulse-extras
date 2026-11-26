@@ -411,7 +411,12 @@ BOOL pet_package_stage(const pet_memory *memory, const pet_package *package,
         return FALSE;
     }
     if (!CreateDirectoryW(stage, NULL)) {
-        fputs("Package stage: pending directory creation failed.\n", stderr);
+        DWORD create_error = GetLastError();
+        if (create_error == ERROR_ALREADY_EXISTS || create_error == ERROR_FILE_EXISTS)
+            fputs("Package stage: pending path already exists.\n", stderr);
+        else
+            fprintf(stderr, "Package stage: pending directory creation failed (Win32 %lu).\n",
+                (unsigned long)create_error);
         return FALSE;
     }
     wchar_t dest[1024], folder[1024], leaf[80];
@@ -420,7 +425,12 @@ BOOL pet_package_stage(const pet_memory *memory, const pet_package *package,
         !join_path(dest, 1024, stage, L"spritesheet.webp") ||
         !stage_copy(memory, package->atlas, dest, MAX_COMPRESSED)) return FALSE;
     if (package->meta.outfit_count) {
-        if (!join_path(folder, 1024, stage, L"outfits") || !CreateDirectoryW(folder, NULL)) return FALSE;
+        if (!join_path(folder, 1024, stage, L"outfits")) return FALSE;
+        if (!CreateDirectoryW(folder, NULL)) {
+            fprintf(stderr, "Package stage: outfits directory creation failed (Win32 %lu).\n",
+                (unsigned long)GetLastError());
+            return FALSE;
+        }
         for (unsigned i = 0; i < package->meta.outfit_count; ++i) {
             if (!leaf_wide(package->meta.outfits[i].leaf, leaf, 80) ||
                 !join_path(dest, 1024, folder, leaf) ||
@@ -428,7 +438,12 @@ BOOL pet_package_stage(const pet_memory *memory, const pet_package *package,
         }
     }
     if (package->meta.count) {
-        if (!join_path(folder, 1024, stage, L"activities") || !CreateDirectoryW(folder, NULL)) return FALSE;
+        if (!join_path(folder, 1024, stage, L"activities")) return FALSE;
+        if (!CreateDirectoryW(folder, NULL)) {
+            fprintf(stderr, "Package stage: activities directory creation failed (Win32 %lu).\n",
+                (unsigned long)GetLastError());
+            return FALSE;
+        }
         for (unsigned i = 0; i < package->meta.count; ++i)
             for (unsigned j = 0; j <= package->meta.outfit_count; ++j) {
                 const pet_package_rep *rep = &package->meta.items[i].reps[j];
