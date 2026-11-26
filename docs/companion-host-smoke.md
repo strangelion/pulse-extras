@@ -165,3 +165,12 @@ companion-market-enter-task, market stage/shards and update-failed.
 Status 0 means the report was accepted; UINT32_MAX percent means
 indeterminate. Compare actual task status with the host popup caption.
 Do not cancel a running session merely to dismiss its popup.
+
+Persistent session popup: launch the runtime from Running. The finite
+runtime-check task may appear briefly; starting/adding/stopping desktop
+pets must not create a Pulse progress popup. Read readiness in the Running
+page, stop one/all, restart, and disable/exit the host while pets run.
+The extension-owned worker must be joined before deactivate returns;
+confirm no child processes remain and no late callbacks run. Collect
+companion-runtime-worker-start/end and phase/ready/terminal logs rather
+than session task-step logs (finite market tasks still report steps).

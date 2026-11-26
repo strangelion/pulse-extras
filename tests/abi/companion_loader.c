@@ -448,15 +448,8 @@ static void observe_worker(Fixture *f) {
 static PulseStatus PULSE_CALL create_task(void *ctx, const PulseTaskDescriptor *desc, PulseTaskId *id) {
     Fixture *f = ctx;
     REQUIRE(desc && desc->size >= sizeof(*desc) && desc->work && desc->user && id);
-    if (same(desc->type, "companion.session")) {
-        /* Read the optional tail independently of the Zig declaration. */
-        const PulseStringView *steps = NULL;
-        uint32_t count = 0;
-        REQUIRE(desc->size == 128);
-        memcpy(&steps, (const char *)desc + 96, sizeof(steps));
-        memcpy(&count, (const char *)desc + 104, sizeof(count));
-        REQUIRE(steps && count == 3 && steps[0].length && steps[1].length && steps[2].length);
-    }
+    /* Long-lived sessions must not allocate a Pulse progress task. */
+    REQUIRE(!same(desc->type, "companion.session"));
     if (f->bundled && f->worker && same(desc->type, "companion.library")) {
         REQUIRE(!f->aux_task);
         f->aux_task = ++f->next; f->aux_work = desc->work; f->aux_user = desc->user;
@@ -464,7 +457,7 @@ static PulseStatus PULSE_CALL create_task(void *ctx, const PulseTaskDescriptor *
         return PULSE_OK;
     }
     REQUIRE(!f->task);
-    int runtime = same(desc->type, "companion.runtime") || same(desc->type, "companion.session");
+    int runtime = same(desc->type, "companion.runtime");
     REQUIRE(same(desc->type, "companion.library") || (f->bundled && runtime));
     f->task = ++f->next; f->task_state = PULSE_TASK_RUNNING;
     f->task_work = desc->work; f->task_user = desc->user;
@@ -888,17 +881,17 @@ static int bundled_session(PulsePluginEntryV1Fn entry) {
     for (unsigned i = 0; i < 750 && f.task; ++i) { Sleep(20); pump(&f); }
     CHECK(!f.task && f.task_state == PULSE_TASK_COMPLETED && f.start_enabled);
     for (unsigned cycle = 0; cycle < 2; ++cycle) {
-        CHECK(click(&f, 12) == 0 && f.task && f.worker && !f.start_enabled);
-        for (unsigned i = 0; i < 900 && f.task && !f.first_frame; ++i) { Sleep(20); pump(&f); }
-        CHECK(f.task && f.first_frame && f.stop_enabled && f.start_enabled);
+        CHECK(click(&f, 12) == 0 && !f.task && !f.worker && !f.start_enabled);
+        for (unsigned i = 0; i < 900 && !f.first_frame; ++i) { Sleep(20); pump(&f); }
+        CHECK(!f.task && f.first_frame && f.stop_enabled && f.start_enabled);
         if (!cycle) {
-            CHECK(click(&f, 12) == 0 && f.task && !f.start_enabled);
-            for (unsigned i = 0; i < 900 && f.task && !f.two_ready; ++i) { Sleep(20); pump(&f); }
-            CHECK(f.task && f.two_ready && f.stop_enabled);
-            const uint64_t session = f.task;
-            CHECK(click(&f, 0) == 0 && f.aux_task && f.task == session);
-            for (unsigned i = 0; i < 100 && f.aux_task; ++i) { Sleep(20); pump(&f); }
-            CHECK(!f.aux_task && f.aux_released == 1 && f.task == session);
+            CHECK(click(&f, 12) == 0 && !f.task && !f.start_enabled);
+            for (unsigned i = 0; i < 900 && !f.two_ready; ++i) { Sleep(20); pump(&f); }
+            CHECK(!f.task && f.two_ready && f.stop_enabled);
+            CHECK(click(&f, 0) == 0 && f.task && !f.worker);
+            CHECK(cancel_task(&f, f.task) == PULSE_OK);
+            for (unsigned i = 0; i < 100 && f.task; ++i) { Sleep(20); pump(&f); }
+            CHECK(!f.task && !f.aux_task);
             CHECK(click(&f, 1) == 0 && f.first_frame && f.stop_enabled);
             CHECK(f.running_rows == 2 && f.running_search_token && f.running_search_changed);
             PulseUiStateChange change = {.key=view("running.query"), .value=view("#2"), .revision=1, .source_mask=PULSE_UI_STATE_USER};
@@ -908,22 +901,19 @@ static int bundled_session(PulsePluginEntryV1Fn entry) {
             change.value = view(""); change.revision = 2; batch.revision = 2;
             f.running_search_changed(f.running_search_user, f.page, &batch);
             CHECK(f.running_rows == 2 && click(&f, 14) == 0);
-            for (unsigned i = 0; i < 400 && f.task && !f.only_second; ++i) { Sleep(20); pump(&f); }
-            CHECK(f.task && f.only_second && f.stop_enabled);
+            for (unsigned i = 0; i < 400 && !f.only_second; ++i) { Sleep(20); pump(&f); }
+            CHECK(!f.task && f.only_second && f.stop_enabled);
             CHECK(click(&f, 13) == 0 && !f.stop_enabled);
-            for (unsigned i = 0; i < 400 && f.task; ++i) { Sleep(20); pump(&f); }
-            CHECK(!f.task && f.task_state == PULSE_TASK_CANCELLED && f.start_enabled);
+            for (unsigned i = 0; i < 400 && !f.start_enabled; ++i) { Sleep(20); pump(&f); }
+            CHECK(!f.task && f.start_enabled && !f.first_frame);
         } else {
-            // Match the SDK destroy contract: cancellation first, wait for
-            // the host-owned worker to return, then destroy plugin userdata.
+            /* Deactivate must join the extension-owned worker itself, not
+             * rely on the host's finite task drain. */
             out.deactivate(out.instance);
-            CHECK(f.worker && WaitForSingleObject(f.worker, 8000) == WAIT_OBJECT_0);
-            observe_worker(&f);
-            CHECK(f.task_state == PULSE_TASK_CANCELLED);
+            CHECK(!f.worker && !f.task && !f.page);
         }
     }
     out.destroy(out.instance);
-    CHECK(release_task(&f, f.task) == PULSE_OK);
     pump(&f);
     CHECK(!f.page && !f.pending && !f.worker && !f.queued);
     DeleteCriticalSection(&f.dispatch_lock);

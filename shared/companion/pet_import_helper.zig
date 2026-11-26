@@ -196,7 +196,6 @@ test "detail protocol accepts bounded Unicode and rejects unsafe fields" {
     try std.testing.expectError(error.InvalidHelperOutput, parseDetail("PULSE_PACKAGE_DETAIL_V1 2 0 0 0 61 62 extra"));
 }
 
-
 test "helper rejection diagnostics preserve known stages and never forward raw stderr" {
     try std.testing.expectEqual(error.PackageMetadataInvalid, rejection("Package admission failed at metadata-parse.\r\nClassic package rejected: metadata, path, inventory or WebP header.\n"));
     try std.testing.expectEqual(error.PackageAtlasHeaderInvalid, rejection("Package admission failed at base-header.\n"));

@@ -389,3 +389,20 @@ fingerprint, stage copy/verification/publication). Preserve transaction
 and recovery semantics; do not copy raw stderr or relax validation. If the
 helper does not exit normally, distinguish that case. Exact asset ID and
 specific rejection still require confirmation; do not claim an install fix.
+
+### D2 persistent popup removal
+
+The smoke-09 screenshot confirmed the host displays the new step bar and
+step 2 (background running) but still shows Preparing and a persistent
+progress window. The installed tasks.h has no automatic background or
+popup dismissal API. Separate long-lived sessions from finite host tasks:
+Companion owns one cancellable joinable worker, with UI updates through
+the existing dispatcher timer. Keep the actual host runtime-check ID
+separate; resource gates include both the check and the worker. Session
+stop only signals an atomic flag, the worker drains its process group,
+and deactivation joins before any UI callback teardown or possible DLL
+unload. No fake completed host task and no private-window manipulation.
+The bundled C fixture now rejects any companion.session host task, verifies
+real first-frame, second instance, stop-one, stop-all and deactivation,
+then unloads the DLL. Market and runtime private-store mutual exclusion
+is unchanged. Actual popup disappearance and shutdown latency need retest.

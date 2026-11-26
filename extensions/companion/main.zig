@@ -66,6 +66,10 @@ const Instance = struct {
     dispatch_token: std.atomic.Value(u64) = .init(0),
     task_id: u64 = 0,
     runtime_task_id: u64 = 0,
+    // A long-lived pet session is not a Pulse progress task. The extension
+    // owns the worker and joins it before deactivation/destroy can return.
+    session_worker: ?std.Thread = null,
+    session_cancel: std.atomic.Value(bool) = .init(false),
     task_kind: TaskKind = .runtime_check,
     runtime_task_state: u32 = raw.PULSE_TASK_RUNNING,
     runtime_done: std.atomic.Value(bool) = .init(false),
@@ -395,8 +399,12 @@ fn runningPageStart(offset: usize, total: usize) usize {
     return @min(offset / running_page_size, (total - 1) / running_page_size) * running_page_size;
 }
 
+fn runtimeBusy(instance: *const Instance) bool {
+    return instance.runtime_task_id != 0 or instance.session_worker != null;
+}
+
 fn marketIdle(instance: *const Instance) bool {
-    return instance.active and instance.section == .market and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.tasks != null and instance.dispatch != null and instance.market_request == null and instance.import_dialog == 0 and instance.removal_dialog == 0 and instance.picker_request == 0 and instance.preference_edit == null and instance.import_request == null and instance.removal_request == null and !instance.recovery_scan and !instance.fallback_pick and config.runtime_sha256.len == 64 and config.helper_sha256.len == 64;
+    return instance.active and instance.section == .market and instance.task_id == 0 and !runtimeBusy(instance) and instance.tasks != null and instance.dispatch != null and instance.market_request == null and instance.import_dialog == 0 and instance.removal_dialog == 0 and instance.picker_request == 0 and instance.preference_edit == null and instance.import_request == null and instance.removal_request == null and !instance.recovery_scan and !instance.fallback_pick and config.runtime_sha256.len == 64 and config.helper_sha256.len == 64;
 }
 
 fn fillMarketQueue(instance: *const Instance, content: *Content) ui.Node {
@@ -470,7 +478,7 @@ fn marketBrowserIdle(instance: *const Instance) bool {
 fn fillMarket(instance: *const Instance, content: *Content) usize {
     const idle = marketIdle(instance);
     const busy = instance.market_request != null and instance.task_id != 0;
-    const status = if (!instance.market_initial_attempted and instance.runtime_task_id != 0)
+    const status = if (!instance.market_initial_attempted and runtimeBusy(instance))
         "市场目录等待运行任务释放；停止桌宠后可加载"
     else
         instance.market_status;
@@ -840,18 +848,18 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 }
                 if (config.helper_sha256.len == 64 and snapshot.count != 0) {
                     content.asset_toolbar[0] = inputField("library.asset-id", "素材 ID", "输入素材 ID");
-                    const live = instance.runtime_task_id != 0 and instance.task_kind == .builtin_session;
-                    content.asset_toolbar[1] = action("library.start", "启动指定素材", commands[15], instance.preference_edit == null and !instance.stop_requested and (instance.runtime_task_id == 0 or (live and instance.session.canStart())));
+                    const live = runtimeBusy(instance) and instance.task_kind == .builtin_session;
+                    content.asset_toolbar[1] = action("library.start", "启动指定素材", commands[15], instance.preference_edit == null and !instance.stop_requested and (!runtimeBusy(instance) or (live and instance.session.canStart())));
                     content.children[count] = horizontal("library.start-toolbar", &content.asset_toolbar);
                     count += 1;
-                    const edit_enabled = config.runtime_sha256.len == 64 and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.tasks != null;
+                    const edit_enabled = config.runtime_sha256.len == 64 and instance.task_id == 0 and !runtimeBusy(instance) and instance.tasks != null;
                     content.preference_toolbar[0] = inputField("library.tag", "标签", "标签（最多 64 字节）");
                     content.preference_toolbar[1] = action("library.favorite-toggle", "切换收藏", commands[16], edit_enabled);
                     content.preference_toolbar[2] = action("library.tag-add", "添加标签", commands[17], edit_enabled);
                     content.preference_toolbar[3] = action("library.tag-remove", "移除标签", commands[18], edit_enabled);
                     content.children[count] = horizontal("library.preferences", &content.preference_toolbar);
                     count += 1;
-                    content.children[count] = fillProfileControls(content, edit_enabled, instance.task_id == 0 and !instance.stop_requested and (instance.runtime_task_id == 0 or (live and instance.session.canStart())));
+                    content.children[count] = fillProfileControls(content, edit_enabled, instance.task_id == 0 and !instance.stop_requested and (!runtimeBusy(instance) or (live and instance.session.canStart())));
                     count += 1;
                     if (instance.library_detail) |*detail| {
                         content.children[count] = fillLocalDetail(content, detail.id, &detail.detail);
@@ -870,14 +878,14 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 }
             }
             if (instance.dialogs != null and config.helper_sha256.len == 64 and config.runtime_sha256.len == 64) {
-                const enabled = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.import_dialog == 0 and instance.picker_request == 0;
+                const enabled = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and !runtimeBusy(instance) and instance.import_dialog == 0 and instance.picker_request == 0;
                 const embedded_picker = instance.dialog_v2_table != null and instance.picker_api != null and !instance.dialog_picker_disabled;
                 const buttons = fillImportToolbar(&content.import_toolbar, embedded_picker, enabled, instance.import_request != null, instance.task_id != 0 and !instance.import_cancel_requested);
                 content.children[count] = horizontal("library.import-toolbar", buttons);
                 count += 1;
             }
             if (config.runtime_sha256.len == 64) {
-                const can_scan = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.import_dialog == 0 and instance.picker_request == 0;
+                const can_scan = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and !runtimeBusy(instance) and instance.import_dialog == 0 and instance.picker_request == 0;
                 content.children[count] = action("library.recovery-scan", "扫描恢复状态（只读）", commands[22], can_scan);
                 count += 1;
             }
@@ -900,8 +908,8 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
         },
         .running => {
             content.children[2] = changingLabel(&content.dynamic_ids[0], "running.status", instance.runtime_status);
-            const live = instance.runtime_task_id != 0 and instance.task_kind == .builtin_session;
-            const can_start = config.runtime_sha256.len == 64 and config.helper_sha256.len == 64 and !instance.stop_requested and ((instance.runtime_task_id == 0 and instance.runtime_checked) or (live and instance.session.canStart()));
+            const live = runtimeBusy(instance) and instance.task_kind == .builtin_session;
+            const can_start = config.runtime_sha256.len == 64 and config.helper_sha256.len == 64 and !instance.stop_requested and ((!runtimeBusy(instance) and instance.runtime_checked) or (live and instance.session.canStart()));
             content.toolbar[0] = action("running.start", if (live) "再启动内置桌宠" else "启动内置桌宠", commands[12], can_start);
             content.toolbar[1] = action("running.stop", "停止全部桌宠", commands[13], live and !instance.stop_requested);
             content.children[3] = searchInput("running.query", "搜索实例", "搜索素材来源、实例编号、素材编号或 PID");
@@ -1022,7 +1030,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             const limits = instance.runtime_limits;
             const limits_text = std.fmt.bufPrint(&content.limits_text, "实例上限 {d} · 提交内存预算 {d} MiB · 有效上限 {d}（每实例预留 {d} MiB；系统资源不足仍会拒绝）", .{ limits.instances, limits.commit_mib, instance.runtime_policy.effective(limits), if (instance.runtime_policy.capture_crashes) @as(usize, 256) else @as(usize, 128) }) catch unreachable;
             content.children[5] = changingLabel(&content.limits_id, "settings.limits", limits_text);
-            const editable = instance.loaded and instance.pending == 0 and instance.runtime_task_id == 0;
+            const editable = instance.loaded and instance.pending == 0 and !runtimeBusy(instance);
             content.limits_inputs[0] = inputField("settings.instances", "实例上限", "实例上限（1–1024）");
             content.limits_inputs[0].enabled = .{ .present = 1, .value = @intFromBool(editable) };
             content.limits_inputs[1] = inputField("settings.commit-mib", "内存预算 MiB", "内存预算 MiB（128–131072）");
@@ -1039,7 +1047,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             }
             content.policy_actions[0] = action("settings.policy-save", "保存启动与退出策略", commands[80], policy_editable);
             content.policy_actions[1] = action("settings.plan-start", "执行已保存启动计划", commands[81], policy_editable and instance.runtime_policy.count != 0);
-            content.policy_actions[2] = action("settings.plan-cancel", "取消剩余启动", commands[82], instance.runtime_task_id != 0 and instance.session.plan_active.load(.acquire));
+            content.policy_actions[2] = action("settings.plan-cancel", "取消剩余启动", commands[82], runtimeBusy(instance) and instance.session.plan_active.load(.acquire));
             content.children[10] = horizontal("settings.policy-actions", &content.policy_actions);
             content.children[11] = action("settings.diagnostics", "导出脱敏诊断到临时目录", commands[87], instance.active and instance.task_id == 0 and instance.tasks != null and instance.dispatch != null);
             const diagnostic = if (instance.diagnostic_pending) "正在导出脱敏诊断" else if (instance.diagnostic_path_len != 0) instance.diagnostic_path[0..instance.diagnostic_path_len] else instance.diagnostic_status;
@@ -1181,7 +1189,7 @@ fn completed(user: ?*anyopaque, reply: [*c]const raw.PulseResourcesReply) callco
         instance.runtime_policy = policy;
         if (!instance.auto_considered and operation == raw.PULSE_RESOURCES_SETTINGS_GET) {
             instance.auto_considered = true;
-            instance.auto_pending = policy.automatic and policy.count != 0 and instance.runtime_task_id == 0;
+            instance.auto_pending = policy.automatic and policy.count != 0 and !runtimeBusy(instance);
         }
         instance.version = value.settings.version;
         instance.loaded = true;
@@ -1218,7 +1226,7 @@ fn save(instance: *Instance, next: u8) void {
 }
 
 fn saveLimits(instance: *Instance) void {
-    if (!instance.loaded or instance.pending != 0 or instance.runtime_task_id != 0) return;
+    if (!instance.loaded or instance.pending != 0 or runtimeBusy(instance)) return;
     const panel = instance.panel orelse return;
     const get_state = panel.table.get_state orelse return;
     var count: [16]u8 = undefined;
@@ -1241,7 +1249,7 @@ fn saveLimits(instance: *Instance) void {
 }
 
 fn savePolicy(instance: *Instance) void {
-    if (!instance.loaded or instance.pending != 0 or instance.runtime_task_id != 0 or instance.task_id != 0 or instance.auto_pending or instance.policy_sync_failed) return;
+    if (!instance.loaded or instance.pending != 0 or runtimeBusy(instance) or instance.task_id != 0 or instance.auto_pending or instance.policy_sync_failed) return;
     const panel = instance.panel orelse return;
     const get_state = panel.table.get_state orelse return;
     const policy = blk: {
@@ -1329,7 +1337,6 @@ comptime {
     if (@sizeOf(raw.PulseTaskProgress) != 72 or @offsetOf(TaskProgress61, "step") != 72 or @offsetOf(TaskProgress61, "linked_operation") != 80 or @sizeOf(TaskProgress61) != 192) @compileError("task progress 1.0.61 x64 ABI mismatch");
 }
 
-const session_steps = [_]abi.StringView{ abi.view("启动桌宠"), abi.view("后台运行"), abi.view("停止与清理") };
 const market_steps = [_]abi.StringView{ abi.view("读取目录索引"), abi.view("验证目录分片"), abi.view("整理搜索结果") };
 
 fn steppedDescriptor(base: raw.PulseTaskDescriptor, steps: []const abi.StringView) TaskDescriptor61 {
@@ -1339,14 +1346,6 @@ fn steppedDescriptor(base: raw.PulseTaskDescriptor, steps: []const abi.StringVie
     descriptor.steps = steps.ptr;
     descriptor.step_count = @intCast(steps.len);
     return descriptor;
-}
-
-fn sessionStep(previous: u32, phase: library.Phase) u32 {
-    return @max(previous, @as(u32, switch (phase) {
-        .idle, .starting => 1,
-        .running => 2,
-        .stopping => 3,
-    }));
 }
 
 // Host-owned worker. Writes only the private result buffer; no UI call.
@@ -1429,34 +1428,23 @@ const SearchWatch = struct {
 };
 
 const SessionWatch = struct {
-    context: [*c]const raw.PulseTaskContext,
-    session: *library.Session,
+    instance: *Instance,
     last_phase: ?library.Phase = null,
-    step: u32 = 0,
 
     fn canceled(user: ?*anyopaque) callconv(.c) u32 {
         const self: *SessionWatch = @ptrCast(@alignCast(user orelse return 1));
-        const host_cancel = self.context[0].cancelled orelse return 1;
-        if (host_cancel(self.context[0].context) != 0) {
+        if (self.instance.session_cancel.load(.acquire)) {
             if (self.last_phase != .stopping) {
                 self.last_phase = .stopping;
                 diag.event("companion-runtime-cancel-observed");
-                self.step = 3;
-                reportTask(self.context, "正在退出并清理桌宠", self.step);
             }
             return 1;
         }
-        const phase: library.Phase = @fromBackingInt(@intCast(self.session.phase.load(.acquire)));
+        const phase: library.Phase = @fromBackingInt(@intCast(self.instance.session.phase.load(.acquire)));
         if (self.last_phase == null or self.last_phase.? != phase) {
             self.last_phase = phase;
             diag.status("companion-runtime-phase", @backingInt(phase));
-            diag.status("companion-runtime-ready", self.session.ready.load(.acquire));
-            self.step = sessionStep(self.step, phase);
-            reportTask(self.context, switch (phase) {
-                .idle, .starting => "正在启动桌宠并等待首帧",
-                .running => "桌宠后台运行中；可选择在后台继续",
-                .stopping => "正在退出并清理桌宠",
-            }, self.step);
+            diag.status("companion-runtime-ready", self.instance.session.ready.load(.acquire));
         }
         return 0;
     }
@@ -1602,20 +1590,33 @@ fn checkRuntime(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) call
     return if (canceled(context[0].context) != 0) raw.PULSE_TASK_CANCELLED else raw.PULSE_TASK_COMPLETED;
 }
 
-fn runBuiltin(user: ?*anyopaque, context: [*c]const raw.PulseTaskContext) callconv(.c) raw.PulseTaskState {
-    const instance: *Instance = @ptrCast(@alignCast(user orelse return raw.PULSE_TASK_FAILED));
+// No host SDK calls on this worker. The cancellation callback reads only
+// our atomic flag; the existing runtime owns and drains all child jobs.
+fn runSessionWorker(instance: *Instance) void {
     defer instance.runtime_done.store(true, .release);
-    if (context == null) return raw.PULSE_TASK_FAILED;
-    const canceled = context[0].cancelled orelse return raw.PULSE_TASK_FAILED;
-    if (canceled(context[0].context) != 0) return raw.PULSE_TASK_CANCELLED;
-    diag.status("companion-runtime-worker-start", context[0].id);
-    defer diag.status("companion-runtime-worker-end", context[0].id);
-    var watch: SessionWatch = .{ .context = context, .session = &instance.session };
+    diag.event("companion-runtime-worker-start");
+    defer diag.event("companion-runtime-worker-end");
+    var watch: SessionWatch = .{ .instance = instance };
     library.runBuiltin(&instance.session, config.runtime_sha256, config.helper_sha256, SessionWatch.canceled, &watch) catch |err| {
         instance.runtime_error = err;
-        return raw.PULSE_TASK_FAILED;
+        diag.event(@errorName(err));
     };
-    return if (canceled(context[0].context) != 0) raw.PULSE_TASK_CANCELLED else raw.PULSE_TASK_COMPLETED;
+}
+
+// Only called on the owner UI thread, after the worker has published done
+// or during shutdown. Join before releasing Instance, never detach it.
+fn collectSession(instance: *Instance, stopping: bool) void {
+    const worker = instance.session_worker orelse return;
+    if (stopping) instance.session_cancel.store(true, .release);
+    if (!stopping and !instance.runtime_done.load(.acquire)) return;
+    worker.join();
+    instance.session_worker = null;
+    instance.runtime_task_state = if (instance.runtime_error != null) raw.PULSE_TASK_FAILED else if (instance.session_cancel.load(.acquire)) raw.PULSE_TASK_CANCELLED else raw.PULSE_TASK_COMPLETED;
+    diag.status("companion-runtime-terminal", instance.runtime_task_state);
+    instance.running_rows = .{};
+    instance.stop_requested = false;
+    instance.runtime_checked = instance.runtime_error == null and !stopping;
+    instance.runtime_status = if (instance.runtime_error) |err| @errorName(err) else "全部桌宠已退出";
 }
 
 fn observe(user: ?*anyopaque, snapshot: [*c]const raw.PulseTaskSnapshot) callconv(.c) void {
@@ -1703,7 +1704,7 @@ fn pollTasks(instance: *Instance) void {
     pollSearch(instance);
     maybeAutoStart(instance);
     maybeBrowseMarket(instance);
-    if (instance.task_id == 0 and instance.runtime_task_id == 0 and !(instance.section == .library and instance.search_pending)) stopTimer(instance);
+    if (instance.task_id == 0 and !runtimeBusy(instance) and !(instance.section == .library and instance.search_pending)) stopTimer(instance);
 }
 
 fn validSearch(value: []const u8) bool {
@@ -1957,7 +1958,7 @@ fn pollLibrary(instance: *Instance) void {
     if (instance.fallback_pick) {
         instance.fallback_pick = false;
         const done = instance.work_done.load(.acquire);
-        if (instance.active and instance.section == .library and instance.runtime_task_id == 0) {
+        if (instance.active and instance.section == .library and !runtimeBusy(instance)) {
             if (instance.task_state == raw.PULSE_TASK_COMPLETED and done and instance.work_error == null) {
                 if (instance.picked_folder) |folder| {
                     var selection: Selection = .{};
@@ -1998,6 +1999,19 @@ fn pollLibrary(instance: *Instance) void {
 }
 
 fn pollRuntime(instance: *Instance) void {
+    if (instance.session_worker != null) {
+        if (instance.runtime_done.load(.acquire)) {
+            collectSession(instance, false);
+            refresh(instance);
+        } else {
+            instance.session.copyRows(&instance.running_rows);
+            if (!instance.stop_requested and instance.session.phase.load(.acquire) == @backingInt(library.Phase.running)) {
+                instance.runtime_status = "桌宠后台运行中";
+            }
+            if (instance.section == .running) refresh(instance);
+        }
+        return;
+    }
     const tasks = instance.tasks orelse return;
     if (instance.runtime_task_id == 0) return;
     const get = tasks.get orelse return;
@@ -2008,16 +2022,7 @@ fn pollRuntime(instance: *Instance) void {
         refresh(instance);
         return;
     }
-    if (!terminal(instance.runtime_task_state)) {
-        if (instance.task_kind == .builtin_session) {
-            instance.session.copyRows(&instance.running_rows);
-            if (!instance.stop_requested and instance.session.phase.load(.acquire) == @backingInt(library.Phase.running)) {
-                instance.runtime_status = "桌宠后台运行中；Pulse 任务窗口可选择在后台继续";
-            }
-            if (instance.section == .running) refresh(instance);
-        }
-        return;
-    }
+    if (!terminal(instance.runtime_task_state)) return;
     if (release(tasks.context, instance.runtime_task_id) != abi.ok) {
         instance.runtime_status = "运行时任务释放失败；请重试";
         refresh(instance);
@@ -2027,19 +2032,13 @@ fn pollRuntime(instance: *Instance) void {
     instance.runtime_task_id = 0;
     instance.running_rows = .{};
     const done = instance.runtime_done.load(.acquire);
-    if (instance.task_kind == .builtin_session) {
-        instance.stop_requested = false;
-        instance.runtime_status = if (done and instance.runtime_error != null) @errorName(instance.runtime_error.?) else if (instance.runtime_task_state == raw.PULSE_TASK_COMPLETED or instance.runtime_task_state == raw.PULSE_TASK_CANCELLED) "全部桌宠已退出" else "运行任务未完成";
-        instance.runtime_checked = done and instance.runtime_error == null;
-    } else {
-        instance.runtime_checked = instance.runtime_task_state == raw.PULSE_TASK_COMPLETED and done and instance.runtime_error == null;
-        instance.runtime_status = if (instance.runtime_checked) "同包运行时已通过检查；可启动内置桌宠" else if (done) if (instance.runtime_error) |err| @errorName(err) else "运行时检查未完成" else "运行时检查已取消";
-    }
+    instance.runtime_checked = instance.runtime_task_state == raw.PULSE_TASK_COMPLETED and done and instance.runtime_error == null;
+    instance.runtime_status = if (instance.runtime_checked) "同包运行时已通过检查；可启动内置桌宠" else if (done) if (instance.runtime_error) |err| @errorName(err) else "运行时检查未完成" else "运行时检查已取消";
     refresh(instance);
 }
 
 fn startRuntimeCheck(instance: *Instance) void {
-    if (instance.diagnostic_pending or instance.detail_request != null or instance.market_request != null or !instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or instance.runtime_task_id != 0 or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0) return;
+    if (instance.diagnostic_pending or instance.detail_request != null or instance.market_request != null or !instance.active or config.runtime_sha256.len == 0 or instance.runtime_checked or runtimeBusy(instance) or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0) return;
     const tasks = instance.tasks orelse return;
     const create = tasks.create orelse return;
     // Existing dispatcher/timer is required: do not create an uncollectable task.
@@ -2070,7 +2069,7 @@ fn startRuntimeCheck(instance: *Instance) void {
 }
 
 fn startBuiltin(instance: *Instance) void {
-    if (instance.runtime_task_id == 0 and !instance.runtime_checked) return;
+    if (!runtimeBusy(instance) and !instance.runtime_checked) return;
     startAsset(instance, library.builtin_asset_id);
 }
 
@@ -2084,13 +2083,13 @@ fn startAssetProfile(instance: *Instance, asset_id: u64, choice: library.LaunchP
 }
 
 fn maybeAutoStart(instance: *Instance) void {
-    if (!instance.auto_pending or !instance.active or !instance.loaded or instance.task_id != 0 or instance.runtime_task_id != 0) return;
+    if (!instance.auto_pending or !instance.active or !instance.loaded or instance.task_id != 0 or runtimeBusy(instance)) return;
     instance.auto_pending = false;
     startPlan(instance);
 }
 
 fn startPlan(instance: *Instance) void {
-    if (!instance.active or !instance.loaded or instance.pending != 0 or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.runtime_policy.count == 0) return;
+    if (!instance.active or !instance.loaded or instance.pending != 0 or instance.task_id != 0 or runtimeBusy(instance) or instance.runtime_policy.count == 0) return;
     if (instance.runtime_policy.total() > instance.runtime_policy.effective(instance.runtime_limits) or instance.runtime_policy.effective(instance.runtime_limits) == 0) {
         instance.runtime_status = "启动计划超过有效资源上限；未启动";
         refresh(instance);
@@ -2108,22 +2107,34 @@ fn startPlan(instance: *Instance) void {
 
 fn startSession(instance: *Instance, asset_id: u64, choice: library.LaunchProfile, planned: bool) void {
     const packed_profile = choice.pack() catch return;
-    if (instance.runtime_task_id == 0 and instance.runtime_policy.effective(instance.runtime_limits) == 0) {
+    if (!runtimeBusy(instance) and instance.runtime_policy.effective(instance.runtime_limits) == 0) {
         instance.runtime_status = "崩溃监控需要每实例256 MiB预算；未启动";
         refresh(instance);
         return;
     }
     if (instance.diagnostic_pending or instance.detail_request != null or instance.market_request != null or !instance.active or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null or instance.stop_requested or instance.preference_edit != null or instance.import_request != null or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.recovery_scan or instance.removal_request != null or instance.removal_dialog != 0 or asset_id == 0) return;
-    if (instance.runtime_task_id != 0) {
+    if (runtimeBusy(instance)) {
         if (instance.task_kind != .builtin_session) return;
         instance.runtime_status = if (instance.session.requestAssetProfile(asset_id, choice)) "已提交新增实例请求" else "暂不可新增实例；请等待或停止";
         refresh(instance);
         return;
     }
-    const tasks = instance.tasks orelse return;
-    const create = tasks.create orelse return;
+    // Do not race a pending private-store task with a new session.
+    if (instance.task_id != 0) {
+        instance.runtime_status = "正在处理其他任务；请等待后再启动";
+        refresh(instance);
+        return;
+    }
+    if (comptime builtin.os.tag != .windows) return;
+    armTimer(instance);
+    if (instance.timer == null) {
+        instance.runtime_status = "宿主自动刷新不可用；未启动桌宠";
+        refresh(instance);
+        return;
+    }
     instance.runtime_done.store(false, .release);
     instance.runtime_error = null;
+    instance.session_cancel.store(false, .release);
     instance.session.reset();
     instance.session.limits = instance.runtime_limits;
     instance.session.policy = instance.runtime_policy;
@@ -2135,26 +2146,18 @@ fn startSession(instance: *Instance, asset_id: u64, choice: library.LaunchProfil
     instance.running_rows = .{};
     instance.stop_requested = false;
     instance.task_kind = .builtin_session;
-    const descriptor = steppedDescriptor(.{
-        .title = abi.view("运行桌宠"),
-        .type = abi.view("companion.session"),
-        .work = runBuiltin,
-        .user = instance,
-    }, &session_steps);
-    var id: u64 = 0;
-    if (create(tasks.context, &descriptor.base, &id) == abi.ok and id != 0) {
-        instance.runtime_task_id = id;
-        instance.runtime_status = "桌宠任务已提交";
-        armTimer(instance);
-        if (instance.timer == null) instance.runtime_status = "自动收集不可用；切换页面重试检查";
-    } else {
-        instance.runtime_status = "宿主拒绝启动任务";
-    }
+    instance.session_worker = std.Thread.spawn(.{}, runSessionWorker, .{instance}) catch |err| {
+        instance.runtime_status = @errorName(err);
+        diag.event(@errorName(err));
+        refresh(instance);
+        return;
+    };
+    instance.runtime_status = "正在启动桌宠并等待首帧";
     refresh(instance);
 }
 
 fn setVisibility(instance: *Instance, all: bool, show: bool) void {
-    if (instance.runtime_task_id == 0 or instance.task_kind != .builtin_session or instance.stop_requested) return;
+    if (!runtimeBusy(instance) or instance.task_kind != .builtin_session or instance.stop_requested) return;
     const id = if (all) std.math.maxInt(u64) else blk: {
         const panel = instance.panel orelse return;
         const get_state = panel.table.get_state orelse return;
@@ -2179,7 +2182,7 @@ fn exportDiagnostic(instance: *Instance) void {
     const report = std.fmt.bufPrint(&instance.diagnostic_report, "PulseExtras Companion diagnostic v1\nSDK preview: {d}\nconfigured_instances: {d}\ncommit_budget_mib: {d}\neffective_limit: {d}\nstartup_batch: {d}\nstartup_interval_ms: {d}\nshutdown_grace_ms: {d}\nshutdown_timeout_ms: {d}\nowned: {d}\nready: {d}\nworking_set_bytes: {d}\nprivate_bytes: {d}\nlaunch_attempted: {d}\nlaunch_created: {d}\nrejections: {d}\nlast_rejection: {d}\nconfirmed_exits: {d}\nabnormal_exits: {d}\nlast_exit_code: {d}\nhistory_write_status: {d}\nhide_on_minimize: {d}\nhost_window_state: {d}\ncapture_crashes: {d}\ndump_stats_available: {d}\ndumps_saved: {d}\ndumps_failed: {d}\n", .{ abi.sdk_preview, instance.runtime_limits.instances, instance.runtime_limits.commit_mib, instance.runtime_policy.effective(instance.runtime_limits), instance.runtime_policy.batch_size, instance.runtime_policy.interval_ms, instance.runtime_policy.grace_ms, instance.runtime_policy.timeout_ms, session.owned.load(.acquire), session.ready.load(.acquire), session.working_set.load(.acquire), session.private_bytes.load(.acquire), session.plan_attempted.load(.acquire), session.plan_launched.load(.acquire), session.denied.load(.acquire), session.last_rejection.load(.acquire), session.exits.load(.acquire), session.abnormal_exits.load(.acquire), session.last_exit.load(.acquire), session.history_status.load(.acquire), @intFromBool(instance.runtime_policy.hide_on_minimize), session.host_window_state.load(.acquire), @intFromBool(instance.runtime_policy.capture_crashes), @intFromBool(session.dump_stats_available.load(.acquire)), session.dumps_saved.load(.acquire), session.dumps_failed.load(.acquire) }) catch return;
     instance.diagnostic_report_len = report.len;
     instance.diagnostic_path_len = 0;
-    instance.diagnostic_history_allowed = instance.runtime_task_id == 0;
+    instance.diagnostic_history_allowed = !runtimeBusy(instance);
     instance.diagnostic_pending = true;
     instance.work_done.store(false, .release);
     instance.work_error = null;
@@ -2204,20 +2207,16 @@ fn exportDiagnostic(instance: *Instance) void {
 
 fn stopBuiltin(instance: *Instance) void {
     instance.auto_pending = false;
-    if (instance.runtime_task_id == 0 or instance.task_kind != .builtin_session or instance.stop_requested) return;
-    const tasks = instance.tasks orelse return;
-    const cancel = tasks.cancel orelse return;
-    if (cancel(tasks.context, instance.runtime_task_id) == abi.ok) {
-        instance.stop_requested = true;
-        instance.runtime_status = "已请求停止全部桌宠；等待实际退出";
-    } else {
-        instance.runtime_status = "停止请求未确认";
-    }
+    if (!runtimeBusy(instance) or instance.task_kind != .builtin_session or instance.stop_requested) return;
+    if (instance.session_worker == null) return;
+    instance.session_cancel.store(true, .release);
+    instance.stop_requested = true;
+    instance.runtime_status = "已请求停止全部桌宠；等待实际退出";
     refresh(instance);
 }
 
 fn stopOne(instance: *Instance) void {
-    if (instance.runtime_task_id == 0 or instance.task_kind != .builtin_session or instance.stop_requested) return;
+    if (!runtimeBusy(instance) or instance.task_kind != .builtin_session or instance.stop_requested) return;
     const panel = instance.panel orelse return;
     const get_state = panel.table.get_state orelse return;
     var bytes: [32]u8 = undefined;
@@ -2273,7 +2272,7 @@ fn startLibraryProfile(instance: *Instance, choice: library.LaunchProfile) void 
 }
 
 fn startLocalDetail(instance: *Instance) void {
-    if (!instance.active or !instance.library_loaded or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.removal_dialog != 0 or instance.picker_request != 0 or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null) return;
+    if (!instance.active or !instance.library_loaded or instance.task_id != 0 or runtimeBusy(instance) or instance.import_dialog != 0 or instance.removal_dialog != 0 or instance.picker_request != 0 or config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or instance.dispatch == null) return;
     const panel = instance.panel orelse return;
     const get_state = panel.table.get_state orelse return;
     var bytes: [32]u8 = undefined;
@@ -2318,7 +2317,7 @@ fn startCustomProfile(instance: *Instance) void {
 
 fn startPreference(instance: *Instance, action_kind: library.PreferenceAction) void {
     if (instance.import_dialog != 0 or instance.import_request != null or instance.picker_request != 0 or instance.fallback_pick) return;
-    if (!instance.active or !instance.library_loaded or instance.task_id != 0 or instance.runtime_task_id != 0 or config.runtime_sha256.len != 64 or instance.dispatch == null) return;
+    if (!instance.active or !instance.library_loaded or instance.task_id != 0 or runtimeBusy(instance) or config.runtime_sha256.len != 64 or instance.dispatch == null) return;
     const panel = instance.panel orelse return;
     const get_state = panel.table.get_state orelse return;
     var id_bytes: [32]u8 = undefined;
@@ -2418,7 +2417,7 @@ fn importClosed(user: ?*anyopaque, dialog: u64, status: abi.Status, button: abi.
         refresh(instance);
         return;
     }
-    if (instance.task_id != 0 or instance.runtime_task_id != 0 or instance.section != .library or count != 2 or states == null) {
+    if (instance.task_id != 0 or runtimeBusy(instance) or instance.section != .library or count != 2 or states == null) {
         instance.library_status = "导入条件已变化，请重试";
         refresh(instance);
         return;
@@ -2442,7 +2441,7 @@ fn importClosed(user: ?*anyopaque, dialog: u64, status: abi.Status, button: abi.
 }
 
 fn showImport(instance: *Instance) void {
-    if (!instance.active or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.tasks == null or instance.dispatch == null or config.helper_sha256.len != 64 or config.runtime_sha256.len != 64) return;
+    if (!instance.active or instance.task_id != 0 or runtimeBusy(instance) or instance.import_dialog != 0 or instance.tasks == null or instance.dispatch == null or config.helper_sha256.len != 64 or config.runtime_sha256.len != 64) return;
     if (instance.picker_request != 0 or instance.fallback_pick) return;
     var selection: Selection = .{};
     const context = instance.host.queryOptional(raw.PulseContextV1, raw.PULSE_CONTEXT_INTERFACE_NAME, raw.PULSE_CONTEXT_VERSION_1) catch null;
@@ -2527,7 +2526,7 @@ fn importDialogCommand(user: ?*anyopaque, dialog: u64, command: abi.StringView) 
 }
 
 fn browseImport(instance: *Instance) void {
-    if (!instance.active or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.dialogs == null or instance.tasks == null or instance.dispatch == null or config.helper_sha256.len != 64 or config.runtime_sha256.len != 64) return;
+    if (!instance.active or instance.task_id != 0 or runtimeBusy(instance) or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.dialogs == null or instance.tasks == null or instance.dispatch == null or config.helper_sha256.len != 64 or config.runtime_sha256.len != 64) return;
     if (instance.picker_api) |picker| {
         if (picker.pick_folders) |pick| {
             if (picker.cancel != null) {
@@ -2561,7 +2560,7 @@ fn browseImport(instance: *Instance) void {
 }
 
 fn showImportWithSelection(instance: *Instance, selection: *const Selection) void {
-    if (!instance.active or instance.section != .library or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0) return;
+    if (!instance.active or instance.section != .library or instance.task_id != 0 or runtimeBusy(instance) or instance.import_dialog != 0 or instance.picker_request != 0) return;
     const dialogs = instance.dialogs orelse return;
     const embedded_picker = instance.dialog_v2_table != null and instance.picker_api != null and !instance.dialog_picker_disabled;
     var fields = [_]ui.Node{ inputField("import.path", "素材文件夹", "本地绝对路径，例如 C:\\Pets\\cat"), inputField("import.id", "来源 ID", "pet.json 中的 id"), ui.node(ui.NodeKind.button) };
@@ -2657,7 +2656,7 @@ fn cancelImport(instance: *Instance) void {
 }
 
 fn canMaintain(instance: *const Instance) bool {
-    return instance.active and instance.library_loaded and instance.recovery_report != null and instance.tasks != null and instance.dispatch != null and instance.dialogs != null and instance.task_id == 0 and instance.runtime_task_id == 0 and instance.import_dialog == 0 and instance.removal_dialog == 0 and instance.removal_request == null and instance.picker_request == 0 and !instance.fallback_pick and !instance.recovery_scan and instance.preference_edit == null and instance.import_request == null;
+    return instance.active and instance.library_loaded and instance.recovery_report != null and instance.tasks != null and instance.dispatch != null and instance.dialogs != null and instance.task_id == 0 and !runtimeBusy(instance) and instance.import_dialog == 0 and instance.removal_dialog == 0 and instance.removal_request == null and instance.picker_request == 0 and !instance.fallback_pick and !instance.recovery_scan and instance.preference_edit == null and instance.import_request == null;
 }
 
 fn confirmedRemoval(status: abi.Status, button: abi.StringView) bool {
@@ -2767,7 +2766,7 @@ fn showRemovalDialog(instance: *Instance, request: library.RemovalRequest) void 
 }
 
 fn startRecovery(instance: *Instance) void {
-    if (!instance.active or config.runtime_sha256.len != 64 or instance.dispatch == null or instance.tasks == null or instance.task_id != 0 or instance.runtime_task_id != 0 or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.preference_edit != null or instance.import_request != null) return;
+    if (!instance.active or config.runtime_sha256.len != 64 or instance.dispatch == null or instance.tasks == null or instance.task_id != 0 or runtimeBusy(instance) or instance.import_dialog != 0 or instance.picker_request != 0 or instance.fallback_pick or instance.preference_edit != null or instance.import_request != null) return;
     instance.recovery_report = null;
     instance.work_recovery_report = null;
     instance.recovery_scan = true;
@@ -3133,10 +3132,11 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
                     instance.market_render_rejected = false;
                     diag.status("companion-market-enter-task", instance.task_id);
                     diag.status("companion-market-enter-runtime-task", instance.runtime_task_id);
+                    diag.status("companion-market-enter-session", @intFromBool(instance.session_worker != null));
                 }
                 // Reconcile completion on explicit navigation even if a
                 // queued timer dispatch has not yet reached the UI.
-                if (instance.task_id != 0 or instance.runtime_task_id != 0) pollTasks(instance);
+                if (instance.task_id != 0 or runtimeBusy(instance)) pollTasks(instance);
                 if (instance.section == .library) {
                     if (instance.search_pending) armTimer(instance);
                     if (!instance.library_loaded and instance.task_id == 0 and !instance.search_pending) startLibrary(instance, false);
@@ -3258,6 +3258,9 @@ fn close(instance: *Instance) host_mod.Error!void {
     instance.runtime_checked = false;
     instance.runtime_status = if (config.runtime_sha256.len == 0) "未打包运行时；无法启动桌宠" else "切换至运行管理时检查同包运行时";
     stopTimer(instance);
+    // Unlike a host task, our worker is not protected by Pulse's task drain.
+    // Cancel and join it here, before any early return or callback teardown.
+    collectSession(instance, true);
     instance.search_pending = false;
     instance.search_ticks = 0;
     if (instance.running_search_token != 0) {
@@ -3430,7 +3433,7 @@ fn open(instance: *Instance) host_mod.Error!void {
     if (instance.resources) |resources| {
         if (resources.settings_get == null or resources.settings_set == null or resources.cancel_request == null) instance.resources = null;
     }
-    if (instance.task_id == 0 and instance.runtime_task_id == 0) {
+    if (instance.task_id == 0 and !runtimeBusy(instance)) {
         instance.library_loaded = false;
         instance.library_offset = 0;
         instance.tasks = try instance.host.queryOptional(raw.PulseTasksV1, raw.PULSE_TASKS_INTERFACE_NAME, raw.PULSE_TASKS_VERSION_1);
@@ -3447,10 +3450,10 @@ fn open(instance: *Instance) host_mod.Error!void {
     instance.auto_considered = false;
     instance.auto_pending = false;
     instance.active = true;
-    const had_tasks = instance.task_id != 0 or instance.runtime_task_id != 0;
+    const had_tasks = instance.task_id != 0 or runtimeBusy(instance);
     if (had_tasks) {
         pollTasks(instance);
-        if (instance.task_id != 0 or instance.runtime_task_id != 0) armTimer(instance);
+        if (instance.task_id != 0 or runtimeBusy(instance)) armTimer(instance);
     } else if (instance.section == .library) {
         startLibrary(instance, false);
     } else if (instance.section == .running) {
@@ -3492,8 +3495,8 @@ fn destroy(user: ?*anyopaque) callconv(.c) void {
         diag.status("companion-destroy-failed", @intFromError(err));
         return;
     };
-    // The pinned host keeps the DLL and task userdata alive through stop;
-    // destroy is called only after host task workers/cancel callbacks return.
+    // The private session worker is joined by close. The pinned host keeps
+    // the DLL alive through the remaining finite SDK tasks and callbacks.
     diag.event("companion-destroy");
     allocator.destroy(instance);
 }
@@ -3786,16 +3789,11 @@ test "default market browsing has an empty optional query and never admits insta
     try std.testing.expect(instance.market_request == null);
 }
 
-test "append-only task phase ABI and monotonic runtime step" {
-    const desc = steppedDescriptor(.{}, &session_steps);
+test "append-only finite market task phase ABI" {
+    const desc = steppedDescriptor(.{}, &market_steps);
     try std.testing.expectEqual(@as(u32, 128), desc.base.size);
     try std.testing.expectEqual(@as(u32, 3), desc.step_count);
-    try std.testing.expectEqualStrings("后台运行", abi.slice(desc.steps[1]).?);
-    try std.testing.expectEqual(@as(u32, 1), sessionStep(0, .starting));
-    try std.testing.expectEqual(@as(u32, 2), sessionStep(1, .running));
-    try std.testing.expectEqual(@as(u32, 2), sessionStep(2, .starting));
-    try std.testing.expectEqual(@as(u32, 3), sessionStep(2, .stopping));
-    try std.testing.expectEqual(@as(u32, 3), sessionStep(3, .running));
+    try std.testing.expectEqualStrings("验证目录分片", abi.slice(desc.steps[1]).?);
 }
 
 test "populated market rows survive navigation without forbidden button attributes" {
