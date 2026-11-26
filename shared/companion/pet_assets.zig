@@ -96,13 +96,17 @@ pub fn parseMetadata(allocator: std.mem.Allocator, input: []const u8, expected_i
         if (version != .integer or version.integer != 2) return error.UnsupportedFormat;
         layout = .v2;
     }
+    // The official catalog ZIPs may include category/subcategory alongside
+    // Classic metadata. They are descriptive only, never paths, commands,
+    // format selectors or runtime state. Keep the supported format gate.
     var keys = object.iterator();
     while (keys.next()) |entry| {
         const key = entry.key_ptr.*;
         if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "displayName") or
             std.mem.eql(u8, key, "description") or std.mem.eql(u8, key, "spritesheetPath") or
             std.mem.eql(u8, key, "spriteVersionNumber") or std.mem.eql(u8, key, "activities") or
-            std.mem.eql(u8, key, "wardrobe") or std.mem.eql(u8, key, "gazeAnchor")) continue;
+            std.mem.eql(u8, key, "wardrobe") or std.mem.eql(u8, key, "gazeAnchor") or
+            std.mem.eql(u8, key, "category") or std.mem.eql(u8, key, "subcategory")) continue;
         return error.UnsupportedFormat;
     }
     const clothes = wardrobe.parse(object.get("wardrobe")) catch return error.InvalidMetadata;
@@ -221,6 +225,19 @@ test "classic metadata resolves exact v1 and v2 dimensions" {
     try t.expectEqual(@as(u32, 1872), one.layout.height());
     try t.expectEqual(@as(u32, 2288), two.layout.height());
     try t.expectEqual(@as(usize, 14057472), two.layout.rgbaBytes());
+}
+
+test "market classification metadata is inert for Classic V1 and V2" {
+    const input = "{\"id\":\"halloween-witch-hat\",\"displayName\":\"Witch Hat\",\"description\":\"Witch Hat, a little Halloween companion.\",\"spritesheetPath\":\"spritesheet.webp\",\"spriteVersionNumber\":2,\"category\":\"western\",\"subcategory\":\"halloween\"}";
+    const meta = try parseMetadata(t.allocator, input, "halloween-witch-hat");
+    try t.expectEqual(Layout.v2, meta.layout);
+    try t.expectEqualStrings("Witch Hat", meta.display_name[0..meta.display_name_len]);
+    try t.expectEqual(@as(u8, 0), meta.wardrobe.count);
+    try t.expectEqual(@as(u8, 0), meta.activities.count);
+    const v1 = try parseMetadata(t.allocator, "{\"id\":\"a\",\"displayName\":\"A\",\"description\":\"A\",\"spritesheetPath\":\"spritesheet.webp\",\"category\":\"asian\",\"subcategory\":\"example\"}", "a");
+    try t.expectEqual(Layout.v1, v1.layout);
+    try t.expectError(error.UnsupportedFormat, parseMetadata(t.allocator, "{\"id\":\"a\",\"displayName\":\"A\",\"description\":\"A\",\"spritesheetPath\":\"spritesheet.svg\",\"category\":\"western\"}", "a"));
+    try t.expectError(error.UnsupportedFormat, parseMetadata(t.allocator, "{\"id\":\"a\",\"displayName\":\"A\",\"description\":\"A\",\"spritesheetPath\":\"spritesheet.webp\",\"motion\":{}}", "a"));
 }
 
 test "metadata rejects mismatches unsupported formats and duplicate keys" {

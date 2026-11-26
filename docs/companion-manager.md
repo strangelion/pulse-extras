@@ -406,3 +406,22 @@ The bundled C fixture now rejects any companion.session host task, verifies
 real first-frame, second instance, stop-one, stop-all and deactivation,
 then unloads the DLL. Market and runtime private-store mutual exclusion
 is unchanged. Actual popup disappearance and shutdown latency need retest.
+
+### D2 actual market package compatibility
+
+User supplied the official Witch Hat base ZIP (SHA-256
+cd9f7acfae8cb0b54c9c5d2e4d7b78359235e8cf4b4b5745340b6ccf0b20ace6).
+Two root members: pet.json (249 bytes) and spritesheet.webp (2392182
+bytes). Metadata has normal Classic V2 fields plus category=western and
+subcategory=halloween. The current allowlist rejected both classification
+keys as UnsupportedFormat, collapsed by the helper to metadata-parse.
+The pinned upstream metadata.ts projects known fields and ignores these
+classification values. Admit these two inert keys without changing any
+path, inventory, format, resource, fingerprint or cleanup checks. Keep
+other unsupported keys rejected. The supplied static VP8L has matching
+RIFF length, zero padding and 1536x2288 RGBA dimensions; decoded locally
+with Pillow, not the native runtime. Add pure parser regression and native
+helper admission fixture with synthetic V2 header (no third-party art
+committed). User also confirmed persistent session popup removed and
+builtin launch works; full teardown and actual market install/launch
+remain to be tested. The preceding Windows/Ubuntu/IPC/desktop gate passed.

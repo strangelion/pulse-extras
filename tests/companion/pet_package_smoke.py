@@ -41,6 +41,25 @@ def main() -> None:
             if stage is not None:
                 assert stage in result.stderr, result.stderr
 
+        # Reproduce the official Witch Hat ZIP's metadata without committing
+        # its third-party artwork. Synthetic V2 header is sufficient for admission.
+        witch = pathlib.Path(tmp) / "halloween-witch-hat"
+        witch.mkdir()
+        witch_meta = {
+            "id": "halloween-witch-hat", "displayName": "Witch Hat",
+            "description": "Witch Hat, a little Halloween companion.",
+            "spritesheetPath": "spritesheet.webp", "spriteVersionNumber": 2,
+            "category": "western", "subcategory": "halloween",
+        }
+        (witch / "pet.json").write_text(json.dumps(witch_meta), encoding="utf-8")
+        (witch / "spritesheet.webp").write_bytes(
+            b"RIFF\x12\x00\x00\x00WEBPVP8L\x05\x00\x00\x00\x2f\xff\xc5\x3b\x12\x00")
+        check(True, "halloween-witch-hat", witch)
+        # Both classification fields remain inert; format gates still apply.
+        witch_meta["spritesheetPath"] = "spritesheet.svg"
+        (witch / "pet.json").write_text(json.dumps(witch_meta), encoding="utf-8")
+        check(False, "halloween-witch-hat", witch, b"metadata-parse")
+
         check(True)
         # Independent canonical fingerprint reference, using actual file bytes.
         def reference(algorithm=hashlib.sha256, domain=b"pulse-classic-package-sha256-v1\x00"):
