@@ -21,9 +21,9 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
-    all: [31]std.Build.Module.Import = undefined,
+    all: [42]std.Build.Module.Import = undefined,
 
-    fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module) Modules {
+    fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module, companion_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
             .root_source_file = b.path("shared/pulse/raw/pulse_all.zig"),
             .target = target,
@@ -80,6 +80,40 @@ const Modules = struct {
                 .{ .name = "pulse_host", .module = host },
             },
         });
+        const async_host = b.createModule(.{
+            .root_source_file = b.path("shared/pulse/async_host.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pulse_raw", .module = raw },
+                .{ .name = "pulse_abi", .module = abi },
+                .{ .name = "pulse_host", .module = host },
+            },
+        });
+        const task_progress = b.createModule(.{
+            .root_source_file = b.path("shared/pulse/task_progress.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pulse_raw", .module = raw },
+                .{ .name = "pulse_abi", .module = abi },
+            },
+        });
+        const pickers = b.createModule(.{
+            .root_source_file = b.path("shared/pulse/pickers_compat.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "pulse_abi", .module = abi }},
+        });
+        const dialogs_v2 = b.createModule(.{
+            .root_source_file = b.path("shared/pulse/dialogs_v2_compat.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pulse_raw", .module = raw },
+                .{ .name = "pulse_abi", .module = abi },
+            },
+        });
         const ui_mount = b.createModule(.{
             .root_source_file = b.path("shared/pulse/ui_mount.zig"),
             .target = target,
@@ -92,6 +126,11 @@ const Modules = struct {
         });
         const diagnostics = b.createModule(.{
             .root_source_file = b.path("shared/diagnostics/probe_log.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const runtime_retention = b.createModule(.{
+            .root_source_file = b.path("shared/runtime/retention.zig"),
             .target = target,
             .optimize = optimize,
         });
@@ -217,6 +256,37 @@ const Modules = struct {
                 .{ .name = "vcs_detect", .module = vcs_detect },
             },
         });
+        const vcs_panel = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/panel.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_provider", .module = vcs_provider },
+                .{ .name = "vcs_session", .module = vcs_session },
+                .{ .name = "vcs_capabilities", .module = vcs_capabilities },
+                .{ .name = "vcs_detect", .module = vcs_detect },
+                .{ .name = "pulse_abi", .module = abi },
+                .{ .name = "pulse_ui_model", .module = ui_model },
+            },
+        });
+        const vcs_host_query = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/host_query.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pulse_abi", .module = abi },
+                .{ .name = "pulse_host", .module = host },
+                .{ .name = "pulse_context", .module = context_mod },
+                .{ .name = "pulse_async_host", .module = async_host },
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_provider", .module = vcs_provider },
+                .{ .name = "vcs_panel", .module = vcs_panel },
+                .{ .name = "pulse_ui_model", .module = ui_model },
+                .{ .name = "vcs_capabilities", .module = vcs_capabilities },
+                .{ .name = "vcs_detect", .module = vcs_detect },
+            },
+        });
         const vcs_git = b.createModule(.{
             .root_source_file = b.path("shared/vcs/providers/git.zig"),
             .target = target,
@@ -228,6 +298,8 @@ const Modules = struct {
                 .{ .name = "vcs_identity", .module = vcs_identity },
                 .{ .name = "vcs_provider", .module = vcs_provider },
                 .{ .name = "vcs_session", .module = vcs_session },
+                .{ .name = "vcs_panel", .module = vcs_panel },
+                .{ .name = "pulse_ui_model", .module = ui_model },
                 .{ .name = "pulse_process", .module = process_mod },
                 .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
@@ -262,16 +334,64 @@ const Modules = struct {
                 .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
         });
+        const vcs_approval = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/approval.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_detect", .module = vcs_detect },
+                .{ .name = "vcs_provider", .module = vcs_provider },
+                .{ .name = "vcs_cli", .module = vcs_cli },
+                .{ .name = "vcs_git", .module = vcs_git },
+                .{ .name = "vcs_host_query", .module = vcs_host_query },
+                .{ .name = "pulse_process", .module = process_mod },
+                .{ .name = "process_trust", .module = process_trust },
+                .{ .name = "vcs_test_config", .module = vcs_test_config },
+                .{ .name = "pulse_async_host", .module = async_host },
+                .{ .name = "pulse_abi", .module = abi },
+            },
+        });
+        const vcs_windows_evidence = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/windows_evidence.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_approval", .module = vcs_approval },
+                .{ .name = "vcs_provider", .module = vcs_provider },
+            },
+        });
+        const companion_library = b.createModule(.{
+            .root_source_file = b.path("shared/companion_extension.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "runtime_retention", .module = runtime_retention },
+                .{ .name = "runtime_budget", .module = runtime_budget },
+                .{ .name = "runtime_group", .module = runtime_group },
+                .{ .name = "runtime_temp_store", .module = runtime_temp_store },
+                .{ .name = "process_trust", .module = process_trust },
+                .{ .name = "pulse_process", .module = process_mod },
+            },
+        });
         var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod, .vcs_capabilities = vcs_capabilities, .vcs_identity = vcs_identity, .vcs_risk = vcs_risk, .vcs_detect = vcs_detect, .vcs_provider = vcs_provider, .vcs_cli = vcs_cli, .vcs_snapshot = vcs_snapshot, .vcs_git = vcs_git, .vcs_jj = vcs_jj, .vcs_svn = vcs_svn };
         modules.all = .{
+            .{ .name = "companion_library", .module = companion_library },
+            .{ .name = "companion_config", .module = companion_config },
             .{ .name = "pulse_raw", .module = raw },
             .{ .name = "pulse_abi", .module = abi },
             .{ .name = "pulse_host", .module = host },
             .{ .name = "pulse_commands", .module = commands },
             .{ .name = "pulse_context", .module = context_mod },
+            .{ .name = "pulse_task_progress", .module = task_progress },
+            .{ .name = "pulse_async_host", .module = async_host },
+            .{ .name = "pulse_pickers", .module = pickers },
+            .{ .name = "pulse_dialogs_v2", .module = dialogs_v2 },
             .{ .name = "pulse_ui_model", .module = ui_model },
             .{ .name = "pulse_ui_mount", .module = ui_mount },
             .{ .name = "pulse_diagnostics", .module = diagnostics },
+            .{ .name = "runtime_retention", .module = runtime_retention },
             .{ .name = "runtime_budget", .module = runtime_budget },
             .{ .name = "runtime_allocator", .module = runtime_allocator },
             .{ .name = "runtime_latest_task", .module = runtime_latest_task },
@@ -291,7 +411,11 @@ const Modules = struct {
             .{ .name = "vcs_cli", .module = vcs_cli },
             .{ .name = "vcs_snapshot", .module = vcs_snapshot },
             .{ .name = "vcs_session", .module = vcs_session },
+            .{ .name = "vcs_panel", .module = vcs_panel },
+            .{ .name = "vcs_host_query", .module = vcs_host_query },
             .{ .name = "vcs_git", .module = vcs_git },
+            .{ .name = "vcs_approval", .module = vcs_approval },
+            .{ .name = "vcs_windows_evidence", .module = vcs_windows_evidence },
             .{ .name = "vcs_jj", .module = vcs_jj },
             .{ .name = "vcs_svn", .module = vcs_svn },
             .{ .name = "vcs_test_config", .module = vcs_test_config },
@@ -315,13 +439,19 @@ pub fn build(b: *std.Build) void {
     const vcs_test_options = b.addOptions();
     const environ = &b.graph.environ_map;
     vcs_test_options.addOption([]const u8, "path", environ.get("PATH") orelse "");
+    vcs_test_options.addOption([]const u8, "system_root", environ.get("SystemRoot") orelse environ.get("SYSTEMROOT") orelse "");
     vcs_test_options.addOption(bool, "require_git", std.mem.eql(u8, environ.get("PULSE_REQUIRE_GIT") orelse "", "1"));
     vcs_test_options.addOption(bool, "require_jj", std.mem.eql(u8, environ.get("PULSE_REQUIRE_JJ") orelse "", "1"));
     vcs_test_options.addOption(bool, "require_svn", std.mem.eql(u8, environ.get("PULSE_REQUIRE_SVN") orelse "", "1"));
     vcs_test_options.addOption([]const u8, "svn_working_copy", environ.get("PULSE_TEST_SVN_WC") orelse "");
     const vcs_test_config = vcs_test_options.createModule();
 
-    var dll_modules = Modules.add(b, target, optimize, vcs_test_config);
+    const companion_options = b.addOptions();
+    companion_options.addOption([]const u8, "runtime_sha256", b.option([]const u8, "companion-runtime-sha256", "Approved runtime DLL digest for bundled Companion") orelse "");
+    companion_options.addOption([]const u8, "helper_sha256", b.option([]const u8, "companion-helper-sha256", "Approved bundled helper digest") orelse "");
+    const companion_config = companion_options.createModule();
+
+    var dll_modules = Modules.add(b, target, optimize, vcs_test_config, companion_config);
     const dll = b.addLibrary(.{
         .name = "pulse_abi_probe",
         .linkage = .dynamic,
@@ -345,16 +475,194 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(hello_panel);
+    b.installArtifact(hello_panel);
+
+    // Optional trusted provisioning implementation compiled into the DLL.
+    // The default is always locked. Never load an arbitrary runtime source.
+    const source_path = b.option([]const u8, "vcs-approval-source", "Trusted reviewed approval provisioning Zig source (relative to repository)") orelse "extensions/vcs-panel/default_source.zig";
+    const native_source = b.createModule(.{
+        .root_source_file = b.path(source_path),
+        .target = target,
+        .optimize = optimize,
+        .imports = dll_modules.imports(),
+    });
+    const vcs_panel_dll = b.addLibrary(.{
+        .name = "pulse_vcs_panel",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("extensions/vcs-panel/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = dll_modules.imports(),
+        }),
+    });
+    vcs_panel_dll.root_module.addImport("vcs_native_source", native_source);
+    b.installArtifact(vcs_panel_dll);
+
+    // Experimental settings contribution; not a release-ready pet runtime.
+    const companion = b.addLibrary(.{
+        .name = "pulse_companion",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("extensions/companion/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = dll_modules.imports(),
+        }),
+    });
+    b.installArtifact(companion);
+
+    // Standalone companion uses the existing GNU Windows native ABI.
+    // Explicit step: no demo in the default production DLL install.
+    const pet_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu });
+    var pet_modules = Modules.add(b, pet_target, optimize, vcs_test_config, companion_config);
+    const pet_root = b.createModule(.{
+        .root_source_file = b.path("shared/companion/pet_demo.zig"),
+        .target = pet_target,
+        .optimize = optimize,
+        .imports = pet_modules.imports(),
+        .link_libc = true,
+    });
+    pet_root.addCSourceFiles(.{
+        .files = &.{
+            "shared/companion/pet_demo_win32.c",
+            "shared/companion/pet_decode_win32.c",
+            "shared/companion/pet_surface_win32.c",
+            "shared/companion/pet_config_win32.c",
+            "shared/companion/pet_crash_watch_win32.c",
+            "shared/companion/pet_private_root_win32.c",
+            "shared/fs/private_root_win32.c",
+            "shared/diagnostics/crash_win32.c",
+            "shared/diagnostics/store_win32.c",
+        },
+    });
+    for ([_][]const u8{ "user32", "gdi32", "shell32", "ole32", "windowscodecs", "uuid", "advapi32" }) |lib|
+        pet_root.linkSystemLibrary(lib, .{});
+    // Explicit experimental backend. The default WIC build is unchanged.
+    const pet_libwebp = b.option(bool, "pet-libwebp", "Use the pinned static WebP decoder for pet-demo") orelse false;
+    if (pet_libwebp) {
+        const source = b.path(".local/deps/libwebp-1.6.0");
+        pet_root.addIncludePath(source);
+        pet_root.addCMacro("PULSE_PET_LIBWEBP", "1");
+        pet_root.addCSourceFiles(.{
+            .root = source,
+            .files = &.{
+                "src/dec/alpha_dec.c",           "src/dec/buffer_dec.c",               "src/dec/frame_dec.c",
+                "src/dec/idec_dec.c",            "src/dec/io_dec.c",                   "src/dec/quant_dec.c",
+                "src/dec/tree_dec.c",            "src/dec/vp8_dec.c",                  "src/dec/vp8l_dec.c",
+                "src/dec/webp_dec.c",            "src/dsp/alpha_processing.c",         "src/dsp/cpu.c",
+                "src/dsp/dec.c",                 "src/dsp/dec_clip_tables.c",          "src/dsp/filters.c",
+                "src/dsp/lossless.c",            "src/dsp/rescaler.c",                 "src/dsp/upsampling.c",
+                "src/dsp/yuv.c",                 "src/dsp/alpha_processing_sse2.c",    "src/dsp/dec_sse2.c",
+                "src/dsp/filters_sse2.c",        "src/dsp/lossless_sse2.c",            "src/dsp/rescaler_sse2.c",
+                "src/dsp/upsampling_sse2.c",     "src/dsp/yuv_sse2.c",                 "src/dsp/alpha_processing_sse41.c",
+                "src/dsp/dec_sse41.c",           "src/dsp/lossless_sse41.c",           "src/dsp/upsampling_sse41.c",
+                "src/dsp/yuv_sse41.c",           "src/dsp/lossless_avx2.c",            "src/utils/bit_reader_utils.c",
+                "src/utils/color_cache_utils.c", "src/utils/filters_utils.c",          "src/utils/huffman_utils.c",
+                "src/utils/palette.c",           "src/utils/quant_levels_dec_utils.c", "src/utils/rescaler_utils.c",
+                "src/utils/random_utils.c",      "src/utils/thread_utils.c",
+            },
+            .flags = &.{"-DWEBP_DSP_OMIT_C_CODE=0"},
+        });
+        pet_root.addCSourceFile(.{ .file = b.path("shared/companion/pet_webp_utils.c"), .flags = &.{"-DWEBP_DSP_OMIT_C_CODE=0"} });
+    }
+    const pet = b.addExecutable(.{ .name = "pulse-pet-demo", .root_module = pet_root });
+    if (pet_libwebp) {
+        // Verify before the compiler attempts to open any third-party source.
+        // Never download implicitly during a build.
+        const verify_webp = b.addSystemCommand(&.{"python"});
+        verify_webp.addFileArg(b.path("scripts/install_pet_webp.py"));
+        verify_webp.addArg("--check");
+        pet.step.dependOn(&verify_webp.step);
+    }
+    const pet_step = b.step("pet-demo", "Build and install the experimental standalone Windows companion");
+    pet_step.dependOn(&b.addInstallArtifact(pet, .{}).step);
+
+    // Separate, explicitly invoked crash collector; never installed with the default DLLs.
+    const dump_root = b.createModule(.{
+        .target = pet_target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    dump_root.addCSourceFiles(.{
+        .files = &.{ "shared/companion/pet_crash_capture_win32.c", "shared/process/job_win32.c", "shared/diagnostics/crash_win32.c" },
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
+    });
+    dump_root.linkSystemLibrary("shell32", .{});
+    dump_root.linkSystemLibrary("advapi32", .{});
+    const dump_capture = b.addExecutable(.{ .name = "pulse-pet-crash-capture", .root_module = dump_root });
+    b.step("pet-crash-capture", "Build the opt-in standalone child crash collector").dependOn(&b.addInstallArtifact(dump_capture, .{}).step);
+
+    // Optional GNU supervisor DLL; a versioned C table is the only exported
+    // contract. The MSVC settings extension need not link GNU CRT objects.
+    const runtime_root = b.createModule(.{
+        .target = pet_target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    runtime_root.addCSourceFiles(.{
+        .files = &.{ "shared/companion/pet_supervisor_win32.c", "shared/companion/pet_runtime_bridge_win32.c", "shared/companion/pet_private_root_win32.c", "shared/companion/pet_catalog_store_win32.c", "shared/companion/pet_market_http_win32.c", "shared/fs/private_root_win32.c", "shared/process/image_win32.c", "shared/process/job_win32.c", "shared/process/metrics_win32.c", "shared/network/https_win32.c" },
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
+    });
+    runtime_root.linkSystemLibrary("psapi", .{});
+    runtime_root.linkSystemLibrary("advapi32", .{});
+    runtime_root.linkSystemLibrary("winhttp", .{});
+    const runtime_bridge = b.addLibrary(.{
+        .name = "pulse_companion_runtime",
+        .linkage = .dynamic,
+        .root_module = runtime_root,
+    });
+    const runtime_step = b.step("companion-runtime-bridge", "Build the experimental versioned native supervisor bridge");
+    runtime_step.dependOn(&b.addInstallArtifact(runtime_bridge, .{}).step);
+
+    const bridge_probe = b.addExecutable(.{
+        .name = "companion-bridge-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("shared/companion_bridge_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = dll_modules.imports(),
+        }),
+    });
+    b.step("companion-bridge-probe", "Build the isolated MSVC runtime integration probe").dependOn(&b.addInstallArtifact(bridge_probe, .{}).step);
 
     // Every module also runs its own tests on the host target, so the wrappers
     // are checked even when the probe does not use them yet.
-    var host_modules = Modules.add(b, b.graph.host, .Debug, vcs_test_config);
+    var host_modules = Modules.add(b, b.graph.host, .Debug, vcs_test_config, companion_config);
+    const locked_source = b.createModule(.{
+        .root_source_file = b.path("extensions/vcs-panel/locked_source.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+        .imports = host_modules.imports(),
+    });
+    const import_integration = b.step("test-companion-import", "Run Windows real-helper and durable inventory integration");
+    if (b.graph.host.result.os.tag == .windows and b.graph.host.result.cpu.arch == .x86_64) {
+        const import_root = b.createModule(.{
+            .root_source_file = b.path("shared/companion_import_integration.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .link_libc = true,
+            .imports = host_modules.imports(),
+        });
+        import_root.addCSourceFiles(.{
+            .files = &.{ "shared/companion/pet_catalog_store_win32.c", "tests/companion/pet_catalog_store_fixture.c", "shared/companion/pet_market_http_win32.c", "shared/companion/pet_private_root_win32.c", "shared/fs/private_root_win32.c", "shared/network/https_win32.c" },
+            .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
+        });
+        import_root.linkSystemLibrary("winhttp", .{});
+        import_root.linkSystemLibrary("advapi32", .{});
+        const import_tests = b.addTest(.{ .root_module = import_root });
+        import_integration.dependOn(&b.addRunArtifact(import_tests).step);
+    }
     const test_sources = [_][]const u8{
         "extensions/abi-probe/main.zig",
         "extensions/hello-panel/main.zig",
+        "extensions/vcs-panel/main.zig",
+        "extensions/vcs-panel/default_source.zig",
+        "extensions/companion/main.zig",
         "shared/diagnostics/probe_log.zig",
         "shared/process/run.zig",
         "shared/runtime/budget.zig",
+        "shared/runtime/retention.zig",
         "shared/runtime/allocator.zig",
         "shared/runtime/latest_task.zig",
         "shared/runtime/group.zig",
@@ -368,6 +676,10 @@ pub fn build(b: *std.Build) void {
         "shared/pulse/host.zig",
         "shared/pulse/commands.zig",
         "shared/pulse/context.zig",
+        "shared/pulse/async_host.zig",
+        "shared/pulse/task_progress.zig",
+        "shared/pulse/pickers_compat.zig",
+        "shared/pulse/dialogs_v2_compat.zig",
         "shared/pulse/ui_model.zig",
         "shared/pulse/ui_mount.zig",
         "shared/vcs/capabilities.zig",
@@ -378,11 +690,45 @@ pub fn build(b: *std.Build) void {
         "shared/vcs/cli.zig",
         "shared/vcs/snapshot.zig",
         "shared/vcs/session.zig",
+        "shared/vcs/panel.zig",
+        "shared/vcs/host_query.zig",
+        "shared/vcs/approval.zig",
+        "shared/vcs/windows_evidence.zig",
         "shared/vcs/providers/git.zig",
         "shared/vcs/providers/jj.zig",
         "shared/vcs/providers/svn.zig",
+        "shared/companion_extension.zig",
+        "shared/companion/openpets_protocol.zig",
+        "shared/companion/openpets_lease.zig",
+        "shared/companion/behavior.zig",
+        "shared/companion/pet_assets.zig",
+        "shared/companion/pet_activities.zig",
+        "shared/companion/pet_wardrobe.zig",
+        "shared/companion/pet_package.zig",
+        "shared/companion/pet_memory.zig",
+        "shared/companion/pet_manager.zig",
+        "shared/companion/pet_catalog.zig",
+        "shared/companion/pet_history.zig",
+        "shared/companion/pet_inventory.zig",
+        "shared/companion/pet_recovery_scan.zig",
+        "shared/companion/pet_removal_receipt.zig",
+        "shared/companion/pet_fingerprint.zig",
+        "shared/companion/pet_import.zig",
+        "shared/companion/pet_import_helper.zig",
+        "shared/companion/pet_market.zig",
+        "shared/companion/pet_market_cache.zig",
+        "shared/companion/pet_market_download.zig",
+        "shared/companion/pet_market_tasks.zig",
+        "shared/companion/pet_zip.zig",
+        "shared/companion/pet_resources.zig",
+        "shared/companion/pet_decode_task.zig",
+        "shared/companion/pet_async_bridge.zig",
+        "shared/companion/animation.zig",
+        "shared/companion/native_dispatch.zig",
     };
     const test_step = b.step("test", "Run native ABI, wrapper and lifecycle regression tests");
+    const companion_tests = b.step("test-companion", "Run companion unit and shared runtime tests");
+    const vcs_tests = b.step("test-vcs", "Run VCS unit and shared runtime tests");
     for (test_sources) |source| {
         const unit_tests = b.addTest(.{
             .root_module = b.createModule(.{
@@ -392,6 +738,13 @@ pub fn build(b: *std.Build) void {
                 .imports = host_modules.imports(),
             }),
         });
-        test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+        if (std.mem.eql(u8, source, "extensions/vcs-panel/main.zig")) unit_tests.root_module.addImport("vcs_native_source", locked_source);
+        const run = b.addRunArtifact(unit_tests);
+        test_step.dependOn(&run.step);
+        const runtime = std.mem.startsWith(u8, source, "shared/runtime/") or std.mem.startsWith(u8, source, "shared/process/");
+        if (runtime or std.mem.startsWith(u8, source, "shared/companion/") or std.mem.eql(u8, source, "extensions/companion/main.zig") or std.mem.eql(u8, source, "shared/companion_extension.zig"))
+            companion_tests.dependOn(&run.step);
+        if (runtime or std.mem.startsWith(u8, source, "shared/vcs/"))
+            vcs_tests.dependOn(&run.step);
     }
 }

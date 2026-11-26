@@ -1,0 +1,9 @@
+{
+  "apiVersion": 1,
+  "id": "strangelion.companion-dev",
+  "name": "Pulse Companion (Development)",
+  "resources": [
+    "settings.own",
+    "context.read"
+  ]
+}

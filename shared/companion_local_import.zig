@@ -1,0 +1,225 @@
+//! Typed local-directory import for a verified runtime owner.
+//! The caller must hold the approved private-root lease and the approved
+//! installation directory. No shell or inherited environment.
+const std = @import("std");
+const runtime = @import("companion_runtime_owner.zig");
+const store = @import("companion_runtime_store.zig");
+const importing = @import("companion/pet_import.zig");
+const helper_mod = @import("companion/pet_import_helper.zig");
+const inventory = @import("companion/pet_inventory.zig");
+const process = @import("pulse_process");
+const zip = @import("companion/pet_zip.zig");
+
+pub const Report = struct {
+    fault: ?importing.Fault = null,
+    cause: ?anyerror = null,
+    recovery_id: ?u64 = null,
+    cleanup: ?anyerror = null,
+    committed: ?Result = null,
+};
+
+extern "kernel32" fn GetWindowsDirectoryW([*]u16, u32) callconv(.winapi) u32;
+
+pub const Result = importing.Result;
+pub const Cancel = importing.Cancel;
+
+pub fn run(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, source: []const u8, source_id: []const u8) !Result {
+    return runControlled(io, owner, private, exe, digest, source, source_id, .{});
+}
+
+pub fn runControlled(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, source: []const u8, source_id: []const u8, cancel: Cancel) !Result {
+    var report: Report = .{};
+    return runReported(io, owner, private, exe, digest, source, source_id, cancel, &report);
+}
+
+pub fn runReported(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, source: []const u8, source_id: []const u8, cancel: Cancel, report: *Report) !Result {
+    report.* = .{};
+    try cancel.check();
+    if (!owner.opened or !owner.lease_opened or !inventory.validSource(source_id)) return error.Invalid;
+    if (source.len < 4 or source.len > 4096 or !std.ascii.isAlphabetic(source[0]) or source[1] != ':' or source[2] != '\\' or
+        std.mem.indexOfScalar(u8, source, 0) != null or !std.unicode.utf8ValidateSlice(source)) return error.InvalidSource;
+    var exe_buf: [4096]u8 = undefined;
+    const exe_len = try std.unicode.utf16LeToUtf8(&exe_buf, exe);
+    var root_buf: [4096]u8 = undefined;
+    const root_len = try std.unicode.utf16LeToUtf8(&root_buf, private);
+    const root = root_buf[0..root_len];
+    var system_wide: [1024]u16 = undefined;
+    const n = GetWindowsDirectoryW(&system_wide, system_wide.len);
+    if (n == 0 or n >= system_wide.len) return error.InvalidSystemDirectory;
+    var system_buf: [4096]u8 = undefined;
+    const system_len = try std.unicode.utf16LeToUtf8(&system_buf, system_wide[0..n]);
+    var environ = std.process.Environ.Map.init(std.heap.page_allocator);
+    defer environ.deinit();
+    try environ.put("SystemRoot", system_buf[0..system_len]);
+    try environ.put("TEMP", root);
+    try environ.put("TMP", root);
+    var runner = process.Runner.init(std.heap.page_allocator, io);
+    try runner.configureApproved(.{ .path = exe_buf[0..exe_len], .digest = digest }, 60 * std.time.ns_per_s);
+    try runner.configureTree(.windows_job);
+    var helper: helper_mod.Helper = .{
+        .runner = &runner,
+        .exe = exe_buf[0..exe_len],
+        .cwd = root,
+        .asset_root = root,
+        .environ = &environ,
+    };
+    const coordinator = try std.heap.page_allocator.create(importing.Coordinator);
+    defer std.heap.page_allocator.destroy(coordinator);
+    coordinator.* = .{};
+    _ = try store.loadInventory(owner, &coordinator.index);
+    const outcome = store.importPackageControlled(owner, coordinator, &helper, source, source_id, cancel);
+    report.fault = coordinator.fault;
+    report.recovery_id = coordinator.recovery_id;
+    if (outcome) |result| {
+        report.committed = result;
+    } else |err| {
+        report.cause = err;
+    }
+    runner.checkDrained() catch |err| {
+        report.cleanup = err;
+        return error.CleanupFailed;
+    };
+    if (coordinator.fault != null) return error.RecoveryRequired;
+    return outcome;
+}
+
+// A user-selected ZIP is borrowed read-only. All extracted files are
+// created exclusively in a private staging directory, never beside the ZIP.
+// Reuse the same bounded ZIP parser and durable import as the market.
+pub fn runArchive(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, source: []const u8, source_id: []const u8, cancel: Cancel, report: *Report) !Result {
+    report.* = .{};
+    try cancel.check();
+    const archive = try std.Io.Dir.openFileAbsolute(io, source, .{ .follow_symlinks = false });
+    defer archive.close(io);
+    const stat = try archive.stat(io);
+    if (stat.kind != .file or stat.size == 0 or stat.size > zip.max_archive_bytes) return error.InvalidArchive;
+    const work = try owner.createLocalImportWork();
+    var path_buf: [4096]u8 = undefined;
+    const len = try std.unicode.utf16LeToUtf8(&path_buf, work);
+    const path = path_buf[0..len];
+    const stage = try std.heap.page_allocator.create(zip.Stage);
+    defer std.heap.page_allocator.destroy(stage);
+    stage.* = .{};
+    var extracted_buf: [4096]u8 = undefined;
+    const extracted = try std.fmt.bufPrint(&extracted_buf, "{s}\\unpacked", .{path});
+    const outcome: anyerror!Result = blk: {
+        const scratch = std.Io.Dir.cwd().openDir(io, path, .{ .follow_symlinks = false }) catch |err| break :blk err;
+        defer scratch.close(io);
+        const result: anyerror!Result = inner: {
+            stage.extract(io, archive, scratch) catch |err| break :inner err;
+            cancel.check() catch |err| break :inner err;
+            break :inner runReported(io, owner, private, exe, digest, extracted, source_id, cancel, report);
+        };
+        if (result) |_| {} else |err| {
+            if (report.cause == null) report.cause = err;
+        }
+        stage.cleanup(io, scratch) catch |err| {
+            report.cleanup = err;
+            break :blk error.CleanupFailed;
+        };
+        break :blk result;
+    };
+    if (report.cleanup == null) {
+        owner.finishMarketWork() catch |err| {
+            report.cleanup = err;
+            return error.CleanupFailed;
+        };
+    }
+    return outcome;
+}
+
+// Reuse the approved, job-contained fingerprint helper. No source path is
+// accepted from a caller: derive the quarantine name from the leased root.
+// The before/after receipt checks catch ordinary stale selection, not every
+// same-user race. No deletion, restore, or receipt write occurs here.
+pub fn verifyQuarantine(io: std.Io, owner: *runtime.Owner, exe: [:0]const u16, digest: [32]u8, id: u64) !void {
+    const expected = try store.cleanupReceipt(owner, id);
+    try owner.pinQuarantine(id, .{ .volume = expected.volume, .file_index = expected.file_index });
+    const outcome = verifyPinnedQuarantine(io, owner, exe, digest, id, expected);
+    try owner.releaseQuarantine();
+    return outcome;
+}
+
+fn verifyPinnedQuarantine(io: std.Io, owner: *runtime.Owner, exe: [:0]const u16, digest: [32]u8, id: u64, expected: @import("companion/pet_removal_receipt.zig").Receipt) !void {
+    const private = std.mem.sliceTo(&owner.lease.path, 0);
+    var exe_buf: [4096]u8 = undefined;
+    const exe_len = try std.unicode.utf16LeToUtf8(&exe_buf, exe);
+    var root_buf: [4096]u8 = undefined;
+    const root_len = try std.unicode.utf16LeToUtf8(&root_buf, private);
+    const root = root_buf[0..root_len];
+    var system_wide: [1024]u16 = undefined;
+    const n = GetWindowsDirectoryW(&system_wide, system_wide.len);
+    if (n == 0 or n >= system_wide.len) return error.InvalidSystemDirectory;
+    var system_buf: [4096]u8 = undefined;
+    const system_len = try std.unicode.utf16LeToUtf8(&system_buf, system_wide[0..n]);
+    var environ = std.process.Environ.Map.init(std.heap.page_allocator);
+    defer environ.deinit();
+    try environ.put("SystemRoot", system_buf[0..system_len]);
+    try environ.put("TEMP", root);
+    try environ.put("TMP", root);
+    var runner = process.Runner.init(std.heap.page_allocator, io);
+    try runner.configureApproved(.{ .path = exe_buf[0..exe_len], .digest = digest }, 60 * std.time.ns_per_s);
+    try runner.configureTree(.windows_job);
+    var helper: helper_mod.Helper = .{
+        .runner = &runner,
+        .exe = exe_buf[0..exe_len],
+        .cwd = root,
+        .asset_root = root,
+        .environ = &environ,
+    };
+    var source: [4096]u8 = undefined;
+    const quarantine = try std.fmt.bufPrint(&source, "{s}\\pet-{x:0>16}.removed", .{ root, id });
+    const outcome = helper.probe(quarantine, expected.record.sourceId());
+    try runner.checkDrained();
+    try expected.verifyPair(try outcome);
+    const current = try store.cleanupReceipt(owner, id);
+    if (!std.meta.eql(expected, current)) return error.StaleSelection;
+    try owner.recheckQuarantine(id, .{ .volume = expected.volume, .file_index = expected.file_index });
+}
+
+pub const Detail = helper_mod.Detail;
+
+// Explicit local selection only. The helper checks both fingerprints and
+// parses package metadata outside the host process. No file or image output.
+pub fn describeManaged(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, expected: inventory.Record, cancel: Cancel) !Detail {
+    try cancel.check();
+    if (try owner.group.remaining() != 0) return error.ActiveInstances;
+    const index = try std.heap.page_allocator.create(inventory.Inventory);
+    defer std.heap.page_allocator.destroy(index);
+    index.* = .{};
+    if (!try store.loadInventory(owner, index)) return error.UnknownAsset;
+    if (!std.meta.eql(try index.get(expected.id), expected)) return error.StaleSelection;
+    const primary = expected.digest orelse return error.UnverifiedAsset;
+    const secondary = expected.secondary orelse return error.UnverifiedAsset;
+    var exe_buf: [4096]u8 = undefined;
+    const exe_len = try std.unicode.utf16LeToUtf8(&exe_buf, exe);
+    var root_buf: [4096]u8 = undefined;
+    const root_len = try std.unicode.utf16LeToUtf8(&root_buf, private);
+    const root = root_buf[0..root_len];
+    var system_wide: [1024]u16 = undefined;
+    const n = GetWindowsDirectoryW(&system_wide, system_wide.len);
+    if (n == 0 or n >= system_wide.len) return error.InvalidSystemDirectory;
+    var system_buf: [4096]u8 = undefined;
+    const system_len = try std.unicode.utf16LeToUtf8(&system_buf, system_wide[0..n]);
+    var environ = std.process.Environ.Map.init(std.heap.page_allocator);
+    defer environ.deinit();
+    try environ.put("SystemRoot", system_buf[0..system_len]);
+    try environ.put("TEMP", root);
+    try environ.put("TMP", root);
+    var runner = process.Runner.init(std.heap.page_allocator, io);
+    try runner.configureApproved(.{ .path = exe_buf[0..exe_len], .digest = digest }, 60 * std.time.ns_per_s);
+    try runner.configureTree(.windows_job);
+    var helper: helper_mod.Helper = .{
+        .runner = &runner,
+        .exe = exe_buf[0..exe_len],
+        .cwd = root,
+        .asset_root = root,
+        .environ = &environ,
+    };
+    var path: [4096]u8 = undefined;
+    const source = try std.fmt.bufPrint(&path, "{s}\\pet-{x:0>16}", .{ root, expected.id });
+    const outcome = helper.describe(source, expected.sourceId(), .{ .primary = primary, .secondary = secondary });
+    try runner.checkDrained();
+    try cancel.check();
+    return outcome;
+}

@@ -383,3 +383,216 @@ CI 45452000441 passed format and reached compilation; Ubuntu rejected the imposs
 ### Windows timeout investigation
 
 Run 45453154189 on 1a62305 passed both format checks and Ubuntu (64/64 build steps, 129/131 tests, two platform skips), but the Windows aggregate test step ran about 29m40s until job cancellation. No individual failing test was identified. Source inspection found a concrete cleanup-order hazard: MultiReader.deinit calls batch.cancel before the outer catch terminates the job. Terminate/drain the job while the reader is still alive, then deinit the reader, then release the child; on failed explicit drain close the kill-on-close job and report containment failure, not success. Add test-only phase markers without user data, and separate child capture, descendant timeout and output-limit cases. CI runs these independently under a short external deadline before VCS setup and still requires the complete suite. This is a candidate fix, not confirmation of root cause; if it hangs in spawn or fill, investigate the pinned stdlib implementation rather than extend timeouts.
+
+## Shared foundation extraction — first integration batch
+
+This candidate brings existing product-tested source into the common build,
+without introducing a shared DLL or changing product behavior. Source
+provenance (exact branch revisions at extraction):
+
+- Companion: `aad90505c1ab699616fd42af06a0c109776691d0` —
+  retention, sealed temporary store, optional picker and dialogs V2 ABI.
+- VCS: `72ec41e9620e0473f8138c422b16d7f13677e635` —
+  task/dispatch ownership, bounded wake hints and navigation mailbox.
+
+The common build registers these modules and their existing tests. The temp
+store adds a sealed-read/quota/cleanup regression. Optional ABI tables retain
+the frozen public SDK baseline; callers must probe interface availability and
+validate returned tables before use. A wake hint is not proof of task
+completion, and final host-destroy retirement is not ordinary cancellation.
+The temp store requires an already verified private directory and a single
+owner; sealed handles are borrowed and must not outlive owner cleanup.
+Retention does not authorize any filesystem deletion.
+
+Validation gate: full Windows/Linux regression on this exact integrated SHA,
+including existing SDK regeneration and C loader checks. Real host acceptance
+and migration of Companion's timer/dispatch implementation remain separate;
+no new host behavior or mixed-extension compatibility is certified by this
+extraction. Do not replace product-specific filesystem authorization,
+supervisor or process policies until the existing acceptance cases pass and
+the common primitive's ownership/error contract is independently reviewed.
+
+### Shared foundation extraction — remaining reusable primitives
+
+The second batch extracts the existing Companion diagnostic backend and menu
+helpers, the private-root lease (fixed trusted product namespace), native
+pinned-image verification, Job Object configuration/drain, bounded HTTPS
+transport, additive task-progress ABI, and common official staging/evidence
+helpers. These are independent source modules with no service, global allocator,
+shared authorization record, or shared DLL. Native modules use the existing
+x64 GNU Windows fixture lane; no product-specific native launch, policy,
+or configuration format is replaced in this branch.
+
+| Module | Existing consumer to migrate after verification | Ownership / boundary |
+| --- | --- | --- |
+| shared/fs/private_root_win32.* | Companion root lease; future private product stores | Caller-approved parent and fixed namespace, exact DACL, exclusive lock; not arbitrary user directories |
+| shared/process/image_win32.* | Companion Supervisor native pin/hash | Caller-owned handle and independent executable/dependency approval; not a sandbox |
+| shared/process/job_win32.* | Companion supervisor/collector | Existing Zig Runner retains its own equivalent Job Object path until common ABI/cancellation tests prove parity |
+| shared/network/https_win32.* | Companion market HTTP adapter | Keep OpenPets origin, path, kind and size policies at call site; no arbitrary URL admission |
+| shared/diagnostics/crash_win32.*, store_win32.* | Companion diagnostic collectors | Out-of-process opt-in only; private lease; never attach to real host |
+| shared/pulse/menu_win32.h, task_progress.zig | Companion menu and task report | Optional ABI; no private UI hooks; caller owns strings and callbacks |
+| scripts/package_common.py | Companion and VCS official staging scripts | Exact member hashes, explicit trusted tool and fresh private output; no signing/install/release |
+
+Local integration: merge the verified foundation into a disposable integration
+worktree; preserve both product branch implementations until their existing
+tests and exact-package host acceptance are rerun. Resolve duplicate files by
+comparing contracts and preserving every product-specific gate. Migrate one
+call site at a time, not via search-and-replace of error enums. VCS's strict
+ancestor/ACL audit and Git/DPAPI grant remain product policy; do not replace
+them with the private-root check. Companion's install/recovery journal, IPC,
+startup handshake, image cache and long-lived runtime stay product-specific.
+The HTTPS helper fixes Content-Length arithmetic, but no live network
+acceptance is claimed. New native checks exercise lease, empty job, own test
+image, canceled/invalid network admission and menu escaping; synthetic crash
+checks use a disposable fixture only. Diagnostic store compilation does not
+prove managed dump retention; keep existing managed-crash tests mandatory in
+the Companion lane. The common staging adapter is developer-only, not an
+untrusted process runner; it relies on the official author tool and does not
+claim package installation. Actual source/build provenance and exact archive
+reuse checks in Companion must remain intact. No production release changes.
+
+Status: candidate, NOT VERIFIED until current full CI and affected product
+host acceptance. Do not treat common-module tests as proof of product migration.
+
+The common native file observation helper (identity_win32.h) is used by both
+private-root and executable pinning; it explicitly separates file identity
+and case policy from ACL/ancestor trust. metrics_win32 provides caller-owned
+live-process Private Bytes, working set, cumulative CPU ticks and handle
+samples. The Job Object helper rejects null handles (Windows otherwise permits
+querying the caller's job). Package evidence binds the actual verified archive
+member bytes and exact inventory as well as staged files. These checks do not
+replace the official verifier or the product-specific trust/acceptance gates.
+### Companion resource profile — first shared allocator consumer
+
+The experimental standalone companion now owns an instance-local shared
+BoundedAllocator with a provisional 48 MiB requested-live-byte cap.
+Its C callback bridge accounts compressed inputs, RGBA atlas/strip
+allocations and the bounded metadata scratch in one domain. Native
+cleanup precedes checkDrained. This does not count WIC/GDI/OS resources,
+stack memory or handles, and is not a host-wide quota. See the companion
+spike for the switch-peak rationale, remaining handle/log/task gates
+and native verification requirements.
+
+Companion phase 2 adds independent shared Budget quotas for asset and
+enumeration handles, synchronous decode scopes and DIB pixel bytes.
+It uses the existing bounded event_log for quota/cleanup events and
+requires all accounted resources to drain at native exit. Scope counters
+are not measurements of WIC internals, GDI overhead, registry/menu/IPC
+resources or total process memory. See companion spike for limits and
+remaining lifecycle/diagnostic integration.
+
+Companion phase 3 owns a shared Group with one running and one queued
+slot; the native buffer bridge reuses the group's pool. A dedicated
+decode handoff adapter consumes shared LatestTask using copyable
+future results and a stable caller-owned decoded-byte mailbox.
+No owning pointer is returned through the future; stale results are
+freed only after actual join. External resource accounting callbacks
+are synchronized for subsequent worker integration. Native WIC and the
+Windows wait loop are not yet connected to that adapter.
+
+Companion phase 4 connects the shared latest-only handoff to the Win32
+message loop for live Classic package outfit and activity decodes.
+The process entry supplies std.Io; a stable native context notifies
+the UI through an event, joins before mailbox access and stops before
+closing pinned resources. Startup and the explicit diagnostic strip
+path remain synchronous. Foreign WIC execution is not hard-cancellable;
+successful artwork and UI responsiveness require native acceptance.
+
+Companion phase 5 adds object-count budgets for inherited IPC handles
+and mapped view, registry key, native menu tree and argument allocation
+scope. Attached menu ownership follows DestroyMenu recursion. Failed
+native release retains its reservation and produces bounded diagnostics.
+Hidden smoke exercises all five menu objects without a modal popup.
+These counts do not represent Windows-internal memory use.
+
+Companion phase 6 charges the published HWND, owned memory DCs and
+borrowed desktop DC separately, including transactional resize peaks
+and WM_NCDESTROY ownership. Fixed native decode events join the
+existing bounded log. No system-wide allocation accounting or full
+migration of textual diagnostics is claimed.
+
+
+### Shared diagnostics and native-menu consumers
+
+The Companion collector now statically compiles the reusable
+`shared/diagnostics/crash_win32.c` backend. It owns system DbgHelp only in
+the explicitly launched diagnostic process, accepts only a caller-owned
+debugged child and matching second-chance event/thread, enforces a
+256 MiB ceiling and uses exclusive current-user DACL output. The backend
+does not discover processes, install a host filter, choose output paths,
+start a service, or perform automatic deletion. Failed callback writes
+are sticky; partial cleanup failure is reported. The standalone adapter
+retains responsibility for the trusted sibling executable, job, debug
+event loop and user opt-in. DbgHelp calls must be serialized in a
+dedicated process; no cross-DLL singleton or shared pointers.
+
+`shared/runtime/retention.zig` provides allocation-free, caller-owned
+ordered record retention by age and count. Companion's PDH1 history
+uses it without changing record format, private lease, 16-row/30-day
+defaults or existing validation. It does not authorize filesystem
+deletion. The later managed diagnostic persistence consumer below is the candidate
+file adapter; actual managed startup/rotation remains unverified.
+User-selected exports stay user-owned and are never swept.
+
+`shared/pulse/menu_win32.h` provides native checked-radio styling and
+bounded UTF-8 mnemonic escaping, consumed by the actual desktop menu.
+The OS retains accessibility, keyboard navigation and cancellation.
+Companion labels and menu commands remain product-specific. This is a
+public Win32 compatibility backend, not a private Fluent renderer or a
+claim of exact Pulse theme parity. Future consumers can compile these
+sources into their own owner scopes; no mandatory shared DLL. Shared
+path changes require full CI, including existing native crash and menu
+fixtures plus retention tests.
+
+
+### Managed diagnostic persistence consumer
+
+The shared crash backend uses the documented x64 pack(4) DbgHelp I/O
+callback ABI, including output union offset zero; the pinned MinGW
+header's incomplete declaration must not control this layout.
+`shared/diagnostics/store_win32.c` implements fixed-slot, identity-bound
+managed dump retention under a separately ACL-verified, locked private
+root. It never adopts unknown files or user exports. Companion's
+optional out-of-process watchers are the first consumer. They are
+independently job-bounded, require explicit policy opt-in, and are
+charged against the group commit budget. No mandatory resident service
+or host process debugger is introduced. See the Companion manager
+document for caps, failure recovery, compatibility and remaining
+real-host evidence. The public Win32 menu backend retains system
+theme/navigation and invalidates active menus on theme/DPI changes;
+the pinned SDK does not provide native external Fluent rendering.
+
+### Deferred shared binary dependency (multi-add-on coexistence)
+
+Status: PLANNED, not implemented. Keep current source sharing and independent
+runtime ownership until existing Companion and VCS acceptance passes. The
+objective is that multiple separately installed Pulse Extras add-ons can use
+one supported, versioned runtime binary and, when in the same host process,
+one coordinated runtime instance. This is not an external-app SDK project.
+
+Before implementation, verify the pinned/current Pulse SDK and registry's
+actual dependency discovery, installation, activation, upgrade and unload
+contracts with upstream. Do not assume an arbitrary common DLL location,
+load from a writable search path, change registry dependencies, or introduce
+a background service. If the host does not support a safe shared dependency,
+retain the bundled source model; evaluate a supported alternative separately.
+
+Acceptance gates:
+
+- Specify versioned C ABI, capability negotiation, trusted canonical binary
+  identity, immutable version directories and compatible mixed-version loading.
+- Per-add-on owner tokens, quota and failure isolation; optional aggregate
+  budgets and bounded queues, no raw allocator/Zig ABI crossing the DLL.
+- Prove concurrent acquire/release, callback drain and last-consumer unload;
+  reject new work while stopping and retain outstanding resources on failure.
+- Prove install/update/uninstall of one add-on cannot replace or remove a
+  loaded or still-required runtime; rollback without forced hot replacement.
+- Explicit missing/incompatible dependency behavior; no silent unsafe fallback.
+- Same-process shared state only. Different host processes may reuse installed
+  code, but resource coordination would require separate approved IPC design.
+- Real host tests with at least two independently installed add-ons in both
+  load orders, mixed versions, partial failure, update and uninstall; measure
+  memory/handle reduction and test full CI before adopting the binary model.
+
+No shared DLL, central allocator or mandatory new dependency is introduced
+by this plan. Do not expand Companion stage C to implement it.

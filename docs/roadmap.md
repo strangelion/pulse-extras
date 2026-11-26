@@ -4,6 +4,8 @@
 
 The last full verified CI baseline is [c330c24 / run 45421511648](https://github.com/strangelion/pulse-extras/actions/runs/45421511648): Ubuntu 83/83 tests, Windows 81 passed and 2 SVN integrations skipped, 6/6 Windows DLL build steps on both runners, pinned SDK regeneration, and 16 C ABI loader lifecycle cycles. Both Zig archive caches hit. These are historical results, not a claim that later commits or real VCS host integration have passed.
 
+Current merged Runtime baseline: [2759b51 / run 45514152046](https://github.com/strangelion/pulse-extras/actions/runs/45514152046), Windows 131/133 and Ubuntu 129/133 (platform-only skips), isolated Windows Job Object tests, both ReleaseSafe builds and Regression gate passed. Main CI 45515451399 was still running at review. This is a library baseline, not a VCS panel release.
+
 ## P0 — Zig and SDK compatibility
 
 - [x] Pinned Zig 0.17.1, public Pulse 1.0.60 SDK / Preview 3, x64 MSVC ABI.
@@ -74,6 +76,8 @@ Implement one operation at a time with risk classification, explicit plan/confir
 | strangelion.companion (candidate) | Existing pet/event bridge or small supported native character prototype | No full pet simulator or generic Agent; validate demand and SDK first |
 | strangelion.forge (conditional) | Reusable templates, constrained recipes, validation and maintenance | No generic coding Agent; separate MCP/panel only with demonstrated value |
 
+- [ ] Deferred RT2+ design gate: allow separately installed Pulse Extras add-ons to reuse a single versioned runtime binary and same-host runtime instance, only after host dependency/lifecycle support and mixed-addon acceptance are proven. Keep the current bundled source-sharing model until then. See [shared binary dependency plan](shared-runtime.md#deferred-shared-binary-dependency-multi-add-on-coexistence).
+
 RT2: all new products reuse the shared runtime contract; extend it only for proven needs, track bundled runtime revisions and rebuild/test/release affected consumers after fixes. Test independent instances and mixed-version coexistence. Recheck upstream source, roadmap, SDK and registry for overlap before implementing each extension. Pulse already has basic Git and SVN status, native lock detection, common previews and archive integration. Coordinate 3D/OCR/remote features with upstream.
 
 After P2/R, prioritize Convert, a small Companion feasibility experiment, then Inspect, Compare, Data and focused DevKit according to demonstrated demand; VCS advanced functions continue as needed. See [product scope](product-scope.md) for overlap exclusions, research references, dependency policy and low-token delivery. Do not block usable features on a complete platform.
@@ -85,6 +89,14 @@ Release follows milestone R and [release.md](release.md). Keep secrets out of Gi
 - [ ] C0: compare OpenPets/other bridges and installed SDK; validate event/rendering support and minimal resource cost. Stop if redundant or unsupported.
 - [ ] C1: optional connector or small character prototype with data-only skins, actual authorized task states, visibility/pause and bounded assets.
 - [ ] C2: actual user/host acceptance and resource measurements before considering independent renderer or richer offline interaction. See [product scope](product-scope.md#5-companion-feasibility-candidate-no-implementation).
+
+### Companion stage D — packaging and real-host acceptance (planned)
+
+- [ ] D0–D1: official native v2 test package with existing development ID, verified exact artifact, isolated Windows test account/VM and host store/profile; green full code CI first. Exact-artifact reuse and evidence checks passed automatic regression at 6d63439; explicit official test-package job added to the existing CI, first artifact and actual installation remain to verify.
+- [ ] D2–D4: use the [canonical D acceptance register](companion-manager.md#d2-real-host-functional-acceptance-matrix): 100 independent visible pets, separately high-count actual Pulse-managed instances, long soak/leak checks, crash/recovery, live market, image fallback and install/update/uninstall. Escalate safely; repair and repeat affected tests with exact-artifact evidence.
+- [ ] D5: independently verified formal candidate, official manifest and signing/release eligibility; separate publication approval. No shared-binary runtime implementation in this stage.
+
+See [Companion stage D](companion-manager.md#stage-d-official-testformal-packaging-and-real-host-acceptance). No claim of actual installed acceptance or publication.
 
 ## F — Forge authoring tooling (conditional, after real components/package foundations)
 
@@ -107,3 +119,5 @@ RT0 latest-only task candidate provides one running future plus one replaceable 
 RT0 non-host candidate implements Windows job-backed Runner opt-in, approved path/digest and narrow env admission, group budgets, FIFO, typed event ring, owned temporary file store. Validate full CI and follow up on failures; actual host and measured multi-plugin acceptance deferred. Persistent crash recovery/rotation, race-free trusted installation verification and product-level policy integration remain explicit follow-up, not claimed complete.
 
 Deferred real-host checks are enumerated in [shared-runtime-host-acceptance.md](shared-runtime-host-acceptance.md); retain NOT VERIFIED until actual evidence. A merge of the library foundation does not certify production VCS panel distribution.
+
+VCS panel milestone: host-independent coordinator and bounded native SDK model are implemented as a candidate; no new DLL/package or automatic execution. Full CI precedes host wiring; UI delivery must respect official dispatch and teardown contract. Actual approved tool/repository policy, JJ/SVN identity and history remain open.

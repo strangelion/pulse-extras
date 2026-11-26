@@ -55,4 +55,6 @@ test "string views round-trip and reject overflow" {
     try @import("std").testing.expectEqual(@as(u32, 5), value.length);
     try @import("std").testing.expectEqualStrings(text, slice(value).?);
     try @import("std").testing.expectEqual(@as(?[]const u8, null), slice(.{ .data = null, .length = 0 }));
+    // A malformed foreign view must never dereference a null data pointer.
+    try @import("std").testing.expectEqual(@as(?[]const u8, null), slice(.{ .data = null, .length = 4096 }));
 }

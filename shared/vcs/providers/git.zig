@@ -22,6 +22,11 @@ pub const Status = struct {
     upstream: contract.Text = .{},
     oid: ?identity.RevisionId = null,
     detached: bool = false,
+    seen_oid: bool = false,
+    seen_head: bool = false,
+    seen_upstream: bool = false,
+    seen_ab: bool = false,
+    distance_known: bool = false,
     changes: Changes = .{},
 };
 
@@ -62,6 +67,8 @@ fn parseHeader(record: []const u8, status: *Status) ParseError!void {
     const key = body[0..split];
     const value = body[split + 1 ..];
     if (std.mem.eql(u8, key, "branch.oid")) {
+        if (status.seen_oid) return error.Malformed;
+        status.seen_oid = true;
         if (std.mem.eql(u8, value, "(initial)")) return;
         if (value.len != 40 and value.len != 64) return error.Malformed;
         for (value) |byte| {
@@ -69,6 +76,8 @@ fn parseHeader(record: []const u8, status: *Status) ParseError!void {
         }
         status.oid = identity.RevisionId.init(.git, value) catch return error.Malformed;
     } else if (std.mem.eql(u8, key, "branch.head")) {
+        if (status.seen_head) return error.Malformed;
+        status.seen_head = true;
         if (std.mem.eql(u8, value, "(detached)")) {
             status.detached = true;
             return;
@@ -76,24 +85,34 @@ fn parseHeader(record: []const u8, status: *Status) ParseError!void {
         if (value.len == 0) return error.Malformed;
         status.branch = contract.Text.init(value) catch return error.Malformed;
     } else if (std.mem.eql(u8, key, "branch.upstream")) {
+        if (status.seen_upstream) return error.Malformed;
+        status.seen_upstream = true;
         if (value.len == 0) return error.Malformed;
         status.upstream = contract.Text.init(value) catch return error.Malformed;
     } else if (std.mem.eql(u8, key, "branch.ab")) {
-        parseAheadBehind(value, &status.changes);
+        if (status.seen_ab) return error.Malformed;
+        status.seen_ab = true;
+        status.distance_known = try parseAheadBehind(value, &status.changes);
     }
 }
 
-fn parseAheadBehind(value: []const u8, changes: *Changes) void {
+fn parseAheadBehind(value: []const u8, changes: *Changes) ParseError!bool {
     var tokens = std.mem.splitScalar(u8, value, ' ');
-    while (tokens.next()) |token| {
-        if (token.len < 2) continue;
-        const number = std.fmt.parseInt(u32, token[1..], 10) catch continue;
-        switch (token[0]) {
-            '+' => changes.ahead = number,
-            '-' => changes.behind = number,
-            else => {},
-        }
+    const ahead = tokens.next() orelse return error.Malformed;
+    const behind = tokens.next() orelse return error.Malformed;
+    if (tokens.next() != null or ahead.len < 2 or behind.len < 2 or ahead[0] != '+' or behind[0] != '-') return error.Malformed;
+    if (std.mem.eql(u8, ahead, "+?") and std.mem.eql(u8, behind, "-?")) return false;
+    for (ahead[1..]) |byte| {
+        if (!std.ascii.isDigit(byte)) return error.Malformed;
     }
+    for (behind[1..]) |byte| {
+        if (!std.ascii.isDigit(byte)) return error.Malformed;
+    }
+    const a = std.fmt.parseInt(u32, ahead[1..], 10) catch return error.Malformed;
+    const b = std.fmt.parseInt(u32, behind[1..], 10) catch return error.Malformed;
+    changes.ahead = a;
+    changes.behind = b;
+    return true;
 }
 
 fn firstField(record: []const u8, index: usize) ?[]const u8 {
@@ -118,9 +137,16 @@ pub const Git = struct {
     runner: *run.Runner,
     executable: identity.Path,
     probe: detect.Probe,
+    execution: cli.Execution = .compatibility,
 
     pub fn init(runner: *run.Runner, executable: identity.Path, probe: detect.Probe) Git {
         return .{ .runner = runner, .executable = executable, .probe = probe };
+    }
+
+    /// Caller keeps approved Runner and environment alive through session join.
+    pub fn initApproved(runner: *run.Runner, executable: identity.Path, probe: detect.Probe, execution: cli.Execution) error{UnapprovedExecutable}!Git {
+        if (execution != .approved or runner.policy != .approved_local) return error.UnapprovedExecutable;
+        return .{ .runner = runner, .executable = executable, .probe = probe, .execution = execution };
     }
 
     pub fn provider(self: *Git) contract.Provider {
@@ -133,9 +159,32 @@ pub const Git = struct {
         };
     }
 
+    /// CLI-reported worktree and common metadata identity, not an OS file ID.
+    pub fn resolveWorkspace(self: *Git, directory: []const u8) contract.Error!identity.Workspace {
+        var outcome = self.execution.execute(self.runner, .{
+            .argv = &.{
+                self.executable.slice(),
+                "--no-optional-locks",
+                "-C",
+                directory,
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-common-dir",
+                "--absolute-git-dir",
+            },
+            .timeout_ns = 5 * std.time.ns_per_s,
+            .stdout_limit = 3 * (identity.max_path_bytes + 2),
+            .stderr_limit = 64 * 1024,
+        }) catch |err| return mapRunError(err);
+        defer outcome.deinit();
+        if (!outcome.succeeded()) return mapFailure(outcome.stderr);
+        return parseWorkspace(outcome.stdout);
+    }
+
     pub fn summarize(self: *Git, workspace: *const identity.Workspace) contract.Error!contract.Snapshot {
         if (workspace.kind != .git) return error.Unsupported;
-        var outcome = self.runner.run(.{
+        var outcome = self.execution.execute(self.runner, .{
             .argv = &.{
                 self.executable.slice(),
                 "--no-optional-locks",
@@ -146,7 +195,7 @@ pub const Git = struct {
                 "--branch",
                 "-z",
                 "--untracked-files=normal",
-                "--ignore-submodules=none",
+                if (self.execution == .approved) "--ignore-submodules=all" else "--ignore-submodules=none",
             },
             .timeout_ns = 10 * std.time.ns_per_s,
             .stdout_limit = parse_limit,
@@ -157,12 +206,21 @@ pub const Git = struct {
         if (!outcome.succeeded()) return mapFailure(outcome.stderr);
 
         const status = parseStatus(outcome.stdout) catch return error.Parse;
-        if (!status.detached and status.branch.slice().len == 0) return error.Parse;
+        if (!status.seen_oid or !status.seen_head or (status.detached and status.oid == null)) return error.Parse;
         var snapshot = contract.Snapshot{
             .availability = .ready,
             .workspace = workspace.*,
             .revision = status.oid,
             .changes = status.changes,
+            .counts = .{
+                .staged = .ready,
+                .modified = .ready,
+                .untracked = .ready,
+                .conflicted = .ready,
+                .ahead = if (status.distance_known) .ready else .unknown,
+                .behind = if (status.distance_known) .ready else .unknown,
+            },
+            .has_conflict = status.changes.conflicted != 0,
         };
         snapshot.reference = status.branch;
         if (status.detached) {
@@ -185,6 +243,24 @@ pub const Git = struct {
         return self.summarize(workspace);
     }
 };
+
+/// Three absolute paths, no ambiguous extra records.
+fn parseWorkspace(output: []const u8) contract.Error!identity.Workspace {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    const root = std.mem.trimEnd(u8, lines.next() orelse return error.Parse, "\r");
+    const common = std.mem.trimEnd(u8, lines.next() orelse return error.Parse, "\r");
+    const metadata = std.mem.trimEnd(u8, lines.next() orelse return error.Parse, "\r");
+    if (lines.next()) |tail| {
+        if (tail.len != 0 or lines.next() != null) return error.Parse;
+    }
+    for ([_][]const u8{ root, common, metadata }) |path| {
+        if (!std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, '\r') != null) return error.Parse;
+        _ = identity.Path.init(path) catch return error.Parse;
+    }
+    var workspace = identity.Workspace.init(.git, root, common) catch return error.Parse;
+    workspace.shared_metadata = !std.mem.eql(u8, common, metadata);
+    return workspace;
+}
 
 fn declaredCapabilities() capabilities.Set {
     var set: capabilities.Set = .empty;
@@ -299,9 +375,10 @@ test "reads a real repository end to end when git is installed" {
         "-m",                              "init",
     });
 
-    const workspace = try identity.Workspace.init(.git, root, root);
-
     var git = Git.init(&runner, report.path, .{ .ctx = undefined, .lookup = fakeLookup });
+    const workspace = try git.resolveWorkspace(root);
+    try std.testing.expect(std.fs.path.isAbsolute(workspace.root.slice()));
+    try std.testing.expect(!workspace.shared_metadata);
     const clean = try git.summarize(&workspace);
     try std.testing.expectEqual(contract.Availability.ready, clean.availability);
     try std.testing.expect(clean.revision != null);
@@ -311,15 +388,30 @@ test "reads a real repository end to end when git is installed" {
     try edited.writeStreamingAll(io, "changed\n");
     edited.close(io);
 
-    var session = @import("vcs_session").Session.init(std.testing.io, 1000, testSessionClock);
-    defer session.shutdown();
-    _ = try session.request(git.provider(), &workspace);
-    try std.testing.expect(try session.startNext());
-    const publication = try session.awaitActive();
-    if (publication == .failed) return publication.failed;
-    try std.testing.expect(publication == .published);
-    const dirty = session.lookup(&workspace).fresh;
-    try std.testing.expectEqual(@as(u32, 1), dirty.changes.modified);
+    const panel = @import("vcs_panel");
+    var controller = panel.Controller.init(std.testing.io, 1000, testSessionClock);
+    defer controller.shutdown();
+    try controller.select(git.provider(), &workspace);
+    try std.testing.expect(try controller.startNext());
+    try controller.join();
+    const dirty = controller.view();
+    if (dirty.failure) |failure| return failure;
+    try std.testing.expectEqual(panel.Phase.ready, dirty.phase);
+    try std.testing.expectEqual(@as(u32, 1), dirty.snapshot.?.changes.modified);
+    var content: panel.Content = undefined;
+    var tree: @import("pulse_ui_model").Tree = undefined;
+    content.build(.en, &dirty, &tree);
+    try std.testing.expectEqualStrings("Modified: 1", content.textFor("vcs.modified").?);
+
+    try expectSuccess(&runner, &.{ report.path.slice(), "-C", root, "worktree", "add", "--detach", "linked", "HEAD" });
+    var linked_buffer: [identity.max_path_bytes]u8 = undefined;
+    const linked_path = try std.fmt.bufPrint(&linked_buffer, "{s}" ++ std.fs.path.sep_str ++ "linked", .{workspace.root.slice()});
+    const linked = try git.resolveWorkspace(linked_path);
+    try std.testing.expect(linked.shared_metadata);
+    try std.testing.expect(!linked.root.eql(workspace.root.slice()));
+    try std.testing.expect(linked.repository_root.eql(workspace.repository_root.slice()));
+    const linked_status = try git.summarize(&linked);
+    try std.testing.expect(linked_status.revision != null);
 }
 
 fn expectSuccess(runner: *run.Runner, argv: []const []const u8) !void {
@@ -354,4 +446,36 @@ test "malformed known git fields are not silently accepted" {
 
 fn testSessionClock() i64 {
     return 1000;
+}
+
+test "ahead behind counts distinguish zero unknown and malformed" {
+    const zero = try parseStatus("# branch.ab +0 -0\x00");
+    try std.testing.expect(zero.distance_known);
+    const unknown = try parseStatus("# branch.ab +? -?\x00");
+    try std.testing.expect(!unknown.distance_known);
+    for ([_][]const u8{
+        "# branch.ab +1\x00",
+        "# branch.ab +1 +2\x00",
+        "# branch.ab +4294967296 -0\x00",
+        "# branch.ab +0 -0 extra\x00",
+        "# branch.ab +? -0\x00",
+        "# branch.ab +0 -0\x00# branch.ab +1 -1\x00",
+        "# branch.head main\x00# branch.head other\x00",
+    }) |fixture| {
+        try std.testing.expectError(error.Malformed, parseStatus(fixture));
+    }
+}
+
+test "workspace identity rejects ambiguous path output" {
+    try std.testing.expectError(error.Parse, parseWorkspace("relative\nrelative\nrelative\n"));
+    try std.testing.expectError(error.Parse, parseWorkspace("one\ntwo\n"));
+    const valid = if (@import("builtin").os.tag == .windows)
+        "C:/work\nC:/repo/.git\nC:/repo/.git/worktrees/work\n"
+    else
+        "/work\n/repo/.git\n/repo/.git/worktrees/work\n";
+    const workspace = try parseWorkspace(valid);
+    try std.testing.expect(workspace.shared_metadata);
+    var buffer: [256]u8 = undefined;
+    const extra = try std.fmt.bufPrint(&buffer, "{s}unexpected\n", .{valid});
+    try std.testing.expectError(error.Parse, parseWorkspace(extra));
 }
