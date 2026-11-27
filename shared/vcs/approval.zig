@@ -288,7 +288,7 @@ pub const Policy = struct {
         const root = self.grant.root.slice();
         const version = argvEqual(request.argv, &.{ exe, "--version" });
         const identity_query = argvEqual(request.argv, &.{ exe, "--no-optional-locks", "-C", root, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--absolute-git-dir" });
-        const status = argvEqual(request.argv, &.{ exe, "--no-optional-locks", "-C", root, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all" });
+        const status = argvEqual(request.argv, &.{ exe, "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", root, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all" });
         if (!version and !identity_query and !status) return error.UnapprovedExecutable;
         self.verify() catch |err| return switch (err) {
             error.Cancelled => error.Cancelled,

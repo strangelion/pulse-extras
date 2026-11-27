@@ -7,7 +7,8 @@ The full Zig regression workflow runs on Windows and Linux. It checks formatting
 | SDK wrappers and ABI tests | Required | Required |
 | Git temporary repository | Required | Required |
 | Jujutsu 0.46.0 temporary repository and operation-log invariance | Required | Required |
-| SVN local repository and working-copy status | Optional if installed locally | Required |
+| SVN local repository and working-copy status | Required in VCS/full CI | Required |
+| Mercurial 7.2.4 real ordinary repository, history/diff and native approved fixture | Required in VCS/full CI | Required in VCS/full CI |
 | Windows DLL build | Required | Required |
 | C loader + binding regeneration | Required | Not run |
 | Actual Pulse UI/host acceptance | Manual isolated host | Not run |
@@ -265,3 +266,11 @@ published inner SHA-256 (corrected transcription), and execute only the
 verified vendor MSI's administrative extraction. Never run the community
 install script. The new mandatory Windows lane remains unverified until
 its actual result; Ubuntu and Companion lanes passed the earlier run.
+
+Four-provider baseline full CI passed 6f29edf / 45935843006. Hg Windows
+CI uses a private adjacent Python runtime and mandatory isolated preflight;
+native approved version/status test remains mandatory. Consolidated
+candidate extends approved Windows fixture coverage to actual local history/
+content/diff and preserves the negative admission/config/path checks.
+No tests have been removed or converted to optional. Exact candidate CI
+and installed Pulse acceptance are separate gates.

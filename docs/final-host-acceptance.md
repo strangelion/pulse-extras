@@ -46,3 +46,9 @@ P3B supported-scope full CI passed 2d08926 / 45932279549; installed/live client/
 P3C d06abe8 / 45934907652: Windows Hg missing python312.dll, shared Zig
 environment test API compile error. Private CI runtime and test repair
 pending exact full CI; installed user runtime/host acceptance NOT RUN.
+
+Four-provider baseline full CI passed 6f29edf / 45935843006 (all six jobs).
+Consolidated read-only hardening candidate pending exact CI. Selected VCS
+scope Git/JJ/SVN/Hg; optional additional providers deferred. P4 native
+mutations not enabled, no publication. Final installed VCS and deferred
+Companion D evidence remain NOT RUN.

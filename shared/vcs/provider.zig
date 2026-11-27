@@ -292,7 +292,7 @@ pub const DetailRequest = struct {
 pub fn safeRelativePath(value: []const u8) bool {
     if (value.len == 0 or value.len > identity.max_path_bytes or !std.unicode.utf8ValidateSlice(value)) return false;
     for (value) |byte| {
-        if (byte < 0x20 or byte == 0x7f or std.mem.indexOfScalar(u8, "\\:\"*?<>|@{}[]", byte) != null) return false;
+        if (byte < 0x20 or byte == 0x7f or std.mem.indexOfScalar(u8, "\\:\"*?<>|@{}[]~", byte) != null) return false;
     }
     var parts = std.mem.splitScalar(u8, value, '/');
     while (parts.next()) |part| {
@@ -300,12 +300,34 @@ pub fn safeRelativePath(value: []const u8) bool {
         for ([_][]const u8{ ".git", ".jj", ".svn", ".hg" }) |bad| {
             if (std.ascii.eqlIgnoreCase(part, bad)) return false;
         }
-        const stem = part[0 .. std.mem.indexOfScalar(u8, part, '.') orelse part.len];
-        for ([_][]const u8{ "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9" }) |bad| {
+        const stem = std.mem.trimEnd(u8, part[0 .. std.mem.indexOfScalar(u8, part, '.') orelse part.len], " ");
+        for ([_][]const u8{ "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9" }) |bad| {
             if (std.ascii.eqlIgnoreCase(stem, bad)) return false;
+        }
+        if (stem.len > 3 and (std.ascii.eqlIgnoreCase(stem[0..3], "COM") or std.ascii.eqlIgnoreCase(stem[0..3], "LPT"))) {
+            for ([_][]const u8{ "¹", "²", "³" }) |digit| {
+                if (std.mem.eql(u8, stem[3..], digit)) return false;
+            }
         }
     }
     return true;
+}
+
+/// Shared display/selection policy. SVN reports absolute local paths and
+/// Hg may use native separators. JJ compact renames and unsafe path aliases
+/// remain visible but are never sent to a CLI as file arguments.
+pub fn selectableFilePath(kind: identity.Kind, root: []const u8, raw: []const u8, row_kind: FileList.Kind, buffer: []u8) ?[]const u8 {
+    switch (row_kind) {
+        .external, .obstructed, .incomplete, .unknown => return null,
+        else => {},
+    }
+    var path = raw;
+    if (kind == .svn and std.mem.startsWith(u8, path, root) and path.len > root.len and (path[root.len] == '/' or path[root.len] == '\\')) path = path[root.len + 1 ..];
+    if (path.len > buffer.len) return null;
+    for (path, 0..) |byte, i| buffer[i] = if ((kind == .svn or kind == .hg) and byte == '\\') '/' else byte;
+    const relative = buffer[0..path.len];
+    if (!safeRelativePath(relative)) return null;
+    return relative;
 }
 
 pub fn safeRevision(kind: identity.Kind, value: []const u8) bool {
@@ -423,7 +445,7 @@ const detail_specs = [_]Spec{
     .{ .provider = .jj, .kind = .operations, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "op", "log", "--no-graph", "--limit", "32" } },
     .{ .provider = .svn, .kind = .local_info, .args = &.{ "$exe", "info", "--non-interactive", "--no-auth-cache", "--xml", "--", "$target" } },
     .{ .provider = .svn, .kind = .working_diff, .args = &.{ "$exe", "diff", "--non-interactive", "--no-auth-cache", "--internal-diff", "--depth", "empty", "--", "$plain_target" } },
-    .{ .provider = .svn, .kind = .content, .args = &.{ "$exe", "cat", "--non-interactive", "--no-auth-cache", "-r", "BASE", "--", "$target" } },
+    .{ .provider = .svn, .kind = .content, .args = &.{ "$exe", "cat", "--non-interactive", "--no-auth-cache", "-r", "BASE", "--", "$file_target" } },
     .{ .provider = .svn, .kind = .properties, .args = &.{ "$exe", "proplist", "--non-interactive", "--no-auth-cache", "--xml", "--", "$target" } },
 };
 
@@ -519,19 +541,25 @@ fn matchToken(kind: identity.Kind, root: []const u8, exe: []const u8, token: []c
         return actual.len > prefix.len and std.mem.startsWith(u8, actual, prefix) and actual[actual.len - 1] == '"' and safeRelativePath(actual[prefix.len .. actual.len - 1]);
     }
     if (eqArg(token, "$target")) return validSvnTarget(root, actual, true);
+    if (eqArg(token, "$file_target")) return actual.len > root.len + 1 and validSvnTarget(root, actual, true);
     if (eqArg(token, "$plain_target")) return !eqArg(root, actual) and validSvnTarget(root, actual, false);
     return eqArg(token, actual);
 }
 
 pub fn detailAllowed(kind: identity.Kind, exe: []const u8, root: []const u8, argv: []const []const u8) bool {
+    return admittedDetailKind(kind, exe, root, argv) != null;
+}
+
+/// Return the exact admitted operation, not a guessed command-name match.
+pub fn admittedDetailKind(kind: identity.Kind, exe: []const u8, root: []const u8, argv: []const []const u8) ?DetailKind {
     outer: for (detail_specs) |spec| {
         if (spec.provider != kind or spec.args.len != argv.len) continue;
         for (spec.args, argv) |token, actual| {
             if (!matchToken(kind, root, exe, token, actual)) continue :outer;
         }
-        return true;
+        return spec.kind;
     }
-    return false;
+    return null;
 }
 
 pub const DetailCommand = struct {
@@ -581,8 +609,8 @@ pub const DetailCommand = struct {
                     std.fmt.bufPrint(&self.scratch, "{s}:{s}", .{ rev, path }) catch return error.ResourceLimit
                 else if (eqArg(token, "$fileset"))
                     std.fmt.bufPrint(&self.scratch, "root-file:\"{s}\"", .{path}) catch return error.ResourceLimit
-                else if (eqArg(token, "$target") or eqArg(token, "$plain_target")) blk: {
-                    const suffix = if (eqArg(token, "$target")) "@" else "";
+                else if (eqArg(token, "$target") or eqArg(token, "$file_target") or eqArg(token, "$plain_target")) blk: {
+                    const suffix = if (eqArg(token, "$plain_target")) "" else "@";
                     if (path.len == 0 and request.kind != .local_info and request.kind != .properties) return error.Permission;
                     const target = if (path.len == 0)
                         std.fmt.bufPrint(&self.scratch, "{s}{s}", .{ root, suffix }) catch return error.ResourceLimit
@@ -775,6 +803,8 @@ test "SVN non-pegged diff uses a plain local file and excludes directory recursi
     try std.testing.expect(!detailAllowed(.svn, "svn", root, command.argv[0..argv.len]));
     const content = try command.build(.svn, "svn", root, &.{ .kind = .content, .path = try identity.Path.init("dir/a.txt") });
     try std.testing.expect(std.mem.endsWith(u8, content[content.len - 1], "@"));
+    command.argv[content.len - 1] = try std.fmt.bufPrint(&command.scratch, "{s}@", .{root});
+    try std.testing.expect(!detailAllowed(.svn, "svn", root, command.argv[0..content.len]));
 }
 
 test "JJ file history is an exact anchored revision intersection" {
@@ -806,4 +836,16 @@ test "Mercurial exact grammar rejects revision expressions and path escapes" {
     try std.testing.expect(!matchHgHistory("limit(reverse(ancestors(id(\"0123456789012345678901234567890123456789\")) & file(\"path:../secret\")),32,32)", true));
     try std.testing.expect(!matchHgHistory("all()", false));
     try std.testing.expect(!detailSupported(.hg, .staged_diff));
+}
+
+test "file selection rejects aliases and display-only rows for all providers" {
+    var buffer: [identity.max_path_bytes]u8 = undefined;
+    for ([_][]const u8{ "CONIN$", "CONOUT$.txt", "COM¹.txt", "LPT².txt", "AUX .txt", "GIT~1/config", ".HG/requires", "a/../b", "folder/" }) |bad| {
+        try std.testing.expect(!safeRelativePath(bad));
+        try std.testing.expect(selectableFilePath(.git, "repo", bad, .modified, &buffer) == null);
+    }
+    try std.testing.expectEqualStrings("dir/a.txt", selectableFilePath(.hg, "repo", "dir\\a.txt", .modified, &buffer).?);
+    try std.testing.expectEqualStrings("dir/a.txt", selectableFilePath(.svn, "C:\\repo", "C:\\repo\\dir\\a.txt", .modified, &buffer).?);
+    try std.testing.expect(selectableFilePath(.svn, "C:\\repo", "C:\\other\\a.txt", .modified, &buffer) == null);
+    try std.testing.expect(selectableFilePath(.svn, "C:\\repo", "external", .external, &buffer) == null);
 }

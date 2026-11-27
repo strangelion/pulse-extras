@@ -29,8 +29,12 @@
   and provide one consolidated acceptance request. Never mark a partial stage
   COMPLETE, use a docs-only green check as code evidence, or claim an ancestor's
   CI as proof of the final source.
-- Current priority: VCS P2B → P3A → P3B. P2A code regression passed at 4d53927;
-  final host acceptance is deferred. Companion ordinary feature development is
+- Current priority: consolidated VCS read-only product acceptance (Git, JJ,
+  SVN, Hg) followed by individually justified write operations or independent
+  products. Baseline full code CI passed at 6f29edf / 45935843006;
+  final host acceptance is deferred. Do not add optional providers merely to
+  increase provider count. Native mutation admission needs a separate design
+  and fixture gate, not inherited read-only consent. Companion ordinary feature development is
   owner-accepted complete; only 1024-instance measured capacity, long-run leak
   evidence and SDK 1.0.61 image-related review remain specific open work. Bundle
   install/lifecycle verification into final acceptance. Do not change working

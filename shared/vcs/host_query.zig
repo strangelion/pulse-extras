@@ -1067,12 +1067,8 @@ pub const Binding = struct {
                 continue;
             }
             const workspace = snapshot.workspace orelse return error.State;
-            var path = files.slice(row.path);
-            if (workspace.kind == .svn and std.mem.startsWith(u8, path, workspace.root.slice()) and path.len > workspace.root.len and (path[workspace.root.len] == '/' or path[workspace.root.len] == '\\')) path = path[workspace.root.len + 1 ..];
             var normalized: [identity.max_path_bytes]u8 = undefined;
-            for (path, 0..) |byte, i| normalized[i] = if ((workspace.kind == .svn or workspace.kind == .hg) and byte == '\\') '/' else byte;
-            const relative = normalized[0..path.len];
-            if (!contract.safeRelativePath(relative)) return error.Argument;
+            const relative = contract.selectableFilePath(workspace.kind, workspace.root.slice(), files.slice(row.path), row.kind, &normalized) orelse return error.Argument;
             const candidate = identity.Path.init(relative) catch return error.Argument;
             const model = if (self.model) |*value| value else return error.State;
             try model.setStates(&.{.{ .key = abi.view(panel.state_detail_path), .value = abi.view(candidate.slice()) }});

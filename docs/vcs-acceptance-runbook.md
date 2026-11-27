@@ -470,3 +470,19 @@ mandatory contained real provider test, then negative config hook, shared
 store and path tests. Also verify that an unresolved launcher fails closed
 with setup guidance, not a fallback to inherited PATH or Python search
 paths. Installed user-side acceptance remains NOT RUN.
+
+### Consolidated final read-only candidate
+
+Baseline 6f29edf / 45935843006 passed all six CI jobs. Run installed
+acceptance once for the final exact source: four tools (including Hg
+self-contained runtime), project create/edit/reopen and provider-specific
+authorization/revoke, each file/status/history/diff path, retained/omitted
+rows and unsafe display-only aliases, Git filter/promisor refusal and
+fsmonitor disable, JJ operation pin, SVN BASE/content without root/directory
+target, Hg subrepo/share rejection. Confirm ordinary live diff rejects
+reparse and nested roots, navigation/cancel/unload does not publish obsolete
+data, and exact client/browser/explicit public HTTP handoffs.
+Native writes and other providers are intentionally unavailable. Actual
+installed UI and live HTTP/client checks remain NOT RUN. Keep final
+Companion D acceptance independent; do not require a second intermediate
+host run. Exact new CI required for the consolidated changes.

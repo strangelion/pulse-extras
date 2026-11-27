@@ -394,6 +394,8 @@ pub const Content = struct {
         }
         const ids = [_][]const u8{ "vcs.file.0", "vcs.file.1", "vcs.file.2", "vcs.file.3", "vcs.file.4", "vcs.file.5", "vcs.file.6", "vcs.file.7" };
         const sources = [_][]const u8{ "vcs.file.source.0", "vcs.file.source.1", "vcs.file.source.2", "vcs.file.source.3", "vcs.file.source.4", "vcs.file.source.5", "vcs.file.source.6", "vcs.file.source.7" };
+        const disabled_ids = [_][]const u8{ "vcs.file.display-only.0", "vcs.file.display-only.1", "vcs.file.display-only.2", "vcs.file.display-only.3", "vcs.file.display-only.4", "vcs.file.display-only.5", "vcs.file.display-only.6", "vcs.file.display-only.7" };
+        var normalized: [identity.max_path_bytes]u8 = undefined;
         var matched: usize = 0;
         var shown: usize = 0;
         for (files.rows[0..files.count]) |row| {
@@ -410,7 +412,13 @@ pub const Content = struct {
                 std.fmt.bufPrint(&label, "{s}{s}{s}: ", .{ row.kind.label(), if (row.property_changed) " P" else "", if (row.tree_conflict) " T" else "" }) catch "";
             self.add(ids[shown], prefix, files.slice(row.path));
             if (row.original.len != 0) self.add(sources[shown], loc(lang, "From: ", "原路径："), files.slice(row.original));
-            if (view.detail_supported and !view.detail_pending and !view.stale and view.phase == .ready) self.addButton(pick_actions[shown], loc(lang, "Select this file", "选择此文件"), pick_actions[shown]);
+            if (view.detail_supported and !view.detail_pending and !view.stale and view.phase == .ready) {
+                if (view.workspace) |workspace| {
+                    if (contract.selectableFilePath(workspace.kind, workspace.root.slice(), files.slice(row.path), row.kind, &normalized) != null) {
+                        self.addButton(pick_actions[shown], loc(lang, "Select this file", "选择此文件"), pick_actions[shown]);
+                    } else self.add(disabled_ids[shown], "", loc(lang, "Display only: not an admissible file path", "仅展示：不是可安全查询的文件路径"));
+                }
+            }
             shown += 1;
         }
         if (shown == 0) self.add("vcs.files.empty", "", loc(lang, "No matching retained records", "没有匹配的已保留记录"));
@@ -438,6 +446,8 @@ pub const Content = struct {
 
     fn addDetails(self: *Content, lang: Language, view: *const View, kind: identity.Kind) void {
         self.add("vcs.detail.heading", "", loc(lang, "Local read-only details", "本地只读详情"));
+        self.add("vcs.detail.write-limit", "", loc(lang, "Stage, commit, update and push are not enabled. Use a reviewed external client for mutations.", "暂存、提交、更新和推送尚未开放；如需修改，请使用已确认的外部客户端。"));
+        if (kind == .git) self.add("vcs.detail.git-limit", "", loc(lang, "Working diff compares index to worktree; staged diff compares selected revision to index. Untracked files may have no diff.", "工作区差异比较索引和工作树；暂存差异比较所选版本和索引。未跟踪文件可能没有差异。"));
         if (kind == .hg) self.add("vcs.detail.hg-limit", "", loc(lang, "Local Mercurial only; shared/subrepositories and upstream distance unsupported. History uses first parent as default anchor.", "仅本地 Mercurial；不支持共享/子仓库及远端距离。历史默认以第一父版本为锚点。"));
         if (kind == .svn) self.add("vcs.detail.svn-limit", "", loc(lang, "Server history is not authorized; BASE/diff require a supported pristine-copy version.", "服务器历史未授权；本地 BASE 与差异需要支持完整 pristine 副本的版本。"));
         if (kind == .jj) self.add("vcs.detail.jj-limit", "", loc(lang, "Recorded revisions only; unsnapshotted edits are not included.", "仅已记录版本，不包含尚未快照的编辑。"));
@@ -808,4 +818,22 @@ test "saved local approval commands require an explicit reviewed view" {
     try std.testing.expect(content.textFor("vcs.action.trust-remember") != null);
     try std.testing.expect(content.textFor("vcs.action.trust-reuse") != null);
     try std.testing.expect(content.textFor("vcs.action.trust-forget") != null);
+}
+
+test "native file list keeps unsafe rows visible but offers only admissible selection" {
+    const workspace = try identity.Workspace.init(.git, "repo", "repo");
+    var snapshot: contract.Snapshot = .{ .workspace = workspace, .availability = .ready };
+    snapshot.files.available = true;
+    snapshot.files.add("valid.txt", "", .{ .path = .{}, .kind = .modified });
+    snapshot.files.add("folder/", "", .{ .path = .{}, .kind = .untracked });
+    snapshot.files.add("AUX.txt", "", .{ .path = .{}, .kind = .modified });
+    const view: View = .{ .phase = .ready, .workspace = workspace, .snapshot = snapshot, .detail_supported = true, .file_controls = true };
+    var content: Content = undefined;
+    var tree: ui.Tree = undefined;
+    content.build(.en, &view, &tree);
+    try std.testing.expect(content.textFor(pick_actions[0]) != null);
+    try std.testing.expect(content.textFor(pick_actions[1]) == null);
+    try std.testing.expect(content.textFor("vcs.file.display-only.1") != null);
+    try std.testing.expect(content.textFor("vcs.file.display-only.2") != null);
+    try std.testing.expect(content.textFor("vcs.detail.write-limit") != null);
 }

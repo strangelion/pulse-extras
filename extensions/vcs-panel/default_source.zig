@@ -741,15 +741,7 @@ const LocalSession = struct {
         if (contract.detailAllowed(review.kind, exe, root, argv)) return true;
         return switch (review.kind) {
             .git => argvEqual(argv, &.{ exe, "--no-optional-locks", "-C", root, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--absolute-git-dir" }) or
-                argvEqual(argv, &.{ exe, "--no-optional-locks", "-C", root, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all" }),
-            .jj => blk: {
-                if (argvEqual(argv, &.{ exe, "--ignore-working-copy", "--no-pager", "--color=never", "-R", root, "log", "-r", "@", "--no-graph", "-T", jj_mod.revision_template })) break :blk true;
-                if (argv.len != 10 or argv[9].len != 40) break :blk false;
-                for (argv[9]) |byte| {
-                    if (!std.ascii.isHex(byte)) break :blk false;
-                }
-                break :blk argvEqual(argv[0..9], &.{ exe, "--ignore-working-copy", "--no-pager", "--color=never", "-R", root, "diff", "--summary", "-r" });
-            },
+                argvEqual(argv, &.{ exe, "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", root, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all" }),
             .svn => argvEqual(argv, &.{ exe, "info", "--non-interactive", "--no-auth-cache", "--show-item", "revision", root }) or
                 argvEqual(argv, &.{ exe, "info", "--non-interactive", "--no-auth-cache", "--show-item", "relative-url", root }) or
                 argvEqual(argv, &.{ exe, "status", "--non-interactive", "--no-auth-cache", "--ignore-externals", "--xml", "--no-ignore", root }),
@@ -786,11 +778,31 @@ const LocalSession = struct {
         self.checkPins(review) catch return error.UnapprovedExecutable;
         self.checkSaved(review) catch return error.UnapprovedExecutable;
         if (review.kind == .hg and !argvEqual(request.argv, &.{ review.executable.slice(), "--version" })) checkHgLayout(review) catch return error.UnapprovedExecutable;
-        if (review.kind == .svn and contract.detailAllowed(.svn, review.executable.slice(), review.root.slice(), request.argv)) {
+        const detail_kind = contract.admittedDetailKind(review.kind, review.executable.slice(), review.root.slice(), request.argv);
+        if (review.kind == .git or review.kind == .hg) {
+            if (detail_kind == .working_diff) {
+                const arg = request.argv[request.argv.len - 1];
+                const relative = if (review.kind == .hg) arg[5..] else arg;
+                var bytes: [identity.max_path_bytes]u8 = undefined;
+                const target = std.fmt.bufPrint(&bytes, "{s}\\{s}", .{ review.root.slice(), relative }) catch return error.UnapprovedExecutable;
+                for (bytes[review.root.len..target.len]) |*byte| {
+                    if (byte.* == '/') byte.* = '\\';
+                }
+                evidence.observeFileTarget(target) catch return error.UnapprovedExecutable;
+                const parent = std.fs.path.dirname(target) orelse return error.UnapprovedExecutable;
+                var observed: detect.Result = .{};
+                detectPreview(self, parent, &observed);
+                const candidate = observed.find(review.kind) orelse return error.UnapprovedExecutable;
+                if (!candidate.root.eql(review.root.slice())) return error.UnapprovedExecutable;
+            }
+        }
+        if (review.kind == .svn and detail_kind != null) {
             const arg = request.argv[request.argv.len - 1];
             const target = if (std.mem.endsWith(u8, arg, "@")) arg[0 .. arg.len - 1] else arg;
             if (!review.root.eql(target)) {
-                evidence.observeLocalTarget(target) catch return error.UnapprovedExecutable;
+                if (detail_kind == .working_diff or detail_kind == .content) {
+                    evidence.observeFileTarget(target) catch return error.UnapprovedExecutable;
+                } else evidence.observeLocalTarget(target) catch return error.UnapprovedExecutable;
                 // Do not treat a nested checkout as the approved working copy.
                 const parent = std.fs.path.dirname(target) orelse return error.UnapprovedExecutable;
                 var observed: detect.Result = .{};
@@ -1125,17 +1137,28 @@ test "local trust command admission is exact for each provider" {
     var review: panel.LocalReview = .{ .root = root, .executable = try identity.Path.init("C:\\tools\\git.exe"), .kind = .git, .generation = 1 };
     const exe = review.executable.slice();
     try std.testing.expect(LocalSession.allowedCommand(&review, &.{ exe, "--version" }));
-    try std.testing.expect(LocalSession.allowedCommand(&review, &.{ exe, "--no-optional-locks", "-C", root.slice(), "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all" }));
+    try std.testing.expect(LocalSession.allowedCommand(&review, &.{ exe, "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", root.slice(), "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all" }));
     try std.testing.expect(!LocalSession.allowedCommand(&review, &.{ exe, "-C", root.slice(), "commit" }));
-    try std.testing.expect(!LocalSession.allowedCommand(&review, &.{ exe, "--no-optional-locks", "-C", "C:\\other", "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all" }));
+    try std.testing.expect(!LocalSession.allowedCommand(&review, &.{ exe, "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", "C:\\other", "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all" }));
     review.kind = .jj;
     review.executable = try identity.Path.init("C:\\tools\\jj.exe");
-    try std.testing.expect(LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "--ignore-working-copy", "--no-pager", "--color=never", "-R", root.slice(), "diff", "--summary", "-r", "0123456789abcdef0123456789abcdef01234567" }));
+    try std.testing.expect(!LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "--ignore-working-copy", "--no-pager", "--color=never", "-R", root.slice(), "diff", "--summary", "-r", "0123456789abcdef0123456789abcdef01234567" }));
+    var command: contract.DetailCommand = .{};
+    const revision = try identity.RevisionId.init(.jj, "0123456789abcdef0123456789abcdef01234567");
+    const operation: [128]u8 = @splat('a');
+    const pinned = try command.build(.jj, review.executable.slice(), root.slice(), &.{ .kind = .jj_status_diff, .revision = revision, .operation = try contract.Text.init(&operation) });
+    try std.testing.expect(LocalSession.allowedCommand(&review, pinned));
     try std.testing.expect(!LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "--ignore-working-copy", "--no-pager", "--color=never", "-R", root.slice(), "diff", "--summary", "-r", "--config" }));
     review.kind = .svn;
     review.executable = try identity.Path.init("C:\\tools\\svn.exe");
     try std.testing.expect(LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "status", "--non-interactive", "--no-auth-cache", "--ignore-externals", "--xml", "--no-ignore", root.slice() }));
     try std.testing.expect(!LocalSession.allowedCommand(&review, &.{ review.executable.slice(), "status", "--xml", "-u", root.slice() }));
+    for ([_]identity.Kind{ .git, .jj, .svn, .hg }) |kind| {
+        review.kind = kind;
+        for ([_][]const u8{ "add", "commit", "push", "pull", "update", "reset", "revert", "clean", "fetch", "merge", "bookmark" }) |mutation| {
+            try std.testing.expect(!LocalSession.allowedCommand(&review, &.{ review.executable.slice(), mutation }));
+        }
+    }
 }
 
 fn fixtureAbsoluteRoot(sub_path: []const u8) !identity.Path {
@@ -1170,6 +1193,35 @@ fn exerciseLocalFixture(kind: identity.Kind, executable: identity.Path, root: id
     try std.testing.expect(resolved.tool_version.slice().len != 0);
     const snapshot = try resolved.provider.summarize(&resolved.workspace);
     try std.testing.expectEqual(contract.Availability.ready, snapshot.availability);
+    // Exercise the actual native admission path, not only the standalone
+    // provider's permissive compatibility runner.
+    const path = try identity.Path.init("tracked.txt");
+    switch (kind) {
+        .git, .hg => {
+            if (snapshot.revision) |revision| {
+                const history = try resolved.provider.detail(&resolved.workspace, &.{ .kind = .history, .revision = revision });
+                try std.testing.expect(std.mem.indexOf(u8, history.slice(), revision.slice()) != null);
+                const content = try resolved.provider.detail(&resolved.workspace, &.{ .kind = .content, .revision = revision, .path = path });
+                try std.testing.expectEqualStrings("original\n", content.slice());
+                const diff = try resolved.provider.detail(&resolved.workspace, &.{ .kind = .working_diff, .path = path });
+                try std.testing.expect(std.mem.indexOf(u8, diff.slice(), "+changed") != null);
+            }
+        },
+        .jj => {
+            const revision = snapshot.revision orelse return error.TestUnexpectedResult;
+            const history = try resolved.provider.detail(&resolved.workspace, &.{ .kind = .history, .revision = revision });
+            try std.testing.expect(std.mem.indexOf(u8, history.slice(), revision.slice()) != null);
+        },
+        .svn => {
+            const info = try resolved.provider.detail(&resolved.workspace, &.{ .kind = .local_info, .path = path });
+            try std.testing.expect(std.mem.indexOf(u8, info.slice(), "tracked.txt") != null);
+            const content = try resolved.provider.detail(&resolved.workspace, &.{ .kind = .content, .path = path });
+            try std.testing.expectEqualStrings("original\n", content.slice());
+            const diff = try resolved.provider.detail(&resolved.workspace, &.{ .kind = .working_diff, .path = path });
+            try std.testing.expect(std.mem.indexOf(u8, diff.slice(), "+changed") != null);
+        },
+        else => return error.TestUnexpectedResult,
+    }
     try LocalSession.revoke(local);
     try std.testing.expectError(error.Permission, resolver.resolve(resolver.ctx, &root));
     try LocalSession.finish(local);
@@ -1189,6 +1241,22 @@ test "trusted local mode queries ordinary installed Git and revokes admission" {
         defer outcome.deinit();
         if (!outcome.succeeded()) return error.TestUnexpectedResult;
     }
+    const tracked = try tmp.dir.createFile(io, "tracked.txt", .{ .exclusive = true });
+    try tracked.writeStreamingAll(io, "original\n");
+    tracked.close(io);
+    {
+        var outcome = try runner.run(.{ .argv = &.{ executable.slice(), "-C", root.slice(), "add", "tracked.txt" }, .timeout_ns = 20 * std.time.ns_per_s });
+        defer outcome.deinit();
+        if (!outcome.succeeded()) return error.TestUnexpectedResult;
+    }
+    {
+        var outcome = try runner.run(.{ .argv = &.{ executable.slice(), "-C", root.slice(), "-c", "user.name=Pulse Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "initial" }, .timeout_ns = 20 * std.time.ns_per_s });
+        defer outcome.deinit();
+        if (!outcome.succeeded()) return error.TestUnexpectedResult;
+    }
+    const changed = try tmp.dir.createFile(io, "tracked.txt", .{});
+    try changed.writeStreamingAll(io, "changed\n");
+    changed.close(io);
     const file = try tmp.dir.createFile(io, "untracked.txt", .{ .exclusive = true });
     try file.writeStreamingAll(io, "fixture\n");
     file.close(io);

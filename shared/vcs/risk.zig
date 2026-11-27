@@ -33,7 +33,7 @@ pub const Level = enum(u8) {
 
     pub fn requiresConfirmation(self: Level) bool {
         return switch (self) {
-            .working_tree_write, .remote_write, .history_rewrite, .destructive => true,
+            .network_read, .local_metadata_write, .working_tree_write, .remote_write, .history_rewrite, .destructive => true,
             else => false,
         };
     }
@@ -60,7 +60,7 @@ pub const Policy = struct {
     /// `refresh` is only allowed when the provider proved the command is
     /// side-effect free for the detected version.
     allow_refresh: bool = false,
-    allow_network_read: bool = true,
+    allow_network_read: bool = false,
     allow_destructive: bool = false,
 
     pub fn allows(self: Policy, level: Level) bool {
@@ -92,7 +92,7 @@ test "default policy is a read-only browser" {
     const policy: Policy = .{};
     try std.testing.expect(policy.allows(.passive_read));
     try std.testing.expect(!policy.allows(.refresh));
-    try std.testing.expect(policy.allows(.network_read));
+    try std.testing.expect(!policy.allows(.network_read));
     try std.testing.expect(!policy.allows(.local_metadata_write));
     try std.testing.expect(!policy.allows(.working_tree_write));
     try std.testing.expect(!policy.allows(.remote_write));
@@ -122,7 +122,8 @@ test "plan and confirmation requirements" {
     try std.testing.expect(!Level.network_read.requiresPlan());
     try std.testing.expect(Level.local_metadata_write.requiresPlan());
     try std.testing.expect(Level.remote_write.requiresConfirmation());
-    try std.testing.expect(!Level.local_metadata_write.requiresConfirmation());
+    try std.testing.expect(Level.local_metadata_write.requiresConfirmation());
+    try std.testing.expect(Level.network_read.requiresConfirmation());
     try std.testing.expect(Level.destructive.requiresConfirmation());
 }
 

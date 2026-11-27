@@ -212,10 +212,16 @@ pub const Git = struct {
 
     pub fn summarize(self: *Git, workspace: *const identity.Workspace) contract.Error!contract.Snapshot {
         if (workspace.kind != .git) return error.Unsupported;
+        // The protected single-Git policy independently audits its entire
+        // configuration and admits summary-only commands. Ordinary trusted
+        // local and compatibility callers need the same config guard as diff.
+        if (!self.runner.git_isolation) try self.checkReadGuards(workspace, true);
         var outcome = self.execution.execute(self.runner, .{
             .argv = &.{
                 self.executable.slice(),
                 "--no-optional-locks",
+                "-c",
+                "core.fsmonitor=false",
                 "-C",
                 workspace.root.slice(),
                 "status",
@@ -267,11 +273,9 @@ pub const Git = struct {
         }
     }
 
-    fn detailImpl(ctx: *anyopaque, workspace: *const identity.Workspace, request: *const contract.DetailRequest) contract.Error!contract.DetailText {
-        const self: *Git = @ptrCast(@alignCast(ctx));
-        if (workspace.kind != .git or !contract.detailSupported(.git, request.kind)) return error.Unsupported;
+    fn checkReadGuards(self: *Git, workspace: *const identity.Workspace, check_filters: bool) contract.Error!void {
         for ([_]contract.DetailKind{ .guard, .filter_guard }) |guard_kind| {
-            if (guard_kind == .filter_guard and request.kind != .working_diff) continue;
+            if (guard_kind == .filter_guard and !check_filters) continue;
             var guard: contract.DetailCommand = .{};
             const guard_args = try guard.build(.git, self.executable.slice(), workspace.root.slice(), &.{ .kind = guard_kind });
             var checked = self.execution.execute(self.runner, .{ .argv = guard_args, .timeout_ns = 5 * std.time.ns_per_s, .stdout_limit = 4096, .stderr_limit = 4096 }) catch |err| return mapRunError(err);
@@ -281,6 +285,12 @@ pub const Git = struct {
                 return error.Permission;
             }
         }
+    }
+
+    fn detailImpl(ctx: *anyopaque, workspace: *const identity.Workspace, request: *const contract.DetailRequest) contract.Error!contract.DetailText {
+        const self: *Git = @ptrCast(@alignCast(ctx));
+        if (workspace.kind != .git or !contract.detailSupported(.git, request.kind)) return error.Unsupported;
+        try self.checkReadGuards(workspace, request.kind == .working_diff);
         var command: contract.DetailCommand = .{};
         const argv = try command.build(.git, self.executable.slice(), workspace.root.slice(), request);
         var outcome = self.execution.execute(self.runner, .{ .argv = argv, .timeout_ns = 10 * std.time.ns_per_s, .stdout_limit = contract.DetailText.capacity, .stderr_limit = 64 * 1024 }) catch |err| return mapRunError(err);
@@ -493,7 +503,12 @@ test "reads a real repository end to end when git is installed" {
     // An ambient clean/process filter is never invoked by the advanced diff.
     try expectSuccess(&runner, &.{ report.path.slice(), "-C", root, "config", "filter.pulse.clean", "never-run-this" });
     try std.testing.expectError(error.Permission, git.provider().detail(&workspace, &.{ .kind = .working_diff, .path = path }));
+    try std.testing.expectError(error.Permission, git.summarize(&workspace));
     try expectSuccess(&runner, &.{ report.path.slice(), "-C", root, "config", "--unset", "filter.pulse.clean" });
+    try expectSuccess(&runner, &.{ report.path.slice(), "-C", root, "config", "core.fsmonitor", "never-run-this" });
+    const no_monitor = try git.summarize(&workspace);
+    try std.testing.expectEqual(@as(u32, 1), no_monitor.changes.modified);
+    try expectSuccess(&runner, &.{ report.path.slice(), "-C", root, "config", "--unset", "core.fsmonitor" });
     const workspaces = try git.provider().detail(&workspace, &.{ .kind = .workspaces });
     try std.testing.expect(std.mem.indexOf(u8, workspaces.slice(), "worktree ") != null);
 

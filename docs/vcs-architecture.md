@@ -407,3 +407,18 @@ these checks do not prove live transport or actual application behavior.
 ### P3C Mercurial local candidate
 
 The fourth ordinary provider uses the existing project, authorization, worker and detail contracts. Mercurial is not staged; native M/A/R/!/ ?/I and copy sources are parsed from NUL status, conflict list separately. First working parent is the default immutable history anchor (merge indicated); history uses a bounded exact ID revset with offset and literal path intersection. Branch/tag/bookmark references are collected from fixed templates; no network distance or server operations. The process gate checks ordinary local metadata and known store requirements, forbids shared/subrepositories and disables ambient and repository config using documented Mercurial environment variables. Existing grants retain their original provider IDs; new HG records use their own scope. Exact CI and installed acceptance remain pending.
+
+### Consolidated four-provider boundary (2026-11-27)
+
+The selected read-only source baseline 6f29edf passed full CI for Git/JJ/
+SVN/Hg. Optional additional providers are deferred, not advertised. The
+candidate guards ordinary Git status against external clean filters and
+promisor configuration and disables fsmonitor; protected Git continues its
+independent strict audit. Native file selection shares one validated
+conversion with command dispatch; unsafe alias/directory/compact display
+records do not get an actionable file selection. Ordinary live file diff
+requires a file or absent leaf with verified parent, not a directory,
+reparse point or nested repository. Historical reads remain fixed-grammar
+revision queries. JJ admission is operation-pinned only. Existing grants
+are read-only; no implicit mutation or network consent. Installed behavior,
+concurrent external changes and real client/HTTP acceptance remain separate.
