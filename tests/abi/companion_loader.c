@@ -152,15 +152,23 @@ static PulseStatus check_input_labels(const PulseUiModelNode *node, unsigned dep
 static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
     REQUIRE(t && t->size == sizeof(*t) && t->root && t->command_count == COMMAND_COUNT && t->commands);
     for (unsigned i = 0; i < COMMAND_COUNT; ++i) REQUIRE(same(t->commands[i], commands[i]));
-    const PulseUiModelNode *root = t->root;
-    REQUIRE(check_input_labels(root, 0) == PULSE_OK);
-    REQUIRE(root->size == sizeof(*root) && root->type == PULSE_UI_MODEL_STACK);
+    const PulseUiModelNode *viewport = t->root;
+    REQUIRE(check_input_labels(viewport, 0) == PULSE_OK);
+    REQUIRE(viewport->size == sizeof(*viewport) && viewport->type == PULSE_UI_MODEL_STACK);
+    REQUIRE(viewport->orientation.present && same(viewport->orientation.value, "horizontal"));
+    REQUIRE(viewport->children.present && viewport->children.data && viewport->children.count == 3);
+    const PulseUiModelNode *root = viewport->children.data + 1;
+    REQUIRE(root->type == PULSE_UI_MODEL_STACK && root->flex.present && root->flex.value == 16);
     REQUIRE(root->children.present && root->children.data && (root->children.count >= 3 && root->children.count <= 36));
-    if (same(root->children.data[1].id, "market"))
-        REQUIRE(!root->max_width.present);
-    else
-        REQUIRE(root->max_width.present && root->max_width.value == 920);
-    const PulseUiModelNode *nav = root->children.data;
+    REQUIRE(viewport->children.data[0].flex.value == 1 && viewport->children.data[2].flex.value == 1);
+    REQUIRE(root->max_width.present);
+    if (same(root->children.data[1].id, "market")) REQUIRE(root->max_width.value == 1440);
+    else if (same(root->children.data[1].id, "global")) REQUIRE(root->max_width.value == 1100);
+    else REQUIRE(root->max_width.value == 1160);
+    const PulseUiModelNode *nav_frame = root->children.data;
+    REQUIRE(nav_frame->children.present && nav_frame->children.data && nav_frame->children.count == 3);
+    const PulseUiModelNode *nav = nav_frame->children.data + 1;
+    REQUIRE(nav->type == PULSE_UI_MODEL_GRID && nav->columns.present && nav->columns.value == 4);
     REQUIRE(nav->children.present && nav->children.count == 4 && nav->children.data);
     unsigned primary_count = 0;
     for (unsigned i = 0; i < 4; ++i) {
@@ -174,16 +182,21 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
     f->global = same(root->children.data[1].id, "global");
     f->enabled_less = f->enabled_more = 0;
     if (f->global) {
-        REQUIRE(root->children.count == 6);
-        const PulseUiModelNode *groups = root->children.data + 2;
+        REQUIRE(root->children.count == 5);
+        const PulseUiModelNode *overview = root->children.data + 2;
+        REQUIRE(overview->type == PULSE_UI_MODEL_GRID && overview->columns.present && overview->columns.value == 2);
+        REQUIRE(overview->children.present && overview->children.data && overview->children.count == 2);
+        const PulseUiModelNode *groups[] = { overview->children.data, overview->children.data + 1,
+                                            root->children.data + 3, root->children.data + 4 };
         static const char *group_ids[] = { "settings.download", "settings.runtime", "settings.policy", "settings.diagnostics-group" };
         for (unsigned i = 0; i < 4; ++i) {
-            REQUIRE(groups[i].type == PULSE_UI_MODEL_GROUP && groups[i].bordered.present && groups[i].bordered.value);
-            REQUIRE(same(groups[i].id, group_ids[i]));
-            REQUIRE(groups[i].children.present && groups[i].children.data);
-            REQUIRE(groups[i].children.count == (i == 3 ? 2u : 3u));
+            const PulseUiModelNode *group = groups[i];
+            REQUIRE(group->type == PULSE_UI_MODEL_GROUP && group->bordered.present && group->bordered.value);
+            REQUIRE(same(group->id, group_ids[i]));
+            REQUIRE(group->children.present && group->children.data);
+            REQUIRE(group->children.count == (i == 3 ? 2u : 3u));
         }
-        REQUIRE(same(groups[1].children.data[2].command.value, commands[52]));
+        REQUIRE(same(groups[1]->children.data[2].command.value, commands[52]));
         REQUIRE(t->state_count == 30);
         REQUIRE(same(t->states[27].key, "library.scale"));
         REQUIRE(same(t->states[28].key, "library.topmost"));
@@ -195,13 +208,13 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
         REQUIRE(same(t->states[26].key, "policy.capture-crashes"));
         /* The fixture intentionally omits set_states: retain the old
          * editable text field on older hosts. */
-        const PulseUiModelNode *policy = groups[2].children.data;
+        const PulseUiModelNode *policy = groups[2]->children.data;
         REQUIRE(policy[1].type == PULSE_UI_MODEL_TEXT_INPUT);
         REQUIRE(same(policy[1].state.value, "settings.runtime-policy"));
         REQUIRE(policy[2].children.data && policy[2].children.count == 3);
         REQUIRE(same(policy[2].children.data[0].command.value, commands[80]));
-        REQUIRE(same(groups[3].children.data[0].command.value, commands[87]));
-        const PulseUiModelNode *toolbar = groups[0].children.data + 2;
+        REQUIRE(same(groups[3]->children.data[0].command.value, commands[87]));
+        const PulseUiModelNode *toolbar = groups[0]->children.data + 2;
         REQUIRE(toolbar->children.present && toolbar->children.count == 3 && toolbar->children.data);
         const PulseUiModelNode *less = toolbar->children.data + 1, *more = less + 1;
         REQUIRE(less->enabled.present && more->enabled.present);
@@ -278,6 +291,15 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
     if (same(root->children.data[1].id, "library")) {
         REQUIRE(root->children.count >= 5);
         const PulseUiModelNode *toolbar = root->children.data + 4;
+        if (same(toolbar->id, "library.actions")) {
+            REQUIRE(toolbar->children.present && toolbar->children.data && toolbar->children.count == 3);
+            const PulseUiModelNode *actions = toolbar->children.data;
+            REQUIRE(actions[1].flex.present && actions[1].flex.value == 1);
+            REQUIRE(same(actions[2].id, "library.import-toolbar") && actions[2].children.present &&
+                    actions[2].children.data && actions[2].children.count >= 1);
+            REQUIRE(same(actions[2].children.data[0].command.value, commands[19]));
+            toolbar = actions;
+        }
         REQUIRE(toolbar->children.present && toolbar->children.data &&
                 (toolbar->children.count == 3 || toolbar->children.count == 4));
         const PulseUiModelNode *search = root->children.data + 3;

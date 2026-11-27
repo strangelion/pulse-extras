@@ -479,11 +479,13 @@ real-host acceptance.
 
 The library distinguishes an empty collection from a filter with no matches.
 The running view separates instance identity and status from resource metrics.
-The market fills the available settings width and reflows result cards from
-one to four columns. Each card keeps the pet name above its source ID. The global
-settings page groups downloads, runtime limits, startup and exit, and
-diagnostics. Number fields keep visible labels when filled, and the eight
-startup plan entries use two columns on wide pages. Commands, persisted keys
+All four pages centre their content within the host viewport and reflow at
+narrow widths. The library places Import on the right of the filter row on
+wide pages. The market reflows from one to four columns, with the pet name
+and source ID centred in each card. Downloads and runtime limits appear
+side by side on wide settings pages and stack on narrower ones. Number
+fields keep visible labels when filled, and the eight startup plan entries
+use two columns where there is room. Commands, persisted keys
 and the single-field policy editor for older hosts remain compatible.
 Verify light and dark themes, narrow widths, keyboard navigation and long
 Chinese text in the final isolated installed-host round.

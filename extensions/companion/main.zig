@@ -161,7 +161,12 @@ const Instance = struct {
 const Content = struct {
     declared: [commands.len]abi.StringView = undefined,
     navigation: [4]ui.Node = undefined,
-    settings_sections: [6]ui.Node = undefined,
+    navigation_frame: [3]ui.Node = undefined,
+    page_frame: [3]ui.Node = undefined,
+    paging_frame: [3]ui.Node = undefined,
+    library_actions: [3]ui.Node = undefined,
+    settings_sections: [5]ui.Node = undefined,
+    settings_overview: [2]ui.Node = undefined,
     // The library's fallback can render 16 individual rows alongside
     // selection, launch profiles, and recovery controls.
     children: [36]ui.Node = undefined,
@@ -248,6 +253,7 @@ const Content = struct {
     quarantine_text: [4][224]u8 = undefined,
     quarantine_ids: [4][64]u8 = undefined,
     root: ui.Node = undefined,
+    viewport: ui.Node = undefined,
     value: [256]u8 = undefined,
 };
 
@@ -331,6 +337,30 @@ fn horizontal(id: []const u8, children: []const ui.Node) ui.Node {
     node.orientation = .{ .present = 1, .value = abi.view("horizontal") };
     node.gap = .{ .present = 1, .value = 6 };
     ui.withChildren(&node, children);
+    return node;
+}
+
+fn horizontalSpacer(id: []const u8) ui.Node {
+    var node = ui.node(ui.NodeKind.stack);
+    node.id = abi.view(id);
+    node.min_width = .{ .present = 1, .value = 1 };
+    node.flex = .{ .present = 1, .value = 1 };
+    return node;
+}
+
+fn centred(nodes: *[3]ui.Node, comptime id: []const u8, child: ui.Node) ui.Node {
+    nodes.* = .{ horizontalSpacer(id ++ ".left"), child, horizontalSpacer(id ++ ".right") };
+    var node = horizontal(id, nodes);
+    node.gap.value = 0;
+    return node;
+}
+
+fn compactToolbar(id: []const u8, actions: []const ui.Node) ui.Node {
+    var node = horizontal(id, actions);
+    var width = @as(i64, @intCast(actions.len - 1)) * node.gap.value;
+    for (actions) |button| width += button.max_width.value;
+    node.min_width = .{ .present = 1, .value = width };
+    node.max_width = node.min_width;
     return node;
 }
 
@@ -662,6 +692,7 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
             const card_id = std.fmt.bufPrint(&ids[2], "market-card-{d}-{x}", .{ n, source_hash }) catch unreachable;
             item[0] = styledAction(button_id, body, commands[40 + n], idle, if (selected) "primary" else "standard", 0);
             item[1] = captionLabel(source_id, row.sourceId());
+            item[1].alignment = .{ .present = 1, .value = abi.view("center") };
             content.market_results[n] = stack(card_id, item, 4);
             content.market_results[n].min_width = .{ .present = 1, .value = 248 };
         }
@@ -673,7 +704,7 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
         if (snapshot.query.offset != 0 or result.summary.total > snapshot.rows.len) {
             content.market_paging[0] = styledAction("market.previous", "上一页", commands[33], idle and snapshot.query.offset >= snapshot.rows.len, "standard", 92);
             content.market_paging[1] = styledAction("market.next", "下一页", commands[34], idle and snapshot.query.offset + written < result.summary.total and written != 0, "standard", 92);
-            content.children[count] = horizontal("market.paging", &content.market_paging);
+            content.children[count] = centred(&content.paging_frame, "market.pager-frame", compactToolbar("market.paging", &content.market_paging));
             count += 1;
         }
         if (written != 0) {
@@ -925,11 +956,15 @@ fn fillPolicyEditor(content: *Content, enabled: bool) ui.Node {
 }
 
 fn fillSettingsSections(content: *Content) []const ui.Node {
+    content.settings_overview = .{
+        settingsGroup("settings.download", "下载偏好", content.children[2..5]),
+        settingsGroup("settings.runtime", "运行限制", content.children[5..8]),
+    };
+    for (&content.settings_overview) |*card| card.min_width = .{ .present = 1, .value = 370 };
     content.settings_sections = .{
         content.children[0],
         content.children[1],
-        settingsGroup("settings.download", "下载偏好", content.children[2..5]),
-        settingsGroup("settings.runtime", "运行限制", content.children[5..8]),
+        grid("settings.overview", &content.settings_overview, 2),
         settingsGroup("settings.policy", "启动与退出", content.children[8..11]),
         settingsGroup("settings.diagnostics-group", "诊断", content.children[11..13]),
     };
@@ -958,9 +993,13 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     const selected: usize = @backingInt(instance.section);
     const active_ids = [_][]const u8{ "nav.library.active", "nav.running.active", "nav.market.active", "nav.global.active" };
     for (names, 0..) |name, n| {
-        content.navigation[n] = styledAction(if (n == selected) active_ids[n] else commands[n], name, commands[n], true, if (n == selected) "primary" else "transparent", 100);
+        content.navigation[n] = styledAction(if (n == selected) active_ids[n] else commands[n], name, commands[n], true, if (n == selected) "primary" else "transparent", 0);
     }
-    content.children[0] = horizontal("navigation", &content.navigation);
+    var navigation = grid("navigation", &content.navigation, 4);
+    navigation.min_width = .{ .present = 1, .value = 320 };
+    navigation.max_width = .{ .present = 1, .value = 660 };
+    navigation.flex = .{ .present = 1, .value = 16 };
+    content.children[0] = centred(&content.navigation_frame, "navigation.frame", navigation);
     content.children[1] = label(commands[selected][10..], names[selected]);
     content.children[1].role = .{ .present = 1, .value = abi.view("section") };
     var count: usize = 3;
@@ -977,15 +1016,21 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             content.toolbar[2] = styledAction("library.search-clear", "清空搜索", commands[28], idle and can_clear, "transparent", 98);
             const fallback = instance.task_id != 0 and instance.timer == null;
             content.toolbar[3] = styledAction("library.poll", "检查任务", commands[8], fallback, "transparent", 102);
-            content.children[4] = horizontal("library.toolbar", content.toolbar[0..if (fallback) @as(usize, 4) else 3]);
+            const controls = content.toolbar[0..if (fallback) @as(usize, 4) else 3];
+            const filter_toolbar = compactToolbar("library.toolbar", controls);
+            content.children[4] = filter_toolbar;
             count = 5;
             const import_available = instance.dialogs != null and config.helper_sha256.len == 64 and config.runtime_sha256.len == 64;
             if (import_available) {
                 const enabled = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and !runtimeBusy(instance) and instance.import_dialog == 0 and instance.picker_request == 0;
                 const embedded_picker = instance.dialog_v2_table != null and instance.picker_api != null and !instance.dialog_picker_disabled;
                 const buttons = fillImportToolbar(&content.import_toolbar, embedded_picker, enabled, instance.import_request != null, instance.task_id != 0 and !instance.import_cancel_requested);
-                content.children[count] = horizontal("library.import-toolbar", buttons);
-                count += 1;
+                content.library_actions = .{
+                    filter_toolbar,
+                    horizontalSpacer("library.actions-space"),
+                    compactToolbar("library.import-toolbar", buttons),
+                };
+                content.children[4] = horizontal("library.actions", &content.library_actions);
             }
             if (instance.library_loaded) {
                 const snapshot = &instance.library_snapshot;
@@ -1006,9 +1051,9 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     count += 1;
                 }
                 if (snapshot.count > 16) {
-                    content.paging[0] = action("library.previous", "上一页", commands[9], instance.library_offset > 0);
-                    content.paging[1] = action("library.next", "下一页", commands[10], end < snapshot.count);
-                    content.children[count] = horizontal("library.pagination", &content.paging);
+                    content.paging[0] = styledAction("library.previous", "上一页", commands[9], instance.library_offset > 0, "standard", 92);
+                    content.paging[1] = styledAction("library.next", "下一页", commands[10], end < snapshot.count, "standard", 92);
+                    content.children[count] = centred(&content.paging_frame, "library.pager-frame", compactToolbar("library.pagination", &content.paging));
                     count += 1;
                 }
                 if (snapshot.count != 0) {
@@ -1183,9 +1228,9 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     const line = std.fmt.bufPrint(&content.running_count, "匹配 {d} / {d} 个实例 · 显示 {d}–{d}", .{ total, instance.running_rows.count, if (total == 0) 0 else offset + 1, offset + rendered }) catch unreachable;
                     content.children[count_index] = changingCaption(&content.running_count_id, "running.count", line);
                     if (total > running_page_size) {
-                        content.running_paging[0] = action("running.previous", "上一页", commands[53], offset != 0);
-                        content.running_paging[1] = action("running.next", "下一页", commands[54], offset + rendered < total);
-                        content.children[count] = horizontal("running.pagination", &content.running_paging);
+                        content.running_paging[0] = styledAction("running.previous", "上一页", commands[53], offset != 0, "standard", 92);
+                        content.running_paging[1] = styledAction("running.next", "下一页", commands[54], offset + rendered < total, "standard", 92);
+                        content.children[count] = centred(&content.paging_frame, "running.pager-frame", compactToolbar("running.pagination", &content.running_paging));
                         count += 1;
                     }
                     if (total == 0) {
@@ -1245,11 +1290,18 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
         },
     }
     const sections = if (instance.section == .global) fillSettingsSections(content) else content.children[0..count];
-    content.root = stack("companion.root", sections, 12);
-    if (instance.section != .market) content.root.max_width = .{ .present = 1, .value = 920 };
+    content.root = stack("companion.page", sections, 12);
+    content.root.min_width = .{ .present = 1, .value = 320 };
+    content.root.max_width = .{ .present = 1, .value = switch (instance.section) {
+        .library, .running => 1160,
+        .market => 1440,
+        .global => 1100,
+    } };
+    content.root.flex = .{ .present = 1, .value = 16 };
+    content.viewport = centred(&content.page_frame, "companion.root", content.root);
     tree.* = std.mem.zeroes(ui.Tree);
     tree.size = @sizeOf(ui.Tree);
-    tree.root = &content.root;
+    tree.root = &content.viewport;
     tree.commands = &content.declared;
     tree.command_count = content.declared.len;
     content.states[0] = .{ .key = abi.view("library.query"), .value = abi.view(instance.search_draft[0..instance.search_draft_len]) };
@@ -3990,15 +4042,23 @@ test "four section tree declares only real navigation and preference actions" {
     for (0..names.len) |n| {
         instance.section = @fromBackingInt(@intCast(n));
         fill(instance, &content, &tree);
-        try expectInputLabels(content.root);
+        try expectInputLabels(content.viewport);
         try std.testing.expectEqual(@as(u32, commands.len), tree.command_count);
-        try std.testing.expectEqual(@as(u32, 4), content.children[0].children.count);
+        try std.testing.expectEqual(@as(u32, 3), content.viewport.children.count);
+        const page = content.page_frame[1];
+        try std.testing.expectEqual(@as(i64, 16), page.flex.value);
+        const page_width: i64 = switch (instance.section) {
+            .library, .running => 1160,
+            .market => 1440,
+            .global => 1100,
+        };
+        try std.testing.expectEqual(page_width, page.max_width.value);
+        try std.testing.expectEqual(content.page_frame[0].flex.value, content.page_frame[2].flex.value);
+        const navigation = content.navigation_frame[1];
+        try std.testing.expectEqual(ui.NodeKind.grid, navigation.type);
+        try std.testing.expectEqual(@as(i64, 4), navigation.columns.value);
+        try std.testing.expectEqual(@as(u32, 4), navigation.children.count);
         try std.testing.expectEqualStrings(commands[n][10..], abi.slice(content.children[1].id).?);
-        if (instance.section == .market) {
-            try std.testing.expectEqual(@as(u32, 0), content.root.max_width.present);
-        } else {
-            try std.testing.expectEqual(@as(i64, 920), content.root.max_width.value);
-        }
         for (content.navigation, 0..) |button, k| {
             try std.testing.expectEqualStrings(commands[k], abi.slice(button.command.value).?);
             try std.testing.expectEqualStrings(if (k == n) "primary" else "transparent", abi.slice(button.kind.value).?);
@@ -4006,11 +4066,18 @@ test "four section tree declares only real navigation and preference actions" {
         }
         const expected: u32 = switch (instance.section) {
             .library => 5,
-            .global => 6,
+            .global => 5,
             .running => 6,
             .market => 8,
         };
         try std.testing.expectEqual(expected, content.root.children.count);
+    }
+    const overview = content.settings_sections[2];
+    try std.testing.expectEqual(ui.NodeKind.grid, overview.type);
+    try std.testing.expectEqual(@as(i64, 2), overview.columns.value);
+    for (content.settings_overview) |card| {
+        try std.testing.expectEqual(ui.NodeKind.group, card.type);
+        try std.testing.expectEqual(@as(i64, 370), card.min_width.value);
     }
     try std.testing.expectEqual(@as(u32, 0), content.toolbar[2].enabled.value);
 }
@@ -4331,6 +4398,7 @@ test "populated market rows survive navigation without forbidden button attribut
             const source = card.children.data[1];
             try std.testing.expectEqualStrings("cat", abi.slice(source.text.value).?);
             try std.testing.expectEqualStrings("caption", abi.slice(source.role.value).?);
+            try std.testing.expectEqualStrings("center", abi.slice(source.alignment.value).?);
         }
     }
     instance.market_render_rejected = true;
