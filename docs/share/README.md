@@ -1,9 +1,10 @@
 # Pulse Share — development plan
 
-Status: P1 local worker implementation; compilation and real Windows integration
-are CI gates, not yet claimed passed. This branch does not provide network file
-sharing. Do not publish or add a release.toml until transport, pairing and
-host acceptance gates pass.
+Status: P1 local worker CI passed at 24b1ec7 (run 45995525015).
+P2 is an experimental, opt-in LAN CLI with TLS 1.3, mutual ephemeral certificate
+pinning, discovery and explicit receive confirmation. P2's new CI and physical
+two-computer acceptance are outstanding. Pulse UI does not launch this tool.
+Do not publish or add a release.toml until transport and host acceptance pass.
 
 ## Scope and architecture
 
@@ -33,9 +34,13 @@ listeners, UPnP, external relay or unrestricted drive exposure.
   same-directory staging, independent hash verification, no-overwrite commit
   and cleanup after worker failure. Explicit developer harness only; UI never
   starts a worker yet. No named endpoints or production signing keys.
-- P2: TLS transport, explicit pairing, IPv4/IPv6 discovery, user-confirmed
-  file offers and live two-PC acceptance. Discovery is opt-in. Keep identity
-  private keys separate from release signing keys.
+- P2 (CLI implementation, awaiting CI and physical acceptance): native Go
+  executable, standard-library TLS 1.3, mutual certificate pinning with
+  manual full-fingerprint comparison, explicit IPv4/IPv6 on-link bindings,
+  opt-in multicast discovery, one approved file per session, SHA-256 and
+  native P1 no-overwrite commit. Session private keys stay in memory and are
+  entirely separate from release-signing keys. Persistent trust, Pulse UI
+  lifecycle/IPC integration and physical two-PC acceptance remain open.
 - P3: directory manifests, relative path validation, bounded queues, per-file
   receipt, cancellation and resume. Verify actual opened source/destination
   identities; reject reparse points and unsupported entries. Never overwrite
@@ -126,6 +131,94 @@ with wrong bytes (including an existing destination), invalid names and
 hard-linked source. The false-success fixture is built only for tests; the
 parent's independent SHA-256 must reject its receipt. Manual cancellation,
 deliberate disk-full and
-real-host lifecycle tests remain outstanding. P2 must connect the DLL through
-a reviewed lifecycle/IPC controller and complete actual two-PC acceptance;
-no network functionality or production packaging is enabled here.
+real-host lifecycle tests remain outstanding. P2's separate opt-in developer
+CLI is described below. UI-driven network functionality and production
+packaging remain disabled.
+
+
+## P2 experimental LAN CLI
+
+The native DLL and P1 staging remain Zig/C. For the network executable use
+Go 1.27.4 (pinned CI toolchain), standard library only, CGO disabled. This
+deliberately avoids implementing TLS from scratch or bundling a browser.
+The Go module has no third-party dependencies. No persistent identity,
+central service, account, relay or automatic firewall changes.
+
+Build from repository root with the existing pinned Zig and Go toolchains:
+
+    zig build share-local -Doptimize=ReleaseSafe
+    Push-Location shared/share/lan
+    $env:GOTOOLCHAIN = 'local'
+    $env:GOPROXY = 'off'
+    $env:CGO_ENABLED = '0'
+    go test -count=1 -timeout=90s -v ./...
+    go build -trimpath -o ../../../zig-out/bin/pulse-share-lan.exe .
+    Pop-Location
+
+Both computers must be Windows x64 for the native receive commit. Choose
+concrete IPs on the same subnet (RFC1918 IPv4, IPv6 ULA/link-local, or loopback
+for tests); not wildcard or global public IPs. A link-local IPv6 address must
+include its own local interface zone. Do not port-forward the listener.
+The OS firewall may block inbound connections; do not weaken the firewall
+or add broad allow rules. If multicast does not work on a multi-address
+adapter or WLAN, use a numeric address. Discovery is strictly advisory.
+
+On the receiving computer choose existing trusted private directories and
+reviewed local binaries. Example (replace addresses and local paths):
+
+    $bin = (Resolve-Path ./zig-out/bin).Path
+    $sup = Join-Path $bin pulse-share-local.exe
+    $worker = Join-Path $bin pulse-share-worker.exe
+    $supHash = (Get-FileHash $sup -Algorithm SHA256).Hash.ToLowerInvariant()
+    $workerHash = (Get-FileHash $worker -Algorithm SHA256).Hash.ToLowerInvariant()
+    & "$bin/pulse-share-lan.exe" receive --bind 192.168.1.20 --port 45843 --directory C:\ShareTest\received --spool C:\ShareTest\private-spool --supervisor $sup --supervisor-sha256 $supHash --worker $worker --worker-sha256 $workerHash
+
+Optionally append --advertise. On sender, use the actual receiver address
+printed as LISTEN, or explicitly search:
+
+    & ./zig-out/bin/pulse-share-lan.exe discover --bind 192.168.1.21
+    & ./zig-out/bin/pulse-share-lan.exe send --bind 192.168.1.21 --peer 192.168.1.20:45843 --source C:\ShareTest\example.bin
+
+Exchange the complete 64-hex FINGERPRINT displayed independently on each
+computer via a trusted channel (e.g. compare screens in person). Enter the
+other device's fingerprint, not your own. Do not trust fingerprints or
+identities learned from a discovery announcement. Each invocation creates
+a fresh in-memory ECDSA key and certificate. No trust-on-first-use, stored
+pairing, password or unauthenticated fallback; both peers must match their
+explicit pin. On receiver review the escaped filename and size and enter
+exactly yes to approve. Any other answer declines. Only one file is offered
+per invocation. Reverse the sender/receiver roles for the other direction.
+
+Protocol: TLS 1.3 with ALPN pulse-share/1; fixed-size bounded offer header,
+UTF-8 Windows-compatible basename, length and SHA-256; explicit accept,
+exact-length stream, sender-finished marker, native commit receipt. No
+remote path, directory enumeration, remote command, executable launch of
+received files, overwrite, or automatic reception. Sender and receiver
+use at most 256 KiB explicit I/O buffer each plus standard TLS/runtime
+buffers. LAN discovery advertises a fixed 8-byte magic/version/port at
+most once per second on the selected interface; it carries no file or
+identity data. Discovered endpoints are labelled UNVERIFIED and never
+connected automatically. TCP sockets have bounded handshake/offer/transfer
+deadlines; disk hashing, user prompts and Windows subprocess drain are
+separate operations. A receiver is single-session, not an always-on server.
+
+Receiver creates a unique spool directory and file under an explicitly
+approved user-private parent. On Windows the parent ACL is inherited; the
+Go spool does not establish or audit a separate protected ACL. Do not choose
+a shared or untrusted parent. P1 performs the independent SHA-256, same-volume
+owner-only staging and no-overwrite final rename. The locally approved
+supervisor is hashed before invocation, but the Go CLI does not pin its image
+handle through process creation. P1 independently pins its own worker.
+Same-user hostile changes, malicious ancestor mutation, power failure and
+forced parent termination are outside the current prototype's recovery
+guarantee. Spool cleanup removes only its own known file and empty directory;
+it is not a persistent recovery journal. If an acknowledgement is lost after
+commit, the sender reports failure/uncertainty and must not assume rollback.
+
+CI runs pure Go IPv4/IPv6 loopback tests for TLS, wrong peer pin, malformed
+offers/discovery, user decline, digest mismatch and spool cleanup. Windows
+also launches two actual CLI processes and P1 native supervisor/worker,
+exercises both address families where available, verifies the destination
+hash and no-overwrite behavior. Real multicast on a physical LAN, performance,
+GUI integration, native process lifetime controller and two-computer testing
+remain acceptance gates. Never treat a green loopback CI as LAN acceptance.
