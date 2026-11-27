@@ -17,6 +17,7 @@ class ShareStage(unittest.TestCase):
             for key in stage.HELPERS:
                 (binaries / f"pulse-share-{key}.exe").write_bytes(key.encode())
             (binaries / stage.NOTICE).write_text("fixture notices", encoding="utf-8")
+            (binaries / stage.GO_NOTICE).write_text("fixture Go notices", encoding="utf-8")
             out = root / "out"
             version = (stage.ROOT / ".zig-version").read_text(encoding="utf-8").strip()
 
@@ -33,12 +34,14 @@ class ShareStage(unittest.TestCase):
                 self.assertEqual(output, out)
                 self.assertEqual(extension, "strangelion.share-dev")
                 self.assertEqual(library.read_bytes(), b"fixture")
-                self.assertEqual(len(members), len(stage.HELPERS) + 1)
-                for (path, name), key in zip(members[:-1], stage.HELPERS, strict=True):
+                self.assertEqual(len(members), len(stage.HELPERS) + 2)
+                for (path, name), key in zip(members[:-2], stage.HELPERS, strict=True):
                     self.assertEqual(path.read_bytes(), key.encode())
                     self.assertEqual(name, f"pulse-share-{key}.exe")
-                self.assertEqual(members[-1][1], stage.NOTICE)
-                self.assertEqual(members[-1][0].read_text(encoding="utf-8"), "fixture notices")
+                self.assertEqual(members[-2][1], stage.NOTICE)
+                self.assertEqual(members[-2][0].read_text(encoding="utf-8"), "fixture notices")
+                self.assertEqual(members[-1][1], stage.GO_NOTICE)
+                self.assertEqual(members[-1][0].read_text(encoding="utf-8"), "fixture Go notices")
                 return {"real_host_accepted": False}
 
             with patch.object(stage.subprocess, "check_output", return_value=version), \

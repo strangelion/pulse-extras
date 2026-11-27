@@ -22,6 +22,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"pulse-extras/share-lan/sharecore"
 )
 
 const (
@@ -211,7 +213,7 @@ func (p *progressWriter) Write(b []byte)(int,error){
 	return n,err
 }
 
-func sendFileProgress(c net.Conn,f *os.File,o offer,report func(uint64,uint64)) error {
+func sendFileProgress(c sharecore.LaneStream,f *os.File,o offer,report func(uint64,uint64)) error {
 	if err:=c.SetDeadline(time.Now().Add(offerTimeout));err!=nil{return err}
 	if err:=writeOffer(c,o);err!=nil{return err}
 	if err:=readStatus(c,1);err!=nil{return err}
@@ -239,7 +241,7 @@ type commitFunc func(offer,string) error
 func receiveFile(c net.Conn,spool string,approve approveFunc,commit commitFunc) error {
 	return receiveFileProgress(c,spool,approve,commit,nil)
 }
-func receiveFileProgress(c net.Conn,spool string,approve approveFunc,commit commitFunc,report func(uint64,uint64)) (result error) {
+func receiveFileProgress(c sharecore.LaneStream,spool string,approve approveFunc,commit commitFunc,report func(uint64,uint64)) (result error) {
 	if err:=c.SetDeadline(time.Now().Add(offerTimeout));err!=nil{return err}
 	o,err:=readOffer(c)
 	if err!=nil{return err}

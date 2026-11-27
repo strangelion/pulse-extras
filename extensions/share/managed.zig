@@ -27,6 +27,7 @@ pub const Request = struct {
     mode: Mode = .discover,
     advertise: bool = false,
     routed: bool = false,
+    quic: bool = false,
     allowed_source: Field = .{},
     bind: Field = .{},
     peer: Field = .{},
@@ -57,6 +58,7 @@ pub const Request = struct {
             },
             else => {},
         }
+        if (self.quic and (self.advertise or (self.mode != .send and self.mode != .receive))) return error.InvalidInput;
         if (self.routed and (self.advertise or (self.mode != .send and self.mode != .receive and !pairingMode(self.mode)))) return error.InvalidInput;
         if (self.routed and (self.mode == .receive or self.mode == .pair_host) and self.allowed_source.len == 0) return error.InvalidInput;
         if (self.bind.len == 0) return error.InvalidInput;
@@ -499,6 +501,7 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
         else => {},
     }
     if (request.routed) try command.arg("--routed");
+    if (request.quic) try command.arg("--quic");
     switch (request.mode) {
         .discover, .interfaces => {},
         .pair_host, .pair_join => {

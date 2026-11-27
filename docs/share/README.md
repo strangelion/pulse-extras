@@ -467,3 +467,19 @@ The [remaining roadmap](roadmap.md) is the source of truth for new work, includi
 clipboard content/files, Tray Shelf integration, unified integrity checks and a
 shared adaptive 32-channel ceiling. These are planned, not implemented by this
 documentation revision.
+
+### Explicit QUIC single-file transport candidate
+
+Use matching helper artifacts, including pulse-share-go-notices.txt. The
+existing send/receive CLI accepts --quic; both endpoints must select it.
+Use numeric IP and UDP port, not TCP discovery. Existing --routed and
+--allowed-source rules apply to the UDP source in this mode. The old TCP
+mode is unchanged and no automatic fallback is performed. The same native
+no-overwrite supervisor and explicit receive approval apply. Batch lanes,
+resume in the installed native UI, and physical acceptance remain pending.
+
+Build preparation: with pinned Go 1.27.4, use go mod download and go mod verify
+with the public checksum database, then set GOPROXY=off and GOFLAGS=-mod=readonly
+for test/build. The go.mod/go.sum are locked to the resolved probe graph;
+CI must reject changes during preparation. Do not use go get -u or go mod tidy
+in the build. This supersedes the historical standard-library-only note.

@@ -338,3 +338,34 @@ routing or physical Pulse behavior. Manual acceptance focuses on the native
 host, ordinary two-device LAN and Windows lifecycle/filesystem behavior;
 do not require the user to install every overlay or proxy application.
 No stable publication until the agreed final acceptance gates pass.
+
+## Stage 2 candidate update: explicit QUIC and content foundations
+
+The production LAN module now pins quic-go v0.66.0 and the exact module
+checksums collected by the successful probe. CI downloads/verifies the
+locked modules, then tests/builds offline in readonly mode and stages a
+separate Go dependency license inventory. QUIC is an explicit single-file
+native send/receive choice (including routed numeric endpoints), using the
+existing native commit and per-offer approval. No 0-RTT, automatic discovery,
+protocol fallback or migration within a session. The source tuple is pinned
+at packet admission; QUIC uses a distinct ALPN and bounded receive windows.
+The previous QUIC-only experiment remains retired. Matching CI and final
+network/host acceptance are required; no native batch-over-QUIC support yet.
+
+The portable core adds bounded explicit DFS source scanning, parent-first
+manifests and source identity checks, and local destination capability policy.
+Clipboard receive destinations are ask, system clipboard, local folder or
+host Tray Shelf when a real shelf-write API exists. For clipboard file
+references, validate and publish actual files first; never place remote paths
+or short-lived spool paths into the clipboard. A host staging commit is not
+Tray Shelf insertion. Users may manually import received clipboard files into
+Pulse's own shelf where available. No implicit clipboard overwrite, sync or
+shelf insertion. Text/image shelf insertion would need explicit file conversion
+and an appropriate supported host interface. The current capability policy
+is not a clipboard implementation.
+
+Stage 2 remains incomplete: native batch control plane and multi-file
+publisher, persisted queue/recovery and global engine ownership, adaptive
+parallel lanes over TCP/QUIC, clipboard adapters/settings, remote directory
+grants/browsing and full UI remain outstanding. The shelf API is an external
+SDK dependency. Grouping remains unchanged; no separate acceptance phase.

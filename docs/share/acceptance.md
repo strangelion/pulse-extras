@@ -158,3 +158,14 @@ not establish compatibility with a named external tool. Native batch
 integration and queue ownership remain stage 2 work; installed single-file
 commands are not automatically resumed. No claim of external network or
 physical device acceptance until actually exercised.
+
+## Stage 2 QUIC / content source candidate
+
+Matching CI must pass actual Windows QUIC file delivery and no-overwrite
+integration as well as Go QUIC loopback, source selection tree and packet
+admission tests. These checks are NOT_RUN until the new revision completes.
+Physical native UI QUIC, IPv6 and overlay performance remain stage 3.
+Native batch, clipboard, remote directories and shelf adapters are NOT_RUN
+and not enabled by these core changes. Include both third-party notices in
+acceptance package inventory. Do not imply the earlier probe validates this
+new implementation.

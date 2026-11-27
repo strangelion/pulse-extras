@@ -16,7 +16,7 @@ const prefs = @import("preferences.zig");
 const choices = @import("choices.zig");
 const pickers = @import("pulse_pickers");
 const allocator = std.heap.page_allocator;
-const command_names = [_][]const u8{ "share-discover", "share-send", "share-receive", "share-refresh", "share-cancel", "share-identity-init", "share-identity-show", "share-peer-add", "share-peer-list", "share-peer-revoke", "share-private-init", "share-recovery-list", "share-approve", "share-decline", "share-apply-prefs", "share-receive-advertise", "share-interfaces", "share-spool-init", "share-spool-recovery", "share-use-local", "share-use-peer", "share-use-endpoint", "share-browse-destination", "share-browse-parent", "share-save-prefs", "share-pair-host", "share-pair-join", "share-send-routed", "share-receive-routed", "share-pair-host-routed", "share-pair-join-routed", "share-pair-host-advertise", "share-use-pair-endpoint" };
+const command_names = [_][]const u8{ "share-discover", "share-send", "share-receive", "share-refresh", "share-cancel", "share-identity-init", "share-identity-show", "share-peer-add", "share-peer-list", "share-peer-revoke", "share-private-init", "share-recovery-list", "share-approve", "share-decline", "share-apply-prefs", "share-receive-advertise", "share-interfaces", "share-spool-init", "share-spool-recovery", "share-use-local", "share-use-peer", "share-use-endpoint", "share-browse-destination", "share-browse-parent", "share-save-prefs", "share-pair-host", "share-pair-join", "share-send-routed", "share-receive-routed", "share-pair-host-routed", "share-pair-join-routed", "share-pair-host-advertise", "share-use-pair-endpoint", "share-send-quic", "share-receive-quic", "share-send-quic-routed", "share-receive-quic-routed" };
 const field_names = view.fields;
 
 const Instance = struct {
@@ -284,7 +284,7 @@ const Instance = struct {
         field.set(bytes[0..needed]) catch return error.Argument;
     }
 
-    fn start(self: *Instance, mode: managed.Mode, advertise: bool, use_spool: bool, routed: bool, join_code: u32) host_mod.Error!void {
+    fn start(self: *Instance, mode: managed.Mode, advertise: bool, use_spool: bool, routed: bool, join_code: u32, quic: bool) host_mod.Error!void {
         if (!self.active or !managed.configured()) return error.Unavailable;
         if (managed.pairingMode(mode) and !managed.pairingConfigured()) return error.Unavailable;
         if (mode == .pair_join and (join_code == 0 or join_code > 100000000)) return error.Argument;
@@ -294,7 +294,7 @@ const Instance = struct {
         } else {
             self.task = try async_host.Task.init(try async_host.taskTable(self.host));
         }
-        var next: managed.Request = .{ .mode = mode, .advertise = advertise, .routed = routed };
+        var next: managed.Request = .{ .mode = mode, .advertise = advertise, .routed = routed, .quic = quic };
         switch (mode) {
             .discover, .send, .receive, .pair_host, .pair_join => try self.readField("bind", &next.bind),
             else => {},
@@ -641,6 +641,12 @@ const Instance = struct {
             view.button("发送（组网/转发）", "share-send-routed", "standard", "state.idle"),
             view.button("接收（组网/转发）", "share-receive-routed", "standard", "state.idle"),
         };
+        const quic_actions = [_]ui.Node{
+            view.button("QUIC 发送", "share-send-quic", "standard", "state.idle"),
+            view.button("QUIC 接收", "share-receive-quic", "standard", "state.idle"),
+            view.button("QUIC 组网发送", "share-send-quic-routed", "standard", "state.idle"),
+            view.button("QUIC 组网接收", "share-receive-quic-routed", "standard", "state.idle"),
+        };
         const transfer_content = [_]ui.Node{
             view.text("selection", selection, "caption"),
             view.text("source", if (self.selected.len != 0) self.selected.slice() else "请从文件列表右键选中一个普通文件进行发送。", "body"),
@@ -652,6 +658,8 @@ const Instance = struct {
             view.text("routed-help", "高级：仅已配对设备。使用具体数字 IP 和端口；接收须填写实际 TCP 来源 IP（代理场景可为代理地址）。不自动映射端口。", "caption"),
             fields[8],
             view.grid("routed-actions", &routed_actions),
+            view.text("quic-help", "QUIC：使用 UDP，双方手动选择 QUIC，不自动回退 TCP；目前仅单文件。", "caption"),
+            view.grid("quic-actions", &quic_actions),
         };
         const setup_actions = [_]ui.Node{
             view.button("应用已保存设置", "share-apply-prefs", "standard", "state.idle"),
@@ -803,7 +811,7 @@ fn pairDialogClosed(user: ?*anyopaque, id: u64, status: abi.Status, button: abi.
     for (0..count) |i| {
         if (!std.mem.eql(u8, abi.slice(states[i].key) orelse "", "pair-input")) continue;
         const code = managed.parseCode(abi.slice(states[i].value) orelse "") catch return self.status("请输入完整 8 位数字连接码");
-        self.start(.pair_join, false, false, self.pair_dialog_routed, code) catch |err| self.status(@errorName(err));
+        self.start(.pair_join, false, false, self.pair_dialog_routed, code, false) catch |err| self.status(@errorName(err));
         return;
     }
 }
@@ -816,7 +824,7 @@ fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv
     if (std.mem.eql(u8, name, "share-pair-host") or std.mem.eql(u8, name, "share-pair-host-routed") or std.mem.eql(u8, name, "share-pair-host-advertise")) {
         const routed = std.mem.eql(u8, name, "share-pair-host-routed");
         self.showPairDialog(true) catch |err| return self.status(@errorName(err));
-        self.start(.pair_host, std.mem.eql(u8, name, "share-pair-host-advertise"), false, routed, 0) catch |err| {
+        self.start(.pair_host, std.mem.eql(u8, name, "share-pair-host-advertise"), false, routed, 0, false) catch |err| {
             self.closePairDialog() catch |close_err| diag.status("share-pair-dialog-close", @intFromError(close_err));
             self.status(@errorName(err));
         };
@@ -864,9 +872,9 @@ fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv
     }
     const mode: managed.Mode = if (std.mem.eql(u8, name, "share-discover"))
         .discover
-    else if (std.mem.eql(u8, name, "share-send") or std.mem.eql(u8, name, "share-send-routed"))
+    else if (std.mem.eql(u8, name, "share-send") or std.mem.eql(u8, name, "share-send-routed") or std.mem.eql(u8, name, "share-send-quic") or std.mem.eql(u8, name, "share-send-quic-routed"))
         .send
-    else if (std.mem.eql(u8, name, "share-receive") or std.mem.eql(u8, name, "share-receive-advertise") or std.mem.eql(u8, name, "share-receive-routed"))
+    else if (std.mem.eql(u8, name, "share-receive") or std.mem.eql(u8, name, "share-receive-advertise") or std.mem.eql(u8, name, "share-receive-routed") or std.mem.eql(u8, name, "share-receive-quic") or std.mem.eql(u8, name, "share-receive-quic-routed"))
         .receive
     else if (std.mem.eql(u8, name, "share-interfaces"))
         .interfaces
@@ -886,7 +894,7 @@ fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv
         .recovery_list
     else
         return;
-    self.start(mode, std.mem.eql(u8, name, "share-receive-advertise"), std.mem.eql(u8, name, "share-spool-init") or std.mem.eql(u8, name, "share-spool-recovery"), std.mem.eql(u8, name, "share-send-routed") or std.mem.eql(u8, name, "share-receive-routed"), 0) catch |err| self.status(switch (err) {
+    self.start(mode, std.mem.eql(u8, name, "share-receive-advertise"), std.mem.eql(u8, name, "share-spool-init") or std.mem.eql(u8, name, "share-spool-recovery"), std.mem.eql(u8, name, "share-send-routed") or std.mem.eql(u8, name, "share-receive-routed") or std.mem.eql(u8, name, "share-send-quic-routed") or std.mem.eql(u8, name, "share-receive-quic-routed"), 0, std.mem.eql(u8, name, "share-send-quic") or std.mem.eql(u8, name, "share-receive-quic") or std.mem.eql(u8, name, "share-send-quic-routed") or std.mem.eql(u8, name, "share-receive-quic-routed")) catch |err| self.status(switch (err) {
         error.Argument => "参数不完整或无效，请检查设备和配置页",
         error.State => "已有任务，请先刷新或取消",
         error.Unavailable => "当前构建或宿主接口不支持此操作",

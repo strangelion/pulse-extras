@@ -97,6 +97,19 @@ jobs:
         with:
           go-version: '1.27.4'
           cache: false
+      - name: Download and verify locked Share Go modules
+        if: (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        working-directory: shared/share/lan
+        env:
+          GOTOOLCHAIN: local
+          GOPROXY: https://proxy.golang.org
+          GOSUMDB: sum.golang.org
+          GOFLAGS: -mod=readonly
+          CGO_ENABLED: '0'
+        run: |
+          go mod download
+          go mod verify
+          git diff --exit-code -- go.mod go.sum
       - name: Build experimental CPace adapter with locked dependencies
         if: (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
         working-directory: shared/share/pake
@@ -120,6 +133,7 @@ jobs:
         env:
           GOTOOLCHAIN: local
           GOPROXY: 'off'
+          GOFLAGS: -mod=readonly
           CGO_ENABLED: '0'
         run: |
           helper="$PWD/../pake/target/release/pulse-share-pake"
@@ -138,10 +152,22 @@ jobs:
         env:
           GOTOOLCHAIN: local
           GOPROXY: 'off'
+          GOFLAGS: -mod=readonly
           GOOS: windows
           GOARCH: amd64
           CGO_ENABLED: '0'
         run: go build -trimpath -o ../../../zig-out/bin/pulse-share-lan.exe .
+      - name: Collect locked Go dependency notices
+        if: runner.os == 'Windows' && (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        working-directory: shared/share/lan
+        env:
+          GOTOOLCHAIN: local
+          GOPROXY: 'off'
+          GOFLAGS: -mod=readonly
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: python collect_notices.py ../../../zig-out/bin/pulse-share-go-notices.txt
       - name: Build Share DLL with verified sibling digests
         if: (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
         shell: bash
@@ -164,6 +190,7 @@ jobs:
             zig-out/bin/pulse-share-worker.exe
             zig-out/bin/pulse-share-pake.exe
             zig-out/bin/pulse-share-pake-notices.txt
+            zig-out/bin/pulse-share-go-notices.txt
             zig-out/bin/pulse_share.dll
       - name: Fast ZIP admission and extraction regression
         if: needs.scope.outputs.level != 'vcs' && needs.scope.outputs.level != 'share'

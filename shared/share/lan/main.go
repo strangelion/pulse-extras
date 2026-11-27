@@ -144,6 +144,7 @@ func openSource(path string) (*os.File,error) {
 
 func sender(ctx context.Context,c console,args []string) error {
 	f:=flags("send")
+	useQUIC:=f.Bool("quic",false,"explicit QUIC transport; numeric endpoint, no fallback")
 	local:=f.String("bind","","local interface IP")
 	routed:=f.Bool("routed",false,"explicit routed connection to a saved peer")
 	peer:=f.String("peer","","numeric receiver IP:port")
@@ -165,6 +166,11 @@ func sender(ctx context.Context,c console,args []string) error {
 	if err!=nil{return err}
 	id,pin,err:=sessionIdentity(c,*store,*paired)
 	if err!=nil{return err}
+	if *useQUIC{
+		if err:=sendQUICFile(ctx,b,addr,id,pin,file,offer{name:name,size:size,digest:digest});err!=nil{return err}
+		fmt.Println("COMPLETED remote commit acknowledged")
+		return nil
+	}
 	dialer:=net.Dialer{Timeout:10*time.Second,LocalAddr:net.TCPAddrFromAddrPort(netip.AddrPortFrom(b.ip,0))}
 	raw,err:=dialer.DialContext(ctx,b.network(),addr.String())
 	if err!=nil{return err}
@@ -225,6 +231,7 @@ func (n nativeCommit) commit(o offer,path string) error {
 
 func receiver(ctx context.Context,c console,args []string) error {
 	f:=flags("receive")
+	useQUIC:=f.Bool("quic",false,"explicit QUIC transport; no multicast advertising")
 	local:=f.String("bind","","local interface IP")
 	routed:=f.Bool("routed",false,"explicit routed receive from a saved peer")
 	allowedSource:=f.String("allowed-source","","exact expected TCP source IP for routed receive")
@@ -241,6 +248,7 @@ func receiver(ctx context.Context,c console,args []string) error {
 	if err:=noExtra(f,args);err!=nil{return err}
 	if runtime.GOOS!="windows"{return errors.New("native receiving commit requires Windows")}
 	if *port>65535{return errors.New("invalid port")}
+	if *useQUIC&&*advert{return errors.New("QUIC requires explicit endpoint; multicast advertises TCP only")}
 	if *routed&&(*store==""||*paired==""||*advert){return errors.New("routed receive requires a saved peer and disables discovery")}
 	b,err:=bindLocalMode(*local,*routed)
 	if err!=nil{return err}
@@ -261,6 +269,11 @@ func receiver(ctx context.Context,c console,args []string) error {
 	if err:=verifyBinary(sup,supPin);err!=nil{return err}
 	if err:=verifyBinary(work,workPin);err!=nil{return err}
 	native:=nativeCommit{sup,work,dest,supPin,workPin,ctx}
+	if *useQUIC{
+		if err:=receiveQUICFile(ctx,c,b,uint16(*port),*store,*paired,sp,native.commit);err!=nil{return err}
+		fmt.Println("COMPLETED local file committed")
+		return nil
+	}
 	listener,err:=net.ListenTCP(b.network(),net.TCPAddrFromAddrPort(netip.AddrPortFrom(b.ip,uint16(*port))))
 	if err!=nil{return err}
 	defer listener.Close()

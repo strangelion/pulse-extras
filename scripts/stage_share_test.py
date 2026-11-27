@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXTENSION_ID = "strangelion.share-dev"
 HELPERS = ("lan", "local", "worker", "pake")
 NOTICE = "pulse-share-pake-notices.txt"
+GO_NOTICE = "pulse-share-go-notices.txt"
 
 
 def prepare(pulse: Path, tool: Path, binaries: Path, out: Path) -> dict:
@@ -59,6 +60,9 @@ def prepare(pulse: Path, tool: Path, binaries: Path, out: Path) -> dict:
         notice = work / NOTICE
         pkg.copy_checked(notice_source, notice, pkg.sha256(notice_source, pkg.FILE_MAX))
         members.append((notice, NOTICE))
+        go_notice = work / GO_NOTICE
+        pkg.copy_checked(binaries / GO_NOTICE, go_notice, pkg.sha256(binaries / GO_NOTICE, pkg.FILE_MAX))
+        members.append((go_notice, GO_NOTICE))
         return pkg.stage(pulse, tool, ROOT / "extensions/share/manifest.dev.json",
                          out, EXTENSION_ID, library, members)
 

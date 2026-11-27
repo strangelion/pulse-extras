@@ -102,7 +102,7 @@ class Child:
 
 @unittest.skipUnless(sys.platform == "win32", "requires native P1 Windows executables")
 class LanCopy(unittest.TestCase):
-    def transfer(self, ip, existing=False):
+    def transfer(self, ip, existing=False, quic=False):
         with tempfile.TemporaryDirectory(prefix="pulse-share-lan-") as temp:
             root = Path(temp).resolve(strict=True)
             source = root / "中文 sample.bin"
@@ -118,12 +118,14 @@ class LanCopy(unittest.TestCase):
                 "--directory", dest, "--spool", spool,
                 "--supervisor", SUPERVISOR, "--supervisor-sha256", digest(SUPERVISOR),
                 "--worker", WORKER, "--worker-sha256", digest(WORKER),
+                *(["--quic"] if quic else []),
             ], root / "receiver.log")
             try:
                 endpoint = receiver.expect("LISTEN ")
                 receiver_pin = receiver.expect("FINGERPRINT ")
                 sender = Child([
                     "send", "--bind", ip, "--peer", endpoint, "--source", source,
+                    *(["--quic"] if quic else []),
                 ], root / "sender.log")
                 try:
                     sender_pin = sender.expect("FINGERPRINT ")
@@ -148,6 +150,12 @@ class LanCopy(unittest.TestCase):
                     sender.close()
             finally:
                 receiver.close()
+
+    def test_quic_native_commit(self):
+        self.transfer("127.0.0.1", quic=True)
+
+    def test_quic_no_overwrite(self):
+        self.transfer("127.0.0.1", existing=True, quic=True)
 
     def test_saved_device_and_revocation(self):
         with tempfile.TemporaryDirectory(prefix="pulse-share-pair-") as temp:
