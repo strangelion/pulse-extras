@@ -1,0 +1,121 @@
+name: Pulse upstream updates
+
+on:
+  schedule:
+    - cron: '37 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pulse-upstream-update
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      status: ${{ steps.discover.outputs.status }}
+      branch: ${{ steps.discover.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check stable upstream versions and exact Git blobs
+        id: discover
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/upstream_update.py
+      - name: Install pinned Zig for candidate generation
+        if: steps.discover.outputs.status == 'candidate'
+        run: python scripts/install_zig.py
+      - name: Compare old and candidate C ABI prefixes
+        if: steps.discover.outputs.status == 'candidate'
+        run: |
+          python scripts/fetch_sdk.py
+          python scripts/verify_abi_prefix.py --zig zig --pinned-include .sdk-cache/include --host-include .local/upstream-update/include
+      - name: Regenerate exact candidate Zig bindings
+        if: steps.discover.outputs.status == 'candidate'
+        run: |
+          cp .local/upstream-update/candidate/sdk/upstream.toml sdk/upstream.toml
+          python scripts/generate_bindings.py --include .local/upstream-update/include --out .local/upstream-update/candidate/shared/pulse/raw/pulse_all.zig
+      - name: Preserve update report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pulse-upstream-report
+          path: .local/upstream-update/report.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Preserve candidate files for review
+        if: steps.discover.outputs.status == 'candidate'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pulse-upstream-candidate
+          path: .local/upstream-update/candidate/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  propose:
+    needs: discover
+    if: needs.discover.outputs.status == 'candidate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: pulse-upstream-candidate
+          path: .local/upstream-proposal
+      - name: Commit exactly the two candidate files, request review and validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ needs.discover.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BRANCH" =~ ^deps/pulse-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch origin main
+          if [[ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]]; then
+            echo "::error::main changed during discovery; rerun instead of creating a stale proposal"
+            exit 1
+          fi
+          files=(sdk/upstream.toml shared/pulse/raw/pulse_all.zig)
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
+            echo "Candidate branch already exists; not overwriting it."
+            echo "Review existing branch/PR or dispatch Upstream candidate compatibility manually."
+            exit 0
+          else
+            code=$?
+            [[ "$code" == 2 ]] || exit "$code"
+          fi
+          git switch -c "$BRANCH"
+          for file in "${files[@]}"; do
+            [[ -f ".local/upstream-proposal/$file" && ! -L ".local/upstream-proposal/$file" ]]
+            cp ".local/upstream-proposal/$file" "$file"
+          done
+          git diff --check
+          git add -- "${files[@]}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "deps: propose Pulse ${BRANCH#deps/pulse-}"
+          git push origin "HEAD:refs/heads/$BRANCH"
+          # Explicit dispatch is required because bot-token pushes/PRs may not trigger CI.
+          gh workflow run upstream-candidate.yml --ref "$BRANCH"
+          gh pr create --base main --head "$BRANCH" \
+            --title "deps: review Pulse ${BRANCH#deps/pulse-}" \
+            --body "Generated from an exact stable upstream tag and GitHub asset digest. C ABI prefix comparison and Zig binding regeneration passed. Wait for Upstream candidate compatibility (full regression and all-product package validation), inspect SDK changes, and perform real-host acceptance where needed. Do not merge or publish automatically. Local host snapshot remains historical."

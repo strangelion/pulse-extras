@@ -14,8 +14,8 @@ possible with exact limitations; no automatic publication on stage completion.
 
 Official [registry contribution guide](https://github.com/jimmgreen/pulse-extensions/blob/main/CONTRIBUTING.md)
 and [native package quickstart](https://github.com/jimmgreen/pulse/blob/b32436831a066e18448b2810bef4bf989024fc68/docs/extensions-sdk-quickstart.md)
-define the authoritative format. Recheck them at implementation/release; current pin is
-Pulse 1.0.60 SDK Preview 3 and Windows x64 MSVC ABI. Confirm Zig-built packages are acceptable
+define the authoritative format. Recheck them at implementation/release; the reviewed public baseline is
+in `sdk/upstream.toml` (initially Pulse 1.0.60 SDK Preview 3, Windows x64 MSVC ABI). Confirm Zig-built packages are acceptable
 to the registry maintainer; working on a local host is not registry approval.
 
 Publish a verified .pulse-ext and matching .sig.json to this repository's GitHub Release;
@@ -155,6 +155,60 @@ marks one latest and does not claim real-host acceptance. A release exposes
 native code: recipients must review its source and trust before installation.
 No stable channel, signing keys or official registry submission are automated.
 The stable release design below remains a separate future gate.
+
+## 3B. Public Pulse dependency updates
+
+`sdk/upstream.toml` is the single reviewed lock for public SDK revision, ABI
+and preview, header digests and the matching Windows installer filename, byte
+size and SHA-256. The installer URL is derived from the official repository
+and exact stable tag; the release workflow checks out the exact SDK commit
+and verifies downloaded installer bytes before isolated installation.
+No release uses an unreviewed "latest" binary. The separate `[host]` section
+is the historical local SDK snapshot; a candidate resets `host_verified`
+without changing that snapshot.
+
+**Actions → Pulse upstream updates** runs daily (02:37 UTC) and on demand.
+It ignores component-pack releases, drafts and prereleases, compares stable
+versions numerically, detects in-place tag/asset changes, resolves the new
+tag to its commit, and checks official installer digest metadata and SDK
+header Git blobs. Changed ABI version, SDK preview, architecture, missing
+installer metadata or new/missing C headers block automatic proposals:
+inspect the report and adapt the wrappers/header inventory explicitly.
+For supported candidates it compares C ABI prefixes and regenerates pinned
+Zig bindings with the current compiler. A separate writer creates
+`deps/pulse-vX.Y.Z` with only the lock and generated binding, dispatches
+**Upstream candidate compatibility**, and opens a review PR. It never
+overwrites an existing branch, merges, signs or creates releases.
+
+Candidate compatibility runs full regression and official package verification
+for every registered extension on a read-only runner. Its synthetic
+`0.0.0-upstream` version is artifact-only and cannot be published by that
+workflow. Inspect the run for the candidate commit before merging; the
+automated dispatch is necessary because GITHUB_TOKEN-generated pushes and PRs
+may not trigger normal CI. If Actions cannot create PRs, enable the repository
+setting "Allow GitHub Actions to create and approve pull requests" if
+appropriate, or open the already-created branch as a PR manually. Re-run
+candidate compatibility on that branch if dispatch failed. The job uses
+only narrowly scoped write permissions for branch/PR/dispatch, never runs
+candidate code with the write token, and does not auto-approve.
+Scheduled runs with no new stable release leave the lock untouched.
+
+Before merging: review SDK/ABI diffs, ensure candidate regression and
+all-package checks succeeded, and run the isolated real-host activation,
+settings, multi-window and unload checks where the host contract changes.
+The ABI prefix check is not a proof of behavioral compatibility. If a
+candidate fails, retain the previous pin; delete/close the candidate only
+after review. Re-run a candidate after manually updating bindings or adding
+a new SDK header. After merge, future manually dispatched releases
+automatically use the new reviewed installer and SDK without YAML changes.
+
+Reserved future gates (not enabled or claimed): upstream Authenticode or
+release-attestation verification once a trusted policy/key is agreed;
+compatibility matrix across supported old/current hosts; signed registry
+submission and stable-channel approval; SBOM/provenance and reproducibility
+evidence; real-host GUI acceptance and rollback. Keep these separate from
+unsigned preview publication. Do not add empty secrets, signing placeholders,
+or auto-merge before these controls are implemented and reviewed.
 
 ## 4. Future stable release phases
 

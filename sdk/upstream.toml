@@ -4,6 +4,7 @@
 repository = "https://github.com/jimmgreen/pulse"
 revision = "b32436831a066e18448b2810bef4bf989024fc68"
 sdk_preview = 3
+abi_version = 1
 pulse_source_version = "1.0.60"
 abi_header_blob = "a4f247e41a50361e4f1c5f30bafc7c6c33b0d1ef"
 target = "x86_64-windows-msvc"
@@ -11,7 +12,14 @@ target = "x86_64-windows-msvc"
 # Real-host acceptance flag. Set only after an isolated-store install,
 # activation, deactivation and unload were verified on a real Pulse host; the
 # evidence for the 2026-11-24 run is in docs/host-compatibility.md.
+# A new public baseline resets this flag; [host] is a historical local snapshot.
 host_verified = true
+
+# Public Windows installer paired with the exact SDK release tag.
+[installer]
+filename = "PulseSetup-1.0.60.exe"
+size = 12240072
+sha256 = "827aebcb14a9e4f4ec8281cf89e339cc887ec6f541ff6e80518ac463732c5234"
 
 # Published header digests (sha256) of the pinned revision. They are what
 # `scripts/fetch_sdk.py` downloads and what `scripts/generate_bindings.py`

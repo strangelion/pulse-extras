@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import patch
 
@@ -38,6 +39,15 @@ class ReleaseSelectionTests(unittest.TestCase):
         release.check_plan(items, release.plan_json(items))
         with self.assertRaises(RuntimeError):
             release.check_plan(items, release.plan_json(release.plan("vcs=0.2.0", "dry-run")))
+
+    def test_candidate_branch_is_not_publishable(self):
+        sha = "a" * 40
+        with patch.dict(os.environ, {"GITHUB_REF": "refs/heads/deps/pulse-v1.0.61",
+                                     "GITHUB_SHA": sha}), patch.object(
+                release.package, "git", side_effect=[sha, ""]):
+            self.assertEqual(release.source_revision(candidate=True), sha)
+            with self.assertRaisesRegex(RuntimeError, "must run on main"):
+                release.source_revision()
 
     @patch.object(release, "repository", return_value="owner/repo")
     @patch.object(release, "gh_pages")

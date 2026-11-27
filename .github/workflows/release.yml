@@ -73,11 +73,14 @@ jobs:
           key: zig-archive-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.zig-version', 'scripts/zig-downloads.json') }}
       - name: Install and verify pinned Zig
         run: python scripts/install_zig.py
+      - name: Read reviewed upstream pin
+        id: upstream
+        run: python scripts/upstream_pin.py
       - name: Checkout pinned public author tools
         uses: actions/checkout@v6
         with:
-          repository: jimmgreen/pulse
-          ref: b32436831a066e18448b2810bef4bf989024fc68
+          repository: ${{ steps.upstream.outputs.repository }}
+          ref: ${{ steps.upstream.outputs.revision }}
           path: .local/sdk
           persist-credentials: false
       - name: Build and verify selected packages

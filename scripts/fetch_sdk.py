@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import sys
-import tomllib
 from pathlib import Path
 from urllib.request import urlopen
+
+import upstream_pin
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = "https://raw.githubusercontent.com/jimmgreen/pulse"
@@ -28,7 +29,7 @@ def header_names() -> list[str]:
 
 
 def main() -> int:
-    pin = tomllib.loads((ROOT / "sdk/upstream.toml").read_text(encoding="utf-8"))
+    pin = upstream_pin.load()
     expected = pin.get("headers")
     if not expected:
         raise SystemExit("sdk/upstream.toml has no [headers] digests")

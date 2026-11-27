@@ -24,10 +24,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from sdk_headers import HEADERS  # noqa: E402  (script-local helper, not a package)
+import upstream_pin  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = ROOT / "shared/pulse/raw/pulse_all.zig"
@@ -46,7 +46,7 @@ def resolve_include(explicit: pathlib.Path | None) -> pathlib.Path:
 
 def upstream_pin() -> dict:
     path = ROOT / "sdk/upstream.toml"
-    return tomllib.loads(path.read_text(encoding="utf-8"))
+    return upstream_pin.load(path)
 
 
 def verify_headers(include: pathlib.Path, pin: dict) -> None:
@@ -58,7 +58,7 @@ def verify_headers(include: pathlib.Path, pin: dict) -> None:
             raise SystemExit(f"missing SDK header {header}; run scripts/fetch_sdk.py")
         expected = digests.get(name)
         if not expected:
-            continue
+            raise SystemExit(f"missing pinned digest for {header}")
         actual = hashlib.sha256(header.read_bytes()).hexdigest()
         if actual != expected:
             raise SystemExit(

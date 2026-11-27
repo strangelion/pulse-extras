@@ -1,7 +1,7 @@
 """Manual, per-product GitHub preview releases. Never sign or publish stable.
 
 The build job has read-only permissions. Only the separate publish job may
-write releases. The published public 1.0.60 host validates package format,
+write releases. The pinned public Pulse host validates package format,
 not real-host lifecycle on the locally installed newer Pulse.
 """
 from __future__ import annotations
@@ -14,18 +14,17 @@ import re
 import shutil
 import subprocess
 import sys
-import tomllib
 from urllib.request import urlopen
 import zipfile
 
 import package_common as common
 import package_release as package
+import upstream_pin
 
 ROOT = package.ROOT
-INSTALLER_URL = "https://github.com/jimmgreen/pulse/releases/download/v1.0.60/PulseSetup-1.0.60.exe"
-INSTALLER_SHA256 = "827aebcb14a9e4f4ec8281cf89e339cc887ec6f541ff6e80518ac463732c5234"
-INSTALLER_SIZE = 12240072
 MODES = {"dry-run", "draft", "publish-preview"}
+
+
 def plan(request: str, mode: str) -> list[dict]:
     if mode not in MODES:
         raise ValueError("unknown release mode")
@@ -77,9 +76,12 @@ def capture(*args: str) -> str:
                           capture_output=True, text=True, encoding="utf-8").stdout.strip()
 
 
-def source_revision() -> str:
-    if os.environ.get("GITHUB_REF") != "refs/heads/main":
+def source_revision(*, candidate: bool = False) -> str:
+    ref = os.environ.get("GITHUB_REF", "")
+    if not candidate and ref != "refs/heads/main":
         raise RuntimeError("release workflow must run on main")
+    if candidate and not (ref.startswith("refs/heads/") or re.fullmatch(r"refs/pull/[0-9]+/merge", ref)):
+        raise RuntimeError("candidate validation requires a branch or PR checkout")
     sha = os.environ["GITHUB_SHA"]
     if not re.fullmatch(r"[0-9a-f]{40}", sha) or package.git("rev-parse", "HEAD") != sha:
         raise RuntimeError("checkout differs from workflow source revision")
@@ -109,16 +111,17 @@ def preflight(items: list[dict]) -> None:
         raise RuntimeError("existing release or tag (never overwrite): " + ", ".join(collisions))
 
 
-def install_host(work: Path) -> Path:
+def install_host(work: Path, pin: dict) -> Path:
     installer = work / "PulseSetup.exe"
+    expected = pin["installer"]
     total = 0
-    with urlopen(INSTALLER_URL, timeout=60) as response, installer.open("xb") as target:
+    with urlopen(upstream_pin.installer_url(pin), timeout=60) as response, installer.open("xb") as target:
         while chunk := response.read(64 * 1024):
             total += len(chunk)
-            if total > INSTALLER_SIZE:
+            if total > expected["size"]:
                 raise RuntimeError("Pulse installer exceeded pinned size")
             target.write(chunk)
-    if total != INSTALLER_SIZE or common.sha256(installer) != INSTALLER_SHA256:
+    if total != expected["size"] or common.sha256(installer) != expected["sha256"]:
         raise RuntimeError("Pulse installer digest mismatch")
     destination = work / "host"
     # /PULSETEST is upstream's isolated test install. No service, startup,
@@ -131,20 +134,18 @@ def install_host(work: Path) -> Path:
     return pulse
 
 
-def build(items: list[dict], output: Path, sdk: Path) -> None:
+def build(items: list[dict], output: Path, sdk: Path, *, candidate: bool = False) -> None:
     if sys.platform != "win32":
         raise RuntimeError("official package build requires Windows runner")
-    revision = source_revision()
-    pin = tomllib.loads((ROOT / "sdk/upstream.toml").read_text(encoding="utf-8"))
-    if pin["pulse_source_version"] != "1.0.60":
-        raise RuntimeError("update and review the pinned installer before changing host version")
+    revision = source_revision(candidate=candidate)
+    pin = upstream_pin.load()
     if capture("git", "-C", str(sdk), "rev-parse", "HEAD") != pin["revision"]:
         raise RuntimeError("official author tool checkout does not match SDK pin")
     if capture("zig", "version") != (ROOT / ".zig-version").read_text().strip():
         raise RuntimeError("Zig version mismatch")
     work = ROOT / ".local" / "release-work"
     work.mkdir(parents=True, exist_ok=False)
-    pulse = install_host(work)
+    pulse = install_host(work, pin)
     prefix = work / "build"
     flags = ["-Doptimize=ReleaseSafe", "--prefix", str(prefix), "--summary", "all"]
     entry_flags = []
@@ -234,13 +235,14 @@ def publish(items: list[dict], mode: str, output: Path) -> None:
     files = {item["product"]: verify_candidate(item, output / item["product"], revision)
              for item in items}
     preflight(items)
+    pin = upstream_pin.load()
     for item in items:
         tag = item["tag"]
         notes = (
             f"Unsigned preview candidate for {item['product']} {item['version']}.\n\n"
             f"Source: https://github.com/{repo}/tree/{revision}\n\n"
             f"Full regression and package build: https://github.com/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}\n\n"
-            "Official package-format verification used the pinned public Pulse 1.0.60 host. "
+            f"Official package-format verification used the pinned public Pulse {pin['pulse_source_version']} host. "
             "Real-host activation, coexistence and production acceptance are not certified. "
             "No official registry signature or publication. Companion uses the Windows WIC backend "
             "when selected. Release evidence describes the package before publication.\n"
@@ -268,11 +270,15 @@ def publish(items: list[dict], mode: str, output: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["plan", "build", "publish"])
+    parser.add_argument("action", choices=["plan", "build", "publish", "candidate"])
     parser.add_argument("--out", type=Path, default=ROOT / ".local/release-output")
     parser.add_argument("--sdk", type=Path, default=ROOT / ".local/sdk")
     args = parser.parse_args()
     try:
+        if args.action == "candidate":
+            # This branch-only path never checks release tags or calls publication.
+            build(plan("all=0.0.0-upstream", "dry-run"), args.out.resolve(), args.sdk.resolve(), candidate=True)
+            return 0
         items = plan(os.environ["RELEASE_REQUEST"], os.environ["RELEASE_MODE"])
         source_revision()
         print(json.dumps(items, indent=2), flush=True)
