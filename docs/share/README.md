@@ -415,3 +415,18 @@ and UI are not enabled; existing fingerprint enrollment remains in use.
 An isolated CPace authentication candidate is under shared/share/pake and
 shared/share/lan/internal/pairauth, with separate TLS loopback CI. It is not
 included in the normal acceptance package or available for device enrollment.
+
+## Scoped CI
+
+Share-only feature-branch pushes now select `share`: Windows/Linux Zig
+`test-share`, native local/worker tests, the locked CPace helper, one Go
+regression pass (including live CPace when built), digest-bound Share DLL,
+and Windows LAN integration and acceptance artifact. Shared native primitive
+checks and small common validation remain. Unrelated VCS tooling, production
+extension builds, Companion ZIP and separate IPC/desktop jobs are omitted.
+Share changes mixed with shared/unknown paths, CI or build changes, main
+pushes involving Share, PR merge candidates involving Share, and manual runs
+retain full regression. The regression gate requires the selected job results;
+no failing test is converted into an optional success. The initial CI change
+itself necessarily runs full regression. No performance savings are claimed
+until a later Share-only push has measured timings.

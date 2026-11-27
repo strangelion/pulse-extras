@@ -37,12 +37,20 @@ def is_companion(path: str) -> bool:
     )
 
 
+def is_share(path: str) -> bool:
+    return path.startswith(("extensions/share/", "shared/share/", "tests/share/")) or path in (
+        "scripts/stage_share_test.py", "scripts/test_stage_share_test.py",
+    )
+
+
 def classify(paths: list[str]) -> str:
     # An empty/unavailable diff must not silently skip required checks.
     if not paths:
         return "full"
     if all(is_doc(path) for path in paths):
         return "docs"
+    if all(is_doc(path) or is_share(path) for path in paths):
+        return "share"
     if all(is_doc(path) or (path.startswith("shared/vcs/") and path.endswith(".zig"))
            for path in paths):
         return "vcs"
@@ -68,6 +76,15 @@ def event_base(event_name: str, ref: str, event: dict) -> str | None:
     return sha
 
 
+def event_scope(paths: list[str], event_name: str, ref: str) -> str:
+    scope = classify(paths)
+    # Share-only feature-branch pushes can use the targeted pipeline.
+    # Keep full integration coverage on merge candidates and main.
+    if scope == "share" and (event_name != "push" or not ref.startswith("refs/heads/") or ref == "refs/heads/main"):
+        return "full"
+    return scope
+
+
 def determine_scope() -> tuple[str, str]:
     try:
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
@@ -81,7 +98,7 @@ def determine_scope() -> tuple[str, str]:
             check=True, capture_output=True, timeout=30,
         )
         paths = [p.decode("utf-8") for p in result.stdout.split(b"\0") if p]
-        return classify(paths), f"{len(paths)} changed path(s)"
+        return event_scope(paths, os.environ["GITHUB_EVENT_NAME"], os.environ["GITHUB_REF"]), f"{len(paths)} changed path(s)"
     except (OSError, ValueError, KeyError, AttributeError, TypeError, subprocess.SubprocessError) as exc:
         return "full", f"diff unavailable ({type(exc).__name__})"
 
@@ -97,6 +114,8 @@ def main() -> None:
             out.write(f"## CI scope: {scope}\n\n{reason}.\n")
             if scope == "docs":
                 out.write("Documentation-only change; no Zig build, ABI or VCS integration tests run.\n")
+            elif scope == "share":
+                out.write("Share Zig, Go, CPace and native file-transfer regression; unrelated Companion and VCS integration omitted.\n")
             elif scope == "vcs":
                 out.write("VCS regression and DLL builds; companion and SDK checks omitted.\n")
             elif scope == "companion":
