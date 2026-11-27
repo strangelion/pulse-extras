@@ -479,13 +479,21 @@ real-host acceptance.
 
 The library distinguishes an empty collection from a filter with no matches.
 The running view separates instance identity and status from resource metrics.
-The market uses a two-column result grid where there is room. The global
+The market fills the available settings width and reflows result cards from
+one to four columns. Each card keeps the pet name above its source ID. The global
 settings page groups downloads, runtime limits, startup and exit, and
 diagnostics. Number fields keep visible labels when filled, and the eight
 startup plan entries use two columns on wide pages. Commands, persisted keys
 and the single-field policy editor for older hosts remain compatible.
 Verify light and dark themes, narrow widths, keyboard navigation and long
 Chinese text in the final isolated installed-host round.
+
+The embedded Pulse 1.0.62 SDK and the local authoring schema agree on the
+IMAGE node. The offline fixture maps the source to glyph, fit to kind and
+alternative text to text, as in the SDK's ModelNode::Image builder. This
+fixture does not retrieve a market asset's thumbnail. The headless test
+checks the submitted model and the text fallback. Visible pixels and
+source support still require the installed-host image diagnostic.
 
 ### Future dialogue integration
 

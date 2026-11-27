@@ -214,8 +214,9 @@ const Content = struct {
     market_detail_id: [64]u8 = undefined,
     market_description_id: [64]u8 = undefined,
     market_results: [12]ui.Node = undefined,
+    market_result_text: [12][2]ui.Node = undefined,
     market_rows: [12][576]u8 = undefined,
-    market_row_ids: [12][64]u8 = undefined,
+    market_row_ids: [12][3][64]u8 = undefined,
     market_info: [256]u8 = undefined,
     market_transfer: [256]u8 = undefined,
     market_transfer_id: [64]u8 = undefined,
@@ -517,7 +518,7 @@ fn fillMarketQueue(instance: *const Instance, content: *Content) ui.Node {
     return node;
 }
 
-// Preview 3 (1.0.61, local reference 20261124) ui_model.h SHA-256:
+// Pulse 1.0.62 embedded Preview 3 ui_model.h SHA-256:
 // a07f8449a6cd6801877813d30c0b7a6a3755a659c0f0154e093540fde140e792
 // The public pinned build has COUNT=41. The later SDK adds IMAGE=44
 // without changing the node layout. Keep this opt-in adapter local until
@@ -544,6 +545,7 @@ fn preview3Image(id: []const u8, source: []const u8, alt: []const u8) ui.Node {
     node.kind = .{ .present = 1, .value = abi.view("contain") };
     node.text = .{ .present = 1, .value = abi.view(alt) };
     node.min_height = .{ .present = 1, .value = 64 };
+    node.max_width = .{ .present = 1, .value = 144 };
     return node;
 }
 
@@ -590,7 +592,7 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
     content.children[5] = horizontal("market.filters", &content.market_filter_actions);
     content.children[6] = captionLabel("market.notice", "官方图库 " ++ library.market_gallery_url ++ " · 素材许可请以来源页面的明确声明为准。");
     var count: usize = 7;
-    content.children[count] = styledAction("market.image-test", if (instance.market_image_rejected) "已回退文字显示" else if (instance.market_image_test) "关闭图片测试" else "SDK 图片测试（离线）", commands[77], !busy and !instance.market_image_rejected, "transparent", 154);
+    content.children[count] = styledAction("market.image-test", if (instance.market_image_rejected) "已回退文字" else if (instance.market_image_test) "关闭图片测试" else "离线图片测试", commands[77], !busy and !instance.market_image_rejected, "transparent", 144);
     count += 1;
     if (instance.market_image_test) {
         content.children[count] = preview3Image("market.image-fixture", preview3_fixture, "SDK 测试图：蓝绿紫橙四格");
@@ -651,13 +653,20 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
         count += 1;
         for (snapshot.rows[0..written], 0..) |*row, n| {
             const selected = instance.market_selected != null and instance.market_selected.? == n;
-            const body = std.fmt.bufPrint(&content.market_rows[n], "{s}{s} · {s}", .{ if (selected) "已选： " else "", row.displayName(), row.sourceId() }) catch unreachable;
-            const id = std.fmt.bufPrint(&content.market_row_ids[n], "market-row-{d}-{x}", .{ n, std.hash.Wyhash.hash(0, body) }) catch unreachable;
-            content.market_results[n] = styledAction(id, body, commands[40 + n], idle, if (selected) "primary" else "standard", 0);
-            content.market_results[n].min_width = .{ .present = 1, .value = 220 };
+            const item = &content.market_result_text[n];
+            const ids = &content.market_row_ids[n];
+            const source_hash = std.hash.Wyhash.hash(0, row.sourceId());
+            const body = std.fmt.bufPrint(&content.market_rows[n], "{s}{s}", .{ if (selected) "已选： " else "", row.displayName() }) catch unreachable;
+            const button_id = std.fmt.bufPrint(&ids[0], "market-row-{d}-{x}", .{ n, std.hash.Wyhash.hash(source_hash, body) }) catch unreachable;
+            const source_id = std.fmt.bufPrint(&ids[1], "market-source-{d}-{x}", .{ n, source_hash }) catch unreachable;
+            const card_id = std.fmt.bufPrint(&ids[2], "market-card-{d}-{x}", .{ n, source_hash }) catch unreachable;
+            item[0] = styledAction(button_id, body, commands[40 + n], idle, if (selected) "primary" else "standard", 0);
+            item[1] = captionLabel(source_id, row.sourceId());
+            content.market_results[n] = stack(card_id, item, 4);
+            content.market_results[n].min_width = .{ .present = 1, .value = 248 };
         }
         content.children[count] = if (written != 0)
-            grid("market.results", content.market_results[0..written], 2)
+            grid("market.results", content.market_results[0..written], 4)
         else
             emptyState("market.no-match", "没有匹配的素材", "调整搜索词或筛选条件后重试。");
         count += 1;
@@ -1237,7 +1246,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     }
     const sections = if (instance.section == .global) fillSettingsSections(content) else content.children[0..count];
     content.root = stack("companion.root", sections, 12);
-    content.root.max_width = .{ .present = 1, .value = 920 };
+    if (instance.section != .market) content.root.max_width = .{ .present = 1, .value = 920 };
     tree.* = std.mem.zeroes(ui.Tree);
     tree.size = @sizeOf(ui.Tree);
     tree.root = &content.root;
@@ -3985,7 +3994,11 @@ test "four section tree declares only real navigation and preference actions" {
         try std.testing.expectEqual(@as(u32, commands.len), tree.command_count);
         try std.testing.expectEqual(@as(u32, 4), content.children[0].children.count);
         try std.testing.expectEqualStrings(commands[n][10..], abi.slice(content.children[1].id).?);
-        try std.testing.expectEqual(@as(i64, 920), content.root.max_width.value);
+        if (instance.section == .market) {
+            try std.testing.expectEqual(@as(u32, 0), content.root.max_width.present);
+        } else {
+            try std.testing.expectEqual(@as(i64, 920), content.root.max_width.value);
+        }
         for (content.navigation, 0..) |button, k| {
             try std.testing.expectEqualStrings(commands[k], abi.slice(button.command.value).?);
             try std.testing.expectEqualStrings(if (k == n) "primary" else "transparent", abi.slice(button.kind.value).?);
@@ -4305,13 +4318,19 @@ test "populated market rows survive navigation without forbidden button attribut
         if (section == .market) {
             const results = &content.children[9];
             try std.testing.expectEqual(ui.NodeKind.grid, results.type);
-            try std.testing.expectEqual(@as(i64, 2), results.columns.value);
+            try std.testing.expectEqual(@as(i64, 4), results.columns.value);
             try std.testing.expectEqual(@as(u32, 1), results.children.count);
-            const row = results.children.data[0];
-            try std.testing.expectEqualStrings("已选： Cat · cat", abi.slice(row.text.value).?);
-            try std.testing.expectEqualStrings("primary", abi.slice(row.kind.value).?);
-            try std.testing.expectEqualStrings(commands[40], abi.slice(row.command.value).?);
-            try std.testing.expectEqual(@as(u32, 0), row.selected.present);
+            const card = results.children.data[0];
+            try std.testing.expectEqual(@as(i64, 248), card.min_width.value);
+            try std.testing.expectEqual(@as(u32, 2), card.children.count);
+            const button = card.children.data[0];
+            try std.testing.expectEqualStrings("已选： Cat", abi.slice(button.text.value).?);
+            try std.testing.expectEqualStrings("primary", abi.slice(button.kind.value).?);
+            try std.testing.expectEqualStrings(commands[40], abi.slice(button.command.value).?);
+            try std.testing.expectEqual(@as(u32, 0), button.selected.present);
+            const source = card.children.data[1];
+            try std.testing.expectEqualStrings("cat", abi.slice(source.text.value).?);
+            try std.testing.expectEqualStrings("caption", abi.slice(source.role.value).?);
         }
     }
     instance.market_render_rejected = true;
@@ -4432,7 +4451,8 @@ test "preview 3 image diagnostic is opt-in and uses verified field mapping" {
     try std.testing.expectEqualStrings(preview3_fixture, abi.slice(image.glyph.value).?);
     try std.testing.expectEqualStrings("contain", abi.slice(image.kind.value).?);
     try std.testing.expectEqual(@as(i64, 64), image.min_height.value);
-    try std.testing.expectEqual(@as(u32, 1), image.text.present);
+    try std.testing.expectEqual(@as(i64, 144), image.max_width.value);
+    try std.testing.expectEqualStrings("SDK 测试图：蓝绿紫橙四格", abi.slice(image.text.value).?);
     rejectMarketImage(instance);
     fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 8), content.root.children.count);

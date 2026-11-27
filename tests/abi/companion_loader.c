@@ -155,8 +155,11 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
     const PulseUiModelNode *root = t->root;
     REQUIRE(check_input_labels(root, 0) == PULSE_OK);
     REQUIRE(root->size == sizeof(*root) && root->type == PULSE_UI_MODEL_STACK);
-    REQUIRE(root->max_width.present && root->max_width.value == 920);
     REQUIRE(root->children.present && root->children.data && (root->children.count >= 3 && root->children.count <= 36));
+    if (same(root->children.data[1].id, "market"))
+        REQUIRE(!root->max_width.present);
+    else
+        REQUIRE(root->max_width.present && root->max_width.value == 920);
     const PulseUiModelNode *nav = root->children.data;
     REQUIRE(nav->children.present && nav->children.count == 4 && nav->children.data);
     unsigned primary_count = 0;
@@ -249,7 +252,9 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
             REQUIRE(same(image->id, "market.image-fixture"));
             REQUIRE(image->glyph.present && same(image->glyph.value, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAASElEQVR42mN88fkPAzUACwMDg37pAfyKrBzX4Fcw3WsKEwOVwKhBowYNKoNYGBgYsh8SyG75T0/hV/B9NLBHDRquBjFSqzoCAFBxDz4y6Mz0AAAAAElFTkSuQmCC"));
             REQUIRE(image->kind.present && same(image->kind.value, "contain"));
-            REQUIRE(image->text.present && image->min_height.present && image->min_height.value == 64);
+            REQUIRE(image->text.present && same(image->text.value, "SDK 测试图：蓝绿紫橙四格"));
+            REQUIRE(image->min_height.present && image->min_height.value == 64);
+            REQUIRE(image->max_width.present && image->max_width.value == 144);
             ++f->image_seen;
             if (f->reject_image) {
                 ++f->image_rejected;
