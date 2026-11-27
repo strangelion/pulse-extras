@@ -116,22 +116,45 @@ clipboard tests remain NOT RUN until the adapters are implemented.
 
 ## Connection-stage exit evidence
 
-The transport-neutral scheduler and authenticated TCP batch adapter are
-candidate code. Record their matching CI run before setting automated results
-PASS; the preceding commit's CI is not evidence for this revision.
+- Implementation baseline 72a207a: [CI 46034445254](https://github.com/strangelion/pulse-extras/actions/runs/46034445254)
+  PASS, Windows and Linux regression jobs and regression gate passed.
+  Individual official job log retrieval was unavailable during consolidation;
+  do not infer the IPv6-specific case passed rather than skipped.
+- QUIC feasibility 27ef92b: [CI 46034841201](https://github.com/strangelion/pulse-extras/actions/runs/46034841201)
+  PASS, Windows job 140627523406 and Linux job 140627523124.
+  Both logs show Go 1.27.4, quic-go v0.66.0 and TLS version 0x0304,
+  X25519MLKEM768, ALPN pulse-share-batch/2 on both connections.
 
-| Case | Status before matching CI/physical test |
+| QUIC probe case | Windows | Linux |
+| --- | --- | --- |
+| Real UDP loopback, hybrid TLS and pinned peers | PASS | PASS |
+| Stream reset, reconnect and verified-block resume | PASS | PASS |
+| Final whole-file SHA-256 and channel budget release | PASS | PASS |
+| Wrong server pin | PASS (rejected) | PASS (rejected) |
+| Wrong client pin | PASS (server rejected) | PASS (server rejected) |
+| Classical-only group | PASS (rejected) | PASS (rejected) |
+| Wrong ALPN | PASS (rejected) | PASS (rejected) |
+
+Probe evidence is not a production QUIC backend or a benchmark. Dependency
+evidence remains in the run artifacts subject to GitHub retention. Production
+module and normal CI remain unchanged.
+
+## Final network acceptance (stage 3)
+
+| Case | Status |
 | --- | --- |
-| Authenticated TCP forwarding, lane loss, fresh authorization and resume (automated) | NOT RUN |
-| IPv6 loopback pinned batch lane (automated; skip if unavailable) | NOT RUN |
-| Wrong incoming TCP source / invalid endpoint / revoked grant (automated) | NOT RUN |
-| Real native pairing, persistence, revoke and private dialogs | NOT RUN |
-| Physical IPv4 and IPv6 transfer in both directions | NOT RUN |
-| Tailscale, ZeroTier, WireGuard (each separately) | NOT RUN |
-| FRP TCP, Nginx stream, manual port mapping (each separately) | NOT RUN |
-| QUIC | DEFERRED — not implemented; no UDP transfer claim |
+| Native host pairing, persistent trust, revoke, private dialogs | NOT_RUN |
+| Physical two-device IPv4/IPv6 transfers and native reconnect | NOT_RUN |
+| CI namespaces, cross-subnet routing, NAT/port mapping | NOT_RUN |
+| Real temporary WireGuard, Tailscale/Headscale, ZeroTier | NOT_RUN |
+| Real FRP TCP and Nginx Stream passthrough | NOT_RUN |
+| Network loss, delay, MTU, bandwidth, interruptions, UDP blocked | NOT_RUN |
+| QUIC production integration, multistream performance and migration | NOT_RUN / conditional on integration |
 
-The loopback forward is only a transparent TCP fixture; it does not establish
-compatibility with any specific external application. Native batch integration
-and physical reconnect are stage 2 gates. The current installed native
-single-file transfer is not automatically resumed after an interruption.
+Keep dedicated network suites separate from ordinary feature CI. Report
+PASS / FAIL / SKIP / ENVIRONMENT_ERROR / NOT_RUN per scenario. Runner
+capability and tooling limitations are not a pass. A loopback forward does
+not establish compatibility with a named external tool. Native batch
+integration and queue ownership remain stage 2 work; installed single-file
+commands are not automatically resumed. No claim of external network or
+physical device acceptance until actually exercised.

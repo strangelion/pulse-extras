@@ -302,17 +302,39 @@ checks and bound inbound admission; this is part of stage 2 control-plane
 integration. Existing single-file native commands keep their explicit
 single-session semantics and never retry uncertain publication.
 
-QUIC is explicitly deferred as an optional backend: current Go module is
-standard-library-only and CI builds with GOPROXY=off. Do not add a floating
-network dependency or relax hybrid TLS, pinning, protocol negotiation or
-explicit source authorization to make QUIC work. A separate reviewed, pinned
-implementation with reproducible offline dependencies, cancellation, stream
-resource budgets, hybrid-group verification and connection migration policy
-is required before enabling QUIC. TCP remains the sole implemented data
-transport; raw UDP remains advisory discovery only. No automatic protocol
-fallback. This is an explicit scope deviation from the proposed QUIC milestone,
-not a claim that QUIC works.
+### QUIC feasibility and final network acceptance
 
-Physical Pulse, IPv4/IPv6 LAN, VPN/overlay, external TCP passthrough and manual
-router mapping remain NOT RUN. See acceptance.md; stage 1 cannot be marked
-accepted until matching CI and physical cases pass. No stable publication.
+The isolated QUIC probe at 27ef92b passed on Windows and Linux (Go 1.27.4,
+quic-go v0.66.0): [CI run 46034841201](https://github.com/strangelion/pulse-extras/actions/runs/46034841201).
+Actual UDP loopback negotiated TLS 1.3, X25519MLKEM768 and pulse-share-batch/2.
+Verified-block resume after stream reset on a fresh connection, whole-file
+SHA-256, and rejection of incompatible peer pins, classical-only exchange
+and wrong ALPN passed. This is feasibility evidence, not production support.
+Keep the standard-library production module unchanged; remove the isolated
+probe and temporary CI workflow from the experimental branch. Preserve the
+historical commit, run links and resolved dependency evidence for review.
+
+Connection implementation baseline 72a207a passed
+[CI run 46034445254](https://github.com/strangelion/pulse-extras/actions/runs/46034445254).
+Proceed to stage 2 without blocking on physical or third-party network
+acceptance. Actual native batch queue integration remains in stage 2.
+TCP remains the only production data transport. Optional QUIC integration
+requires reviewed, locked offline dependencies, resource accounting,
+stream cancellation/lifecycle and explicit endpoint/migration policy; do
+not silently downgrade authentication or advertise unimplemented support.
+
+Move the dedicated network compatibility and adverse-network acceptance to
+stage 3. Use isolated Linux CI network namespaces, virtual links, NAT,
+routing and netem where available; exercise actual temporary WireGuard,
+Tailscale/Headscale, ZeroTier, FRP and Nginx Stream instances where feasible,
+with pinned versions and no personal accounts or production credentials.
+Test both address families, TCP and optional QUIC if integrated, loss,
+delay, MTU, UDP blocking, interruption and recovery using representative
+scenarios rather than a Cartesian matrix. Run the heavy suite manually or
+at release acceptance, not on every unrelated feature push. Record PASS,
+FAIL, SKIP, ENVIRONMENT_ERROR or NOT_RUN with evidence and reasons.
+Linux CI does not certify Windows virtual adapter drivers, actual external
+routing or physical Pulse behavior. Manual acceptance focuses on the native
+host, ordinary two-device LAN and Windows lifecycle/filesystem behavior;
+do not require the user to install every overlay or proxy application.
+No stable publication until the agreed final acceptance gates pass.
