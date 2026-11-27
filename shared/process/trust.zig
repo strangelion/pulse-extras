@@ -135,6 +135,7 @@ fn validateEnvironmentInternal(map: *const std.process.Environ.Map, git_global: 
             (std.mem.eql(u8, key, "HGRCPATH") and value.len == 0) or
             (std.mem.eql(u8, key, "HGRCSKIPREPO") and std.mem.eql(u8, value, "1")) or
             (std.mem.eql(u8, key, "HGENCODING") and std.mem.eql(u8, value, "UTF-8")) or
+            (std.mem.eql(u8, key, "PYTHONNOUSERSITE") and std.mem.eql(u8, value, "1")) or
             (std.mem.eql(u8, key, "GIT_CONFIG_GLOBAL") and git_global != null and std.mem.eql(u8, value, git_global.?)) or
             (git_global != null and (std.mem.eql(u8, key, "HOME") or std.mem.eql(u8, key, "XDG_CONFIG_HOME"))) or
             (git_global != null and std.mem.eql(u8, key, "GIT_ATTR_NOSYSTEM") and std.mem.eql(u8, value, "1"));
@@ -228,5 +229,17 @@ test "Mercurial controlled environment permits only fixed isolation values" {
     try map.put("HGENCODING", "UTF-8");
     try validateEnvironment(&map);
     try map.put("HGRCPATH", "unreviewed-config");
+    try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
+}
+
+test "Mercurial Python user site isolation admits only exact disabling value" {
+    var map = std.process.Environ.Map.init(std.testing.allocator);
+    defer map.deinit();
+    try map.put("PYTHONNOUSERSITE", "1");
+    try validateEnvironment(&map);
+    try map.put("PYTHONNOUSERSITE", "0");
+    try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
+    _ = map.remove("PYTHONNOUSERSITE");
+    try map.put("PYTHONPATH", ".");
     try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
 }

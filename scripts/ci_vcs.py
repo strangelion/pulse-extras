@@ -162,7 +162,7 @@ def svn_fixture():
 
 def hg_fixture():
     root = Path(tempfile.mkdtemp(prefix="pulse-hg-", dir=os.environ["RUNNER_TEMP"]))
-    env = dict(os.environ, HGPLAIN="1", HGRCPATH="", HGRCSKIPREPO="1", HGENCODING="UTF-8")
+    env = dict(os.environ, HGPLAIN="1", HGRCPATH="", HGRCSKIPREPO="1", HGENCODING="UTF-8", PYTHONNOUSERSITE="1")
     def hg(*args):
         subprocess.run(["hg", *args], cwd=root, env=env, check=True, timeout=30)
     hg("init")
@@ -175,8 +175,42 @@ def hg_fixture():
     (root / "untracked.txt").write_bytes(b"new\n")
     # A failing hook must never run in the controlled read session.
     (root / ".hg" / "hgrc").write_text("[hooks]\npre-status = exit 73\n", encoding="utf-8")
+    if platform.system() == "Windows":
+        # Same explicit environment and neutral cwd as LocalSession, but
+        # without the Zig job wrapper. Diagnose launcher vs containment.
+        exe = shutil.which("hg.exe")
+        if not exe:
+            raise RuntimeError("Mercurial executable missing")
+        system = os.environ["SystemRoot"]
+        minimal = {
+            "SystemRoot": system, "WINDIR": system, "LANG": "C",
+            "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_NO_LAZY_FETCH": "1", "HGPLAIN": "1",
+            "HGRCPATH": "", "HGRCSKIPREPO": "1",
+            "HGENCODING": "UTF-8", "PYTHONNOUSERSITE": "1",
+        }
+        for label, args in (
+            ("version", ["--version"]),
+            ("root", ["--cwd", str(root), "--repository", str(root), "--noninteractive", "--config", "ui.paginate=never", "root"]),
+            ("status", ["--cwd", str(root), "--repository", str(root), "--noninteractive", "--config", "ui.paginate=never", "status", "--modified", "--added", "--removed", "--deleted", "--unknown", "--ignored", "--copies", "--print0"]),
+        ):
+            try:
+                result = subprocess.run([exe, *args], cwd=system, env=minimal,
+                                        stdin=subprocess.DEVNULL, capture_output=True,
+                                        timeout=10, check=False)
+                print(f"Hg minimal-environment {label}: exit={result.returncode}, "
+                      f"stdout_bytes={len(result.stdout)}, stderr_bytes={len(result.stderr)}")
+                if result.returncode:
+                    # Only a generated CI fixture and pinned installation;
+                    # never log production repository CLI output.
+                    print(repr(result.stderr[:1024]))
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                print(f"Hg minimal-environment {label}: {type(exc).__name__}")
+        # Preflight is diagnostic, not a replacement for the mandatory
+        # approved Runner test below; leave it enabled even if this fails.
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as out:
-        out.write(f"PULSE_TEST_HG_WC={root}\nPULSE_REQUIRE_HG=1\nHGPLAIN=1\nHGRCPATH=\nHGRCSKIPREPO=1\nHGENCODING=UTF-8\n")
+        out.write(f"PULSE_TEST_HG_WC={root}\nPULSE_REQUIRE_HG=1\nHGPLAIN=1\nHGRCPATH=\nHGRCSKIPREPO=1\nHGENCODING=UTF-8\nPYTHONNOUSERSITE=1\n")
 
 
 if __name__ == "__main__":

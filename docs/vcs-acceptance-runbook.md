@@ -454,3 +454,10 @@ actual external clients remain final installed acceptance items.
 ### Mercurial candidate acceptance
 
 Required pinned 7.2.4 local fixture on Windows/Linux: detect/configure, consent/revoke, tracked modification/copy/untracked, hook skipped, branch/tag/bookmark, history and file history with offset, selected content and Diff. Unit fixtures cover missing/ignored/conflicts, malformed NUL records, path/revset injection, remote/shared requirements, controlled environment. Test installed HG executable path, project save/reload/relink, provider switch and revoke, nested/subrepo and unsupported format rejection, no staging/network/write, UI selection, cancellation and unload. No installed host claim; exact CI pending. Other providers not implemented.
+
+Windows Hg admission regression: 235f66a failed at the approved version
+probe, not the native history parser. Compare the CI-only minimal-env
+version/root/status preflight with the mandatory contained approved test.
+Do not bypass the job or inherit ambient Python paths to achieve a pass.
+Probe diagnostics in Zig tests disclose only status, exit code and sizes;
+preflight stderr is bounded and limited to the generated CI fixture.

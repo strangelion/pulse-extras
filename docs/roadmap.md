@@ -563,3 +563,19 @@ assumed. Full new code gate required, installed/live transport still deferred.
 P3C starts with one Mercurial vertical slice: non-executing ordinary .hg detection, exact configured/detected hg path, separate provider-scoped review and remembered grant/revoke, project record, native status including copy/missing/ignored/untracked and unresolved conflicts, 32-entry anchored history pages and file history, revision info/content, working/revision diff, branch/tag/bookmark inventory, existing file selection and bounded text UI. No staging, server distance, remote operations, writes or shared/subrepository support. Baseline 7.2.4, CI provisions the pinned binary wheel and local fixture on both OSes. Controlled session uses exact HGPLAIN=1, HGRCPATH empty, HGRCSKIPREPO=1, HGENCODING=UTF-8; the ordinary .hg/store layout and requirements are independently checked before every repository command. Config hooks must not execute (fixture includes a failing pre-status hook). This is not a sandbox: trusted installation and repository remain necessary; reject unknown metadata requirements, .hg/sharedpath and .hgsub/.hgsubstate. Documentation: https://www.mercurial-scm.org/help/topics/environment and https://mercurial-scm.org/help/topics/revisions . New code is a candidate; exact cross-platform CI and installed acceptance NOT RUN. Perforce and other VCS require their own complete implementation, not stubs. No Companion or SDK changes.
 
 Mercurial candidate 7bdee3b / 45933512830 reached the build graph but failed because the added module import exceeded the old 42-entry array. Corrected to 43 entries after checking the complete import list. Exact new full CI required; no Companion functional regression is inferred from this common build failure.
+
+Mercurial regression 235f66a / 45933783252: Ubuntu passed, Windows
+compiled and passed 715/716 tests; the sole failed test was the native
+approved Hg fixture, at the version probe before repository admission.
+The prior logs did not distinguish launcher failure from other nonzero
+exit status. Keep all mandatory checks. Add an explicit Windows
+minimal-environment preflight for the generated fixture (version, root,
+status) independent of the Zig job wrapper, redacted test-only native
+probe status/exit/output-size diagnostics, and a ten-second Hg cold-start
+version budget within the existing 15-second approved process limit.
+Disable Python user-site imports via the exact PYTHONNOUSERSITE=1
+environment value without admitting inherited PATH/PYTHONPATH or
+credentials; the installation itself remains trusted, not sandboxed.
+Mercurial 7.2.4 minimum and pinned wheel unchanged. Root cause of the
+nonzero version exit is not yet established; fresh exact CI required.
+Perforce work remains gated on the Mercurial regression.

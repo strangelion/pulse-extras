@@ -713,7 +713,7 @@ const LocalSession = struct {
             self.environment.put(key, value) catch return error.OutOfMemory;
         }
         if (review.kind == .hg) {
-            for ([_][]const u8{ "HGPLAIN", "HGRCPATH", "HGRCSKIPREPO", "HGENCODING" }, [_][]const u8{ "1", "", "1", "UTF-8" }) |key, value| {
+            for ([_][]const u8{ "HGPLAIN", "HGRCPATH", "HGRCSKIPREPO", "HGENCODING", "PYTHONNOUSERSITE" }, [_][]const u8{ "1", "", "1", "UTF-8", "1" }) |key, value| {
                 self.environment.put(key, value) catch return error.OutOfMemory;
             }
         }

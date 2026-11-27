@@ -121,12 +121,17 @@ pub fn probeApproved(tool: Tool, path: *const identity.Path, execution: *const E
     if (execution.* != .approved or !candidatePath(path.slice())) return error.UnapprovedExecutable;
     var outcome = try execution.execute(runner, .{
         .argv = &.{ path.slice(), "--version" },
-        .timeout_ns = 3 * std.time.ns_per_s,
+        // Windows wheel launchers may start a Python child. Stay within
+        // the reviewed 15-second local process budget.
+        .timeout_ns = @as(u64, if (tool == .hg) 10 else 3) * std.time.ns_per_s,
         .stdout_limit = 4096,
         .stderr_limit = 4096,
     });
     defer outcome.deinit();
-    if (!outcome.succeeded()) return error.InvalidVersion;
+    if (!outcome.succeeded()) {
+        if (builtin.is_test and tool == .hg) std.debug.print("Approved Hg version probe failed: status={s}, exit={any}, stdout_bytes={d}, stderr_bytes={d}\n", .{ @tagName(outcome.status), outcome.exit_code, outcome.stdout.len, outcome.stderr.len });
+        return error.InvalidVersion;
+    }
     const line_end = std.mem.indexOfScalar(u8, outcome.stdout, '\n') orelse outcome.stdout.len;
     const line = std.mem.trim(u8, outcome.stdout[0..line_end], " \r\t");
     const version = parseVersion(tool, line) orelse return error.InvalidVersion;
