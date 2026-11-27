@@ -755,6 +755,23 @@ pub const Settings = struct {
     form_kind: ?identity.Kind = null,
     form_root: identity.Path = .{},
 
+    const initial: Settings = .{
+        .host = undefined,
+        .user = undefined,
+        .current = undefined,
+        .updated = undefined,
+    };
+
+    /// The project library and its decode scratch space belong to the
+    /// persistent settings owner. Initialize them without a stack copy.
+    pub fn initInPlace(self: *Settings, host: host_mod.Host, user: *anyopaque, current: *const fn (*anyopaque) ?Current, updated: *const fn (*anyopaque, Tools, vcs_panel.Language) void) void {
+        @memcpy(std.mem.asBytes(self), std.mem.asBytes(&initial));
+        self.host = host;
+        self.user = user;
+        self.current = current;
+        self.updated = updated;
+    }
+
     const Visible = struct {
         indices: [page_size]usize = undefined,
         count: usize = 0,

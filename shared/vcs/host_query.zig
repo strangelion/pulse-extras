@@ -605,8 +605,26 @@ pub const Binding = struct {
     poisoned: bool = false,
     last_error: ?host_mod.Error = null,
 
+    const initial: Binding = .{
+        .controller = .{ .query = .{ .task = undefined } },
+        .resolution = .{ .task = undefined },
+        .language = .en,
+    };
+
+    /// Initialize at the stable owner address. The view, query results and
+    /// recent snapshot cache together exceed a safe host callback frame.
+    pub fn initInPlace(self: *Binding, table: async_host.TaskTable, language: panel.Language) host_mod.Error!void {
+        const task = try async_host.Task.init(table);
+        @memcpy(std.mem.asBytes(self), std.mem.asBytes(&initial));
+        self.controller.query.task = task;
+        self.resolution.task = task;
+        self.language = language;
+    }
+
     pub fn init(table: async_host.TaskTable, language: panel.Language) host_mod.Error!Binding {
-        return .{ .controller = try Controller.init(table), .resolution = try Resolution.init(table), .language = language };
+        var binding: Binding = undefined;
+        try binding.initInPlace(table, language);
+        return binding;
     }
 
     /// Permanent lock for a lifecycle-only attachment. No resolver or
@@ -676,44 +694,10 @@ pub const Binding = struct {
         if (table.update == null or table.close == null or table.subscribe_command == null or table.unsubscribe == null) return error.Unavailable;
         self.last_error = null;
         self.local_ui = self.local_access != null and table.get_state != null;
-        var content: panel.Content = undefined;
-        var tree: ui.Tree = undefined;
-        var current = self.controller.view();
-        current.approval_required = self.approval_locked;
-        current.metadata_only = self.metadata_only;
-        current.local_setup = self.local_ui;
-        current.reset_configured = if (self.local_access) |access| access.reset != null else false;
-        current.saved_trust_configured = self.savedTrustAvailable();
-        current.file_controls = self.local_ui and self.savedTrustAvailable();
-        current.file_page = self.file_page;
-        current.file_filter = self.file_filter;
-        current.detail_supported = current.file_controls and (if (self.controller.selection) |selected| selected.provider.vtable.detail != null else false);
-        current.detail_pending = self.controller.detail_pending;
-        current.detail_scope = if (self.controller.detail_scope) |*scope| scope else null;
-        current.detail_data = if (self.controller.detail_data) |*data| data else null;
-        current.detail_error = self.controller.detail_error;
-        current.detail_page = self.detail_page;
-        current.detail_path = self.detail_path;
-        current.detail_revision = self.detail_revision;
-        current.history_offset = self.history_offset;
-        current.saved_trust_selected = self.saved_trust_selected;
-        current.tool_version = self.verified_version;
-        if (current.snapshot) |*snapshot| {
-            if (self.metadata_only) {
-                for (self.configured_tools, 0..) |configured, index| {
-                    if (configured) |path| snapshot.preview_tools[index] = path;
-                }
-            }
-        }
-        current.local_review = self.local_review;
-        current.setup_issue = self.setup_issue;
-        current.revocation_configured = self.revocation != null;
-        current.approved_root = self.approved_root;
-        current.persistent_revocation = self.persistent_revocation;
-        current.revocation_failed = self.revocation_failed;
-        content.buildInteractive(self.language, &current, &tree);
+        const frame = try self.renderFrame(false);
+        defer std.heap.page_allocator.destroy(frame);
         var id: u64 = 0;
-        try host_mod.mapStatus(create(table.context, abi.view("VCS"), &tree, &id));
+        try host_mod.mapStatus(create(table.context, abi.view("VCS"), &frame.tree, &id));
         if (id == 0) {
             // Invalid successful ID: no handle to close. Do not certify drain.
             self.poisoned = true;
@@ -1488,18 +1472,18 @@ pub const Binding = struct {
         }
     }
 
-    pub fn render(self: *Binding) host_mod.Error!void {
-        if (!self.accepting) return error.State;
-        // Even an explicit repaint must not expose a superseded workspace.
-        // Clear the view before cancel; paint that cleared state on failure.
-        var navigation_error: ?host_mod.Error = null;
-        self.invalidateNavigation() catch |err| {
-            navigation_error = err;
-        };
-        const model = if (self.model) |*value| value else return error.State;
-        var content: panel.Content = undefined;
-        var tree: ui.Tree = undefined;
-        var current = self.controller.view();
+    const RenderFrame = struct {
+        current: panel.View,
+        content: panel.Content,
+        tree: ui.Tree,
+    };
+
+    fn renderFrame(self: *const Binding, include_discovery: bool) host_mod.Error!*RenderFrame {
+        // The host synchronously copies the tree. A separate frame per call
+        // keeps the source data stable across any nested owner callback.
+        const frame = std.heap.page_allocator.create(RenderFrame) catch return error.Initialization;
+        const current = &frame.current;
+        @memcpy(std.mem.asBytes(current), std.mem.asBytes(&self.controller.current));
         current.approval_required = self.approval_locked;
         current.metadata_only = self.metadata_only;
         current.local_setup = self.local_ui;
@@ -1532,11 +1516,25 @@ pub const Binding = struct {
         current.approved_root = self.approved_root;
         current.persistent_revocation = self.persistent_revocation;
         current.revocation_failed = self.revocation_failed;
-        if (!self.approval_locked and self.resolver != null and self.navigation.accepting) {
+        if (include_discovery and !self.approval_locked and self.resolver != null and self.navigation.accepting) {
             if (self.navigation.latest) |*latest| current.discovery_available = latest.directory() != null;
         }
-        content.buildInteractive(self.language, &current, &tree);
-        model.update(&tree) catch |err| {
+        frame.content.buildInteractive(self.language, current, &frame.tree);
+        return frame;
+    }
+
+    pub fn render(self: *Binding) host_mod.Error!void {
+        if (!self.accepting) return error.State;
+        // Even an explicit repaint must not expose a superseded workspace.
+        // Clear the view before cancel; paint that cleared state on failure.
+        var navigation_error: ?host_mod.Error = null;
+        self.invalidateNavigation() catch |err| {
+            navigation_error = err;
+        };
+        const model = if (self.model) |*value| value else return error.State;
+        const frame = try self.renderFrame(true);
+        defer std.heap.page_allocator.destroy(frame);
+        model.update(&frame.tree) catch |err| {
             self.last_error = err;
             // STATE may mean the user closed the panel. Do not assume that
             // ownership has been released until the close path confirms it.

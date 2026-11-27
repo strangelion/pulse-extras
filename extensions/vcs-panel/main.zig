@@ -22,8 +22,8 @@ const allocator = std.heap.page_allocator;
 
 const Instance = struct {
     host: host_mod.Host,
-    settings: ?settings_mod.Settings = null,
-    binding: ?host_query.Binding = null,
+    settings: ?*settings_mod.Settings = null,
+    binding: ?*host_query.Binding = null,
     session: ?approval.NativeSession = null,
     session_revoked: bool = false,
     active: bool = false,
@@ -57,7 +57,7 @@ const Instance = struct {
 
     fn openFromMenu(self: *Instance) host_mod.Error!void {
         if (self.active) {
-            if (self.binding) |*binding| {
+            if (self.binding) |binding| {
                 if (binding.accepting) {
                     // Refresh the owner context synchronously, without using
                     // selected filenames as an authorization or tool argument.
@@ -74,7 +74,7 @@ const Instance = struct {
             try self.stop();
         }
         try self.start();
-        const binding = if (self.binding) |*value| value else return error.State;
+        const binding = self.binding orelse return error.State;
         const model = binding.model orelse return error.State;
         // Best effort only: the host can refuse an occupied sidebar. The
         // existing panel remains the fallback and retains its ownership.
@@ -85,12 +85,18 @@ const Instance = struct {
 
     fn openSettings(self: *Instance) void {
         if (self.settings == null) {
-            self.settings = .{ .host = self.host, .user = self, .current = &currentProject, .updated = &settingsUpdated, .folder_opened = &selectedFolderOpened };
+            const settings = allocator.create(settings_mod.Settings) catch {
+                diag.event("vcs-settings-allocation-failed");
+                return;
+            };
+            settings.initInPlace(self.host, self, &currentProject, &settingsUpdated);
+            settings.folder_opened = &selectedFolderOpened;
             if (comptime @hasDecl(source, "inspectProjectGrant") and @hasDecl(source, "forgetProjectGrant")) {
-                self.settings.?.grant_access = .{ .inspect = &inspectProjectGrant, .forget = &forgetProjectGrant, .invalidate = &invalidateProjectGrant };
+                settings.grant_access = .{ .inspect = &inspectProjectGrant, .forget = &forgetProjectGrant, .invalidate = &invalidateProjectGrant };
             }
+            self.settings = settings;
         }
-        if (self.settings) |*settings| settings.open() catch |err| diag.status("vcs-settings-open", @intFromError(err));
+        if (self.settings) |settings| settings.open() catch |err| diag.status("vcs-settings-open", @intFromError(err));
     }
 
     fn inspectProjectGrant(_: *anyopaque, root: *const identity.Path, kind: identity.Kind) contract.SavedHint {
@@ -105,7 +111,7 @@ const Instance = struct {
 
     fn invalidateProjectGrant(user: *anyopaque, root: *const identity.Path, kind: identity.Kind) void {
         const self: *Instance = @ptrCast(@alignCast(user));
-        if (self.binding) |*binding| {
+        if (self.binding) |binding| {
             binding.invalidateSavedScope(root, kind) catch |err| diag.status("vcs-grant-invalidate", @intFromError(err));
         }
     }
@@ -117,7 +123,7 @@ const Instance = struct {
 
     fn settingsUpdated(user: *anyopaque, tools: settings_mod.Tools, language: vcs_panel.Language) void {
         const self: *Instance = @ptrCast(@alignCast(user));
-        if (self.binding) |*binding| {
+        if (self.binding) |binding| {
             binding.configured_tools = tools;
             binding.language = language;
             binding.local_review = null;
@@ -127,7 +133,7 @@ const Instance = struct {
 
     fn currentProject(user: *anyopaque) ?settings_mod.Current {
         const self: *Instance = @ptrCast(@alignCast(user));
-        const binding = if (self.binding) |*value| value else return null;
+        const binding = self.binding orelse return null;
         if (!binding.accepting) return null;
         binding.navigation.refreshCurrent() catch return null;
         binding.render() catch return null;
@@ -149,16 +155,21 @@ const Instance = struct {
     fn start(self: *Instance) host_mod.Error!void {
         self.openSettings();
         if (self.active) {
-            if (self.binding) |*binding| {
+            if (self.binding) |binding| {
                 if (binding.accepting) return;
             }
             return error.State;
         }
         if (self.binding != null or self.session != null) return error.State;
-        self.binding = try host_query.Binding.init(try async_host.taskTable(self.host), settings_mod.Locale.auto.language());
+        const table = try async_host.taskTable(self.host);
+        const binding = allocator.create(host_query.Binding) catch return error.Initialization;
+        binding.initInPlace(table, settings_mod.Locale.auto.language()) catch |err| {
+            allocator.destroy(binding);
+            return err;
+        };
+        self.binding = binding;
         errdefer self.stop() catch |err| diag.status("vcs-rollback-failed", @intFromError(err));
-        const binding = &self.binding.?;
-        if (self.settings) |*settings| {
+        if (self.settings) |settings| {
             if (settings.loaded) {
                 binding.configured_tools = settings.stored.tools;
                 binding.language = settings.stored.locale.language();
@@ -200,12 +211,13 @@ const Instance = struct {
     fn stop(self: *Instance) host_mod.Error!void {
         self.active = false;
         if (self.session) |*session| session.stopAdmission();
-        if (self.binding) |*binding| {
+        if (self.binding) |binding| {
             try binding.requestStop();
             binding.checkDrained() catch return error.State;
             try binding.finishLocalAccess();
             if (binding.approval_locked and self.session != null) self.session_revoked = true;
             self.binding = null;
+            allocator.destroy(binding);
         }
         try self.finishSession();
     }
@@ -270,7 +282,7 @@ fn invokeMenu(user: ?*anyopaque, id: commands.CommandId, snapshot: [*c]const com
             table.getSelection(&FolderSelection.fresh, &selected) catch return;
             if (!selected.confirmed) return;
             self.openSettings();
-            if (self.settings) |*settings| {
+            if (self.settings) |settings| {
                 settings.openFolder(selected.path.slice()) catch |err| diag.status("vcs-selected-folder-route", @intFromError(err));
             }
             return;
@@ -283,7 +295,7 @@ fn invokeMenu(user: ?*anyopaque, id: commands.CommandId, snapshot: [*c]const com
             diag.status("vcs-menu-open-failed", @intFromError(err));
             return;
         };
-        if (self.binding) |*binding| binding.prepareSelectedFile(&selected.path) catch |err| diag.status("vcs-selected-file-prefill", @intFromError(err));
+        if (self.binding) |binding| binding.prepareSelectedFile(&selected.path) catch |err| diag.status("vcs-selected-file-prefill", @intFromError(err));
         return;
     }
     // Empty or multi-selection retains the current-directory action.
@@ -347,7 +359,7 @@ fn activate(raw: ?*anyopaque) callconv(.c) abi.Status {
 
 fn deactivate(raw: ?*anyopaque) callconv(.c) void {
     const self: *Instance = @ptrCast(@alignCast(raw orelse return));
-    if (self.settings) |*settings| settings.close() catch |err| diag.status("vcs-settings-deactivate", @intFromError(err));
+    if (self.settings) |settings| settings.close() catch |err| diag.status("vcs-settings-deactivate", @intFromError(err));
     self.stop() catch |err| {
         diag.status("vcs-deactivate-failed", @intFromError(err));
         return;
@@ -358,7 +370,7 @@ fn deactivate(raw: ?*anyopaque) callconv(.c) void {
 fn destroy(raw: ?*anyopaque) callconv(.c) void {
     const self: *Instance = @ptrCast(@alignCast(raw orelse return));
     self.menu_accepting = false;
-    if (self.settings) |*settings| settings.retireAtHostDestroy();
+    if (self.settings) |settings| settings.retireAtHostDestroy();
     if (self.menu_id != 0) {
         if (self.menu_table) |table| {
             table.unregister(self.menu_id) catch |err| {
@@ -375,7 +387,7 @@ fn destroy(raw: ?*anyopaque) callconv(.c) void {
         // At final destroy the SDK stop boundary suppresses callbacks and
         // joins host-owned task work. The source must own no live producers.
         // Never use this retirement path for ordinary deactivate.
-        if (self.binding) |*binding| {
+        if (self.binding) |binding| {
             binding.retireAtHostDestroy() catch |retire_err| {
                 diag.status("vcs-destroy-drain-failed", @intFromError(retire_err));
                 return;
@@ -386,12 +398,14 @@ fn destroy(raw: ?*anyopaque) callconv(.c) void {
                 return;
             };
             self.binding = null;
+            allocator.destroy(binding);
         }
         self.finishSession() catch |finish_err| {
             diag.status("vcs-destroy-runner-failed", @intFromError(finish_err));
             return;
         };
     };
+    if (self.settings) |settings| allocator.destroy(settings);
     allocator.destroy(self);
 }
 

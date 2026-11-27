@@ -486,3 +486,21 @@ Native writes and other providers are intentionally unavailable. Actual
 installed UI and live HTTP/client checks remain NOT RUN. Keep final
 Companion D acceptance independent; do not require a second intermediate
 host run. Exact new CI required for the consolidated changes.
+
+### VCS 1.0.0-dev owner-thread stack overflow
+
+The signed preview at 6a4d8b3 came from
+[release run 45975958111](https://github.com/strangelion/pulse-extras/actions/runs/45975958111).
+Its VCS DLL overflowed the host thread stack on Pulse 1.0.61 and 1.0.62.
+Both dumps reported `0xC00000FD` in `__chkstk`. Matching the release
+code and unwind sections to a rebuild identified `start` and
+`openSettings` around the failing calls. The `start` frame alone
+reserved approximately 822 KiB.
+
+The isolated C loader reproduces the published DLL failure on a 512 KiB
+owner thread. The corrected DLL passes 16 lifecycle cycles that cover
+menu activation and repaint, settings completion and stale request
+rejection, activation rollback, close retry and host-first unload. The
+fixture uses public Preview 3 headers and a mock host. Repeat the same
+settings and menu paths after manually installing the next verified
+preview into an isolated Pulse profile.

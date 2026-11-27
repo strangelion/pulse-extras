@@ -5,6 +5,8 @@
 #include "pulse/abi.h"
 #include "pulse/context.h"
 #include "pulse/commands.h"
+#include "pulse/resources.h"
+#include "pulse/settings_pages.h"
 #include "pulse/tasks.h"
 #include "pulse/ui_model.h"
 #include <string.h>
@@ -46,6 +48,10 @@ typedef struct {
     PulseCommandId menu_id;
     PulseCommandFn menu;
     void *menu_user;
+    uint64_t settings_page, settings_request;
+    unsigned settings_updates, settings_syncs;
+    PulseResourcesCompletionFn settings_reply;
+    void *settings_user;
 } LockedHost;
 
 static PulseStringView sv(const char *value) {
@@ -72,7 +78,8 @@ static int tree_valid(const PulseUiModelTree *tree) {
     for (uint32_t i = 0; i < root->children.count; ++i) {
         const PulseUiModelNode *node = &root->children.data[i];
         if (equals(node->id, "vcs.approval") && node->text.present &&
-            equals(node->text.value, "Execution locked: production approval unavailable"))
+            (equals(node->text.value, "Execution locked: production approval unavailable") ||
+             equals(node->text.value, "执行已锁定：尚未提供生产授权")))
             locked = 1;
         if (node->command.present) {
             if (!equals(node->command.value, "vcs.check")) return 0;
@@ -225,10 +232,121 @@ static PulseStatus PULSE_CALL unregister_menu(void *context, PulseCommandId id) 
     return PULSE_OK;
 }
 
+static int settings_tree_valid(const PulseUiModelTree *tree) {
+    return tree && tree->size == sizeof(*tree) && tree->root &&
+        equals(tree->root->id, "vcs.settings.root") &&
+        tree->command_count != 0 && tree->commands;
+}
+
+static PulseStatus PULSE_CALL settings_create(void *context, PulseStringView title,
+    const PulseUiModelTree *tree, uint64_t *page) {
+    LockedHost *host = context;
+    if (host->settings_page || !page || !title.length || !settings_tree_valid(tree)) return PULSE_ERROR_ARGUMENT;
+    *page = host->settings_page = ++host->next_panel;
+    return PULSE_OK;
+}
+
+static PulseStatus PULSE_CALL settings_update(void *context, uint64_t page, const PulseUiModelTree *tree) {
+    LockedHost *host = context;
+    if (!host->settings_page || host->settings_page != page || !settings_tree_valid(tree)) return PULSE_ERROR_ARGUMENT;
+    ++host->settings_updates;
+    return PULSE_OK;
+}
+
+static PulseStatus PULSE_CALL settings_subscribe(void *context, uint64_t page,
+    PulseStringView command, PulseUiClickFn callback, void *user, uint64_t *id) {
+    LockedHost *host = context;
+    if (!host->settings_page || host->settings_page != page ||
+        !command.length || !callback || !user || !id) return PULSE_ERROR_ARGUMENT;
+    *id = ++host->next_subscription;
+    return PULSE_OK;
+}
+
+static PulseStatus PULSE_CALL settings_set_states(void *context, uint64_t page,
+    const PulseUiState *states, uint32_t count) {
+    LockedHost *host = context;
+    if (!host->settings_page || host->settings_page != page || !states || !count) return PULSE_ERROR_ARGUMENT;
+    ++host->settings_syncs;
+    return PULSE_OK;
+}
+
+static PulseStatus PULSE_CALL settings_get_state(void *context, uint64_t page,
+    PulseStringView key, char *buffer, uint32_t capacity, uint32_t *needed) {
+    LockedHost *host = context;
+    (void)buffer;
+    (void)capacity;
+    if (!host->settings_page || host->settings_page != page || !key.length || !needed) return PULSE_ERROR_ARGUMENT;
+    *needed = 0;
+    return PULSE_OK;
+}
+
+static PulseStatus PULSE_CALL settings_query(void *context, uint64_t page,
+    PulseStringView interface_name, uint32_t version, void *out, uint32_t size) {
+    LockedHost *host = context;
+    if (!host->settings_page || host->settings_page != page || !out ||
+        !equals(interface_name, PULSE_UI_MODEL_INTERFACE) || version != 1 ||
+        size < sizeof(PulseUiModelV1)) return PULSE_ERROR_ARGUMENT;
+    const PulseUiModelV1 table = {
+        .size = sizeof(table), .version = 1, .context = host, .update = settings_update,
+        .subscribe_command = settings_subscribe, .set_states = settings_set_states, .get_state = settings_get_state,
+    };
+    memcpy(out, &table, sizeof(table));
+    return PULSE_OK;
+}
+
+static PulseStatus PULSE_CALL settings_remove(void *context, uint64_t page) {
+    LockedHost *host = context;
+    if (!host->settings_page || host->settings_page != page) return PULSE_ERROR_STATE;
+    host->settings_page = 0;
+    return PULSE_OK;
+}
+
+static PulseStatus PULSE_CALL settings_read(void *context, PulseResourcesCompletionFn reply,
+    void *user, PulseResourcesRequestId *id) {
+    LockedHost *host = context;
+    if (!host->settings_page || host->settings_request || !reply || !user || !id) return PULSE_ERROR_STATE;
+    *id = host->settings_request = ++host->next_subscription;
+    host->settings_reply = reply;
+    host->settings_user = user;
+    return PULSE_OK;
+}
+
+static PulseStatus PULSE_CALL settings_write(void *context, PulseStringView key, PulseStringView value,
+    uint32_t delete_value, uint64_t version, PulseResourcesCompletionFn reply, void *user,
+    PulseResourcesRequestId *id) {
+    (void)context; (void)key; (void)value; (void)delete_value; (void)version;
+    (void)reply; (void)user; (void)id;
+    return PULSE_ERROR_PERMISSION;
+}
+
+static PulseStatus PULSE_CALL settings_cancel(void *context, PulseResourcesRequestId id) {
+    LockedHost *host = context;
+    if (!id || id != host->settings_request) return PULSE_ERROR_STATE;
+    host->settings_request = 0;
+    host->settings_reply = NULL;
+    host->settings_user = NULL;
+    return PULSE_OK;
+}
+
 static PulseStatus PULSE_CALL query_locked(void *context, PulseStringView name, uint32_t version, void *out, uint32_t size) {
     LockedHost *host = context;
     if (host->stopped) return PULSE_ERROR_STATE;
     if (!out || version != 1) return PULSE_ERROR_ABI;
+    if (equals(name, PULSE_SETTINGS_PAGES_INTERFACE_NAME)) {
+        const PulseSettingsPagesV1 table = { sizeof(table), 1, host, settings_create, settings_query, settings_remove };
+        if (size < sizeof(table)) return PULSE_ERROR_ABI;
+        memcpy(out, &table, sizeof(table));
+        return PULSE_OK;
+    }
+    if (equals(name, PULSE_RESOURCES_INTERFACE_NAME)) {
+        const PulseResourcesV1 table = {
+            .size = sizeof(table), .version = 1, .context = host,
+            .settings_get = settings_read, .settings_set = settings_write, .cancel_request = settings_cancel,
+        };
+        if (size < sizeof(table)) return PULSE_ERROR_ABI;
+        memcpy(out, &table, sizeof(table));
+        return PULSE_OK;
+    }
     if (equals(name, PULSE_COMMANDS_INTERFACE_NAME)) {
         const PulseCommandsV1 table = { sizeof(table), 1, host, register_menu, unregister_menu };
         if (size < sizeof(table)) return PULSE_ERROR_ABI;
@@ -274,6 +392,21 @@ static int exercise_locked(PulsePluginEntryV1Fn entry) {
     CHECK(!state.panel_open);
     state.menu(state.menu_user, state.menu_id, &selection);
     CHECK(state.panel_open && state.navigation && !state.unexpected_tasks);
+    CHECK(state.settings_page && state.settings_request && state.settings_reply);
+    unsigned settings_updates = state.settings_updates;
+    unsigned panel_updates = state.updates;
+    PulseResourcesReply reply = {
+        .size = sizeof(reply), .operation = PULSE_RESOURCES_SETTINGS_GET,
+        .request_id = state.settings_request + 1, .status = PULSE_OK, .settings = { .version = 1 },
+    };
+    state.settings_reply(state.settings_user, &reply);
+    CHECK(state.settings_updates == settings_updates && state.updates == panel_updates);
+    reply.request_id = state.settings_request;
+    state.settings_request = 0;
+    state.settings_reply(state.settings_user, &reply);
+    state.settings_reply = NULL;
+    state.settings_user = NULL;
+    CHECK(state.settings_updates > settings_updates && state.settings_syncs && state.updates > panel_updates);
     unsigned menu_created = state.created;
     state.menu(state.menu_user, state.menu_id, &selection);
     CHECK(state.created == menu_created && state.panel_open);
@@ -282,7 +415,7 @@ static int exercise_locked(PulsePluginEntryV1Fn entry) {
     state.menu(state.menu_user, state.menu_id, &selection);
     CHECK(state.panel_open && state.navigation && state.created == menu_created + 1);
     out.deactivate(out.instance);
-    CHECK(!state.panel_open && !state.navigation);
+    CHECK(!state.panel_open && !state.navigation && !state.settings_page && !state.settings_request);
     /* Roll back a partially activated panel/context; a retry must work. */
     state.fail_get = 1;
     CHECK(out.activate(out.instance) == PULSE_ERROR_PERMISSION);
@@ -324,6 +457,10 @@ static int exercise_locked(PulsePluginEntryV1Fn entry) {
     /* Host stop invalidates command callbacks before final destroy. */
     state.menu = NULL;
     state.menu_user = NULL;
+    state.settings_page = 0;
+    state.settings_request = 0;
+    state.settings_reply = NULL;
+    state.settings_user = NULL;
     state.stopped = 1;
     out.deactivate(out.instance);
     unsigned attempts = state.close_attempts;
@@ -333,9 +470,15 @@ static int exercise_locked(PulsePluginEntryV1Fn entry) {
     return 0;
 }
 
+static DWORD WINAPI exercise_locked_on_host_stack(LPVOID context) {
+    PulsePluginEntryV1Fn entry = *(PulsePluginEntryV1Fn *)context;
+    return (DWORD)exercise_locked(entry);
+}
+
 int main(int argc, char **argv) {
     CHECK(argc == 2 || argc == 3);
     int locked_candidate = argc == 3;
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     for (int cycle = 0; cycle < 16; ++cycle) {
         HMODULE lib = LoadLibraryExA(argv[1], NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
         CHECK(lib);
@@ -360,9 +503,18 @@ int main(int argc, char **argv) {
         CHECK(out.activate(out.instance) == (locked_candidate ? PULSE_ERROR_UNAVAILABLE : PULSE_OK));
         out.deactivate(out.instance);
         out.destroy(out.instance);
-        if (locked_candidate) CHECK(exercise_locked(entry) == 0);
+        if (locked_candidate) {
+            HANDLE owner = CreateThread(NULL, 512 * 1024, exercise_locked_on_host_stack,
+                                        &entry, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+            CHECK(owner);
+            DWORD wait = WaitForSingleObject(owner, 30000);
+            DWORD result = 1;
+            BOOL completed = wait == WAIT_OBJECT_0 && GetExitCodeThread(owner, &result);
+            CHECK(CloseHandle(owner));
+            CHECK(completed && result == 0);
+        }
         CHECK(FreeLibrary(lib));
     }
-    puts(locked_candidate ? "C ABI VCS loader: 16 locked lifecycle and rollback cycles passed" : "C ABI DLL loader: 16 lifecycle cycles passed");
+    puts(locked_candidate ? "C ABI VCS loader: 16 locked lifecycle and rollback cycles passed on a 512 KiB owner thread" : "C ABI DLL loader: 16 lifecycle cycles passed");
     return 0;
 }
