@@ -17,6 +17,7 @@ const diag = @import("pulse_diagnostics");
 const vcs_panel = @import("vcs_panel");
 const project_route = @import("project_route.zig");
 const evidence = @import("vcs_windows_evidence");
+const forge = @import("forge.zig");
 
 const max_projects = 64;
 const page_size = 12;
@@ -25,7 +26,10 @@ const keys = [_][]const u8{ "tool.git", "tool.jj", "tool.svn" };
 const names = [_][]const u8{ "Git", "Jujutsu", "Subversion" };
 const tools = [_]cli.Tool{ .git, .jj, .svn };
 const fields = [_][]const u8{ "settings.git", "settings.jj", "settings.svn" };
-const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump", "vcs.projects.cancel-identity", "vcs.projects.inspect-grants", "vcs.projects.revoke-git", "vcs.projects.revoke-jj", "vcs.projects.revoke-svn" };
+const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump", "vcs.projects.cancel-identity", "vcs.projects.inspect-grants", "vcs.projects.revoke-git", "vcs.projects.revoke-jj", "vcs.projects.revoke-svn", "vcs.forge.issues", "vcs.forge.reviews", "vcs.forge.ci", "vcs.forge.releases", "vcs.forge.discover", "vcs.forge.remote.0", "vcs.forge.remote.1", "vcs.forge.remote.2", "vcs.forge.remote.3", "vcs.forge.remote.4", "vcs.forge.remote.5", "vcs.forge.metadata", "vcs.client.save-code", "vcs.client.save-svn", "vcs.client.review-code", "vcs.client.review-svn", "vcs.client.confirm", "vcs.client.cancel" };
+const clients = [_]forge.Client{ .vscode, .tortoise_svn };
+const client_keys = [_][]const u8{ "client.vscode", "client.tortoise_svn" };
+const client_fields = [_][]const u8{ "settings.client.vscode", "settings.client.tortoise_svn" };
 const root_key = "settings.project.root";
 const url_key = "settings.project.url";
 const selection_key = "settings.project.selected";
@@ -106,6 +110,13 @@ const Status = enum {
     grant_revoke_pending,
     grant_revoked,
     grants_failed,
+    remotes_ready,
+    remotes_failed,
+    metadata_ready,
+    client_review,
+    client_launched,
+    client_failed,
+    external_changed,
 
     fn label(self: Status, lang: vcs_panel.Language) []const u8 {
         return switch (self) {
@@ -142,6 +153,13 @@ const Status = enum {
             .grant_revoke_pending => tr(lang, "Revoking the reviewed scope; Check pending task result", "正在撤销已确认范围的授权；请检查待处理任务结果"),
             .grant_revoked => tr(lang, "Scope revoke completed; running commands cannot be rolled back", "指定范围撤销已完成；已运行的命令无法回滚"),
             .grants_failed => tr(lang, "Approval operation incomplete; inspect again before retrying", "授权操作未确认完成；请重新检查后再试"),
+            .remotes_ready => tr(lang, "Literal local remote choices; select the same project before saving", "本地远程地址候选；保存前请选择同一项目"),
+            .remotes_failed => tr(lang, "Ordinary .git/config not available; enter a repository address manually", "无法读取普通 .git/config；可手动填写仓库地址"),
+            .metadata_ready => tr(lang, "Public GitHub request finished; see snapshot status", "公开 GitHub 查询已结束；请查看快照状态"),
+            .client_review => tr(lang, "Review the exact external program and folder; launch requires confirmation", "请核对外部程序及目录；确认后才会启动"),
+            .client_launched => tr(lang, "External application started; its window and state are not verified", "外部程序已启动；未验证窗口及应用状态"),
+            .client_failed => tr(lang, "External application could not be launched", "外部程序启动失败"),
+            .external_changed => tr(lang, "Project or settings changed; result discarded", "项目或设置发生变化；已丢弃结果"),
         };
     }
 };
@@ -151,6 +169,7 @@ const Project = struct {
     key: [key_len]u8,
     root: identity.Path,
     remote: contract.Text = .{},
+    remote_detected: bool = false,
     name: contract.Text = .{},
     tags: contract.Text = .{},
     favorite: bool = false,
@@ -205,7 +224,7 @@ const Project = struct {
     }
 
     fn encode(self: *const Project, buffer: []u8) ![]const u8 {
-        return std.fmt.bufPrint(buffer, "v2\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{d}", .{
+        return std.fmt.bufPrint(buffer, "v3\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{d}\n{s}", .{
             self.root.slice(),
             self.remote.slice(),
             self.name.slice(),
@@ -213,12 +232,14 @@ const Project = struct {
             if (self.favorite) "1" else "0",
             if (self.kind) |kind| @tagName(kind) else "-",
             self.opened_order,
+            if (self.remote_detected) "detected" else "manual",
         });
     }
 
     fn decode(key: []const u8, value: []const u8) !Project {
         if (value.len > max_value or !validKey(key)) return error.InvalidSettings;
-        if (!std.mem.startsWith(u8, value, "v2\n")) {
+        const v3 = std.mem.startsWith(u8, value, "v3\n");
+        if (!v3 and !std.mem.startsWith(u8, value, "v2\n")) {
             const split = std.mem.indexOfScalar(u8, value, '\n') orelse return error.InvalidSettings;
             const item = try make(value[0..split], value[split + 1 ..]);
             if (!std.mem.eql(u8, key, &item.key) or !item.remote.eql(value[split + 1 ..])) return error.InvalidSettings;
@@ -240,6 +261,10 @@ const Project = struct {
             if (!std.ascii.isDigit(c)) return error.InvalidSettings;
         }
         item.opened_order = std.fmt.parseInt(u64, order, 10) catch return error.InvalidSettings;
+        if (v3) {
+            const source = lines.next() orelse return error.InvalidSettings;
+            item.remote_detected = if (std.mem.eql(u8, source, "detected") and item.remote.len != 0) true else if (std.mem.eql(u8, source, "manual")) false else return error.InvalidSettings;
+        }
         if (item.opened_order > (1 << 53) - 1 or lines.next() != null) return error.InvalidSettings;
         // V2 keys survive explicit relink. The new root never conveys trust.
         @memcpy(&item.key, key);
@@ -279,6 +304,7 @@ const Stored = struct {
     version: u64 = 0,
     locale: Locale = .auto,
     tools: Tools = .{ null, null, null },
+    client_paths: [clients.len]?identity.Path = @splat(null),
     projects: [max_projects]Project = undefined,
     count: usize = 0,
 
@@ -315,6 +341,7 @@ const Stored = struct {
         out.* = .{ .version = value.version };
         var seen: [3]bool = @splat(false);
         var seen_locale = false;
+        var seen_clients: [clients.len]bool = @splat(false);
         for (0..value.count) |n| {
             const pair = value.values[n];
             const key = abi.slice(pair.key) orelse return error.InvalidSettings;
@@ -331,6 +358,13 @@ const Stored = struct {
                 seen[i] = true;
                 const data = if (pair.value.length == 0) "" else abi.slice(pair.value) orelse return error.InvalidSettings;
                 out.tools[i] = try toolPath(i, data);
+            }
+            for (client_keys, 0..) |client_key, i| {
+                if (!std.mem.eql(u8, key, client_key)) continue;
+                if (seen_clients[i]) return error.InvalidSettings;
+                seen_clients[i] = true;
+                const data = if (pair.value.length == 0) "" else abi.slice(pair.value) orelse return error.InvalidSettings;
+                out.client_paths[i] = try forge.clientPath(clients[i], data);
             }
             if (!std.mem.startsWith(u8, key, project_prefix)) continue;
             if (out.count == max_projects or out.find(key) != null) return error.InvalidSettings;
@@ -363,11 +397,45 @@ const GrantJob = struct {
 
 const grant_kinds = [_]identity.Kind{ .git, .jj, .svn };
 
+const Scope = struct {
+    key: [key_len]u8,
+    root: identity.Path,
+    version: u64,
+    remote: contract.Text,
+    kind: ?identity.Kind,
+
+    fn from(project: *const Project, version: u64) Scope {
+        return .{ .key = project.key, .root = project.root, .version = version, .remote = project.remote, .kind = project.kind };
+    }
+
+    fn matches(self: *const Scope, project: *const Project, version: u64) bool {
+        return self.version == version and std.mem.eql(u8, &self.key, &project.key) and self.root.eql(project.root.slice()) and self.remote.eql(project.remote.slice()) and self.kind == project.kind;
+    }
+};
+const ClientReview = struct { scope: Scope, client: forge.Client, executable: identity.Path };
+const ExternalJob = union(enum) {
+    website: struct { scope: Scope, page: forge.Page },
+    discover: Scope,
+    metadata: Scope,
+    client: ClientReview,
+
+    fn scope(self: *const ExternalJob) *const Scope {
+        return switch (self.*) {
+            .website => |*job| &job.scope,
+            .discover => |*job| job,
+            .metadata => |*job| job,
+            .client => |*job| &job.scope,
+        };
+    }
+};
+const RemoteReview = struct { scope: Scope, value: forge.Remotes };
+const MetadataReview = struct { scope: Scope, value: forge.Metadata };
+
 const Content = struct {
-    nodes: [72]ui.Node = undefined,
+    nodes: [112]ui.Node = undefined,
     len: usize = 0,
     root: ui.Node = undefined,
-    states: [9]ui.State = undefined,
+    states: [11]ui.State = undefined,
     vocabulary: [commands.len]abi.StringView = undefined,
     rows: [page_size]raw.PulseUiModelRow = undefined,
     cells: [page_size][7]abi.StringView = undefined,
@@ -376,6 +444,8 @@ const Content = struct {
     page_label: [96]u8 = undefined,
     edit_label: [128]u8 = undefined,
     grant_labels: [3][96]u8 = undefined,
+    remote_labels: [forge.Remotes.capacity][384]u8 = undefined,
+    meta_label: [256]u8 = undefined,
 
     fn add(self: *Content, node: ui.Node, id: []const u8) void {
         std.debug.assert(self.len < self.nodes.len);
@@ -455,9 +525,59 @@ const Content = struct {
             if (owner.route.table != null) {
                 self.button(22, tr(lang, "Open selected project in Pulse", "在 Pulse 中打开选中项目"), idle);
             } else self.add(ui.text(tr(lang, "Host navigation unavailable: edit selected and open its path manually.", "宿主不支持跳转：编辑选中项目并手动打开路径。")), "settings.project.route-fallback");
-            self.button(10, tr(lang, "Open remote repository in browser", "在浏览器打开远程仓库"), idle and (if (owner.browser) |*task| !task.occupied() else false));
+            const external_idle = idle and (if (owner.browser) |*task| !task.occupied() else false);
+            self.button(10, tr(lang, "Open remote repository in browser", "在浏览器打开远程仓库"), external_idle);
+            self.button(30, tr(lang, "Open Issues", "打开 Issues"), external_idle);
+            self.button(31, tr(lang, "Open PR / MR", "打开 PR / MR"), external_idle);
+            self.button(32, tr(lang, "Open Actions / Pipelines", "打开 Actions / Pipelines"), external_idle);
+            self.button(33, tr(lang, "Open Releases (GitHub / GitLab)", "打开 Releases（GitHub / GitLab）"), external_idle);
+            self.button(34, tr(lang, "Inspect literal local Git remotes", "检查本地 Git 远程地址"), external_idle);
+            self.button(41, tr(lang, "Fetch public GitHub metadata (api.github.com, no account)", "获取公开 GitHub 元数据（api.github.com，无账号）"), external_idle);
+            self.button(44, tr(lang, "Review opening selected folder in VS Code", "审核使用 VS Code 打开项目"), external_idle and owner.stored.client_paths[0] != null);
+            self.button(45, tr(lang, "Review opening SVN status dialog", "审核打开 TortoiseSVN 状态窗口"), external_idle and owner.stored.client_paths[1] != null);
+            self.add(ui.text(tr(lang, "Browser availability and private access are not verified; external apps may access files/network independently.", "未验证网页可用性与私有访问权限；外部程序可自行访问文件或网络。")), "settings.forge.warning");
             if (owner.grant_access != null and owner.project_task != null) self.button(26, tr(lang, "Inspect selected project saved approvals", "检查选中项目的持久授权"), idle);
         } else self.add(ui.text(tr(lang, "No matching projects (up to 64 records)", "没有匹配项目（最多 64 项）")), "settings.project.empty");
+        if (owner.remote_review) |*review| {
+            self.add(ui.text(review.scope.root.slice()), "settings.forge.review-root");
+            const remote_ids = [_][]const u8{ "settings.remote.0", "settings.remote.1", "settings.remote.2", "settings.remote.3", "settings.remote.4", "settings.remote.5" };
+            for (review.value.rows[0..review.value.count], 0..) |row, i| {
+                const label = std.fmt.bufPrint(&self.remote_labels[i], "{s}: {s}", .{ row.name.slice(), row.url.slice() }) catch "";
+                self.add(ui.text(label), remote_ids[i]);
+                self.button(35 + i, tr(lang, "Save this detected address for same selected project", "将此检测地址保存至同一选中项目"), idle and !owner.externalBusy());
+            }
+            if (review.value.count == 0) self.add(ui.text(tr(lang, "No supported literal remote", "没有支持的字面远程地址")), "settings.remote.empty");
+            if (review.value.omitted != 0) self.add(ui.text(tr(lang, "Some remote values were rejected or exceed the retained limit; raw values hidden.", "部分远程地址无效或超出保留上限；原始值不显示。")), "settings.remote.omitted");
+        }
+        if (owner.metadata_review) |*review| {
+            self.add(ui.text(review.scope.remote.slice()), "settings.meta.repository");
+            const result = review.value;
+            self.add(ui.text(tr(lang, "Last explicit public snapshot (not live; no automatic refresh)", "最近一次显式公开快照（非实时；不自动刷新）")), "settings.meta.heading");
+            const status = if (result.status == .ready and forge.nowMs() -| result.fetched_ms > 300000) tr(lang, "Expired; fetch again", "已过期；请重新获取") else switch (result.status) {
+                .ready => tr(lang, "Public response verified", "已验证公开响应"),
+                .forbidden_or_limited => tr(lang, "Access denied or rate limited; retry manually later", "访问被拒绝或限流；稍后手动重试"),
+                .not_found => tr(lang, "Not found or private; no account connected", "不存在或为私有仓库；未连接账号"),
+                .redirected => tr(lang, "Redirect refused; review repository URL", "已拒绝重定向；请确认仓库地址"),
+                .http_error => tr(lang, "HTTP request failed", "HTTP 请求失败"),
+                .offline => tr(lang, "Offline, timeout or transport unavailable", "离线、超时或传输不可用"),
+                .invalid => tr(lang, "Invalid or mismatched response", "响应无效或仓库不匹配"),
+                .too_large => tr(lang, "Response exceeds 64 KiB", "响应超过 64 KiB"),
+                .cancelled => tr(lang, "Cancelled", "已取消"),
+            };
+            self.add(ui.text(status), "settings.meta.status");
+            if (result.status == .ready and forge.nowMs() -| result.fetched_ms <= 300000) {
+                const label = std.fmt.bufPrint(&self.meta_label, "Stars {d} | Forks {d} | Open issues + PRs {d} | Archived {s}", .{ result.stars, result.forks, result.open_items, if (result.archived) "yes" else "no" }) catch "";
+                self.add(ui.text(label), "settings.meta.counts");
+                self.add(ui.text(result.branch.slice()), "settings.meta.branch");
+            }
+        }
+        if (owner.client_review) |*review| {
+            self.add(ui.text(review.client.name()), "settings.client.review-kind");
+            self.add(ui.text(review.executable.slice()), "settings.client.review-exe");
+            self.add(ui.text(review.scope.root.slice()), "settings.client.review-root");
+            self.button(46, tr(lang, "Confirm external launch (not a sandbox)", "确认启动外部程序（非沙箱）"), idle and !owner.externalBusy());
+            self.button(47, tr(lang, "Cancel launch review", "取消启动审核"), idle and !owner.externalBusy());
+        }
         if (owner.route.busy()) self.button(24, tr(lang, "Cancel directory lookup", "取消目录查找"), true);
         if (owner.grant_review) |*review| {
             self.add(ui.text(tr(lang, "Reviewed approval scope (no execution; select this same row before revoking)", "已检查授权范围（不执行；撤销前请选中同一项目）")), "settings.grants.heading");
@@ -503,6 +623,12 @@ const Content = struct {
             if (owner.picker != null) self.button(4 + i, tr(lang, "Browse tool folder", "浏览工具所在文件夹"), idle);
             self.states[i] = .{ .key = abi.view(field), .value = abi.view(if (owner.stored.tools[i]) |*path| path.slice() else "") };
         }
+        self.add(ui.text(tr(lang, "External client paths · save does not launch or grant VCS access", "外部客户端路径 · 保存不启动或授予 VCS 权限")), "settings.client.heading");
+        for (clients, client_fields, 0..) |client, field, i| {
+            self.input(field, client.name(), idle);
+            self.button(42 + i, tr(lang, "Save exact executable (empty clears)", "保存准确可执行文件路径（留空清除）"), idle);
+            self.states[9 + i] = .{ .key = abi.view(field), .value = abi.view(if (owner.stored.client_paths[i]) |*path| path.slice() else "") };
+        }
         for (commands, 0..) |command, i| self.vocabulary[i] = abi.view(command);
         self.root = ui.node(ui.NodeKind.stack);
         self.root.id = abi.view("vcs.settings.root");
@@ -547,7 +673,12 @@ pub const Settings = struct {
     picker_request: u64 = 0,
     picker_index: usize = 0,
     browser: ?async_host.Task = null,
-    browser_url: contract.Text = .{},
+    external_job: ?ExternalJob = null,
+    remote_review: ?RemoteReview = null,
+    metadata_review: ?MetadataReview = null,
+    client_review: ?ClientReview = null,
+    remote_result: ?forge.Remotes = null,
+    metadata_result: ?forge.Metadata = null,
     project_task: ?async_host.Task = null,
     checked_project: ?Project = null,
     checked_version: u64 = 0,
@@ -570,6 +701,10 @@ pub const Settings = struct {
         count: usize = 0,
         total: usize = 0,
     };
+
+    fn externalBusy(self: *const Settings) bool {
+        return if (self.browser) |*task| task.occupied() else false;
+    }
 
     fn checkingProject(self: *const Settings) bool {
         return if (self.project_task) |*task| task.occupied() else false;
@@ -671,11 +806,16 @@ pub const Settings = struct {
     fn syncTools(self: *Settings, mask: u8) void {
         if (!self.render_ok) return;
         const model = if (self.panel) |*value| value else return;
-        var states: [4]ui.State = undefined;
+        var states: [6]ui.State = undefined;
         var count: usize = 0;
         for (fields, 0..) |field, i| {
             if (mask & (@as(u8, 1) << @as(u3, @intCast(i))) == 0) continue;
             states[count] = .{ .key = abi.view(field), .value = abi.view(if (self.stored.tools[i]) |*path| path.slice() else "") };
+            count += 1;
+        }
+        for (client_fields, 0..) |field, i| {
+            if (mask & (@as(u8, 16) << @as(u3, @intCast(i))) == 0) continue;
+            states[count] = .{ .key = abi.view(field), .value = abi.view(if (self.stored.client_paths[i]) |*path| path.slice() else "") };
             count += 1;
         }
         // Selection state belongs to the visible project table only.
@@ -703,6 +843,9 @@ pub const Settings = struct {
         self.operation = 0;
         self.loaded = false;
         self.grant_review = null;
+        self.remote_review = null;
+        self.metadata_review = null;
+        self.client_review = null;
         if (!self.active) return;
         if (reply.*.status != abi.ok or reply.*.operation != operation) {
             self.status = .conflict;
@@ -742,7 +885,7 @@ pub const Settings = struct {
         const get = resources.settings_get orelse return;
         var id: u64 = 0;
         self.grant_review = null;
-        self.sync_mask = 15;
+        self.sync_mask = 63;
         const status = get(resources.context, completed, self, &id);
         self.admitted(status, id, raw.PULSE_RESOURCES_SETTINGS_GET);
     }
@@ -756,6 +899,9 @@ pub const Settings = struct {
         self.sync_mask = if (std.mem.startsWith(u8, key, project_prefix)) 8 else 0;
         for (keys, 0..) |tool_key, i| {
             if (std.mem.eql(u8, key, tool_key)) self.sync_mask = @as(u8, 1) << @as(u3, @intCast(i));
+        }
+        for (client_keys, 0..) |client_key, i| {
+            if (std.mem.eql(u8, key, client_key)) self.sync_mask = @as(u8, 16) << @as(u3, @intCast(i));
         }
         const status = set(resources.context, abi.view(key), abi.view(value), @intFromBool(remove), self.stored.version, completed, self, &id);
         self.admitted(status, id, raw.PULSE_RESOURCES_SETTINGS_SET);
@@ -775,6 +921,13 @@ pub const Settings = struct {
         const value = try self.read(fields[index], &bytes);
         _ = try toolPath(index, value);
         self.save(keys[index], value, value.len == 0);
+    }
+
+    fn saveClient(self: *Settings, index: usize) !void {
+        var bytes: [max_value + 1]u8 = undefined;
+        const value = try self.read(client_fields[index], &bytes);
+        _ = try forge.clientPath(clients[index], value);
+        self.save(client_keys[index], value, value.len == 0);
     }
 
     fn fillForm(self: *Settings, root: []const u8, remote: []const u8, name: []const u8, tags: []const u8) !void {
@@ -835,6 +988,7 @@ pub const Settings = struct {
             item.key = old.key;
             item.favorite = old.favorite;
             item.opened_order = old.opened_order;
+            item.remote_detected = old.remote_detected and old.root.eql(item.root.slice()) and old.remote.eql(item.remote.slice());
         } else {
             if (self.edit_key != null or self.stored.count == max_projects or self.stored.findRoot(item.root.slice()) != null) return error.InvalidSettings;
             item.key = try self.stored.newKey(item.root.slice());
@@ -1159,25 +1313,84 @@ pub const Settings = struct {
         if (context == null) return @backingInt(async_host.TaskState.failed);
         const cancelled = context.*.cancelled orelse return @backingInt(async_host.TaskState.failed);
         if (cancelled(context.*.context) != 0) return @backingInt(async_host.TaskState.cancelled);
-        openWebsite(self.browser_url.slice()) catch return @backingInt(async_host.TaskState.failed);
+        const job = self.external_job orelse return @backingInt(async_host.TaskState.failed);
+        switch (job) {
+            .website => |value| openWebsite(value.scope.remote.slice(), value.page) catch return @backingInt(async_host.TaskState.failed),
+            .discover => |scope| self.remote_result = forge.inspectRemotes(scope.root.slice()) catch return @backingInt(async_host.TaskState.failed),
+            .metadata => |scope| self.metadata_result = forge.fetchMetadata(scope.remote.slice(), cancelled, context.*.context),
+            .client => |review| forge.launchClient(review.client, review.executable.slice(), review.scope.root.slice(), review.scope.kind) catch return @backingInt(async_host.TaskState.failed),
+        }
         return @backingInt(async_host.TaskState.completed);
     }
 
-    fn openSelected(self: *Settings) !void {
+    fn startExternal(self: *Settings, job: ExternalJob) !void {
         const task = if (self.browser) |*value| value else return error.Unavailable;
         if (task.occupied()) return error.State;
-        const project = try self.selected();
-        const url = contract.repositoryWebUrl(project.remote.slice()) orelse return error.Argument;
-        self.browser_url = url;
+        self.external_job = job;
+        self.remote_result = null;
+        self.metadata_result = null;
         const descriptor: async_host.Descriptor = .{
             .size = @sizeOf(async_host.Descriptor),
-            .title = abi.view("Open repository website"),
-            .type = abi.view("vcs.projects.website"),
+            .title = abi.view("Explicit project integration"),
+            .type = abi.view("vcs.projects.integration"),
             .work = &browserWork,
             .user = self,
         };
+        errdefer if (!task.occupied()) {
+            self.external_job = null;
+        };
         try task.start(&descriptor);
         self.status = .browser_pending;
+    }
+
+    fn openSelected(self: *Settings, page: forge.Page) !void {
+        const project = try self.selected();
+        _ = forge.pageUrl(project.remote.slice(), page) orelse return error.Argument;
+        try self.startExternal(.{ .website = .{ .scope = Scope.from(project, self.stored.version), .page = page } });
+    }
+
+    fn discoverRemotes(self: *Settings) !void {
+        const scope = Scope.from(try self.selected(), self.stored.version);
+        self.remote_review = null;
+        try self.startExternal(.{ .discover = scope });
+    }
+
+    fn saveDetected(self: *Settings, index: usize) !void {
+        if (self.externalBusy()) return error.State;
+        const review = if (self.remote_review) |*value| value else return error.State;
+        var project = (try self.selected()).*;
+        if (!review.scope.matches(&project, self.stored.version) or index >= review.value.count) return error.State;
+        project.remote = review.value.rows[index].url;
+        project.remote_detected = true;
+        try self.saveRecord(&project);
+    }
+
+    fn fetchPublic(self: *Settings) !void {
+        const scope = Scope.from(try self.selected(), self.stored.version);
+        var endpoint: [contract.Text.capacity + 16]u8 = undefined;
+        _ = forge.githubPath(scope.remote.slice(), &endpoint) orelse return error.Argument;
+        self.metadata_review = null;
+        try self.startExternal(.{ .metadata = scope });
+    }
+
+    fn reviewClient(self: *Settings, index: usize) !void {
+        if (self.externalBusy()) return error.State;
+        const scope = Scope.from(try self.selected(), self.stored.version);
+        const executable = self.stored.client_paths[index] orelse return error.Argument;
+        var command: [2 * identity.max_path_bytes + 128]u8 = undefined;
+        _ = try forge.commandLine(clients[index], executable.slice(), scope.root.slice(), scope.kind, &command);
+        self.client_review = .{ .scope = scope, .client = clients[index], .executable = executable };
+        self.status = .client_review;
+    }
+
+    fn confirmClient(self: *Settings) !void {
+        const review = self.client_review orelse return error.State;
+        if (!review.scope.matches(try self.selected(), self.stored.version)) return error.State;
+        const index: usize = if (review.client == .vscode) 0 else 1;
+        const path = self.stored.client_paths[index] orelse return error.State;
+        if (!path.eql(review.executable.slice())) return error.State;
+        self.client_review = null;
+        try self.startExternal(.{ .client = review });
     }
 
     fn pollBrowser(self: *Settings) !void {
@@ -1186,7 +1399,44 @@ pub const Settings = struct {
         const state = try task.poll();
         if (!state.terminal()) return;
         try task.releaseTerminal();
-        self.status = if (state == .completed) .browser_opened else .browser_failed;
+        const job = self.external_job orelse return error.State;
+        defer {
+            self.external_job = null;
+            self.remote_result = null;
+            self.metadata_result = null;
+        }
+        const project = self.selected() catch {
+            self.status = .external_changed;
+            return;
+        };
+        if (!job.scope().matches(project, self.stored.version)) {
+            self.status = .external_changed;
+            return;
+        }
+        switch (job) {
+            .website => self.status = if (state == .completed) .browser_opened else .browser_failed,
+            .client => self.status = if (state == .completed) .client_launched else .client_failed,
+            .discover => {
+                if (state == .completed) {
+                    if (self.remote_result) |result| {
+                        self.remote_review = .{ .scope = job.discover, .value = result };
+                        self.status = .remotes_ready;
+                        return;
+                    }
+                }
+                self.status = .remotes_failed;
+            },
+            .metadata => {
+                if (state == .completed) {
+                    if (self.metadata_result) |result| {
+                        self.metadata_review = .{ .scope = job.metadata, .value = result };
+                        self.status = .metadata_ready;
+                        return;
+                    }
+                }
+                self.status = .browser_failed;
+            },
+        }
     }
 
     fn onCommand(user: ?*anyopaque, page: u64, command: abi.StringView) callconv(.c) void {
@@ -1226,7 +1476,7 @@ pub const Settings = struct {
             self.render();
             return;
         }
-        if (!self.loaded or !self.render_ok or self.pending != 0 or self.picker_request != 0 or self.route.busy()) return;
+        if (!self.loaded or !self.render_ok or self.pending != 0 or self.picker_request != 0 or self.route.busy() or self.externalBusy()) return;
         for (commands[1..], 1..) |key, index| {
             if (!std.mem.eql(u8, name, key)) continue;
             const result: anyerror!void = switch (index) {
@@ -1239,7 +1489,7 @@ pub const Settings = struct {
                     self.save(&project.key, "", true);
                     break :blk {};
                 },
-                10 => self.openSelected(),
+                10 => self.openSelected(.repository),
                 11 => self.pollBrowser(),
                 12...14 => self.save(locale_key, @tagName(([_]Locale{ .auto, .en, .zh })[index - 12]), false),
                 15 => self.newProject(),
@@ -1253,6 +1503,14 @@ pub const Settings = struct {
                 23 => self.browse(tools.len),
                 26 => self.inspectGrants(),
                 27...29 => self.revokeGrant(grant_kinds[index - 27]),
+                30...33 => self.openSelected(forge.pages[index - 29]),
+                34 => self.discoverRemotes(),
+                35...40 => self.saveDetected(index - 35),
+                41 => self.fetchPublic(),
+                42...43 => self.saveClient(index - 42),
+                44...45 => self.reviewClient(index - 44),
+                46 => self.confirmClient(),
+                47 => { self.client_review = null; },
                 else => return,
             };
             result catch |err| {
@@ -1303,6 +1561,12 @@ pub const Settings = struct {
             }
         }
         self.browser = null;
+        self.external_job = null;
+        self.remote_result = null;
+        self.metadata_result = null;
+        self.remote_review = null;
+        self.metadata_review = null;
+        self.client_review = null;
         if (self.project_task) |*task| {
             if (task.occupied()) {
                 const state = try task.poll();
@@ -1332,6 +1596,12 @@ pub const Settings = struct {
         self.route.retire();
         if (self.browser) |*task| task.retireAtHostDestroy();
         self.browser = null;
+        self.external_job = null;
+        self.remote_result = null;
+        self.metadata_result = null;
+        self.remote_review = null;
+        self.metadata_review = null;
+        self.client_review = null;
         if (self.project_task) |*task| task.retireAtHostDestroy();
         self.project_task = null;
         self.checked_project = null;
@@ -1356,10 +1626,9 @@ const ShellOpen = *const fn (?*anyopaque, [*:0]const u16, [*:0]const u16, ?[*:0]
 const ComInit = *const fn (?*anyopaque, u32) callconv(.winapi) i32;
 const ComUninit = *const fn () callconv(.winapi) void;
 
-fn openWebsite(value: []const u8) !void {
+fn openWebsite(value: []const u8, page: forge.Page) !void {
     if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
-    const url = contract.repositoryWebUrl(value) orelse return error.InvalidSettings;
-    if (!url.eql(value)) return error.InvalidSettings;
+    const url = forge.pageUrl(value, page) orelse return error.InvalidSettings;
     // Only our canonical ASCII HTTPS forge URLs reach ShellExecuteW.
     var wide: [contract.Text.capacity + 1]u16 = undefined;
     for (url.slice(), 0..) |c, i| wide[i] = c;
@@ -1564,7 +1833,7 @@ test "settings writes use exact version and preserve drafts on conflict or unrel
     const initial: raw.PulseResourcesReply = .{ .size = @sizeOf(raw.PulseResourcesReply), .operation = raw.PULSE_RESOURCES_SETTINGS_GET, .request_id = 4, .status = abi.ok, .settings = .{ .version = 9 } };
     Settings.completed(owner, &initial);
     try std.testing.expect(owner.loaded and owner.render_ok);
-    try std.testing.expectEqual(@as(usize, 3), fixture.synced);
+    try std.testing.expectEqual(@as(usize, 5), fixture.synced);
     Settings.onCommand(owner, 8, abi.view(commands[1]));
     try std.testing.expectEqual(@as(usize, 0), fixture.calls);
     Settings.onCommand(owner, 7, abi.view(commands[1]));
@@ -1799,4 +2068,20 @@ test "project grant review supports missing roots and rejects a changed selectio
     try std.testing.expectEqual(contract.SavedHint.State.absent, owner.grant_review.?.hints[0].state);
     try std.testing.expectEqual(contract.SavedHint.State.recorded, owner.grant_review.?.hints[1].state);
     try std.testing.expectEqual(@as(usize, 0), fixture.calls);
+}
+
+test "project remote provenance migrates old records and binds review to exact scope" {
+    const root = if (builtin.os.tag == .windows) "C:\\work\\repo" else "/work/repo";
+    var item = try Project.make(root, "https://github.com/a/b");
+    var bytes: [max_value]u8 = undefined;
+    const old = try std.fmt.bufPrint(&bytes, "v2\n{s}\n{s}\n\n\n0\ngit\n0", .{ root, item.remote.slice() });
+    try std.testing.expect(!(try Project.decode(&item.key, old)).remote_detected);
+    item.remote_detected = true;
+    const encoded = try item.encode(&bytes);
+    try std.testing.expect((try Project.decode(&item.key, encoded)).remote_detected);
+    const scope = Scope.from(&item, 7);
+    try std.testing.expect(scope.matches(&item, 7));
+    try std.testing.expect(!scope.matches(&item, 8));
+    item.remote = try contract.Text.init("https://github.com/a/c");
+    try std.testing.expect(!scope.matches(&item, 7));
 }

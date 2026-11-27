@@ -421,3 +421,23 @@ Verify rapid project switching, cancellation, failed task release, close/
 revoke and simultaneous windows. Native memory Diff not available on the
 public pin; use bounded own view. No installed acceptance or release claimed;
 exact new CI required.
+
+### P3B candidate acceptance
+
+P3A code gate passed 378e540 / 45929366805; installed test remains deferred.
+For P3B, inspect a project with multiple local remotes, choose one, reload
+v2/v3 records and verify provenance, edit/relink/remove without carrying
+detected provenance to a different root. Reject raw credential URLs,
+unsupported schemes, reserved GitLab routes, redirects and oversized
+configs; no .git indirection or include traversal. Open GitHub/GitLab/
+Bitbucket repository/issues/review/CI pages and GitHub/GitLab releases;
+Bitbucket releases are unsupported, and disabled/private pages may fail.
+Verify exact saved client executable, selection and settings version
+review, cancel/confirm, unavailable/missing/reparse executable/root,
+Unicode/spaces, no shell and no handle leak. VS Code and TortoiseSVN
+are the only implemented external adapters. Exercise explicit GitHub public
+GET, wrong repository, private/404, 403/429, redirects, offline/timeouts,
+oversized and malformed JSON, five-minute expiry, cancellation, selection
+change, settings update and unload during a task. No actual account
+credential or private endpoint test is authorized; no remote write.
+Tests are candidate fixtures; live transport/client/host NOT RUN.

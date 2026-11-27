@@ -200,7 +200,7 @@ stable certification. Do not repeatedly publish tiny partial milestones.
 
 ## P3 — Read-only advanced functions
 
-### P3A — Complete local read-only workspace (active; consolidated candidate)
+### P3A — Complete local read-only workspace (DEV COMPLETE / HOST DEFERRED)
 
 **Outcome:** one consistent project/status/history/diff interface for all
 three primary providers, with native semantics and bounded content.
@@ -227,7 +227,7 @@ three primary providers, with native semantics and bounded content.
 positive real fixture and negative malformed/large/binary/rename/path traversal
 tests, no unreviewed mutation or network access, full CI and installed UI tests.
 
-### P3B — Remote forge and external client integration
+### P3B — Remote forge and external client integration (active; consolidated candidate)
 
 **Outcome:** saved projects expose verified remote and local client actions
 without requiring an account for ordinary local VCS use.
@@ -494,3 +494,43 @@ working-copy diff target with empty depth (no directory recursion).
 Only compatibility test builds emit bounded detail failure diagnostics;
 approved host sessions do not log raw tool output. These repairs require
 the exact new CI and installed acceptance remains deferred.
+
+### P3A exit review and P3B consolidated candidate
+
+[378e540 / 45929366805](https://github.com/strangelion/pulse-extras/actions/runs/45929366805)
+passed all six required jobs (scope, both OS checks, both native Companion
+lanes and Regression gate). Local-only P3A code gate is met; installed UI
+and the explicitly unsupported server/history/pristine/SDK cases remain
+HOST DEFERRED. No release.
+
+P3B extends the existing project manager, rather than adding another store:
+literal local Git remote discovery (six choices, 4 KiB ordinary config,
+no includes or indirection), canonical chosen address with persisted
+detected/manual provenance and v2 migration, fixed GitHub/GitLab/Bitbucket
+browser page actions, explicit saved exact VS Code and TortoiseSVN executable
+paths, a separate one-shot project/version-bound launch review and an
+anonymous GitHub repository metadata snapshot. The external task slot is
+serialized, retains immutable inputs through terminal release, discards
+obsolete results, and never uses VCS trust or credentials. Only a chosen
+canonical address persists; public API snapshots expire after five minutes
+and are never reused for authorization or automatically refreshed. HTTPS
+request is GET to api.github.com only, with 64 KiB body bound, timeout,
+no redirects/cookies/auth or proxy auto-discovery. Rate limit/denial,
+private/missing, network, invalid and oversized states stay distinct.
+Client handoffs use an exact executable and fixed reviewed arguments,
+not a shell, no inherited handles; applications are user-owned afterward.
+VS Code CLI and TortoiseSVN automation references:
+https://code.visualstudio.com/docs/configure/command-line
+https://tortoisesvn.net/docs/release/TortoiseSVN_en/tsvn-automation.html
+GitHub public REST: https://docs.github.com/en/rest/repos/repos#get-a-repository
+WinHTTP options: https://learn.microsoft.com/en-us/windows/win32/winhttp/option-flags
+
+No authenticated API/token storage, GitHub Desktop launcher (Windows
+documented command does not establish a verified direct exe adapter),
+Sourcetree/GitKraken, self-hosted forge, indirect/worktree/JJ-native remote
+discovery or GitLab/Bitbucket API is claimed. Manual canonical URLs remain
+available. The public API does not use the user's browser or proxy credentials;
+private access remains browser-only. No credential or remote write action.
+Exact P3B full CI, independent Windows HTTP/launch ABI review, live consenting
+public endpoint/client tests and installed UI remain unverified. P3B remains
+active until exit review; no Companion change, no SDK change or release.

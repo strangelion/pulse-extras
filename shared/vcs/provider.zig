@@ -253,7 +253,7 @@ pub fn repositoryWebUrl(input: []const u8) ?Text {
         var components = std.mem.splitScalar(u8, path, '/');
         var count: usize = 0;
         while (components.next()) |component| {
-            if (component.len == 0 or component.len > 100 or component[0] == '.' or component[component.len - 1] == '.') return null;
+            if (component.len == 0 or component.len > 100 or component[0] == '.' or component[component.len - 1] == '.' or std.mem.eql(u8, component, "-")) return null;
             for (component) |c| {
                 if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_' and c != '.') return null;
             }

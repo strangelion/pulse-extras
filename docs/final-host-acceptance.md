@@ -23,7 +23,7 @@ artifact and observed result.
 | --- | --- | --- |
 | VCS P2A | All onboarding, settings, Git/JJ/SVN, denial/cancellation, native menu/locale/DPI | Code CI pass 4d53927; HOST DEFERRED |
 | VCS P2B | Saved projects migration, search/favorites/relink, routing, provider switching, durable grants and individual/all revoke, stale cache, restart and concurrent instances | 147449b full code CI passed; DEV COMPLETE / HOST DEFERRED |
-| VCS P3A/P3B | File/history/diff and forge/client integrations; verify offline unsupported cases and local consent scope | P3A status CI pass 5bfdaa3; 59a6721 failed formatting; 5e70df2 Linux compiled but 3 real integration tests failed; CLI compatibility repair pending exact CI; HOST DEFERRED |
+| VCS P3A/P3B | File/history/diff and forge/client integrations; verify offline unsupported cases and local consent scope | P3A full CI pass 378e540 / 45929366805; DEV COMPLETE / HOST DEFERRED. P3B candidate pending exact CI and live external handoff/HTTP acceptance |
 | Companion ordinary functionality | Import/download, library, market, runtime, profiles, menu, recovery and lifecycle | Owner-accepted development complete; final host smoke deferred |
 | Companion performance | Controlled actual Pulse-managed visible/hidden count ramp 1→1024, stop at safe measured ceiling; CPU/GPU/VRAM/private bytes/working set/handles/frame p50/p95/p99 and startup/stop latency | OPEN |
 | Companion long-running | 30 min / 2 h / extended soak; repeated create/stop, asset switching, import/download, hide/show and unload; baseline/peak/steady/post-cleanup memory and handle deltas | OPEN |

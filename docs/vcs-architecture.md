@@ -376,3 +376,22 @@ before old saved approvals can be used with the expanded grammar. Git
 partial-clone/filters and SVN non-pristine/server history limitations are
 documented in the roadmap and runbook. No host-private interface or generic
 CLI. Actual installed rendering and exact new CI remain pending.
+
+### P3B project integrations candidate
+
+Projects retain one user-selected canonical forge repository and its
+manual/legacy versus locally detected provenance. A bounded literal
+ordinary .git/config inspector exposes up to six sanitized choices, never
+raw rejected URLs, and does not follow config includes or metadata links.
+The saved settings version and exact project key/root/address bind all
+review and worker results. Fixed provider-specific web pages are derived
+from the repository location (not arbitrary URLs); unsupported feature
+pages are refused. Client paths are separate preferences, not VCS grants.
+Only an explicit one-shot reviewed VS Code/TortoiseSVN launch can hand off
+a local directory to a user-owned external application. The task returns
+after CreateProcessW and handle release, not after application readiness.
+The anonymous GitHub endpoint accepts only public matching typed metadata,
+uses no credentials/redirects/cookies or automatic polling, and retains a
+bounded transient snapshot (five-minute display TTL). Exact CI, Windows
+transport and installed acceptance remain pending; authenticated access and
+other clients/providers are not implemented.
