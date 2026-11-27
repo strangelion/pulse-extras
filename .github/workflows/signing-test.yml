@@ -1,0 +1,44 @@
+name: Pulse signature compatibility
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'scripts/sign_release.py'
+      - 'scripts/test_sign_release.py'
+      - '.github/workflows/signing-test.yml'
+  pull_request:
+    paths:
+      - 'scripts/sign_release.py'
+      - 'scripts/test_sign_release.py'
+      - '.github/workflows/signing-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Read pinned official signing tool revision
+        id: registry
+        shell: bash
+        run: |
+          python -c 'import sys; sys.path.insert(0,"scripts"); import sign_release; print("revision="+sign_release.REGISTRY_REVISION)' >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: jimmgreen/pulse-extensions
+          ref: ${{ steps.registry.outputs.revision }}
+          path: .local/registry-signing
+          persist-credentials: false
+      - name: Verify official CNG signing with a disposable key
+        env:
+          PULSE_SIGNING_TEST_REGISTRY: ${{ github.workspace }}/.local/registry-signing
+        run: python -m unittest discover -s scripts -p test_sign_release.py

@@ -153,8 +153,7 @@ Draft creates private reviewable unsigned preview drafts.
 Publish-preview explicitly publishes unsigned GitHub prereleases, never
 marks one latest and does not claim real-host acceptance. A release exposes
 native code: recipients must review its source and trust before installation.
-No stable channel, signing keys or official registry submission are automated.
-The stable release design below remains a separate future gate.
+Stable GitHub promotion is a separate workflow; signing remains local and official registry submission is not automated.
 
 ## 3B. Public Pulse dependency updates
 
@@ -210,9 +209,75 @@ evidence; real-host GUI acceptance and rollback. Keep these separate from
 unsigned preview publication. Do not add empty secrets, signing placeholders,
 or auto-merge before these controls are implemented and reviewed.
 
-## 4. Future stable release phases
+## 3C. GitHub stable promotion and local signing
 
-The following are the additional requirements for production/stable or signed registry releases, not claims made by the unsigned preview workflow.
+Stable GitHub publication is independent of the official registry and signing.
+Use **Extension release → dry-run** with final numeric versions (no prerelease
+suffix), download the exact candidate artifact and complete the applicable
+[installed acceptance matrix](final-host-acceptance.md). Record actual
+Pulse version, SHA-256 for every selected .pulse-ext and reproducible acceptance
+evidence. Do not promote a failed, incomplete or untested candidate.
+
+Then use **Extension stable release** on main: supply the successful candidate
+run ID, comma-separated product=SHA256 pairs covering exactly that run's
+packages, actual host version, evidence reference and explicit acceptance
+confirmation. Choose draft-stable or publish-stable. The candidate must
+be from the same current main SHA, successful Extension release workflow and
+retained artifact; if main moves or the artifact expires, rebuild and retest.
+This deliberately avoids rebuilding after acceptance. Existing tags/releases
+block promotion. The stable workflow uses the shared release concurrency
+group and retains exact original bytes. Its new stable-acceptance.json is
+owner-reported evidence, not an automated GUI test, and the original build
+evidence remains unsigned and pre-acceptance. A stable draft may be published
+manually after review; never overwrite existing tags. Multi-product releases
+remain non-latest. Configure GitHub Settings → Environments → stable-release
+to restrict main and require an appropriate reviewer where the plan permits.
+The environment name alone is not an approval control.
+
+For optional local signing, the actual official keygen/sign/verify CLI is
+in **jimmgreen/pulse-extensions**, not the public Pulse SDK checkout.
+Use the reviewed commit `0a325ac77d5ecddb98a45f9062fd1b0129978dbe`.
+On Windows (PowerShell), clone outside this repository, check out the commit,
+and generate a publisher key once:
+
+```powershell
+$registry = Join-Path $env:LOCALAPPDATA "PulseSigning\registry"
+$keys = Join-Path $env:LOCALAPPDATA "PulseSigning\pulse-extras"
+git clone https://github.com/jimmgreen/pulse-extensions.git $registry
+git -C $registry checkout --detach 0a325ac77d5ecddb98a45f9062fd1b0129978dbe
+python (Join-Path $registry "tools\pulse_sign.py") keygen --out-dir $keys --bits 3072
+```
+
+Keep the private blob outside all repositories, cloud sync, logs and GitHub
+secrets; restrict access to your account, encrypt backups and never share it.
+The public blob, fingerprint and publicKey are publishable. Do not regenerate
+the key for each package/version. The same publisher can sign multiple products.
+The official Windows CNG tool uses RSAFULLPRIVATEBLOB / RSAPUBLICBLOB, not PEM.
+The separate Pulse signature compatibility workflow tests disposable key generation,
+signing, verification and byte-tamper rejection on Windows, without uploading keys.
+
+With the exact clean source checkout of the dry-run candidate, sign locally
+using an extracted per-product directory and a new output directory:
+
+```powershell
+python scripts/sign_release.py --product companion --candidate .local/candidates/companion `
+  --registry $registry --private-key (Join-Path $keys "publisher.private.blob") `
+  --public-key (Join-Path $keys "publisher.public.blob") --out .local/signed-companion
+```
+
+This verifies package hashes and source identity, signs the raw manifest bytes
+with the pinned official CLI, verifies against the explicitly supplied public
+blob, and writes a detached .sig.json, public publisher.json (copy to publishers/<fingerprint>.json in the registry PR) and
+signing-evidence.json. The original candidate is not changed. Sign before
+publishing if official registry distribution is planned; upload only the
+matching verified signature via an explicitly reviewed release step. This
+wrapper does not create a release, change trust policies or submit registry
+metadata. Never upload private blobs, and do not claim signed registry
+acceptance until the official catalog PR is reviewed.
+
+## 4. Further signed registry / production release phases
+
+The following are additional requirements for signed registry distribution and further production hardening. Stable GitHub promotion above intentionally does not imply registry approval.
 
 1. Plan: resolve immutable source commit, selection, descriptors, dependency impact, versions,
    tag/asset names and acceptance policy. Preflight every selected package and fail before any
@@ -258,7 +323,7 @@ Use the official commands as verified against the chosen SDK, for example:
 python tools/extensions/pulse_ext.py --pulse <trusted-pulse.exe> --json native-manifest manifest.json --library <dll> --output out/manifest.json
 python tools/extensions/pulse_ext.py --pulse <trusted-pulse.exe> --json pack out/manifest.json --output out/extension.pulse-ext
 python tools/extensions/pulse_ext.py --pulse <trusted-pulse.exe> --json verify out/extension.pulse-ext
-python tools/pulse_sign.py sign-manifest out/manifest.json --private-key <protected-key> --output out/extension.sig.json
+python <pulse-extensions-checkout>/tools/pulse_sign.py sign-manifest out/manifest.json --private-key <protected-key> --output out/extension.sig.json
 ```
 
 Paths are placeholders, not executable commands as written. The manifest/library/resources
@@ -270,7 +335,7 @@ official signature/policy options; consult the tool version's help rather than g
 
 Unsigned preview releases include the archive, raw manifest, release evidence, SHA256SUMS.txt, AGPL license and retained Apache license. The exact public source tag/commit is linked in the notes; the current composition uses the system WIC backend and no bundled libwebp or third-party pet assets. Before any composition change, review dependency notices and corresponding-source obligations. Stable/registry releases must additionally satisfy the following.
 
-Each stable product release includes at minimum:
+Each signed official-registry product release includes at minimum:
 
 - strangelion.<name>-<version>.pulse-ext
 - strangelion.<name>-<version>.sig.json

@@ -1,0 +1,68 @@
+name: Extension stable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run:
+        description: 'Successful Extension release run ID (same main commit)'
+        required: true
+        type: string
+      tested_hashes:
+        description: 'Exact installed package SHA256, e.g. companion=<hash>,vcs=<hash>'
+        required: true
+        type: string
+      tested_host:
+        description: 'Actual tested Pulse version'
+        required: true
+        type: string
+      acceptance_reference:
+        description: 'Acceptance record or evidence reference (no private data)'
+        required: true
+        type: string
+      acceptance_confirmed:
+        description: 'I completed all applicable final installed acceptance checks for these exact packages'
+        required: true
+        default: false
+        type: boolean
+      mode:
+        description: 'Stable GitHub release (unsigned; no registry submission)'
+        required: true
+        default: draft-stable
+        type: choice
+        options:
+          - draft-stable
+          - publish-stable
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extension-release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: stable-release
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Verify and promote exact accepted candidate (no rebuild)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          TESTED_HASHES: ${{ inputs.tested_hashes }}
+          TESTED_HOST: ${{ inputs.tested_host }}
+          ACCEPTANCE_REFERENCE: ${{ inputs.acceptance_reference }}
+          ACCEPTANCE_CONFIRMED: ${{ inputs.acceptance_confirmed }}
+          STABLE_MODE: ${{ inputs.mode }}
+        run: python scripts/stable_release.py

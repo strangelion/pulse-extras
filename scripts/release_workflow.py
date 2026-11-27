@@ -1,4 +1,4 @@
-"""Manual, per-product GitHub preview releases. Never sign or publish stable.
+"""Manual, per-product GitHub releases. Stable promotion requires exact tested artifacts.
 
 The build job has read-only permissions. Only the separate publish job may
 write releases. The pinned public Pulse host validates package format,
@@ -222,9 +222,15 @@ def verify_candidate(item: dict, directory: Path, revision: str) -> list[Path]:
     return sorted(directory / name for name in names)
 
 
-def publish(items: list[dict], mode: str, output: Path) -> None:
-    if mode not in {"draft", "publish-preview"}:
+def publish(items: list[dict], mode: str, output: Path, *,
+            stable_receipts: dict | None = None, build_run_id: str | None = None) -> None:
+    stable = mode in {"draft-stable", "publish-stable"}
+    if mode not in {"draft", "publish-preview", "draft-stable", "publish-stable"}:
         raise ValueError("not a publication mode")
+    if stable != (stable_receipts is not None):
+        raise ValueError("stable publication requires exact-artifact acceptance receipts")
+    if stable and (not build_run_id or set(stable_receipts) != {item["product"] for item in items}):
+        raise ValueError("incomplete stable acceptance receipts")
     revision = source_revision()
     repo = repository()
     # A private source checkout is not adequate corresponding-source access.
@@ -236,6 +242,29 @@ def publish(items: list[dict], mode: str, output: Path) -> None:
              for item in items}
     preflight(items)
     pin = upstream_pin.load()
+    if stable:
+        # Do not modify the package, raw manifest, or original build evidence.
+        # Add a separate owner-attestation receipt and a release checksum list.
+        for item in items:
+            product = item["product"]
+            receipt_dir = ROOT / ".local/stable-receipts" / product
+            receipt_dir.mkdir(parents=True, exist_ok=False)
+            receipt = stable_receipts[product]
+            evidence = common.read_evidence(output / product / "release-evidence.json")
+            if (receipt.get("asset_sha256") != evidence["asset_sha256"]
+                    or receipt.get("source_revision") != revision
+                    or receipt.get("product") != product
+                    or receipt.get("version") != item["version"]
+                    or receipt.get("build_run_id") != build_run_id):
+                raise RuntimeError("acceptance receipt does not bind candidate")
+            common.write_evidence(receipt_dir / "stable-acceptance.json", receipt)
+            assets = [path for path in files[product] if path.name != "SHA256SUMS.txt"]
+            assets.append(receipt_dir / "stable-acceptance.json")
+            sums = receipt_dir / "SHA256SUMS.txt"
+            sums.write_text("".join(f"{common.sha256(path)}  {path.name}\n"
+                                    for path in sorted(assets, key=lambda p: p.name)),
+                            encoding="ascii", newline="\n")
+            files[product] = assets + [sums]
     for item in items:
         tag = item["tag"]
         notes = (
@@ -247,9 +276,23 @@ def publish(items: list[dict], mode: str, output: Path) -> None:
             "No official registry signature or publication. Companion uses the Windows WIC backend "
             "when selected. Release evidence describes the package before publication.\n"
         )
+        if stable:
+            receipt = stable_receipts[item["product"]]
+            notes = (
+                f"GitHub stable release: {item['product']} {item['version']} (unsigned).\n\n"
+                f"Source: https://github.com/{repo}/tree/{revision}\n\n"
+                f"Exact candidate build: https://github.com/{repo}/actions/runs/{build_run_id}\n\n"
+                f"Official package verification: Pulse {pin['pulse_source_version']}. "
+                f"Owner-reported installed acceptance: Pulse {receipt['host_version']}; "
+                "see stable-acceptance.json for scope and evidence reference. "
+                "The receipt is a human attestation, not an automated GUI test. "
+                "Build evidence remains the pre-acceptance snapshot. "
+                "This release is not signed or submitted to the official registry.\n"
+            )
         run("gh", "release", "create", tag, *(str(path) for path in files[item["product"]]),
-            "--repo", repo, "--target", revision, "--draft", "--prerelease", "--latest=false",
-            "--title", f"{item['product']} {item['version']} (Preview)", "--notes", notes)
+            "--repo", repo, "--target", revision, "--draft",
+            "--prerelease=false" if stable else "--prerelease", "--latest=false",
+            "--title", f"{item['product']} {item['version']}" + ("" if stable else " (Preview)"), "--notes", notes)
         print("Created draft: " + tag, flush=True)
     # All drafts must have complete, digest-matching assets before any
     # publication. No deletion/overwrite on partial failure.
@@ -258,14 +301,14 @@ def publish(items: list[dict], mode: str, output: Path) -> None:
         entry = releases[item["tag"]]
         actual = {asset["name"]: asset.get("digest") for asset in entry["assets"]}
         expected = {path.name: "sha256:" + common.sha256(path) for path in files[item["product"]]}
-        if (not entry["draft"] or not entry["prerelease"] or entry["target_commitish"] != revision
+        if (not entry["draft"] or entry["prerelease"] != (not stable) or entry["target_commitish"] != revision
                 or actual != expected):
             raise RuntimeError("draft asset/source verification failed; retain draft for review")
-    if mode == "publish-preview":
+    if mode in {"publish-preview", "publish-stable"}:
         for item in items:
             run("gh", "release", "edit", item["tag"], "--repo", repo,
-                "--draft=false", "--prerelease", "--latest=false")
-            print("Published preview: " + item["tag"], flush=True)
+                "--draft=false", "--prerelease=false" if stable else "--prerelease", "--latest=false")
+            print(("Published stable: " if stable else "Published preview: ") + item["tag"], flush=True)
 
 
 def main() -> int:
