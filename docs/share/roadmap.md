@@ -152,6 +152,70 @@ policy for clipboard, shelf or remote browsing.
   VPN/relay/NAT traversal server, UPnP or automatic router mapping. Reuse
   external networking tools; keep directory access inside Pulse Share.
 
+### Future independent clients and local self-hosted Web access
+
+Architectural constraint for stage 2; independent desktop and Web clients
+are follow-up options, not extra mandatory delivery stages.
+
+- Extract reusable Share Core from Pulse-specific UI and process supervision.
+  Keep Pulse SDK, Tray Shelf and OS clipboard/filesystem adapters outside
+  the portable core. Use versioned bounded client interfaces and a single
+  authoritative owner of device identities, grants, queues, transactions,
+  resource budgets and the global 32-data-channel ceiling. Multiple frontends
+  must not independently mutate the same store or start competing engines.
+  Preserve current supervised plugin shutdown until a separately owned
+  service lifecycle and authenticated local IPC are implemented and accepted.
+- A future standalone native desktop client need not install Pulse or embed
+  a browser. A future Web frontend is a locally hosted, optional service
+  serving bundled static assets and a separate versioned HTTP(S) API. The
+  browser must not directly speak the existing custom TLS/TCP wire protocol.
+  Browser capabilities and permissions are distinct from native peer identity.
+- No required cloud account, hosted Web service, external CDN, public relay,
+  proprietary tunnel, telemetry, or internet dependency for local use.
+  Users independently choose whether and how to reach their local service:
+  LAN, private overlay, existing reverse proxy/tunnel, or manual router
+  mapping. Do not provision, discover or modify those services or routes.
+  No automatic external listener, firewall changes or UPnP.
+- Web service is disabled by default; explicit start/stop, concrete loopback
+  bind by default, operator-selected non-loopback binding only by explicit
+  opt-in. Remote access is not implicitly trusted because it traverses a VPN,
+  proxy or local address. Require HTTPS for non-loopback browser access,
+  with operator-managed certificates or a deliberately configured trusted
+  TLS-terminating proxy over a protected backend link. Reject insecure
+  remote mode; local HTTP, if supported, is restricted to loopback with
+  authenticated sessions. Do not claim end-to-end TLS through a terminating
+  proxy; TCP passthrough and HTTPS termination are different deployments.
+- Use separately designed browser enrollment/session authentication and
+  authorization, short-lived revocable credentials, secure cookie/session
+  policy, CSRF and Origin/Host validation (including DNS rebinding defenses),
+  explicit allowed origins, no wildcard CORS, no trust from forwarded headers
+  except explicitly configured trusted proxies. Never expose pairing secrets
+  or session tokens in URLs, logs or history. Limit authentication attempts,
+  sessions, request sizes, concurrency, timeouts, and disk quotas.
+- Per-browser/session grants are least privilege; browsing is read-only by
+  default and uploads require explicit authorization. Every request is
+  authorized against a granted root or approved transaction, not a caller's
+  arbitrary local path. Reuse manifests, SHA-256 block/whole-file checks,
+  no-overwrite publication, cancellation, recovery and global resource
+  scheduling. For browser uploads the authenticated session binds a manifest
+  and content digest; do not imply that browsers have native TLS pin/PAKE
+  capabilities or that a user-supplied hash alone authenticates a file.
+  Browser download verification must be documented according to its actual
+  capabilities. Do not expose native clipboard, shelf, device private keys,
+  arbitrary filesystem access or command execution as a generic Web API.
+- Local owner can see listener status/bind, authorized sessions, grants and
+  active transfers, revoke access, stop accepting requests, cancel/drain
+  tasks and shut down the Web service independently. Distinguish disabling
+  new requests from cancelling active transfers and already committed files.
+  No automatic execution, clipboard sync or file overwrite on Web access.
+- Future acceptance must cover unauthorized requests, invalid Origin/Host,
+  untrusted proxy headers, expired/revoked sessions, interrupted uploads,
+  corruption, quotas, parallel clients, listener shutdown and no service
+  listening by default. External connectivity is the user's responsibility;
+  document supported configurations and limitations, not universal reachability.
+  The current release does not contain a Web server or standalone desktop app.
+
+
 ## 3. Acceptance and release (planned)
 
 - Physical two-PC tests on the supported Pulse host, local and routed
