@@ -372,7 +372,14 @@ const Output = struct {
 pub fn run(request: *const Request, ctx: *const raw.PulseTaskContext, decisions: *Decisions) !void {
     if (comptime builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return error.UnsupportedPlatform;
     var output: Output = .{};
-    errdefer |err| output.report(ctx, @errorName(err));
+    runInner(request, ctx, decisions, &output) catch |err| {
+        output.report(ctx, @errorName(err));
+        return err;
+    };
+}
+
+fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions: *Decisions, output: *Output) !void {
+    if (comptime builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return error.UnsupportedPlatform;
     try request.validate();
     if (!configured()) return error.Unconfigured;
     if (cancelled(ctx)) return error.Cancelled;

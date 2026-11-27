@@ -17,6 +17,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -249,9 +250,14 @@ func receiveFileProgress(c net.Conn,spool string,approve approveFunc,commit comm
 		// and then the empty directory, never recursively remove foreign files.
 		if err:=os.Remove(dir);err!=nil && result==nil{result=fmt.Errorf("spool directory cleanup: %w",err)}
 	}()
-	f,err:=os.CreateTemp(dir,"payload-")
+	j,err:=newJournal(dir,o)
 	if err!=nil{return err}
-	path:=f.Name()
+	defer func(){
+		if err:=os.Remove(j.path);err!=nil && result==nil{result=fmt.Errorf("journal cleanup: %w",err)}
+	}()
+	path:=filepath.Join(dir,"payload.part")
+	f,err:=os.OpenFile(path,os.O_WRONLY|os.O_CREATE|os.O_EXCL,0600)
+	if err!=nil{return err}
 	closed:=false
 	defer func(){
 		if !closed{_ = f.Close()}
@@ -271,7 +277,12 @@ func receiveFileProgress(c net.Conn,spool string,approve approveFunc,commit comm
 	if err:=f.Sync();err!=nil{return err}
 	if err:=f.Close();err!=nil{return err}
 	closed=true
+	if err:=j.advance("verified");err!=nil{return err}
+	if err:=j.advance("committing");err!=nil{return err}
 	if err:=commit(o,path);err!=nil{_ = writeAll(c,[]byte{0});return err}
+	if err:=j.advance("committed");err!=nil{
+		return fmt.Errorf("file committed, local journal update failed: %w",err)
+	}
 	// Only a successful native no-overwrite commit permits the receipt.
 	if err:=writeAll(c,[]byte{3});err!=nil{return fmt.Errorf("committed locally, receipt delivery uncertain: %w",err)}
 	return nil

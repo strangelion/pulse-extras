@@ -197,8 +197,11 @@ class LanCopy(unittest.TestCase):
             store = root / "store"
             dest = root / "destination"
             spool = root / "spool"
-            for path in (store, dest, spool):
-                path.mkdir()
+            dest.mkdir()
+            for path in (store, spool):
+                created = subprocess.run([str(LAN), "private-init", "--store", str(path)],
+                                         capture_output=True, text=True, timeout=15)
+                self.assertEqual(created.returncode, 0, (created.stdout, created.stderr))
             handle = kernel.CreateEventW(None, True, False, None)
             if not handle:
                 raise ctypes.WinError(ctypes.get_last_error())

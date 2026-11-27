@@ -67,6 +67,7 @@ func sessionIdentity(c console, store, label string) (identity, [32]byte, error)
 	if store == "" || label == "" { return identity{}, [32]byte{}, errors.New("use both --store and --paired") }
 	root, err := storeRoot(store)
 	if err != nil { return identity{}, [32]byte{}, err }
+	if isManaged(c.ctx){if err:=auditPrivateDirectory(root);err!=nil{return identity{},[32]byte{},err}}
 	id, err := loadStoredIdentity(root)
 	if err != nil { return identity{}, [32]byte{}, err }
 	pin, err := loadPeer(root, label)
@@ -83,6 +84,7 @@ func manageTrust(c console, operation string, args []string) error {
 	if err := noExtra(f, args); err != nil { return err }
 	root, err := storeRoot(*store)
 	if err != nil { return err }
+	if isManaged(c.ctx){if err:=auditPrivateDirectory(root);err!=nil{return err}}
 	if operation == "identity-init" {
 		id, err := initStoredIdentity(root)
 		if err != nil { return err }
@@ -240,6 +242,7 @@ func receiver(ctx context.Context,c console,args []string) error {
 	if err!=nil{return err}
 	sp,err:=existingPath(*spool,true)
 	if err!=nil{return err}
+	if isManaged(ctx){if err:=auditPrivateDirectory(*spool);err!=nil{return err}}
 	sup,err:=existingPath(*supervisor,false)
 	if err!=nil{return err}
 	work,err:=existingPath(*worker,false)
@@ -326,6 +329,9 @@ func run(ctx context.Context,args []string) error {
 	}
 }
 
+type managedKey struct{}
+func isManaged(ctx context.Context)bool{v,_:=ctx.Value(managedKey{}).(bool);return v}
+
 func consoleProgress(done,total uint64){fmt.Printf("PROGRESS %d %d\n",done,total)}
 
 func main(){
@@ -333,6 +339,7 @@ func main(){
 	defer cancel()
 	managed,args,closeManaged,err:=managedContext(ctx,os.Args[1:])
 	if err==nil{
+		if len(os.Args)>1 && os.Args[1]=="--managed-cancel-handle"{managed=context.WithValue(managed,managedKey{},true)}
 		err=run(managed,args)
 	}
 	closeManaged()

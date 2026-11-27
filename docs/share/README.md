@@ -314,3 +314,23 @@ creation, non-destructive recovery inspection, progress and prompt generation.
 The Windows CLI integration also starts a receive session with an inherited
 cancellation event and verifies cancellation while awaiting pairing leaves
 no destination or spool files. This is not an actual Pulse host UI test.
+
+### Durable network phase records
+
+Each accepted network receive creates a bounded `transaction.v1` record in its
+unique spool directory before writing `payload.part`. Synchronized append-only
+phase records distinguish `receiving`, `verified`, `committing`, and
+`committed`. Read-only recovery lists the last valid phase, name, expected size
+and digest; malformed or interrupted records are unknown. Ordinary exit removes
+its own temporary objects. Abrupt exits may leave evidence. A committing or
+committed record is not an instruction to retry: check the destination first.
+Directory-entry durability on sudden power loss is not guaranteed. Recovery does
+not delete or resume files automatically, and native P1 destination-side stages
+still lack independent durable receipts. No ownership claim from a filename.
+
+Managed tasks require an existing private store and spool with the protected
+current-user-only ACL produced by `private-init`. Other policies are rejected
+rather than modified. Use a new directory for each store and spool. CLI
+sessions outside Pulse retain the documented operator-managed private-directory
+prerequisite. This is not a defense against hostile same-user or administrator
+changes or a race-free ancestor containment guarantee.
