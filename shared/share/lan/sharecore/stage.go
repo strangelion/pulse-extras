@@ -35,6 +35,7 @@ func (t Transaction) encode()[]byte{
 // open it concurrently in multiple processes. No peer-controlled spool path.
 // Opaque filenames cannot map onto destination relative paths.
 type Stage struct{
+	scheduleMu sync.Mutex
 	mu sync.Mutex
 	root string
 	tx Transaction

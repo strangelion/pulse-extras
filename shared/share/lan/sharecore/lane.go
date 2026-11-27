@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
-	"net"
 	"time"
 )
 
@@ -21,6 +20,16 @@ const laneIdle = 30*time.Second
 // Source opens an independently reviewed source for a manifest entry.
 // The adapter owns path/handle admission, identity and source change checks.
 type Source func(context.Context,uint32)(io.ReaderAt,io.Closer,error)
+
+// LaneStream is the authenticated, ordered, reliable bidirectional data stream
+// owned by the caller's transport adapter. Close must unblock I/O and release
+// stream resources; SetDeadline bounds both directions. TLS/TCP net.Conn
+// satisfies this contract. A future QUIC adapter must preserve these semantics
+// and separately verify peer identity, negotiated protocol and authorization.
+type LaneStream interface {
+	io.ReadWriteCloser
+	SetDeadline(time.Time) error
+}
 
 func writeAll(w io.Writer,data []byte)error{
 	for len(data)>0{
@@ -66,7 +75,7 @@ func NewSender(tx Transaction,m Manifest,b *Budget,open Source)(*Sender,error){
 	return &Sender{tx:tx,m:manifest,b:b,open:open},nil
 }
 
-func (s *Sender) ServeLane(ctx context.Context,conn net.Conn)error{
+func (s *Sender) ServeLane(ctx context.Context,conn LaneStream)error{
 	if conn==nil{return errors.New("missing lane adapter")}
 	defer conn.Close()
 	stop:=context.AfterFunc(ctx,func(){conn.Close()});defer stop()
@@ -110,12 +119,18 @@ func (s *Sender) ServeLane(ctx context.Context,conn net.Conn)error{
 // ReceiveLane requests the caller-assigned missing blocks, then closes.
 // A disconnect preserves durable verified receipts. No auto-publish;
 // Seal separately verifies all files and invokes a reviewed local publisher.
-func(s *Stage) ReceiveLane(ctx context.Context,conn net.Conn,blocks []Block)error{
+func(s *Stage) ReceiveLane(ctx context.Context,conn LaneStream,blocks []Block)error{
 	if conn==nil{return errors.New("missing lane connection")}
 	defer conn.Close()
 	stop:=context.AfterFunc(ctx,func(){conn.Close()});defer stop()
 	if len(blocks)==0||len(blocks)>MaxBlocks{return errors.New("invalid assigned blocks")}
 	return s.budget.run(ctx,func(buf []byte)error{
+		return s.receiveLane(ctx,conn,blocks,buf)
+	})
+}
+
+// receiveLane runs only after the caller has reserved the shared lane budget.
+func(s *Stage) receiveLane(ctx context.Context,conn LaneStream,blocks []Block,buf []byte)error{
 		if err:=conn.SetDeadline(time.Now().Add(laneIdle));err!=nil{return err}
 		header:=laneHeader(s.tx)
 		if err:=writeAll(conn,header[:]);err!=nil{return err}
@@ -133,5 +148,4 @@ func(s *Stage) ReceiveLane(ctx context.Context,conn net.Conn,blocks []Block)erro
 		}
 		if err:=writeAll(conn,[]byte{0});err!=nil{return err}
 		return status(conn,3)
-	})
 }

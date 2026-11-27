@@ -272,3 +272,18 @@ private spool ownership/quota, safe no-overwrite publisher and cleanup.
 Do not bypass the existing single-file supervisor or advertise batch support
 until those boundaries are integrated. CI and real-host acceptance remain
 required; current tests do not establish throughput or crash durability.
+
+### Bounded transfer scheduler candidate
+
+The core now exposes a reliable ordered LaneStream contract independent of
+TCP socket addresses, and a bounded missing-block scheduler. Each lane obtains
+the existing shared engine budget before connecting; disjoint assignments use
+only unverified blocks, retry known connectivity interruptions for at most five
+rounds, and recheck durable receipts between rounds. Permanent failures stop
+and drain the round. The adapter must reauthorize and authenticate each newly
+opened stream; no automatic protocol downgrade or publication is allowed.
+A successful scheduler result means locally verified blocks only, not a peer
+acknowledgement or destination commit. QUIC remains a future optional backend;
+no QUIC implementation, native batch listener or real-device acceptance is
+claimed here. Native queue, single-owner service, control-plane approval and
+safe directory publisher are still integration gates.
