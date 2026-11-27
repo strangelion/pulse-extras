@@ -281,6 +281,13 @@ review and real isolated fixture acceptance. Respect native Pulse file
 mutation and undo contracts; no universal undo, automatic snapshot, background
 write, force push or arbitrary CLI by default.
 
+The first P4A slice implements reviewed single-file Git stage and unstage
+on eligible standalone Windows checkouts. It keeps the working file, HEAD
+and unrelated staged entries intact. Git commit, Jujutsu mutations, SVN
+mutations and P4B still need their own implementation and acceptance.
+See [the P4A architecture](vcs-architecture.md#p4a-git-index-transaction-candidate)
+and [installed checks](vcs-acceptance-runbook.md#p4a-single-file-git-index-writes).
+
 **Exit:** per-operation risk/consent and capability tests, concurrent change,
 cancellation, recovery, repository integrity and actual installed acceptance.
 Leave any unapproved operation disabled and record it explicitly rather than
