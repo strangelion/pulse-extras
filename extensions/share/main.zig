@@ -13,8 +13,10 @@ const async_host = @import("pulse_async_host");
 const managed = @import("managed.zig");
 const view = @import("presentation.zig");
 const prefs = @import("preferences.zig");
+const choices = @import("choices.zig");
+const pickers = @import("pulse_pickers");
 const allocator = std.heap.page_allocator;
-const command_names = [_][]const u8{ "share-discover", "share-send", "share-receive", "share-refresh", "share-cancel", "share-identity-init", "share-identity-show", "share-peer-add", "share-peer-list", "share-peer-revoke", "share-private-init", "share-recovery-list", "share-approve", "share-decline", "share-apply-prefs", "share-receive-advertise", "share-interfaces", "share-spool-init", "share-spool-recovery" };
+const command_names = [_][]const u8{ "share-discover", "share-send", "share-receive", "share-refresh", "share-cancel", "share-identity-init", "share-identity-show", "share-peer-add", "share-peer-list", "share-peer-revoke", "share-private-init", "share-recovery-list", "share-approve", "share-decline", "share-apply-prefs", "share-receive-advertise", "share-interfaces", "share-spool-init", "share-spool-recovery", "share-use-local", "share-use-peer", "share-use-endpoint", "share-browse-destination", "share-browse-parent", "share-save-prefs" };
 const field_names = view.fields;
 
 const Instance = struct {
@@ -34,6 +36,19 @@ const Instance = struct {
     history: [2048]u8 = @splat(0),
     history_len: usize = 0,
     recorded_terminal: bool = false,
+    local_choices: choices.List = .{},
+    endpoint_choices: choices.List = .{},
+    peer_choices: choices.List = .{},
+    discovery_bind: managed.Field = .{},
+    peer_store: managed.Field = .{},
+    choices_dirty: bool = false,
+    choices_ready: bool = false,
+    selection_count: ?u32 = null,
+    picker: ?pickers.Table = null,
+    picker_request: u64 = 0,
+    picker_panel: u64 = 0,
+    picker_parent: bool = false,
+    picker_poisoned: bool = false,
     request: managed.Request = .{},
     decisions: managed.Decisions = .{},
     shown_prompt: u32 = 0,
@@ -42,6 +57,13 @@ const Instance = struct {
 
     fn close(self: *Instance) host_mod.Error!void {
         self.shown_prompt = 0;
+        if (self.picker_request != 0) {
+            const picker = self.picker orelse return error.State;
+            const cancel = picker.cancel orelse return error.Unavailable;
+            try host_mod.mapStatus(cancel(picker.context, self.picker_request));
+            self.picker_request = 0;
+        }
+        if (self.picker_poisoned) return error.State;
         if (self.panel) |*panel| {
             // Save draft inputs only if all reads succeed; no trust is created.
             var next: [field_names.len]managed.Field = @splat(.{});
@@ -89,6 +111,46 @@ const Instance = struct {
     fn rememberTerminal(self: *Instance, state: async_host.TaskState, message: []const u8) void {
         if (self.recorded_terminal) return;
         self.recorded_terminal = true;
+        if (state == .completed) {
+            switch (self.request.mode) {
+                .interfaces => {
+                    self.local_choices = choices.parse(.local, message);
+                    self.choices_dirty = true;
+                },
+                .discover => {
+                    self.endpoint_choices = choices.parse(.endpoint, message);
+                    self.discovery_bind = self.request.bind;
+                    self.choices_dirty = true;
+                },
+                .peer_list => {
+                    self.peer_choices = choices.parse(.peer, message);
+                    self.peer_store = self.request.store;
+                    self.choices_dirty = true;
+                },
+                .peer_add, .peer_revoke => {
+                    self.peer_choices = .{};
+                    self.choices_dirty = true;
+                },
+                else => {},
+            }
+        }
+        if (state != .completed) {
+            switch (self.request.mode) {
+                .interfaces => {
+                    self.local_choices = .{};
+                    self.choices_dirty = true;
+                },
+                .discover => {
+                    self.endpoint_choices = .{};
+                    self.choices_dirty = true;
+                },
+                .peer_list, .peer_add, .peer_revoke => {
+                    self.peer_choices = .{};
+                    self.choices_dirty = true;
+                },
+                else => {},
+            }
+        }
         if (self.request.mode == .interfaces or self.request.mode == .discover or self.request.mode == .peer_list or self.request.mode == .recovery_list) {
             self.inventory_len = @min(message.len, self.inventory.len);
             // Child output has already been checked as UTF-8; avoid splitting a character.
@@ -123,7 +185,7 @@ const Instance = struct {
         if (self.wake) |*wake| wake.reap();
         self.shown_prompt = 0;
         if (self.task) |*task| {
-            if (!task.occupied()) return;
+            if (!task.occupied()) return self.updateChoices();
             const state = task.poll() catch return self.status("任务状态不可用 / Task state unavailable");
             var snap: Snapshot = .{};
             const get = task.table.get orelse return;
@@ -180,6 +242,7 @@ const Instance = struct {
                     self.status("终态任务尚未释放；请重试刷新");
                     return;
                 };
+                self.updateChoices();
             }
         }
     }
@@ -196,6 +259,7 @@ const Instance = struct {
 
     fn start(self: *Instance, mode: managed.Mode, advertise: bool, use_spool: bool) host_mod.Error!void {
         if (!self.active or !managed.configured()) return error.Unavailable;
+        if (self.picker_request != 0 or self.picker_poisoned) return error.State;
         if (self.task) |*task| {
             if (task.occupied()) return error.State;
         } else {
@@ -252,6 +316,19 @@ const Instance = struct {
         self.refresh();
     }
 
+    fn savePreferences(self: *Instance) void {
+        if (self.picker_request != 0 or self.picker_poisoned) return self.status("请先结束目录选择");
+        if (self.task) |*task| {
+            if (task.occupied()) return self.status("请先结束当前任务");
+        }
+        var values: prefs.Values = .{};
+        for (prefs.indices, 0..) |index, n| {
+            self.readField(field_names[index], &values.fields[n]) catch return self.status("读取配置失败");
+        }
+        self.settings.saveValues(&values) catch return self.status("无法提交设置；请检查长度、端口或在扩展设置中重新读取");
+        self.status("已提交保存请求；请在扩展设置页查看宿主确认结果");
+    }
+
     fn applyPreferences(self: *Instance) void {
         if (!self.settings.loaded) return self.status("常用设置尚未读取，请先在扩展设置中重新读取");
         const panel = if (self.panel) |*p| p else return;
@@ -264,6 +341,114 @@ const Instance = struct {
 
     fn open(self: *Instance, count: ?u32) host_mod.Error!void {
         try self.close();
+        self.selection_count = count;
+        try self.render(false);
+        if (self.task != null) self.refresh();
+    }
+
+    fn updateChoices(self: *Instance) void {
+        if (!self.choices_dirty or self.panel == null) return;
+        self.choices_ready = false;
+        const panel = if (self.panel) |*p| p else return;
+        const reset = [_]ui.State{
+            .{ .key = abi.view("local-choice"), .value = abi.view("0") },
+            .{ .key = abi.view("endpoint-choice"), .value = abi.view("0") },
+            .{ .key = abi.view("peer-choice"), .value = abi.view("0") },
+        };
+        panel.setStates(&reset) catch return self.status("无法重置设备选项，请重新打开面板");
+        self.render(true) catch return self.status("无法更新设备选项，请重新打开面板");
+    }
+
+    fn applyChoice(self: *Instance, kind: choices.Kind) void {
+        if (self.picker_request != 0 or self.picker_poisoned) return self.status("请先结束目录选择");
+        if (!self.choices_ready or self.choices_dirty) return self.status("请先查询设备或重新打开面板");
+        if (self.task) |*task| {
+            if (task.occupied()) return self.status("请先结束当前任务");
+        }
+        const key: []const u8 = switch (kind) {
+            .local => "local-choice",
+            .endpoint => "endpoint-choice",
+            .peer => "peer-choice",
+        };
+        var field: managed.Field = .{};
+        self.readField(key, &field) catch return self.status("无法读取选择");
+        const index = std.fmt.parseInt(usize, field.slice(), 10) catch return self.status("无效选项");
+        const list = switch (kind) {
+            .local => &self.local_choices,
+            .endpoint => &self.endpoint_choices,
+            .peer => &self.peer_choices,
+        };
+        const value = list.selected(index) orelse return self.status("请选择有效条目");
+        if (kind == .endpoint) {
+            self.readField("bind", &field) catch return self.status("本机地址无效");
+            if (!std.mem.eql(u8, field.slice(), self.discovery_bind.slice())) return self.status("本机地址已改变，请重新发现");
+        }
+        if (kind == .peer) {
+            self.readField("store", &field) catch return self.status("身份目录无效");
+            if (!std.mem.eql(u8, field.slice(), self.peer_store.slice())) return self.status("身份目录已改变，请重新查询配对");
+        }
+        const target: []const u8 = switch (kind) {
+            .local => "bind",
+            .endpoint => "peer",
+            .peer => "paired",
+        };
+        const panel = if (self.panel) |*p| p else return;
+        const states = [_]ui.State{.{ .key = abi.view(target), .value = abi.view(value) }};
+        panel.setStates(&states) catch return self.status("无法应用选项");
+        self.status("已填入选项；请核对后再操作。发现结果不代表信任。");
+    }
+
+    fn pickerCompleted(user: ?*anyopaque, result: [*c]const pickers.Result) callconv(.c) void {
+        const self: *Instance = @ptrCast(@alignCast(user orelse return));
+        if (result == null or result.*.size < @sizeOf(pickers.Result) or self.picker_request == 0 or result.*.request_id != self.picker_request) return;
+        self.picker_request = 0;
+        if (!self.active or self.panel == null or self.panel.?.id != self.picker_panel) return;
+        if (result.*.outcome != pickers.accepted or result.*.path_count != 1 or result.*.paths == null) return self.status("未选择目录");
+        const path = abi.slice(result.*.paths[0]) orelse return self.status("目录结果无效");
+        var checked: managed.Field = .{};
+        checked.set(path) catch return self.status("目录过长或格式无效");
+        if (path.len < 3 or path[1] != ':' or path[2] != '\\' or !std.ascii.isAlphabetic(path[0])) return self.status("请选择本机绝对目录");
+        const panel = if (self.panel) |*p| p else return;
+        if (self.picker_parent) {
+            var store: [2048]u8 = undefined;
+            var spool: [2048]u8 = undefined;
+            const parent = std.mem.trimEnd(u8, path, "\\/");
+            const store_path = std.fmt.bufPrint(&store, "{s}\\PulseShare-identity", .{parent}) catch return self.status("路径过长");
+            const spool_path = std.fmt.bufPrint(&spool, "{s}\\PulseShare-spool", .{parent}) catch return self.status("路径过长");
+            const states = [_]ui.State{
+                .{ .key = abi.view("store"), .value = abi.view(store_path) },
+                .{ .key = abi.view("spool"), .value = abi.view(spool_path) },
+            };
+            panel.setStates(&states) catch return self.status("无法填入目录");
+            return self.status("已建议两个独立目录；请核对后分别创建，尚未写入磁盘");
+        }
+        const states = [_]ui.State{.{ .key = abi.view("destination"), .value = abi.view(path) }};
+        panel.setStates(&states) catch return self.status("无法填入接收目录");
+        self.status("已选接收目录；接收时仍会验证");
+    }
+
+    fn browse(self: *Instance, parent: bool) void {
+        if (self.picker_request != 0 or self.picker_poisoned) return self.status("已有目录选择请求");
+        if (self.task) |*task| {
+            if (task.occupied()) return self.status("请先结束当前任务");
+        }
+        const panel = self.panel orelse return;
+        const picker = self.picker orelse return self.status("此宿主未提供目录选择器，可手动填写");
+        const pick = picker.pick_folders orelse return self.status("此宿主未提供目录选择器");
+        self.picker_panel = panel.id;
+        self.picker_parent = parent;
+        const request: pickers.Request = .{ .title = abi.view(if (parent) "选择私有目录的父文件夹" else "选择接收目录"), .ok_label = abi.view("选择") };
+        var id: u64 = 0;
+        host_mod.mapStatus(pick(picker.context, &request, &pickerCompleted, self, &id)) catch return self.status("打开目录选择器失败");
+        if (id == 0) {
+            self.picker_poisoned = true;
+            return self.status("宿主未返回有效请求标识");
+        }
+        self.picker_request = id;
+    }
+
+    fn render(self: *Instance, update: bool) host_mod.Error!void {
+        const count = self.selection_count;
         var selection_buffer: [96]u8 = undefined;
         const selection = if (count) |n|
             std.fmt.bufPrint(&selection_buffer, "选中 {d} 项", .{n}) catch return error.State
@@ -282,11 +467,18 @@ const Instance = struct {
             view.button("添加配对", "share-peer-add", "primary", "state.idle"),
             view.button("撤销配对", "share-peer-revoke", "danger", "state.idle"),
         };
+        var local_options: choices.Options = undefined;
+        var endpoint_options: choices.Options = undefined;
+        var peer_options: choices.Options = undefined;
         const inventory_children = [_]ui.Node{view.bound("inventory-text", "state.inventory")};
         const device_content = [_]ui.Node{
             view.text("discovery-help", "先查看本机网络地址，再填写同一局域网的地址。发现结果不代表设备已受信任。", "body"),
             fields[0],
             view.grid("discovery-actions", &discover_actions),
+            view.select("local-options", "local-choice", "可用本机地址", self.local_choices.options(&local_options)),
+            view.button("使用所选本机地址", "share-use-local", "standard", "state.idle"),
+            view.select("peer-options", "peer-choice", "已配对设备", self.peer_choices.options(&peer_options)),
+            view.button("使用所选配对设备", "share-use-peer", "standard", "state.idle"),
             view.group("inventory-group", "最近一次查询", &inventory_children),
             fields[3],
             fields[7],
@@ -301,12 +493,15 @@ const Instance = struct {
         const transfer_content = [_]ui.Node{
             view.text("selection", selection, "caption"),
             view.text("source", if (self.selected.len != 0) self.selected.slice() else "请从文件列表右键选中一个普通文件进行发送。", "body"),
+            view.select("endpoint-options", "endpoint-choice", "发现的未验证地址", self.endpoint_choices.options(&endpoint_options)),
+            view.button("使用所选对端地址", "share-use-endpoint", "standard", "state.idle"),
             fields[1],
             view.text("transfer-help", "使用设备页填写的本机地址与已配对设备。接收时仍须核对并批准每个请求。", "caption"),
             view.grid("transfer-actions", &transfer_actions),
         };
         const setup_actions = [_]ui.Node{
             view.button("应用已保存设置", "share-apply-prefs", "standard", "state.idle"),
+            view.button("保存当前配置", "share-save-prefs", "primary", "state.idle"),
             view.button("创建身份目录", "share-private-init", "standard", "state.idle"),
             view.button("创建设备身份", "share-identity-init", "primary", "state.idle"),
             view.button("创建暂存目录", "share-spool-init", "standard", "state.idle"),
@@ -315,8 +510,10 @@ const Instance = struct {
         };
         const setup_content = [_]ui.Node{
             view.text("setup-help", "首次使用：填写新的身份目录，创建目录后创建设备身份。接收暂存目录也必须是独立的私有目录。常用设置可在 Pulse 扩展设置页保存。", "body"),
+            view.button("选择私有目录的父文件夹", "share-browse-parent", "standard", "state.idle"),
             fields[2],
             fields[4],
+            view.button("浏览接收目录", "share-browse-destination", "standard", "state.idle"),
             fields[5],
             fields[6],
             view.grid("setup-actions", &setup_actions),
@@ -331,7 +528,8 @@ const Instance = struct {
             view.tab("history-tab", "记录", &history_content),
             view.tab("setup-tab", "配置", &setup_content),
         };
-        const tabs = view.container(ui.NodeKind.tabs, "share-tabs", &tabs_children);
+        var tabs = view.container(ui.NodeKind.tabs, "share-tabs", &tabs_children);
+        tabs.state = .{ .present = 1, .value = abi.view("active-tab") };
         var bar = ui.node(ui.NodeKind.progress);
         bar.id = abi.view("transfer-progress");
         bar.binding = .{ .present = 1, .value = abi.view("state.progress") };
@@ -354,7 +552,7 @@ const Instance = struct {
             tabs,
         };
         const root = view.container(ui.NodeKind.stack, "share-root", &children);
-        var states: [field_names.len + 8]ui.State = undefined;
+        var states: [field_names.len + 12]ui.State = undefined;
         for (field_names, 0..) |key, n| {
             const value = if (self.draft_valid) self.draft[n].slice() else self.settings.saved.value(n);
             states[n] = .{ .key = abi.view(key), .value = abi.view(value) };
@@ -370,7 +568,14 @@ const Instance = struct {
             .{ .key = abi.view("inventory"), .value = abi.view(if (self.inventory_len != 0) self.inventory[0..self.inventory_len] else "尚未读取设备或目录信息") },
             .{ .key = abi.view("history"), .value = abi.view(if (self.history_len != 0) self.history[0..self.history_len] else "本次会话尚无传输记录") },
         };
-        @memcpy(states[field_names.len..], &extra);
+        @memcpy(states[field_names.len..][0..extra.len], &extra);
+        const selections = [_]ui.State{
+            .{ .key = abi.view("local-choice"), .value = abi.view("0") },
+            .{ .key = abi.view("endpoint-choice"), .value = abi.view("0") },
+            .{ .key = abi.view("peer-choice"), .value = abi.view("0") },
+            .{ .key = abi.view("active-tab"), .value = abi.view("0") },
+        };
+        @memcpy(states[field_names.len + extra.len ..], &selections);
         var declared: [command_names.len]abi.StringView = undefined;
         for (command_names, 0..) |name, n| declared[n] = abi.view(name);
         var tree = std.mem.zeroes(ui.Tree);
@@ -380,14 +585,22 @@ const Instance = struct {
         tree.state_count = states.len;
         tree.commands = &declared;
         tree.command_count = declared.len;
+        if (update) {
+            const panel = if (self.panel) |*p| p else return error.State;
+            try panel.update(&tree);
+            self.choices_dirty = false;
+            self.choices_ready = true;
+            return;
+        }
         self.panel = try ui.Panel.open(self.host, "Pulse Share", &tree);
+        self.choices_dirty = false;
+        self.choices_ready = true;
         for (command_names) |name| {
             _ = self.panel.?.subscribeCommand(name, &onCommand, self) catch |err| {
                 self.close() catch |close_err| diag.status("share-panel-close", @intFromError(close_err));
                 return err;
             };
         }
-        if (self.task != null) self.refresh();
     }
 };
 
@@ -418,6 +631,12 @@ fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv
     const name = abi.slice(command) orelse return;
     if (std.mem.eql(u8, name, "share-refresh")) return self.refresh();
     if (std.mem.eql(u8, name, "share-apply-prefs")) return self.applyPreferences();
+    if (std.mem.eql(u8, name, "share-save-prefs")) return self.savePreferences();
+    if (std.mem.eql(u8, name, "share-use-local")) return self.applyChoice(.local);
+    if (std.mem.eql(u8, name, "share-use-endpoint")) return self.applyChoice(.endpoint);
+    if (std.mem.eql(u8, name, "share-use-peer")) return self.applyChoice(.peer);
+    if (std.mem.eql(u8, name, "share-browse-parent")) return self.browse(true);
+    if (std.mem.eql(u8, name, "share-browse-destination")) return self.browse(false);
     if (std.mem.eql(u8, name, "share-cancel")) {
         self.shown_prompt = 0;
         if (self.task) |*task| {
@@ -515,6 +734,11 @@ fn activate(raw: ?*anyopaque) callconv(.c) abi.Status {
     self.active = true;
     if (self.wake) |*wake| wake.enabled.store(true, .release);
     self.settings.open() catch |err| diag.status("share-settings-open", @intFromError(err));
+    if (self.host.queryOptional(pickers.Table, pickers.name, pickers.version)) |optional| {
+        if (optional) |picker| {
+            if (picker.pick_folders != null and picker.cancel != null) self.picker = picker;
+        }
+    } else |_| {}
     return abi.ok;
 }
 

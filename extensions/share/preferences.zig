@@ -8,7 +8,7 @@ const managed = @import("managed.zig");
 const view = @import("presentation.zig");
 const diag = @import("pulse_diagnostics");
 
-const indices = [_]usize{ 0, 2, 4, 5, 6 };
+pub const indices = [_]usize{ 0, 2, 4, 5, 6 };
 const key = "share.preferences.v1";
 const limit = 1024;
 const commands = [_][]const u8{ "share-prefs-load", "share-prefs-save" };
@@ -176,13 +176,21 @@ pub const Settings = struct {
             if (needed >= bytes.len) return self.status("输入过长");
             values.fields[i].set(bytes[0..needed]) catch return self.status("输入格式无效");
         }
+        self.saveValues(&values) catch return self.status("保存请求失败；检查长度、端口或重新读取设置");
+    }
+
+    // The calling panel may supply a reviewed draft. The same versioned
+    // resource operation owns the write; no independent settings file.
+    pub fn saveValues(self: *Settings, values: *const Values) !void {
+        if (!self.active or !self.loaded or self.pending != 0 or self.poisoned) return error.State;
         var data: [limit]u8 = undefined;
-        const encoded = values.encode(&data) catch return self.status("常用设置总长度超过 1024 字节");
-        _ = Values.decode(encoded) catch return self.status("端口须为 0–65535");
-        const resources = self.resources orelse return;
+        const encoded = try values.encode(&data);
+        _ = try Values.decode(encoded);
+        const resources = self.resources orelse return error.Unavailable;
         var id: u64 = 0;
         const result = resources.settings_set.?(resources.context, abi.view(key), abi.view(encoded), 0, self.version, &completed, self, &id);
         self.admitted(result, id, raw.PULSE_RESOURCES_SETTINGS_SET);
+        if (result != abi.ok or id == 0) return error.State;
     }
 
     fn completed(user: ?*anyopaque, reply: [*c]const raw.PulseResourcesReply) callconv(.c) void {

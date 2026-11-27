@@ -387,3 +387,23 @@ admission or no-overwrite commit policy. The settings permission is limited to
 package-owned preferences; users must explicitly re-accept it in the isolated
 updated package. Do not add unsupported manifest metadata or claim that an
 unsigned local package is a verified publisher release.
+
+### Selectable device queries and native folder picker
+
+The device page keeps separate bounded choices for local interfaces and saved
+peers; the transfer page offers discovered numeric endpoints. Each list starts
+with an explicit empty selection. The user must select and apply a value; no
+connection or trust is granted by a discovery response. Changing the local
+bind or identity directory invalidates the corresponding old query selection.
+Successful pairing changes invalidate the saved-peer list until refreshed.
+Use the native folder picker on supported hosts to select a receive directory
+or suggest two separate private directories beneath an existing local parent.
+The latter only fills fields; creation remains explicitly requested, and
+existing directories are not modified. Manual entry remains available.
+
+The main configuration tab also submits its reviewed defaults using the same
+versioned preference write operation. Save admission is not completion: the
+embedded settings page reports the host's actual confirmation or conflict.
+A failed inventory query clears that category of choices, and manual refresh
+can retry a failed model update. The picker API is optional and does not
+replace the original explicit path validation. Session-only history remains.

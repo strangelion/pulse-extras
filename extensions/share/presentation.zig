@@ -59,6 +59,16 @@ pub fn button(label: []const u8, command: []const u8, kind: []const u8, enabled:
     return n;
 }
 
+pub fn select(id: []const u8, state: []const u8, label: []const u8, options: []const abi.StringView) ui.Node {
+    var n = ui.node(ui.NodeKind.select);
+    n.id = abi.view(id);
+    n.text = .{ .present = 1, .value = abi.view(label) };
+    n.state = .{ .present = 1, .value = abi.view(state) };
+    n.options = .{ .present = 1, .data = options.ptr, .count = @intCast(options.len) };
+    n.enabled_binding = .{ .present = 1, .value = abi.view("state.idle") };
+    return n;
+}
+
 pub const FieldNodes = struct {
     children: [2]ui.Node = undefined,
 

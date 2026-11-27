@@ -60,3 +60,14 @@ the earlier 9cd77d2 screenshot or CI results.
 Verify independent creation of identity and spool directories, retained query
 results, and bounded session history. History is not persistent across plugin
 restart. A discovery result must still be entered as an explicit reviewed address.
+
+Check selectable local addresses, discovered endpoints and saved peers; ensure
+selection alone never initiates a network operation. Change the bind/store and
+verify old query choices cannot be applied. Test cancel and close during native
+folder selection, and verify suggested private paths are not created until
+explicitly requested.
+
+Save defaults from the main panel and confirm the host's result in its
+settings page; reopen the extension and verify values are retained. Test a
+failed query followed by a successful query and confirm stale entries are not
+selectable. Native folder picker fallback remains manual on unsupported hosts.
