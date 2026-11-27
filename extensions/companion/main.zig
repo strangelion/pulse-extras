@@ -101,6 +101,7 @@ const Instance = struct {
     picker_request: u64 = 0,
     fallback_pick: bool = false,
     recovery_scan: bool = false,
+    remove_after_scan: ?u64 = null,
     work_recovery_report: ?library.RecoverySnapshot = null,
     recovery_report: ?library.RecoverySnapshot = null,
     quarantine_offset: usize = 0,
@@ -163,7 +164,6 @@ const Content = struct {
     // Maximum market view includes the preview diagnostic, manual task
     // collection, queue, 12 results and selected detail simultaneously.
     children: [36]ui.Node = undefined,
-    removal_toolbar: [2]ui.Node = undefined,
     import_toolbar: [3]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
@@ -189,7 +189,7 @@ const Content = struct {
     selected_profile_id: [64]u8 = undefined,
     selected_default: [96]u8 = undefined,
     selected_alternate: [96]u8 = undefined,
-    selected_toolbar: [2]ui.Node = undefined,
+    selected_toolbar: [3]ui.Node = undefined,
     profile_launch: [2]ui.Node = undefined,
     profile_group: [5]ui.Node = undefined,
     local_detail_nodes: [4]ui.Node = undefined,
@@ -952,7 +952,9 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                         const edit_enabled = config.runtime_sha256.len == 64 and instance.task_id == 0 and !runtimeBusy(instance) and instance.tasks != null and instance.dispatch != null;
                         content.selected_toolbar[0] = action("library.start", "启动桌宠（默认配置）", commands[15], launch_enabled);
                         content.selected_toolbar[1] = action("library.load-alternate", "读取备用配置", commands[90], row.alternate_profile != null and edit_enabled);
-                        content.children[count] = horizontal("library.selected-toolbar", &content.selected_toolbar);
+                        const can_show_remove = config.runtime_sha256.len == 64 and config.helper_sha256.len == 64 and instance.dialogs != null;
+                        content.selected_toolbar[2] = action("library.remove", "移除素材…", commands[23], maintenanceIdle(instance) and !instance.search_pending);
+                        content.children[count] = horizontal("library.selected-toolbar", content.selected_toolbar[0..if (can_show_remove) @as(usize, 3) else 2]);
                         count += 1;
                         content.preference_toolbar[0] = inputField("library.tag", "标签", "输入标签（最多 64 字节）");
                         content.preference_toolbar[1] = action("library.favorite-toggle", if (row.favorite) "取消收藏" else "收藏", commands[16], edit_enabled);
@@ -1000,10 +1002,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     count += 1;
                 }
                 if (librarySelectedIndex(instance) != null and instance.dialogs != null and config.runtime_sha256.len == 64 and config.helper_sha256.len == 64) {
-                    const enabled = canMaintain(instance);
-                    content.removal_toolbar[0] = action("library.remove", "隔离移除指定素材", commands[23], enabled);
-                    content.removal_toolbar[1] = action("library.restore", "恢复中断移除", commands[24], enabled);
-                    content.children[count] = horizontal("library.removal-toolbar", &content.removal_toolbar);
+                    content.children[count] = action("library.restore", "恢复中断移除", commands[24], canMaintain(instance));
                     count += 1;
                 }
             }
@@ -1218,6 +1217,7 @@ fn refresh(instance: *Instance) void {
                 diag.event("companion-market-fallback-ok");
             } else if (instance.section == .library and instance.library_loaded and !instance.library_table_rejected) {
                 instance.library_table_rejected = true;
+                instance.remove_after_scan = null;
                 instance.library_selected = null;
                 instance.library_detail = null;
                 fill(instance, &content, &tree);
@@ -1880,6 +1880,7 @@ fn applySearch(instance: *Instance) void {
 }
 
 fn clearLibrarySelection(instance: *Instance) void {
+    instance.remove_after_scan = null;
     instance.library_selected = null;
     instance.library_detail = null;
     if (instance.panel) |*panel| {
@@ -1972,8 +1973,14 @@ fn onLibrarySelectionChanged(user: ?*anyopaque, panel: u64, batch: [*c]const raw
         if (!std.mem.eql(u8, abi.slice(change.key) orelse continue, "library.asset-id")) continue;
         instance.library_selection_revision = change.revision;
         const value = abi.slice(change.value) orelse "";
-        if (value.len > 20) return;
+        if (value.len > 20) {
+            instance.remove_after_scan = null;
+            return;
+        }
         const id = std.fmt.parseInt(u64, value, 10) catch 0;
+        if (instance.remove_after_scan) |pending| if (pending != id) {
+            instance.remove_after_scan = null;
+        };
         // CommitValue runs on the UI owner thread. Confirm the live state;
         // never perform an asset mutation from a selection notification.
         var current: [32]u8 = undefined;
@@ -2204,6 +2211,8 @@ fn pollLibrary(instance: *Instance) void {
     }
     if (instance.recovery_scan) {
         instance.recovery_scan = false;
+        const remove_id = instance.remove_after_scan;
+        instance.remove_after_scan = null;
         instance.quarantine_offset = 0;
         const done = instance.work_done.load(.acquire);
         if (instance.task_state == raw.PULSE_TASK_COMPLETED and done and instance.work_error == null and instance.work_recovery_report != null) {
@@ -2214,6 +2223,13 @@ fn pollLibrary(instance: *Instance) void {
             instance.library_status = if (instance.task_state == raw.PULSE_TASK_CANCELLED) "恢复扫描已取消" else if (done) if (instance.work_error) |err| @errorName(err) else "恢复扫描结果无效" else "恢复扫描未完成";
         }
         instance.work_recovery_report = null;
+        if (remove_id != null and instance.recovery_report != null) {
+            if (!instance.search_pending and canMaintain(instance)) {
+                showRemoval(instance, .quarantine, remove_id);
+                return;
+            }
+            instance.library_status = "素材维护条件已变化；请重新选择后移除";
+        }
         refresh(instance);
         return;
     }
@@ -2932,8 +2948,24 @@ fn cancelImport(instance: *Instance) void {
     refresh(instance);
 }
 
+fn maintenanceIdle(instance: *const Instance) bool {
+    return instance.active and instance.library_loaded and instance.tasks != null and instance.dispatch != null and instance.dialogs != null and instance.task_id == 0 and !runtimeBusy(instance) and instance.import_dialog == 0 and instance.removal_dialog == 0 and instance.removal_request == null and instance.picker_request == 0 and !instance.fallback_pick and !instance.recovery_scan and instance.preference_edit == null and instance.import_request == null;
+}
+
 fn canMaintain(instance: *const Instance) bool {
-    return instance.active and instance.library_loaded and instance.recovery_report != null and instance.tasks != null and instance.dispatch != null and instance.dialogs != null and instance.task_id == 0 and !runtimeBusy(instance) and instance.import_dialog == 0 and instance.removal_dialog == 0 and instance.removal_request == null and instance.picker_request == 0 and !instance.fallback_pick and !instance.recovery_scan and instance.preference_edit == null and instance.import_request == null;
+    return instance.recovery_report != null and maintenanceIdle(instance);
+}
+
+fn requestSelectedRemoval(instance: *Instance) void {
+    if (config.runtime_sha256.len != 64 or config.helper_sha256.len != 64 or !maintenanceIdle(instance) or instance.search_pending) return;
+    const id = currentLibraryId(instance) orelse {
+        instance.library_status = "请先选择当前素材";
+        refresh(instance);
+        return;
+    };
+    instance.remove_after_scan = id;
+    startRecovery(instance);
+    if (instance.task_id == 0) instance.remove_after_scan = null;
 }
 
 fn confirmedRemoval(status: abi.Status, button: abi.StringView) bool {
@@ -2963,7 +2995,7 @@ fn removalClosed(user: ?*anyopaque, dialog: u64, status: abi.Status, button: abi
     refresh(instance);
 }
 
-fn showRemoval(instance: *Instance, action_kind: library.RemovalAction) void {
+fn showRemoval(instance: *Instance, action_kind: library.RemovalAction, expected_id: ?u64) void {
     if (config.runtime_sha256.len != 64 or !canMaintain(instance)) return;
     const id = if (action_kind == .purge) blk: {
         var bytes: [32]u8 = undefined;
@@ -2971,6 +3003,11 @@ fn showRemoval(instance: *Instance, action_kind: library.RemovalAction) void {
         break :blk std.fmt.parseInt(u64, value, 10) catch 0;
     } else currentLibraryId(instance) orelse {
         instance.library_status = "请先选择当前素材";
+        refresh(instance);
+        return;
+    };
+    if (expected_id) |expected| if (expected != id) {
+        instance.library_status = "所选素材已变化；请重新选择后移除";
         refresh(instance);
         return;
     };
@@ -3405,6 +3442,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         switch (n) {
             0, 1, 2, 3 => {
                 instance.section = @fromBackingInt(@intCast(n));
+                if (instance.section != .library) instance.remove_after_scan = null;
                 diag.status("companion-navigation", n);
                 if (instance.section != .market) {
                     instance.market_image_test = false;
@@ -3455,9 +3493,9 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
             20 => cancelImport(instance),
             21 => browseImport(instance),
             22 => startRecovery(instance),
-            23 => showRemoval(instance, .quarantine),
-            24 => showRemoval(instance, .restore_interrupted),
-            27 => showRemoval(instance, .purge),
+            23 => requestSelectedRemoval(instance),
+            24 => showRemoval(instance, .restore_interrupted, null),
+            27 => showRemoval(instance, .purge, null),
             28 => clearSearch(instance),
             29 => manualRunningSearch(instance, false),
             30 => manualRunningSearch(instance, true),
@@ -3544,6 +3582,7 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
 
 fn close(instance: *Instance) host_mod.Error!void {
     instance.active = false;
+    instance.remove_after_scan = null;
     instance.library_render_ok = false;
     instance.library_selected = null;
     instance.policy_write_pending = false;
@@ -4010,6 +4049,36 @@ test "removal confirmation is explicit and cancellation clears copied request" {
     try std.testing.expect(instance.removal_request == null);
     try std.testing.expectEqual(@as(u64, 0), instance.task_id);
     try std.testing.expect(!canMaintain(instance));
+}
+
+test "a changed selection discards the pending removal scan target" {
+    const instance = try std.testing.allocator.create(Instance);
+    defer std.testing.allocator.destroy(instance);
+    instance.* = .{
+        .host = undefined,
+        .active = true,
+        .page = 9,
+        .library_selection_token = 1,
+        .task_id = 12,
+        .recovery_scan = true,
+        .remove_after_scan = 3,
+    };
+    var change: raw.PulseUiStateChange = .{
+        .key = abi.view("library.asset-id"),
+        .value = abi.view("3"),
+        .revision = 1,
+        .source_mask = @intCast(raw.PULSE_UI_STATE_USER),
+    };
+    var batch: raw.PulseUiStateBatch = .{ .revision = 1, .changes = &change, .count = 1 };
+    onLibrarySelectionChanged(instance, 9, &batch);
+    try std.testing.expectEqual(@as(?u64, 3), instance.remove_after_scan);
+    change.value = abi.view("4");
+    change.revision = 2;
+    batch.revision = 2;
+    onLibrarySelectionChanged(instance, 9, &batch);
+    try std.testing.expect(instance.remove_after_scan == null);
+    try std.testing.expect(instance.recovery_scan);
+    try std.testing.expect(instance.removal_request == null);
 }
 
 test "import toolbar initializes every visible node for both picker modes" {
