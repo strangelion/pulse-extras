@@ -34,11 +34,11 @@ pub const Receive = struct {
     received_bytes: u64 = 0,
     hash: Sha256,
 
-    pub fn init(size: u64, digest: Digest) error{TooLarge}!Receive {
+    pub fn init(size: u64, expected: Digest) error{TooLarge}!Receive {
         if (size > max_file_bytes) return error.TooLarge;
         return .{
             .expected_bytes = size,
-            .expected_digest = digest,
+            .expected_digest = expected,
             .hash = Sha256.init(.{}),
         };
     }

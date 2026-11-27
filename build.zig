@@ -556,6 +556,41 @@ pub fn build(b: *std.Build) void {
     // Standalone companion uses the existing GNU Windows native ABI.
     // Explicit step: no demo in the default production DLL install.
     const pet_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu });
+
+    // Explicit Share worker/harness only. No automatic network listener,
+    // normal install or release registration.
+    const share_worker_root = b.createModule(.{
+        .root_source_file = b.path("shared/share/worker.zig"),
+        .target = pet_target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    share_worker_root.addCSourceFiles(.{
+        .files = &.{"shared/share/worker_win32.c"},
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
+    });
+    share_worker_root.linkSystemLibrary("shell32", .{});
+    const share_worker = b.addExecutable(.{ .name = "pulse-share-worker", .root_module = share_worker_root });
+    const share_local_root = b.createModule(.{
+        .target = pet_target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    share_local_root.addCSourceFiles(.{
+        .files = &.{
+            "shared/share/local_copy_win32.c",
+            "shared/process/image_win32.c",
+            "shared/process/job_win32.c",
+        },
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
+    });
+    for ([_][]const u8{ "shell32", "bcrypt", "advapi32" }) |lib|
+        share_local_root.linkSystemLibrary(lib, .{});
+    const share_local = b.addExecutable(.{ .name = "pulse-share-local", .root_module = share_local_root });
+    const share_local_step = b.step("share-local", "Build the isolated Share worker and local developer harness");
+    share_local_step.dependOn(&b.addInstallArtifact(share_worker, .{}).step);
+    share_local_step.dependOn(&b.addInstallArtifact(share_local, .{}).step);
+
     var pet_modules = Modules.add(b, pet_target, optimize, vcs_test_config, companion_config);
     const pet_root = b.createModule(.{
         .root_source_file = b.path("shared/companion/pet_demo.zig"),

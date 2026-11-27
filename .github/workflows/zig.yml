@@ -167,6 +167,17 @@ jobs:
       - name: Build experimental Share UI
         if: needs.scope.outputs.level == 'full'
         run: zig build share-dev -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
+      - name: Build isolated Share local transport
+        if: needs.scope.outputs.level == 'full'
+        run: zig build share-local -Doptimize=ReleaseSafe --summary all
+      - name: Real Windows Share worker integration
+        if: runner.os == 'Windows' && needs.scope.outputs.level == 'full'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu tests/share/worker_fixture_win32.c -o zig-out/bin/pulse-share-worker-fixture.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/share/test_local_copy.py zig-out/bin/pulse-share-local.exe zig-out/bin/pulse-share-worker.exe zig-out/bin/pulse-share-worker-fixture.exe
       - name: Verify forge Windows ABI constants and layouts
         if: runner.os == 'Windows' && (needs.scope.outputs.level == 'vcs' || needs.scope.outputs.level == 'full')
         shell: pwsh

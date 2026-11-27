@@ -32,10 +32,10 @@ const Instance = struct {
             "Selection unavailable / 选中项不可用";
         var children = [_]ui.Node{
             ui.text("Pulse Share / 文件共享"),
-            ui.text("Experimental foundation / 开发中：网络功能尚未接入"),
+            ui.text("Local worker foundation / 本地传输核心开发中"),
             ui.text(selection),
-            ui.text("No listener, remote access or file transfer is enabled."),
-            ui.text("尚未开启监听、远程访问或文件传输。"),
+            ui.text("Network and UI transfer are not enabled; local harness is separate."),
+            ui.text("未启用网络及界面传输；本地测试工具独立运行。"),
         };
         const ids = [_][]const u8{ "title", "status", "selection", "notice", "notice-zh" };
         for (&children, ids) |*child, id| child.id = abi.view(id);

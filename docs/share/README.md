@@ -1,8 +1,9 @@
 # Pulse Share — development plan
 
-Status: P0 foundation only. This branch does not yet provide network file
-sharing. Do not publish or add a release.toml until the actual transport,
-pairing, staging and host acceptance gates pass.
+Status: P1 local worker implementation; compilation and real Windows integration
+are CI gates, not yet claimed passed. This branch does not provide network file
+sharing. Do not publish or add a release.toml until transport, pairing and
+host acceptance gates pass.
 
 ## Scope and architecture
 
@@ -27,9 +28,11 @@ listeners, UPnP, external relay or unrestricted drive exposure.
   bounded single-file receive state, approval, ordered chunks, streaming
   SHA-256, terminal verification and commit receipt. Tests exercise the
   abstract contract only. No real files are opened or transferred.
-- P1: worker executable and supervised lifetime; authenticated local IPC;
-  isolated local staging, no-overwrite commit, cleanup and failure reporting.
-  Build/launch test fixtures and mock host callbacks before LAN use.
+- P1 (implemented, awaiting CI and host acceptance): worker executable,
+  supervised single-process job, inherited handle-only local IPC, owner-only
+  same-directory staging, independent hash verification, no-overwrite commit
+  and cleanup after worker failure. Explicit developer harness only; UI never
+  starts a worker yet. No named endpoints or production signing keys.
 - P2: TLS transport, explicit pairing, IPv4/IPv6 discovery, user-confirmed
   file offers and live two-PC acceptance. Discovery is opt-in. Keep identity
   private keys separate from release signing keys.
@@ -64,6 +67,59 @@ Open "Pulse Share / 文件共享" from the command menu. The panel explicitly sa
 network functionality is unavailable. No sockets, discovery, file writes,
 or production key are used by this stage.
 
-Before moving to P1: confirm Windows and Linux unit regression, cross-build
-the DLL, test entry/activation/open/close/disable and multiple host windows.
-Real-host acceptance remains outstanding.
+## P1 local worker contract
+
+    zig build share-local -Doptimize=ReleaseSafe
+
+Explicit Windows x64 GNU target, produces pulse-share-worker.exe and
+pulse-share-local.exe under zig-out/bin. The native developer harness owns the
+file handles and creates a single-use process with a 64 MiB job commitment
+limit and kill-on-close. The worker has no network listener or filename
+request, receives exactly five explicitly inherited handles (read-only source,
+stage read/write, request read, reply write, cancellation event) and one
+fixed-size request. Handle inheritance is a local capability boundary for
+this single-use process, not a sandbox against same-user or elevated code.
+The digest-pinned absolute worker image stays open through launch. The parent
+opens the worker suspended, assigns the job before resume, waits off the
+Pulse UI thread and drains before reporting success. The worker uses the
+Zig Receive state machine after each successful staged write; only the
+parent publishes. Child output is a bounded fixed-size status/byte receipt.
+
+Local use, only with explicitly chosen files and a disposable target:
+
+    $worker = (Resolve-Path zig-out/bin/pulse-share-worker.exe).Path
+    $digest = (Get-FileHash $worker -Algorithm SHA256).Hash.ToLowerInvariant()
+    & ./zig-out/bin/pulse-share-local.exe --confirm-local-copy $worker $digest (Resolve-Path ./sample.bin).Path (Resolve-Path ./test-destination).Path received.bin
+
+The target directory must already exist, be a local fixed drive, and use
+canonical DOS paths. The parent opens a regular single-link source without
+write/delete sharing, rejects unsupported entries and reparse points, hashes
+the source, creates a unique same-directory owner-only staging file with
+CREATE_NEW and sends the already-open file handles. Worker writes at most
+256 KiB per chunk and verifies final size/hash. Parent independently hashes
+the stage, rechecks directory and file path identities, and performs a
+no-overwrite handle rename. A committed file keeps its owner-only ACL.
+The parent never deletes the source or uses a peer-supplied absolute path.
+No alternate data streams are copied; this is a normal data-file copy only.
+Path/handle checks do not defend against a malicious same-user process or
+hostile ancestor mutations. The user must choose a trusted local directory.
+No UNC, removable media, automatic directory traversal or overwrites.
+
+Ctrl+C requests cooperative cancellation between chunks, then the parent
+drains the child job after a bounded grace period. The five-minute child
+wait is a provisional local-harness deadline; disk I/O and parent pre/post
+hashing are not globally deadline-bounded. Cancellation before commit
+prevents publication; once the rename succeeds it is not rolled back.
+Failures clean up the parent-owned staging handle; cleanup failures are
+reported without deleting by pathname. A hard parent/power failure may
+leave a unique .pulse-share-*.part file. Do not auto-delete by glob; persistent
+ownership receipts and restart recovery are a later gate, before enabling UI
+transfers. There is no promise of power-fail durability.
+
+CI: full regression builds the DLL and local worker on Linux and Windows;
+Windows invokes real parent/child integration for multi-chunk Unicode files,
+empty files, existing target, bad worker digest, worker exit, invalid names
+and hard-linked source. Manual cancellation, deliberate disk-full and
+real-host lifecycle tests remain outstanding. P2 must connect the DLL through
+a reviewed lifecycle/IPC controller and complete actual two-PC acceptance;
+no network functionality or production packaging is enabled here.
