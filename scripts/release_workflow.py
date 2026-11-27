@@ -7,11 +7,13 @@ not real-host lifecycle on the locally installed newer Pulse.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from urllib.request import urlopen
@@ -137,6 +139,46 @@ def install_host(work: Path, pin: dict) -> Path:
     return pulse
 
 
+def stage_cargo_helper(source: Path, destination: Path) -> str:
+    """Copy a just-built, trusted Cargo output into an independent package file.
+
+    Cargo can hardlink its top-level executable to a fingerprinted build
+    artifact. Admit this only at the private compiler-output boundary.
+    The normal package admission code still rejects all hardlinked files.
+    """
+    if source.name != "pulse-share-pake.exe" or destination.name != source.name:
+        raise ValueError("unexpected Cargo helper path")
+    def inspect():
+        info = source.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink < 1
+                or getattr(info, "st_file_attributes", 0) & 0x400
+                or not 0 < info.st_size <= common.FILE_MAX):
+            raise RuntimeError("invalid freshly built Cargo helper")
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_nlink)
+    before = inspect()
+    digest = hashlib.sha256()
+    total = 0
+    created = False
+    try:
+        with source.open("rb") as src, destination.open("xb") as dst:
+            created = True
+            while chunk := src.read(64 * 1024):
+                total += len(chunk)
+                if total > common.FILE_MAX:
+                    raise RuntimeError("Cargo helper exceeds size limit")
+                digest.update(chunk)
+                dst.write(chunk)
+        expected = digest.hexdigest()
+        if (total != before[2] or inspect() != before
+                or common.sha256(destination, common.FILE_MAX) != expected):
+            raise RuntimeError("Cargo helper changed during staging")
+        return expected
+    except BaseException:
+        if created:
+            destination.unlink(missing_ok=True)
+        raise
+
+
 def build_share(prefix: Path, flags: list[str]) -> None:
     """Build exact Windows helpers before compiling their digests into Share."""
     binaries = prefix / "bin"
@@ -168,7 +210,7 @@ def build_share(prefix: Path, flags: list[str]) -> None:
     subprocess.run(["cargo", "build", "--locked", "--offline", "--release", "--target", target],
                    cwd=pake, env=cargo_env, check=True, timeout=600)
     src = cargo_target / target / "release/pulse-share-pake.exe"
-    common.copy_checked(src, binaries / src.name, common.sha256(src, common.FILE_MAX))
+    stage_cargo_helper(src, binaries / src.name)
     subprocess.run([sys.executable, "collect_notices.py",
                     str(binaries / "pulse-share-pake-notices.txt")],
                    cwd=pake, env=cargo_env, check=True, timeout=180)

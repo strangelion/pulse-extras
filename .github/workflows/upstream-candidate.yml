@@ -1,13 +1,18 @@
-name: Upstream candidate compatibility
+name: Extension test package
 
 on:
   workflow_dispatch:
     inputs:
       request:
-        description: 'Unsigned candidate selection, e.g. share=0.1.0-rc.1 or all=0.0.0-upstream'
+        description: 'Test package selection, e.g. share=0.1.0-rc.1 or all=0.0.0-upstream'
         type: string
         required: false
         default: all=0.0.0-upstream
+      run_regression:
+        description: 'Run full regression before packaging (always enabled for SDK validation)'
+        type: boolean
+        required: false
+        default: false
   pull_request:
     branches: [main]
     paths:
@@ -25,12 +30,16 @@ concurrency:
 
 jobs:
   regression:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_regression }}
     uses: ./.github/workflows/zig.yml
     permissions:
       contents: read
 
   package:
     needs: regression
+    # Manual packaging may explicitly omit regression; failures/cancellations
+    # in a requested regression must never be treated as a pass.
+    if: ${{ !cancelled() && (needs.regression.result == 'success' || (github.event_name == 'workflow_dispatch' && !inputs.run_regression && needs.regression.result == 'skipped')) }}
     runs-on: windows-latest
     timeout-minutes: 50
     env:
@@ -75,6 +84,15 @@ jobs:
       - name: Package selected extensions (never publish)
         shell: pwsh
         run: python scripts/release_workflow.py candidate --request "$env:CANDIDATE_REQUEST" --out .local/upstream-candidates
+      - name: Record verification scope
+        shell: pwsh
+        env:
+          REGRESSION_RESULT: ${{ needs.regression.result }}
+        run: |
+          "## Unsigned test packages" >> $env:GITHUB_STEP_SUMMARY
+          "Source: $env:GITHUB_SHA" >> $env:GITHUB_STEP_SUMMARY
+          "Regression in this run: $env:REGRESSION_RESULT" >> $env:GITHUB_STEP_SUMMARY
+          "Official package verification is required. Real-host acceptance, signing and publication are not performed." >> $env:GITHUB_STEP_SUMMARY
       - name: Preserve candidate packages
         uses: actions/upload-artifact@v4
         with:

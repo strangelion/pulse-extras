@@ -566,7 +566,7 @@ The fixture script is non-destructive and does not access a real clipboard.
 
 ### Action-built acceptance package
 
-Reuse the existing **Upstream candidate compatibility** workflow
+Reuse the existing **Extension test package** workflow
 (upstream-candidate.yml), select feature/share and enter
 share=0.1.0-rc.1. Its upstream-candidate-packages artifact contains
 the official verified, unsigned Share package, manifest, release evidence
@@ -580,3 +580,11 @@ The existing Extension release workflow supports the share product after
 merge to main. Share builds all four hash-bound helpers and both notices
 only when selected. Existing signing/publication/stable acceptance gates
 remain unchanged. No additional packaging workflow is introduced.
+
+The workflow filename remains upstream-candidate.yml for existing links and SDK automation.
+For a manually requested test package, run_regression defaults to false (package-only).
+Enable it when a full regression is required. SDK update dispatches explicitly enable
+full regression, and SDK pull requests always run full regression. A failed requested
+regression blocks packaging. All packages still undergo official format verification
+and digest checks; skipping regression is not proof of passing regression.
+The existing upstream-candidate-packages artifact name is retained for compatibility.
