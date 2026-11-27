@@ -90,6 +90,18 @@ class LocalCopy(unittest.TestCase):
         self.invoke("existing.bin", worker=CORRUPT, expected=4)
         self.assertEqual(target.read_bytes(), b"original")
 
+    def test_verified_copy_requires_original_digest(self):
+        self.source.write_bytes(b"actual network content")
+        args = [str(SUPERVISOR), "--confirm-verified-copy", str(WORKER), sha(WORKER),
+                str(self.source), str(self.destination), "verified.bin"]
+        result = subprocess.run([*args, "0" * 64], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 4, (result.stdout, result.stderr))
+        self.assertFalse(list(self.destination.iterdir()))
+        result = subprocess.run([*args, sha(self.source)], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.assertEqual(sha(self.destination / "verified.bin"), sha(self.source))
+        self.assertFalse(list(self.destination.glob(".pulse-share-*.part")))
+
     def test_invalid_destination_names(self):
         self.source.write_bytes(b"test")
         for name in ("..", "..\\escape.bin", "CON.txt", "foo:stream", "a. ", "NUL"):

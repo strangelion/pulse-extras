@@ -36,7 +36,9 @@ type identity struct {
 	pin [32]byte
 }
 
-func newIdentity() (identity, error) {
+func newIdentity() (identity, error) { return createIdentity(2*time.Hour) }
+
+func createIdentity(lifetime time.Duration) (identity, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil { return identity{}, err }
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
@@ -45,7 +47,7 @@ func newIdentity() (identity, error) {
 	now := time.Now()
 	template := &x509.Certificate{
 		SerialNumber: serial, NotBefore: now.Add(-time.Minute),
-		NotAfter: now.Add(2*time.Hour),
+		NotAfter: now.Add(lifetime),
 		KeyUsage: x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,

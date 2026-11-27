@@ -141,8 +141,8 @@ packaging remain disabled.
 The native DLL and P1 staging remain Zig/C. For the network executable use
 Go 1.27.4 (pinned CI toolchain), standard library only, CGO disabled. This
 deliberately avoids implementing TLS from scratch or bundling a browser.
-The Go module has no third-party dependencies. No persistent identity,
-central service, account, relay or automatic firewall changes.
+The Go module has no third-party dependencies. Optional DPAPI-protected persistent identity; no central service, account,
+relay or automatic firewall changes.
 
 Build from repository root with the existing pinned Zig and Go toolchains:
 
@@ -183,9 +183,8 @@ Exchange the complete 64-hex FINGERPRINT displayed independently on each
 computer via a trusted channel (e.g. compare screens in person). Enter the
 other device's fingerprint, not your own. Do not trust fingerprints or
 identities learned from a discovery announcement. Each invocation creates
-a fresh in-memory ECDSA key and certificate. No trust-on-first-use, stored
-pairing, password or unauthenticated fallback; both peers must match their
-explicit pin. On receiver review the escaped filename and size and enter
+a fresh in-memory ECDSA key and certificate. No trust-on-first-use, password or unauthenticated fallback; both peers must
+match their explicit pin. Optional stored pairing is described below. On receiver review the escaped filename and size and enter
 exactly yes to approve. Any other answer declines. Only one file is offered
 per invocation. Reverse the sender/receiver roles for the other direction.
 
@@ -222,3 +221,43 @@ exercises both address families where available, verifies the destination
 hash and no-overwrite behavior. Real multicast on a physical LAN, performance,
 GUI integration, native process lifetime controller and two-computer testing
 remain acceptance gates. Never treat a green loopback CI as LAN acceptance.
+
+
+### Persistent devices (P2 opt-in)
+
+Use a new existing absolute directory with a current-user-only ACL on each
+Windows device. Never put the store in a shared directory, source repository,
+cloud-synced public folder, or release signing location. The CLI does not
+audit ancestor ACLs or defend against hostile same-user changes. DPAPI
+encrypts/authenticates the identity blob in current-user scope. The device
+certificate lasts 365 days; expired/corrupt identity fails closed, no automatic
+replacement. Use a new store and pair again when replacing an identity.
+
+    pulse-share-lan.exe identity-init --store C:\ShareTest\device
+    pulse-share-lan.exe identity-show --store C:\ShareTest\device
+    pulse-share-lan.exe peer-add --store C:\ShareTest\device --name laptop
+    pulse-share-lan.exe peer-list --store C:\ShareTest\device
+    pulse-share-lan.exe peer-revoke --store C:\ShareTest\device --name laptop
+
+Compare the full fingerprint independently and explicitly confirm adding the
+peer on both computers. No discovery response can create trust. Existing
+identities and peer labels cannot be silently overwritten. Revoke requires
+confirmation; then future sessions selecting that label fail. Revocation is
+not retroactive to an already running transfer: stop that transfer explicitly.
+For send/receive, append --store C:\ShareTest\device --paired laptop to
+select the saved device. Without both flags the existing ephemeral pairing
+remains available. Receiving still requires per-file confirmation. A saved
+pin is not a grant to browse directories, write arbitrary paths, or receive
+automatically. No private key is written as plaintext to disk.
+
+The P1 helper now accepts a separate --confirm-verified-copy mode with the
+network offer SHA-256. It checks the exact pinned source handle against that
+digest before creating the final stage and keeps the source locked through
+the copy. This closes the gap between network verification and native commit
+without altering the original local-copy mode. Use only matching builds of
+the LAN and P1 executables.
+
+CI adds Windows DPAPI tamper/round-trip tests, peer record unit tests, original
+network digest enforcement, and two saved-device transfers across fresh CLI
+processes followed by revocation. Prompts time out after 90 seconds. Physical
+LAN and host lifecycle acceptance remain outstanding.

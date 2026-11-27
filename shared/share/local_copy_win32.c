@@ -277,18 +277,20 @@ static BOOL commit_stage(HANDLE stage, const wchar_t *target) {
 }
 
 static int copy_local(const wchar_t *worker, const wchar_t *worker_digest,
-    const wchar_t *source_path, const wchar_t *directory, const wchar_t *name) {
+    const wchar_t *source_path, const wchar_t *directory, const wchar_t *name,
+    const wchar_t *source_digest) {
     HANDLE image = INVALID_HANDLE_VALUE, source = INVALID_HANDLE_VALUE,
         root = INVALID_HANDLE_VALUE, stage = INVALID_HANDLE_VALUE;
     wchar_t target[CAP] = {0}, temp[CAP] = {0};
-    uint8_t expected[32], actual[32];
+    uint8_t expected[32], actual[32], required[32];
     BY_HANDLE_FILE_INFORMATION info;
     LARGE_INTEGER size;
     int result = SHARE_DESTINATION;
     BOOL committed = FALSE;
     const char *phase = "validate-input";
     if (!path_ok(worker) || !parse_digest(worker_digest, expected) ||
-        !path_ok(source_path) || !path_ok(directory) || !leaf_ok(name)) return result;
+        !path_ok(source_path) || !path_ok(directory) || !leaf_ok(name) ||
+        (source_digest && !parse_digest(source_digest, required))) return result;
     int n = swprintf(target, CAP, L"%ls\\%ls", directory, name);
     if (n <= 0 || n >= (int)CAP) return result;
     phase = "verify-image";
@@ -313,6 +315,9 @@ static int copy_local(const wchar_t *worker, const wchar_t *worker_digest,
     if (!hash_file(source, request.size, request.sha256)) {
         result = WaitForSingleObject(cancel_event, 0) == WAIT_OBJECT_0 ? SHARE_CANCELLED : SHARE_IO;
         goto done;
+    }
+    if (source_digest && memcmp(required, request.sha256, sizeof(required))) {
+        result = SHARE_INTEGRITY; goto done;
     }
     phase = "create-stage";
     stage = create_stage(directory, temp);
@@ -357,16 +362,18 @@ done:
 int main(void) {
     int argc = 0;
     wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (!argv || argc != 7 || wcscmp(argv[1], L"--confirm-local-copy")) {
+    if (!argv || !((argc == 7 && !wcscmp(argv[1], L"--confirm-local-copy")) ||
+                   (argc == 8 && !wcscmp(argv[1], L"--confirm-verified-copy")))) {
         if (argv) LocalFree(argv);
-        fputs("Usage: pulse-share-local --confirm-local-copy worker.exe sha256 source destination-directory leaf\n", stderr);
+        fputs("Usage: pulse-share-local --confirm-local-copy worker.exe sha256 source destination-directory leaf\n"
+              "       pulse-share-local --confirm-verified-copy worker.exe sha256 source destination-directory leaf source-sha256\n", stderr);
         return SHARE_PROTOCOL;
     }
     cancel_event = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (!cancel_event || !SetConsoleCtrlHandler(console_cancel, TRUE)) {
         close_handle(&cancel_event); LocalFree(argv); return SHARE_CONTAINMENT;
     }
-    int result = copy_local(argv[2], argv[3], argv[4], argv[5], argv[6]);
+    int result = copy_local(argv[2], argv[3], argv[4], argv[5], argv[6], argc == 8 ? argv[7] : NULL);
     SetConsoleCtrlHandler(console_cancel, FALSE);
     /* Process exit owns event lifetime; don't race a dispatched handler. */
     LocalFree(argv);

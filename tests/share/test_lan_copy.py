@@ -124,6 +124,63 @@ class LanCopy(unittest.TestCase):
             finally:
                 receiver.close()
 
+    def test_saved_device_and_revocation(self):
+        with tempfile.TemporaryDirectory(prefix="pulse-share-pair-") as temp:
+            root = Path(temp).resolve(strict=True)
+            a, b = root / "a", root / "b"
+            a.mkdir()
+            b.mkdir()
+            def run(operation, store, *args, answer=None, want=0):
+                p = subprocess.run([str(LAN), operation, "--store", str(store), *args],
+                                   input=answer, capture_output=True, text=True, timeout=30)
+                self.assertEqual(p.returncode, want, (p.stdout, p.stderr))
+                return p.stdout
+            a_pin = run("identity-init", a).split()[-1]
+            b_pin = run("identity-init", b).split()[-1]
+            self.assertEqual(len(a_pin), 64)
+            self.assertNotEqual(a_pin, b_pin)
+            self.assertEqual(run("identity-show", a).split()[-1], a_pin)
+            run("peer-add", a, "--name", "b", answer=b_pin+"\nyes\n")
+            run("peer-add", b, "--name", "a", answer=a_pin+"\nyes\n")
+            self.assertIn(b_pin, run("peer-list", a))
+            dest, spool = root / "destination", root / "spool"
+            dest.mkdir()
+            spool.mkdir()
+            for i in range(2):
+                source = root / f"paired-{i}.bin"
+                source.write_bytes(b"paired transfer" * 4096)
+                receiver = Child([
+                    "receive", "--bind", "127.0.0.1", "--port", "0",
+                    "--directory", dest, "--spool", spool,
+                    "--supervisor", SUPERVISOR, "--supervisor-sha256", digest(SUPERVISOR),
+                    "--worker", WORKER, "--worker-sha256", digest(WORKER),
+                    "--store", b, "--paired", "a",
+                ], root / "receiver.log")
+                try:
+                    endpoint = receiver.expect("LISTEN ")
+                    receiver.expect("PAIRED ")
+                    sender = Child(["send", "--bind", "127.0.0.1", "--peer", endpoint,
+                                    "--source", source, "--store", a, "--paired", "b"], root / "sender.log")
+                    try:
+                        sender.expect("PAIRED ")
+                        receiver.expect("OFFER ")
+                        receiver.answer("yes")
+                        self.assertEqual(sender.wait(), 0, sender.diagnostics())
+                        self.assertEqual(receiver.wait(), 0, receiver.diagnostics())
+                        self.assertEqual(digest(source), digest(dest / source.name))
+                        self.assertEqual(list(spool.iterdir()), [])
+                    finally:
+                        sender.close()
+                finally:
+                    receiver.close()
+            run("peer-revoke", a, "--name", "b", answer="yes\n")
+            self.assertNotIn(b_pin, run("peer-list", a))
+            p = subprocess.run([str(LAN), "send", "--bind", "127.0.0.1", "--peer", "127.0.0.1:1",
+                                "--source", str(source), "--store", str(a), "--paired", "b"],
+                               capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(p.returncode, 0)
+            self.assertNotIn("PAIRED ", p.stdout)
+
     def test_ipv4(self):
         self.transfer("127.0.0.1")
 

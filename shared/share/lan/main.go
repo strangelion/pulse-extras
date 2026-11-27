@@ -1,5 +1,6 @@
 // Pulse Share experimental LAN developer tool. No automatic listener,
-// persistent trust, firewall changes, shell commands or Pulse UI launch.
+// firewall changes, shell commands or Pulse UI launch. Persistent device
+// identities are opt-in and protected by Windows DPAPI.
 package main
 
 import (
@@ -37,8 +38,11 @@ func (c console) prompt(s string) (string,error) {
 		if err==nil{err=io.EOF}
 		done<-answer{err:err}
 	}()
+	timer := time.NewTimer(90*time.Second)
+	defer timer.Stop()
 	select {
 	case <-c.ctx.Done():return "",c.ctx.Err()
+	case <-timer.C:return "",errors.New("confirmation timed out")
 	case a:=<-done:return a.text,a.err
 	}
 }
@@ -50,6 +54,67 @@ func (c console) pair(id identity) ([32]byte,error) {
 	pin,err:=parsePin(line)
 	if err==nil && pin==id.pin{return pin,errors.New("cannot pair with this session's own identity")}
 	return pin,err
+}
+
+// A saved peer is selected explicitly for each session. It does not
+// authorize automatic receiving, directory access, or new peer enrollment.
+func sessionIdentity(c console, store, label string) (identity, [32]byte, error) {
+	if store == "" && label == "" {
+		id, err := newIdentity()
+		if err != nil { return identity{}, [32]byte{}, err }
+		pin, err := c.pair(id)
+		return id, pin, err
+	}
+	if store == "" || label == "" { return identity{}, [32]byte{}, errors.New("use both --store and --paired") }
+	root, err := storeRoot(store)
+	if err != nil { return identity{}, [32]byte{}, err }
+	id, err := loadStoredIdentity(root)
+	if err != nil { return identity{}, [32]byte{}, err }
+	pin, err := loadPeer(root, label)
+	if err != nil { return identity{}, [32]byte{}, err }
+	if pin == id.pin { return identity{}, [32]byte{}, errors.New("cannot select own identity") }
+	fmt.Printf("PAIRED %s %x\n", label, pin)
+	return id, pin, nil
+}
+
+func manageTrust(c console, operation string, args []string) error {
+	f := flags(operation)
+	store := f.String("store", "", "existing absolute user-private device store")
+	label := f.String("name", "", "local peer label")
+	if err := noExtra(f, args); err != nil { return err }
+	root, err := storeRoot(*store)
+	if err != nil { return err }
+	if operation == "identity-init" {
+		id, err := initStoredIdentity(root)
+		if err != nil { return err }
+		fmt.Printf("FINGERPRINT %x\n", id.pin)
+		return nil
+	}
+	id, err := loadStoredIdentity(root)
+	if err != nil { return err }
+	switch operation {
+	case "identity-show":
+		fmt.Printf("FINGERPRINT %x\n", id.pin)
+		return nil
+	case "peer-add":
+		if _, err := peerFile(root, *label); err != nil { return err }
+		pin, err := c.pair(id)
+		if err != nil { return err }
+		answer, err := c.prompt(fmt.Sprintf("Trust %s fingerprint %x? Enter yes:", *label, pin))
+		if err != nil { return err }
+		if answer != "yes" { return errors.New("pairing declined") }
+		return addPeer(root, *label, pin)
+	case "peer-list":
+		return listPeers(root)
+	case "peer-revoke":
+		pin, err := loadPeer(root, *label)
+		if err != nil { return err }
+		answer, err := c.prompt(fmt.Sprintf("Revoke %s fingerprint %x? Enter yes:", *label, pin))
+		if err != nil { return err }
+		if answer != "yes" { return errors.New("revocation declined") }
+		return revokePeer(root, *label)
+	}
+	return errors.New("unknown trust operation")
 }
 
 func flags(name string) *flag.FlagSet {
@@ -81,6 +146,8 @@ func sender(ctx context.Context,c console,args []string) error {
 	local:=f.String("bind","","local interface IP")
 	peer:=f.String("peer","","numeric receiver IP:port")
 	source:=f.String("source","","explicit local source file")
+	store:=f.String("store","","existing user-private device store")
+	paired:=f.String("paired","","explicit saved peer label")
 	if err:=noExtra(f,args);err!=nil{return err}
 	b,err:=bindLocal(*local)
 	if err!=nil{return err}
@@ -93,9 +160,7 @@ func sender(ctx context.Context,c console,args []string) error {
 	if !validName(name){return errors.New("unsupported Windows filename")}
 	size,digest,err:=digestFile(file)
 	if err!=nil{return err}
-	id,err:=newIdentity()
-	if err!=nil{return err}
-	pin,err:=c.pair(id)
+	id,pin,err:=sessionIdentity(c,*store,*paired)
 	if err!=nil{return err}
 	dialer:=net.Dialer{Timeout:10*time.Second,LocalAddr:net.TCPAddrFromAddrPort(netip.AddrPortFrom(b.ip,0))}
 	raw,err:=dialer.DialContext(ctx,b.network(),addr.String())
@@ -151,8 +216,8 @@ func (n nativeCommit) commit(o offer,path string) error {
 	if err:=verifyBinary(n.worker,n.workerPin);err!=nil{return err}
 	ctx,cancel:=context.WithTimeout(n.ctx,10*time.Minute)
 	defer cancel()
-	cmd:=exec.CommandContext(ctx,n.supervisor,"--confirm-local-copy",n.worker,
-		fmt.Sprintf("%x",n.workerPin),path,n.destination,o.name)
+	cmd:=exec.CommandContext(ctx,n.supervisor,"--confirm-verified-copy",n.worker,
+		fmt.Sprintf("%x",n.workerPin),path,n.destination,o.name,fmt.Sprintf("%x",o.digest))
 	cmd.Stdout=io.Discard
 	cmd.Stderr=os.Stderr
 	if err:=cmd.Run();err!=nil{return fmt.Errorf("native commit failed: %w",err)}
@@ -170,6 +235,8 @@ func receiver(ctx context.Context,c console,args []string) error {
 	supervisorSHA:=f.String("supervisor-sha256","","locally verified supervisor SHA-256")
 	worker:=f.String("worker","","absolute local P1 worker executable")
 	workerSHA:=f.String("worker-sha256","","locally verified worker SHA-256")
+	store:=f.String("store","","existing user-private device store")
+	paired:=f.String("paired","","explicit saved peer label")
 	if err:=noExtra(f,args);err!=nil{return err}
 	if runtime.GOOS!="windows"{return errors.New("native receiving commit requires Windows")}
 	if *port>65535{return errors.New("invalid port")}
@@ -190,8 +257,6 @@ func receiver(ctx context.Context,c console,args []string) error {
 	if err:=verifyBinary(sup,supPin);err!=nil{return err}
 	if err:=verifyBinary(work,workPin);err!=nil{return err}
 	native:=nativeCommit{sup,work,dest,supPin,workPin,ctx}
-	id,err:=newIdentity()
-	if err!=nil{return err}
 	listener,err:=net.ListenTCP(b.network(),net.TCPAddrFromAddrPort(netip.AddrPortFrom(b.ip,uint16(*port))))
 	if err!=nil{return err}
 	defer listener.Close()
@@ -208,7 +273,7 @@ func receiver(ctx context.Context,c console,args []string) error {
 			}
 		}()
 	}
-	pin,err:=c.pair(id)
+	id,pin,err:=sessionIdentity(c,*store,*paired)
 	if err!=nil{return err}
 	if err:=listener.SetDeadline(time.Now().Add(2*time.Minute));err!=nil{return err}
 	for attempts:=0;attempts<8;attempts++{
@@ -242,11 +307,12 @@ func receiver(ctx context.Context,c console,args []string) error {
 }
 
 func run(ctx context.Context,args []string) error {
-	if len(args)==0{return errors.New("usage: pulse-share-lan {send|receive|discover} [flags]")}
+	if len(args)==0{return errors.New("usage: pulse-share-lan {send|receive|discover|identity-init|identity-show|peer-add|peer-list|peer-revoke} [flags]")}
 	scanner:=bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte,256),256)
 	c:=console{ctx,scanner}
 	switch args[0]{
+	case "identity-init","identity-show","peer-add","peer-list","peer-revoke":return manageTrust(c,args[0],args[1:])
 	case "send":return sender(ctx,c,args[1:])
 	case "receive":return receiver(ctx,c,args[1:])
 	case "discover":
