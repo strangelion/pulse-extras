@@ -11,6 +11,9 @@ artifact and observed result.
 - Build final affected versions with pinned Zig and SDK; run full regression
   on exact code SHA. Generate and verify official packages. Record SHA-256,
   manifest, host build, SDK/API evidence, Windows build and hardware.
+- Trigger the [Extension release workflow](release.md#3a-one-manually-dispatched-workflow)
+  for the final preview. Download the released package, check its digest,
+  and install it manually for the combined acceptance round.
 - Use isolated profile/store. Never disable security software, modify the
   daily profile, or reuse test data across incompatible versions without
   backup. Do not publish or sign stable without separate permission.
@@ -23,7 +26,7 @@ artifact and observed result.
 | --- | --- | --- |
 | VCS P2A | All onboarding, settings, Git/JJ/SVN, denial/cancellation, native menu/locale/DPI | Code CI pass 4d53927; HOST DEFERRED |
 | VCS P2B | Saved projects migration, search/favorites/relink, routing, provider switching, durable grants and individual/all revoke, stale cache, restart and concurrent instances | 147449b full code CI passed; DEV COMPLETE / HOST DEFERRED |
-| VCS P3A/P3B | File/history/diff and forge/client integrations; verify offline unsupported cases and local consent scope | P3A full CI pass 378e540 / 45929366805; DEV COMPLETE / HOST DEFERRED. P3B candidate pending exact CI and live external handoff/HTTP acceptance |
+| VCS P3A–P3C | File/history/diff across Git, Jujutsu, SVN and Mercurial, forge/client integrations, offline behavior and local consent scope | Consolidated full CI passed at [99f3c8b](https://github.com/strangelion/pulse-extras/actions/runs/45945212493), DEV COMPLETE / HOST DEFERRED. Live external handoff and HTTP remain unverified. |
 | Companion ordinary functionality | Import/download, library, market, runtime, profiles, menu, recovery and lifecycle | Owner-accepted development complete; final host smoke deferred |
 | Companion performance | Controlled actual Pulse-managed visible/hidden count ramp 1→1024, stop at safe measured ceiling; CPU/GPU/VRAM/private bytes/working set/handles/frame p50/p95/p99 and startup/stop latency | OPEN |
 | Companion long-running | 30 min / 2 h / extended soak; repeated create/stop, asset switching, import/download, hide/show and unload; baseline/peak/steady/post-cleanup memory and handle deltas | OPEN |
@@ -47,8 +50,7 @@ P3C d06abe8 / 45934907652: Windows Hg missing python312.dll, shared Zig
 environment test API compile error. Private CI runtime and test repair
 pending exact full CI; installed user runtime/host acceptance NOT RUN.
 
-Four-provider baseline full CI passed 6f29edf / 45935843006 (all six jobs).
-Consolidated read-only hardening candidate pending exact CI. Selected VCS
-scope Git/JJ/SVN/Hg; optional additional providers deferred. P4 native
-mutations not enabled, no publication. Final installed VCS and deferred
-Companion D evidence remain NOT RUN.
+Consolidated four-provider read-only CI passed at
+[99f3c8b / 45945212493](https://github.com/strangelion/pulse-extras/actions/runs/45945212493).
+Final installed VCS and Companion D cases remain HOST DEFERRED. The updated
+preview release is pending.

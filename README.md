@@ -18,7 +18,7 @@ Current stage order, actual blockers and exit criteria are in the
 | Extension | Scope | Status |
 | --- | --- | --- |
 | Hello Panel | Command + `pulse.context` panel, workspace and sidebar placement | Verified on Pulse 1.0.61 (2026-11-24) |
-| VCS | Read-only multi-VCS manager: Git / Jujutsu / Subversion / Mercurial | 1.0.0 unsigned preview is older than main. Source: tool configuration, scoped authorization, project library, local history/diff and reviewed forge/client links; four-provider baseline CI passed at 6f29edf. Consolidated read-only release candidate needs exact CI and installed acceptance; native mutations disabled ([architecture](docs/vcs-architecture.md), [roadmap](docs/roadmap.md)) |
+| VCS | Read-only multi-VCS manager: Git / Jujutsu / Subversion / Mercurial | 1.0.0 unsigned preview is older than main. The consolidated read-only source passed full CI at [99f3c8b](https://github.com/strangelion/pulse-extras/actions/runs/45945212493). The updated preview and installed acceptance are pending. Native mutations remain disabled ([architecture](docs/vcs-architecture.md), [roadmap](docs/roadmap.md)) |
 | Convert | File conversion | Planned |
 | Inspect | Binary and package inspection | Planned |
 | Data | Database and scientific data preview | Planned |

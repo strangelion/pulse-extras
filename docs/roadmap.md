@@ -258,15 +258,16 @@ credential absence/revocation/offline/redaction/unsafe URL tests and explicit
 real-host smoke with consenting account where needed. Do not mark API support
 complete from a webpage link; unavailable external account tests are NOT RUN.
 
-### P3C — Additional providers (Mercurial code gate passed; consolidated read-only candidate)
+### P3C — Four-provider read-only scope (DEV COMPLETE / HOST DEFERRED)
 
-Mercurial full code CI passed at 6f29edf / 45935843006. The selected
-read-only product scope is Git, Jujutsu, SVN and Mercurial. Defer Perforce,
+The consolidated read-only scope passed full code CI at
+[99f3c8b / 45945212493](https://github.com/strangelion/pulse-extras/actions/runs/45945212493).
+The selected providers are Git, Jujutsu, SVN and Mercurial. Defer Perforce,
 Sapling, Fossil and Plastic until demonstrated demand and a supported
 tool/server contract exist. Perforce needs an explicitly configured server
 and client scope with credentials/TLS and an isolated server fixture; do
 not reuse local marker authorization. No provider stubs or fake server
-acceptance. Consolidate read-only hardening and acceptance in one candidate.
+acceptance. Installed checks are part of the final acceptance round.
 
 ## P4 — Write operations (disabled until reviewed)
 
@@ -301,7 +302,7 @@ making the whole provider appear writable.
 
 RT2: all new products reuse the shared runtime contract; extend it only for proven needs, track bundled runtime revisions and rebuild/test/release affected consumers after fixes. Test independent instances and mixed-version coexistence. Recheck upstream source, roadmap, SDK and registry for overlap before implementing each extension. Pulse already has basic Git and SVN status, native lock detection, common previews and archive integration. Coordinate 3D/OCR/remote features with upstream.
 
-Current priority is the consolidated four-provider VCS read-only candidate; actual host tests are deferred. P4 native write operations remain gated by separate operation review and integrity fixtures. Companion is maintenance/acceptance only unless a user reports a defect or explicitly requests expansion. After the VCS read-only product stages, choose the next independent product (Convert, Inspect, Compare, Data, DevKit) according to demand and verified upstream overlap. Each needs its own complete first-use stage (UI, processing, persistence where needed, errors, tests, packaging/acceptance), not a collection of empty modules. See [product scope](product-scope.md). Do not block usable products on a speculative platform.
+The consolidated four-provider VCS read-only code gate is complete. Installed checks follow the final preview release and manual download and installation. P4 native write operations remain gated by separate operation review and integrity fixtures. Companion is maintenance/acceptance only unless a user reports a defect or explicitly requests expansion. After the VCS read-only product stages, choose the next independent product (Convert, Inspect, Compare, Data, DevKit) according to demand and verified upstream overlap. Each needs its own complete first-use stage (UI, processing, persistence where needed, errors, tests, packaging/acceptance), not a collection of empty modules. See [product scope](product-scope.md). Do not block usable products on a speculative platform.
 
 Release follows milestone R and [release.md](release.md). Keep secrets out of Git/CI logs. Project license is AGPL-3.0-only, preserving prior Apache-2.0 grants and upstream/third-party obligations. Zig-first remains unchanged; review source delivery and registry acceptance before distributing.
 
@@ -615,8 +616,14 @@ live file-diff directory/reparse/nested-repository targets; remove legacy
 unpinned JJ admission; exercise actual approved history/content/diff in
 Windows fixtures; explicitly label write restrictions and Git diff semantics.
 Risk defaults require confirmation for network/local metadata writes.
-Exact new full CI required. These are conservative admission checks, not
-an OS sandbox or atomic defense against concurrent external changes.
+These checks apply conservative admission rules. Their guarantees exclude
+OS sandboxing and atomic protection against concurrent external changes.
+
+The Windows SVN fixture in 4433cdc / 45938220878 wrote CRLF in text mode.
+Writing the fixture bytes with LF preserved the exact content assertion.
+[99f3c8b / 45945212493](https://github.com/strangelion/pulse-extras/actions/runs/45945212493)
+passed all six required jobs. Windows passed 719/719 tests, including the
+pinned real SVN fixture. The consolidated scope is DEV COMPLETE / HOST DEFERRED.
 
 P4 remains NOT IMPLEMENTED: existing read approval and read task cancellation
 cannot be reused for a mutating command. Native writes require separately
