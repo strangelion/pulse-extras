@@ -400,7 +400,7 @@ pub fn observeLocalTarget(path: []const u8) Error!void {
     const parent = std.fs.path.dirname(path) orelse return error.Permission;
     _ = try observeIdentity(parent, true);
     const wide = try Wide.init(path);
-    const attrs = GetFileAttributesW(&wide.buffer);
+    const attrs = GetFileAttributesW(wide.z());
     if (attrs == invalid_attributes) {
         if (GetLastError() == 2) return;
         return error.Permission;

@@ -1023,6 +1023,7 @@ pub const Binding = struct {
         const pending = self.pending_file orelse return;
         if (self.pending_file_generation != self.navigation_generation) {
             self.pending_file = null;
+            self.pending_file_generation = null;
             return;
         }
         if (self.metadata_only or self.approval_locked or self.navigation.pending or self.controller.query.task.occupied() or self.resolution.task.occupied() or self.controller.current.phase != .ready or self.controller.current.stale) return;
@@ -1456,9 +1457,11 @@ pub const Binding = struct {
             self.last_error = err;
             return err;
         };
-        const permission_denied = (if (self.controller.current.failure) |failure| failure == error.Permission else false) or self.controller.detail_error == error.Permission;
+        const permission_denied = (if (self.controller.current.failure) |failure| failure == error.Permission else false) or (if (self.controller.detail_error) |failure| failure == error.Permission else false);
         if (self.saved_trust_selected and permission_denied) {
             self.controller.current.failure = error.Permission;
+            self.controller.current.phase = .failed;
+            self.controller.dropDetail();
             self.controller.current.snapshot = null;
             self.controller.current.stale = false;
             self.cache_token = null;

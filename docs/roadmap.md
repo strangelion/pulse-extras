@@ -475,3 +475,11 @@ approval gate; native installed UI, all alias/large-repo cases and full
 candidate CI remain unverified. Exact required CI and exit review still
 required; do not advance to P3B on a failed gate. No release or Companion
 change.
+
+Regression 59a6721 / 45928253651 failed the formatting gate on Windows and
+Ubuntu before compilation. The repair aligns the exact formatter output,
+fixes the duplicate Git integration-test name and Windows sentinel pointer,
+allows only the exact GIT_NO_LAZY_FETCH=1 environment value, suppresses
+permission-denied detail results and rejects an SVN target in a nested
+checkout. Adds working diff and environment regression assertions. Exact
+new full CI is mandatory; the previous failed gate is not a test pass.

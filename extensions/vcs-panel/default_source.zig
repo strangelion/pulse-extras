@@ -762,7 +762,15 @@ const LocalSession = struct {
         if (review.kind == .svn and contract.detailAllowed(.svn, review.executable.slice(), review.root.slice(), request.argv)) {
             const arg = request.argv[request.argv.len - 1];
             const target = arg[0 .. arg.len - 1];
-            if (!review.root.eql(target)) evidence.observeLocalTarget(target) catch return error.UnapprovedExecutable;
+            if (!review.root.eql(target)) {
+                evidence.observeLocalTarget(target) catch return error.UnapprovedExecutable;
+                // Do not treat a nested checkout as the approved working copy.
+                const parent = std.fs.path.dirname(target) orelse return error.UnapprovedExecutable;
+                var observed: detect.Result = .{};
+                detectPreview(self, parent, &observed);
+                const candidate = observed.find(.svn) orelse return error.UnapprovedExecutable;
+                if (!candidate.root.eql(review.root.slice())) return error.UnapprovedExecutable;
+            }
         }
         // Runner independently rehashes the executable immediately before spawn.
         if (self.revoked.load(.acquire)) return error.UnapprovedExecutable;

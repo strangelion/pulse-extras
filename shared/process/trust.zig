@@ -130,6 +130,7 @@ fn validateEnvironmentInternal(map: *const std.process.Environ.Map, git_global: 
             (std.mem.eql(u8, key, "GIT_TERMINAL_PROMPT") and std.mem.eql(u8, value, "0")) or
             (std.mem.eql(u8, key, "GIT_OPTIONAL_LOCKS") and std.mem.eql(u8, value, "0")) or
             (std.mem.eql(u8, key, "GIT_CONFIG_NOSYSTEM") and std.mem.eql(u8, value, "1")) or
+            (std.mem.eql(u8, key, "GIT_NO_LAZY_FETCH") and std.mem.eql(u8, value, "1")) or
             (std.mem.eql(u8, key, "GIT_CONFIG_GLOBAL") and git_global != null and std.mem.eql(u8, value, git_global.?)) or
             (git_global != null and (std.mem.eql(u8, key, "HOME") or std.mem.eql(u8, key, "XDG_CONFIG_HOME"))) or
             (git_global != null and std.mem.eql(u8, key, "GIT_ATTR_NOSYSTEM") and std.mem.eql(u8, value, "1"));
@@ -201,4 +202,15 @@ test "isolated Git environment requires exact controls and fixed global file" {
     try map.put("GIT_CONFIG_GLOBAL", path);
     try map.put("GIT_CONFIG_COUNT", "1");
     try std.testing.expectError(error.UnapprovedEnvironment, validateGitEnvironment(&map, cwd));
+}
+
+test "approved environment admits only the exact no lazy fetch value" {
+    var map = std.process.Environ.Map.init(std.testing.allocator);
+    defer map.deinit();
+    try map.put("GIT_NO_LAZY_FETCH", "1");
+    try validateEnvironment(&map);
+    for ([_][]const u8{ "0", "", "false" }) |value| {
+        try map.put("GIT_NO_LAZY_FETCH", value);
+        try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
+    }
 }

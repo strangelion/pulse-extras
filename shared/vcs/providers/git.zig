@@ -442,8 +442,8 @@ test "reads a real repository end to end when git is installed" {
     const revision = clean.revision orelse return error.TestExpectedRevision;
     const history = try git.provider().detail(&workspace, &.{ .kind = .history, .revision = revision });
     try std.testing.expect(std.mem.indexOf(u8, history.slice(), "init") != null);
-    const content = try git.provider().detail(&workspace, &.{ .kind = .content, .revision = revision, .path = try identity.Path.init("work.txt") });
-    try std.testing.expectEqualStrings("hello\n", content.slice());
+    const revision_content = try git.provider().detail(&workspace, &.{ .kind = .content, .revision = revision, .path = try identity.Path.init("work.txt") });
+    try std.testing.expectEqualStrings("hello\n", revision_content.slice());
     const path = try identity.Path.init("work.txt");
     const file_history = try git.provider().detail(&workspace, &.{ .kind = .file_history, .revision = revision, .path = path });
     try std.testing.expect(std.mem.indexOf(u8, file_history.slice(), revision.slice()) != null);
@@ -460,6 +460,8 @@ test "reads a real repository end to end when git is installed" {
     const edited = try tmp.dir.createFile(io, "work.txt", .{});
     try edited.writeStreamingAll(io, "changed\n");
     edited.close(io);
+    const working_diff = try git.provider().detail(&workspace, &.{ .kind = .working_diff, .path = path });
+    try std.testing.expect(std.mem.indexOf(u8, working_diff.slice(), "+changed") != null);
 
     const panel = @import("vcs_panel");
     var controller = panel.Controller.init(std.testing.io, 1000, testSessionClock);
