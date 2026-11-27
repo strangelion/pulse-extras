@@ -16,6 +16,7 @@ const cli = @import("vcs_cli");
 const diag = @import("pulse_diagnostics");
 const vcs_panel = @import("vcs_panel");
 const project_route = @import("project_route.zig");
+const evidence = @import("vcs_windows_evidence");
 
 const max_projects = 64;
 const page_size = 12;
@@ -96,6 +97,9 @@ const Status = enum {
     route_dispatched,
     route_failed,
     route_cancelled,
+    identity_pending,
+    identity_failed,
+    folder_filled,
 
     fn label(self: Status, lang: vcs_panel.Language) []const u8 {
         return switch (self) {
@@ -123,6 +127,9 @@ const Status = enum {
             .route_dispatched => tr(lang, "Pulse accepted directory navigation; verify the destination", "Pulse 已接受目录跳转；请确认实际到达目录"),
             .route_failed => tr(lang, "Cannot navigate to this root; it may be missing, moved, denied or unsupported. Edit/relink or open its path manually.", "无法跳转；目录可能已移动、不存在、被拒绝或不受支持。请编辑重新关联或手动打开路径。"),
             .route_cancelled => tr(lang, "Directory request cancelled; dispatched navigation is not rolled back", "已取消目录请求；已经提交的跳转不会回滚"),
+            .identity_pending => tr(lang, "Checking local folder identity; use Check pending task result", "正在检查本地目录身份；请检查待处理任务结果"),
+            .identity_failed => tr(lang, "Folder identity could not be verified or already exists; no record written", "目录身份无法验证或已存在；未写入记录"),
+            .folder_filled => tr(lang, "Selected folder filled; review before adding. No execution approval granted.", "已填入选中文件夹；确认后添加，不授予执行权限。"),
         };
     }
 };
@@ -359,10 +366,10 @@ const Content = struct {
 
     fn build(self: *Content, owner: *const Settings, tree: *ui.Tree) void {
         self.len = 0;
-        const idle = owner.loaded and owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned and !owner.route.busy();
+        const idle = owner.loaded and owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned and !owner.route.busy() and !owner.checkingProject();
         const lang = owner.stored.locale.language();
         self.add(ui.text(owner.status.label(lang)), "settings.status");
-        self.button(0, tr(lang, "Reload settings", "重新读取设置"), owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned and !owner.route.busy());
+        self.button(0, tr(lang, "Reload settings", "重新读取设置"), owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned and !owner.route.busy() and !owner.checkingProject());
         self.add(ui.text(tr(lang, "Projects · bookmarks only; no execution or trust", "项目库 · 记录项目，不自动授予权限")), "settings.projects");
         const visible = owner.visible();
         self.input(search_key, tr(lang, "Search name, path, tags or remote", "搜索名称、路径、标签或远程地址"), idle);
@@ -416,7 +423,7 @@ const Content = struct {
             self.button(10, tr(lang, "Open remote repository in browser", "在浏览器打开远程仓库"), idle and (if (owner.browser) |*task| !task.occupied() else false));
         } else self.add(ui.text(tr(lang, "No matching projects (up to 64 records)", "没有匹配项目（最多 64 项）")), "settings.project.empty");
         if (owner.route.busy()) self.button(24, tr(lang, "Cancel directory lookup", "取消目录查找"), true);
-        self.button(11, tr(lang, "Check browser task result", "检查浏览器任务结果"), if (owner.browser) |*task| task.occupied() else false);
+        self.button(11, tr(lang, "Check pending task result", "检查待处理任务结果"), owner.checkingProject() or (if (owner.browser) |*task| task.occupied() else false));
         const edit_text = if (owner.edit_key) |key| std.fmt.bufPrint(&self.edit_label, "{s}: {s}", .{ tr(lang, "Editing", "编辑"), &key }) catch "" else tr(lang, "New project", "新建项目");
         self.add(ui.text(edit_text), "settings.project.edit-mode");
         self.button(15, tr(lang, "New project / clear form", "新建项目 / 清空表单"), idle);
@@ -459,6 +466,7 @@ pub const Settings = struct {
     user: *anyopaque,
     current: *const fn (*anyopaque) ?Current,
     updated: *const fn (*anyopaque, Tools, vcs_panel.Language) void,
+    folder_opened: ?*const fn (*anyopaque) void = null,
     pages: ?raw.PulseSettingsPagesV1 = null,
     resources: ?raw.PulseResourcesV1 = null,
     panel: ?ui.Panel = null,
@@ -480,8 +488,12 @@ pub const Settings = struct {
     picker_index: usize = 0,
     browser: ?async_host.Task = null,
     browser_url: contract.Text = .{},
+    project_task: ?async_host.Task = null,
+    checked_project: ?Project = null,
+    checked_version: u64 = 0,
     route: project_route.Route = .{},
     route_key: ?[key_len]u8 = null,
+    route_folder: bool = false,
     route_version: u64 = 0,
     recency_write: bool = false,
     search: contract.Text = .{},
@@ -496,6 +508,10 @@ pub const Settings = struct {
         count: usize = 0,
         total: usize = 0,
     };
+
+    fn checkingProject(self: *const Settings) bool {
+        return if (self.project_task) |*task| task.occupied() else false;
+    }
 
     fn visible(self: *const Settings) Visible {
         var ordered: [max_projects]usize = undefined;
@@ -532,7 +548,7 @@ pub const Settings = struct {
         if (self.poisoned) return error.State;
         // A previous deactivate can have removed the page while a browser
         // worker or callback is still retained. Never overwrite that owner.
-        if (self.page != 0 or self.pending != 0 or self.picker_request != 0 or self.browser != null or self.route.busy()) try self.close();
+        if (self.page != 0 or self.pending != 0 or self.picker_request != 0 or self.browser != null or self.project_task != null or self.route.busy()) try self.close();
         const pages = (try self.host.queryOptional(raw.PulseSettingsPagesV1, raw.PULSE_SETTINGS_PAGES_INTERFACE_NAME, raw.PULSE_SETTINGS_PAGES_VERSION_1)) orelse return;
         const resources = (try self.host.queryOptional(raw.PulseResourcesV1, raw.PULSE_RESOURCES_INTERFACE_NAME, raw.PULSE_RESOURCES_VERSION_1)) orelse return;
         const create = pages.create orelse return error.Unavailable;
@@ -549,6 +565,7 @@ pub const Settings = struct {
         if (comptime builtin.os.tag == .windows) {
             if (async_host.taskTable(self.host)) |table| {
                 self.browser = async_host.Task.init(table) catch null;
+                self.project_task = async_host.Task.init(table) catch null;
             } else |_| {}
         }
         var content: Content = undefined;
@@ -657,7 +674,7 @@ pub const Settings = struct {
     }
 
     fn reload(self: *Settings) void {
-        if (!self.active or self.pending != 0 or self.picker_request != 0 or self.poisoned or self.route.busy()) return;
+        if (!self.active or self.pending != 0 or self.picker_request != 0 or self.poisoned or self.route.busy() or self.checkingProject()) return;
         const resources = self.resources orelse return;
         const get = resources.settings_get orelse return;
         var id: u64 = 0;
@@ -757,7 +774,66 @@ pub const Settings = struct {
             if (self.edit_key != null or self.stored.count == max_projects or self.stored.findRoot(item.root.slice()) != null) return error.InvalidSettings;
             item.key = try self.stored.newKey(item.root.slice());
         }
-        try self.saveRecord(&item);
+        if (update) {
+            const index = self.stored.find(&item.key) orelse return error.State;
+            // Editing metadata on a missing/moved existing root remains
+            // possible; changing the root requires a fresh observation.
+            if (self.stored.projects[index].root.eql(item.root.slice())) {
+                try self.saveRecord(&item);
+                return;
+            }
+        }
+        try self.checkProject(&item);
+    }
+
+    fn checkProject(self: *Settings, item: *const Project) !void {
+        const task = if (self.project_task) |*value| value else return error.Unavailable;
+        if (task.occupied()) return error.State;
+        self.checked_project = item.*;
+        self.checked_version = self.stored.version;
+        errdefer self.checked_project = null;
+        const descriptor: async_host.Descriptor = .{
+            .size = @sizeOf(async_host.Descriptor),
+            .title = abi.view("Verify local project identity"),
+            .type = abi.view("vcs.projects.identity"),
+            .work = &projectWork,
+            .user = self,
+        };
+        try task.start(&descriptor);
+        self.status = .identity_pending;
+    }
+
+    fn projectWork(user: ?*anyopaque, work_context: [*c]const async_host.Context) callconv(.c) u32 {
+        const self: *Settings = @ptrCast(@alignCast(user orelse return @backingInt(async_host.TaskState.failed)));
+        if (work_context == null) return @backingInt(async_host.TaskState.failed);
+        const cancelled = work_context.*.cancelled orelse return @backingInt(async_host.TaskState.failed);
+        if (cancelled(work_context.*.context) != 0) return @backingInt(async_host.TaskState.cancelled);
+        const item = if (self.checked_project) |*value| value else return @backingInt(async_host.TaskState.failed);
+        const observed = evidence.observeIdentity(item.root.slice(), true) catch return @backingInt(async_host.TaskState.failed);
+        // Stored and checked_project are immutable until this task releases.
+        // No startup scan, no CLI, no follow-reparse exception.
+        for (self.stored.projects[0..self.stored.count]) |*other| {
+            if (cancelled(work_context.*.context) != 0) return @backingInt(async_host.TaskState.cancelled);
+            if (std.mem.eql(u8, &item.key, &other.key)) continue;
+            const existing = evidence.observeIdentity(other.root.slice(), true) catch continue;
+            if (observed.volume == existing.volume and observed.index == existing.index) return @backingInt(async_host.TaskState.failed);
+        }
+        return @backingInt(if (cancelled(work_context.*.context) != 0) async_host.TaskState.cancelled else async_host.TaskState.completed);
+    }
+
+    fn pollProject(self: *Settings) !void {
+        const task = if (self.project_task) |*value| value else return;
+        if (!task.occupied()) return;
+        const state = try task.poll();
+        if (!state.terminal()) return;
+        try task.releaseTerminal();
+        const item = self.checked_project;
+        self.checked_project = null;
+        self.status = .identity_failed;
+        if (state == .completed and self.active and self.loaded and self.render_ok and self.pending == 0 and self.checked_version == self.stored.version) {
+            if (item) |project| try self.saveRecord(&project);
+        }
+        self.render();
     }
 
     fn saveRecord(self: *Settings, item: *const Project) !void {
@@ -813,10 +889,47 @@ pub const Settings = struct {
         try self.clearSelection();
     }
 
+    // An explicit, freshly validated menu selection prepares the project
+    // form and requests the same public navigation as a saved bookmark.
+    pub fn openFolder(self: *Settings, path: []const u8) !void {
+        if (!self.active or !self.loaded or !self.render_ok or self.pending != 0 or self.picker_request != 0 or self.poisoned or self.route.busy() or self.checkingProject()) return error.State;
+        if (!approval.strictPath(path)) return error.Argument;
+        const root = try identity.Path.init(path);
+        if (self.stored.findRoot(path)) |index| {
+            const project = &self.stored.projects[index];
+            if (!project.root.eql(path)) return error.Argument;
+            try self.fillForm(project.root.slice(), project.remote.slice(), project.name.slice(), project.tags.slice());
+            self.edit_key = project.key;
+            self.edit_version = self.stored.version;
+            self.form_kind = project.kind;
+            self.route_key = project.key;
+        } else {
+            try self.fillForm(path, "", "", "");
+            self.edit_key = null;
+            self.form_kind = null;
+            self.route_key = null;
+        }
+        self.form_root = root;
+        self.route_version = self.stored.version;
+        self.status = .folder_filled;
+        self.route_folder = true;
+        self.route.begin(path, self, &routeDone) catch {
+            self.route_folder = false;
+            self.route_key = null;
+            self.status = .route_failed;
+            self.render();
+            return;
+        };
+        self.status = .route_pending;
+        self.render();
+    }
+
     fn jump(self: *Settings) !void {
         const project = (try self.selected()).*;
+        self.route_folder = false;
         self.route_key = project.key;
         self.route_version = self.stored.version;
+        errdefer self.route_key = null;
         try self.route.begin(project.root.slice(), self, &routeDone);
         self.status = .route_pending;
     }
@@ -824,7 +937,9 @@ pub const Settings = struct {
     fn routeDone(user: *anyopaque, accepted: bool) void {
         const self: *Settings = @ptrCast(@alignCast(user));
         const key = self.route_key;
+        const folder = self.route_folder;
         self.route_key = null;
+        self.route_folder = false;
         if (!self.active) return;
         self.status = if (accepted) .route_dispatched else .route_failed;
         // Store recency only for the same current record/version, after the
@@ -841,6 +956,9 @@ pub const Settings = struct {
             }
         }
         self.render();
+        if (accepted and folder) {
+            if (self.folder_opened) |open| open(self.user);
+        }
     }
 
     fn pickerCompleted(user: ?*anyopaque, result: [*c]const pickers.Result) callconv(.c) void {
@@ -925,6 +1043,16 @@ pub const Settings = struct {
         const self: *Settings = @ptrCast(@alignCast(user orelse return));
         if (!self.active or page == 0 or page != self.page or self.poisoned) return;
         const name = abi.slice(command) orelse return;
+        if (std.mem.eql(u8, name, commands[11])) {
+            if (self.checkingProject()) {
+                self.pollProject() catch |err| diag.status("vcs-project-identity-poll", @intFromError(err));
+            } else {
+                self.pollBrowser() catch |err| diag.status("vcs-settings-browser-poll", @intFromError(err));
+                self.render();
+            }
+            return;
+        }
+        if (self.checkingProject()) return;
         self.pollBrowser() catch |err| diag.status("vcs-settings-browser-poll", @intFromError(err));
         if (std.mem.eql(u8, name, commands[0])) {
             self.reload();
@@ -938,6 +1066,7 @@ pub const Settings = struct {
                 return;
             };
             self.route_key = null;
+            self.route_folder = false;
             self.status = .route_cancelled;
             self.render();
             return;
@@ -984,6 +1113,7 @@ pub const Settings = struct {
         if (self.poisoned) return error.State;
         try self.route.stop();
         self.route_key = null;
+        self.route_folder = false;
         if (self.picker_request != 0) {
             const picker = self.picker orelse return error.State;
             const cancel = picker.cancel orelse return error.Unavailable;
@@ -1016,6 +1146,18 @@ pub const Settings = struct {
             }
         }
         self.browser = null;
+        if (self.project_task) |*task| {
+            if (task.occupied()) {
+                const state = try task.poll();
+                if (!state.terminal()) {
+                    try task.cancel();
+                    return error.State;
+                }
+                try task.releaseTerminal();
+            }
+        }
+        self.project_task = null;
+        self.checked_project = null;
         self.pages = null;
         self.resources = null;
         self.picker = null;
@@ -1030,6 +1172,9 @@ pub const Settings = struct {
         self.route.retire();
         if (self.browser) |*task| task.retireAtHostDestroy();
         self.browser = null;
+        if (self.project_task) |*task| task.retireAtHostDestroy();
+        self.project_task = null;
+        self.checked_project = null;
         self.panel = null;
         self.page = 0;
         self.pending = 0;

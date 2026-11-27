@@ -15,6 +15,7 @@ const context = @import("pulse_context");
 const mount = @import("pulse_ui_mount");
 const settings_mod = @import("settings.zig");
 const vcs_panel = @import("vcs_panel");
+const identity = @import("vcs_identity");
 
 const allocator = std.heap.page_allocator;
 
@@ -38,7 +39,7 @@ const Instance = struct {
             return;
         };
         if (table.raw.unregister_command == null) return;
-        var item = commands.descriptor("vcs.open-current", "VCS: Current directory / 查看当前目录", &invokeMenu);
+        var item = commands.descriptor("vcs.open-current", "VCS: Current or selected folder / 当前或选中文件夹", &invokeMenu);
         item.kinds = commands.Kind.files | commands.Kind.directories;
         item.min_selection = 0;
         item.max_selection = 4096;
@@ -82,8 +83,13 @@ const Instance = struct {
     }
 
     fn openSettings(self: *Instance) void {
-        if (self.settings == null) self.settings = .{ .host = self.host, .user = self, .current = &currentProject, .updated = &settingsUpdated };
+        if (self.settings == null) self.settings = .{ .host = self.host, .user = self, .current = &currentProject, .updated = &settingsUpdated, .folder_opened = &selectedFolderOpened };
         if (self.settings) |*settings| settings.open() catch |err| diag.status("vcs-settings-open", @intFromError(err));
+    }
+
+    fn selectedFolderOpened(user: *anyopaque) void {
+        const self: *Instance = @ptrCast(@alignCast(user));
+        self.openFromMenu() catch |err| diag.status("vcs-selected-folder-panel", @intFromError(err));
     }
 
     fn settingsUpdated(user: *anyopaque, tools: settings_mod.Tools, language: vcs_panel.Language) void {
@@ -180,6 +186,35 @@ const Instance = struct {
     }
 };
 
+// Copy only an exact direct child from the borrowed selection. Neither the
+// menu snapshot nor the fresh read can authorize an executable.
+const FolderSelection = struct {
+    revision: u64,
+    parent: identity.Path,
+    path: identity.Path,
+    confirmed: bool = false,
+
+    fn read(snapshot: *const commands.SelectionSnapshot) ?FolderSelection {
+        if (!context.validSelection(snapshot) or snapshot.entry_count != 1 or snapshot.entries == null) return null;
+        const row = &snapshot.entries[0];
+        if (row.size < @sizeOf(context.SelectionEntry) or row.flags & context.EntryFlag.directory == 0) return null;
+        const parent = abi.slice(snapshot.directory) orelse return null;
+        const path = context.entryPath(row) orelse return null;
+        const name = context.entryName(row) orelse return null;
+        if (!approval.strictPath(parent) or !approval.strictPath(path)) return null;
+        if (!std.mem.eql(u8, std.fs.path.dirname(path) orelse return null, parent) or !std.mem.eql(u8, std.fs.path.basename(path), name)) return null;
+        return .{ .revision = snapshot.selection_revision, .parent = identity.Path.init(parent) catch return null, .path = identity.Path.init(path) catch return null };
+    }
+
+    fn fresh(user: ?*anyopaque, snapshot: [*c]const commands.SelectionSnapshot) callconv(.c) void {
+        const self: *FolderSelection = @ptrCast(@alignCast(user orelse return));
+        self.confirmed = false;
+        if (snapshot == null) return;
+        const other = read(&snapshot.*) orelse return;
+        self.confirmed = self.revision == other.revision and self.parent.eql(other.parent.slice()) and self.path.eql(other.path.slice());
+    }
+};
+
 fn invokeMenu(user: ?*anyopaque, id: commands.CommandId, snapshot: [*c]const commands.SelectionSnapshot) callconv(.c) void {
     const self: *Instance = @ptrCast(@alignCast(user orelse return));
     if (!self.menu_accepting or self.menu_invoking or id == 0 or id != self.menu_id) return;
@@ -187,15 +222,49 @@ fn invokeMenu(user: ?*anyopaque, id: commands.CommandId, snapshot: [*c]const com
     if (snapshot.*.entry_count > 4096 or (snapshot.*.entry_count != 0 and snapshot.*.entries == null)) return;
     const directory = abi.slice(snapshot.*.directory) orelse return;
     if (directory.len == 0 or directory.len > 32768 or !std.unicode.utf8ValidateSlice(directory) or std.mem.indexOfScalar(u8, directory, 0) != null) return;
-    // Intentionally follow the current loaded directory, not a selected
-    // child or arbitrary path. No borrowed snapshot survives this call.
     self.menu_invoking = true;
     defer self.menu_invoking = false;
+    if (snapshot.*.entry_count == 1) {
+        const row = &snapshot.*.entries[0];
+        if (row.size < @sizeOf(context.SelectionEntry)) return;
+        if (row.flags & context.EntryFlag.directory != 0) {
+            var selected = FolderSelection.read(&snapshot.*) orelse return;
+            const table = context.Table.init(self.host.raw()) catch return;
+            table.getSelection(&FolderSelection.fresh, &selected) catch return;
+            if (!selected.confirmed) return;
+            self.openSettings();
+            if (self.settings) |*settings| {
+                settings.openFolder(selected.path.slice()) catch |err| diag.status("vcs-selected-folder-route", @intFromError(err));
+            }
+            return;
+        }
+    }
+    // Empty, file, or multi-selection retains the current-directory action.
     self.openFromMenu() catch |err| {
         diag.status("vcs-menu-open-failed", @intFromError(err));
         return;
     };
     diag.event("vcs-menu-open");
+}
+
+test "selected folder requires exact direct child and unchanged fresh selection" {
+    const parent = if (@import("builtin").os.tag == .windows) "C:\\work" else "/work";
+    const child = if (@import("builtin").os.tag == .windows) "C:\\work\\repo" else "/work/repo";
+    var row: context.SelectionEntry = .{ .size = @sizeOf(context.SelectionEntry), .flags = context.EntryFlag.directory, .path = abi.view(child), .name = abi.view("repo") };
+    var snapshot: commands.SelectionSnapshot = .{ .size = @sizeOf(commands.SelectionSnapshot), .selection_revision = 9, .directory = abi.view(parent), .entries = &row, .entry_count = 1 };
+    var selected = FolderSelection.read(&snapshot).?;
+    FolderSelection.fresh(&selected, &snapshot);
+    try std.testing.expect(selected.confirmed);
+    snapshot.selection_revision += 1;
+    FolderSelection.fresh(&selected, &snapshot);
+    try std.testing.expect(!selected.confirmed);
+    row.name = abi.view("other");
+    try std.testing.expect(FolderSelection.read(&snapshot) == null);
+    row.name = abi.view("repo");
+    row.flags = 0;
+    try std.testing.expect(FolderSelection.read(&snapshot) == null);
+    snapshot.entry_count = 2;
+    try std.testing.expect(FolderSelection.read(&snapshot) == null);
 }
 
 fn statusOf(err: host_mod.Error) abi.Status {

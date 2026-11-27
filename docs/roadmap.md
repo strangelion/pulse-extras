@@ -145,7 +145,7 @@ once. No claim that local trust is a filesystem/network sandbox.
 4d53927 already contains V2 migrated project bookmarks, 64-record capacity,
 12-row paging, name/tags/favorites/search/accepted-navigation recency, supported
 folder route and in-panel session reset. This follow-up adds explicit saved
-local trust and identity-bound stale snapshot reuse. Exact new CI remains required.
+local trust and identity-bound stale snapshot reuse. [a676805 / 45856710161](https://github.com/strangelion/pulse-extras/actions/runs/45856710161) passed full regression. The selected-folder and project-identity follow-up requires its own exact regression.
 
 **Outcome:** the project library is a primary, useful VCS entry, not a settings
 appendix; users can manage multiple projects without repeatedly typing paths.
@@ -374,3 +374,21 @@ failed only at formatting; its exact correction and additional stale/reparse
 navigation tests are included in the follow-up candidate.
 
 The owner-directed consolidated [final installed acceptance](final-host-acceptance.md) register covers both products. Do not request repeated local installs between development stages.
+
+### P2B selected-folder and identity follow-up (candidate)
+
+The single context menu now differentiates a single selected directory from
+empty/file/multiple selection. It checks the fresh public selection revision,
+exact directory and direct-child path before submitting public snapshot routing.
+The selected folder fills the project form; saving remains explicit. A route
+refusal exposes the manual-path fallback; no automatic trust is created.
+New/relinked project roots require a background fixed-drive, exact-canonical,
+non-reparse identity observation on Windows. Compare the observed volume and
+file index against observable existing records on this explicit action only;
+no startup scan. Check pending task result completes the version-checked save.
+Unobservable candidate roots fail closed; unobservable existing roots cannot
+be certified as duplicates and are not deleted. Editing metadata at an
+unchanged missing root remains possible. This is not a race-free identity
+registry, nor support for junctions or linked worktrees. Pending work blocks
+conflicting owner edits and is cancelled/drained at teardown. Full source CI,
+physical fixture coverage and real-host acceptance remain gates; P2B stays active.

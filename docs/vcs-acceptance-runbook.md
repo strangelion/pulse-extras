@@ -344,3 +344,19 @@ old nonce. Capture the global epoch at explicit consent, not at delayed worker
 start; epoch changes therefore invalidate pending approvals. Permission failure
 in the saved-trust status path discards any stale cached snapshot. This is
 command admission revalidation, not an atomic process-launch sandbox.
+
+### Selected folder and local project identity candidate
+
+Use the same VCS context action on one selected ordinary directory. A fresh
+selection revision and exact direct-child path must match the menu snapshot;
+files, multiple selection and empty selection keep current-directory behavior.
+The public directory route opens only an exact non-reparse folder entry.
+The selected path populates the project form, but neither adds a record nor
+creates a grant without separate explicit actions. If the settings page or
+navigation interface cannot be used, manually open the directory and use the
+existing project form. When adding or relinking, Check pending task result
+completes the asynchronous identity check and version-checked save. Verify
+duplicate rejection, changed selection, refusal/missing target, two windows,
+cancel/deactivate during validation, unchanged missing-root metadata edit,
+no repository mutations and no execution grants. Existing unobservable roots
+are not certified unique. No HOST PASS or new release is claimed.
