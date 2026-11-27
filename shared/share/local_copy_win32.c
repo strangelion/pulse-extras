@@ -1,7 +1,10 @@
 /* Explicit local developer harness, never started by Pulse UI.
  * Only the parent opens files; it owns the stage and commits after a second
  * digest verification. No network, elevated privileges or remote paths. */
+/* Zig's Windows target supplies this macro. Do not override its SDK target. */
+#ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0602
+#endif
 #include "local_protocol_win32.h"
 #include "../fs/identity_win32.h"
 #include "../process/image_win32.h"

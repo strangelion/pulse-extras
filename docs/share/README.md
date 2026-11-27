@@ -118,8 +118,11 @@ transfers. There is no promise of power-fail durability.
 
 CI: full regression builds the DLL and local worker on Linux and Windows;
 Windows invokes real parent/child integration for multi-chunk Unicode files,
-empty files, existing target, bad worker digest, worker exit, invalid names
-and hard-linked source. Manual cancellation, deliberate disk-full and
+empty files, existing target, bad worker digest, worker exit, false success
+with wrong bytes (including an existing destination), invalid names and
+hard-linked source. The false-success fixture is built only for tests; the
+parent's independent SHA-256 must reject its receipt. Manual cancellation,
+deliberate disk-full and
 real-host lifecycle tests remain outstanding. P2 must connect the DLL through
 a reviewed lifecycle/IPC controller and complete actual two-PC acceptance;
 no network functionality or production packaging is enabled here.

@@ -7,9 +7,9 @@ import sys
 import tempfile
 import unittest
 
-if len(sys.argv) != 4:
-    raise SystemExit("usage: test_local_copy.py supervisor.exe worker.exe failing-worker.exe")
-SUPERVISOR, WORKER, FAILING = (Path(p).resolve(strict=True) for p in sys.argv[1:])
+if len(sys.argv) != 5:
+    raise SystemExit("usage: test_local_copy.py supervisor.exe worker.exe failing-worker.exe corrupt-worker.exe")
+SUPERVISOR, WORKER, FAILING, CORRUPT = (Path(p).resolve(strict=True) for p in sys.argv[1:])
 sys.argv[1:] = []
 
 
@@ -77,6 +77,18 @@ class LocalCopy(unittest.TestCase):
         self.assertIn(result.returncode, (1, 2), (result.stdout, result.stderr))
         self.assertEqual(self.source.read_bytes(), before)
         self.assertFalse(list(self.destination.iterdir()))
+
+    def test_false_success_cannot_publish_corrupt_bytes(self):
+        self.source.write_bytes(b"nonzero content")
+        self.invoke(worker=CORRUPT, expected=4)
+        self.assertFalse(list(self.destination.iterdir()))
+
+    def test_false_success_cannot_replace_existing_file(self):
+        self.source.write_bytes(b"nonzero content")
+        target = self.destination / "existing.bin"
+        target.write_bytes(b"original")
+        self.invoke("existing.bin", worker=CORRUPT, expected=4)
+        self.assertEqual(target.read_bytes(), b"original")
 
     def test_invalid_destination_names(self):
         self.source.write_bytes(b"test")
