@@ -340,8 +340,9 @@ const Content = struct {
     states: [9]ui.State = undefined,
     vocabulary: [commands.len]abi.StringView = undefined,
     rows: [page_size]raw.PulseUiModelRow = undefined,
-    cells: [page_size][6]abi.StringView = undefined,
-    columns: [6]raw.PulseUiModelColumn = undefined,
+    cells: [page_size][7]abi.StringView = undefined,
+    columns: [7]raw.PulseUiModelColumn = undefined,
+    recency_labels: [page_size][32]u8 = undefined,
     page_label: [96]u8 = undefined,
     edit_label: [128]u8 = undefined,
 
@@ -386,8 +387,8 @@ const Content = struct {
         self.states[6] = .{ .key = abi.view(name_key), .value = abi.view("") };
         self.states[7] = .{ .key = abi.view(tags_key), .value = abi.view("") };
         self.states[8] = .{ .key = abi.view(search_key), .value = abi.view(owner.search.slice()) };
-        const headers = [_][]const u8{ tr(lang, "Favorite", "收藏"), tr(lang, "Project", "项目"), tr(lang, "Provider hint", "类型提示"), tr(lang, "Local directory", "本地目录"), tr(lang, "Tags", "标签"), tr(lang, "Remote", "远程仓库") };
-        const ids = [_][]const u8{ "favorite", "name", "provider", "path", "tags", "remote" };
+        const headers = [_][]const u8{ tr(lang, "Favorite", "收藏"), tr(lang, "Project", "项目"), tr(lang, "Provider hint", "类型提示"), tr(lang, "Local directory", "本地目录"), tr(lang, "Tags", "标签"), tr(lang, "Remote", "远程仓库"), tr(lang, "Open order", "打开顺序") };
+        const ids = [_][]const u8{ "favorite", "name", "provider", "path", "tags", "remote", "opened" };
         for (headers, ids, 0..) |heading, id, i| {
             self.columns[i] = std.mem.zeroes(raw.PulseUiModelColumn);
             self.columns[i].size = @sizeOf(raw.PulseUiModelColumn);
@@ -403,6 +404,7 @@ const Content = struct {
                 abi.view(project.root.slice()),
                 abi.view(project.tags.slice()),
                 abi.view(project.remote.slice()),
+                abi.view(if (project.opened_order == 0) tr(lang, "Never", "未记录") else std.fmt.bufPrint(&self.recency_labels[i], "{d}", .{project.opened_order}) catch ""),
             };
             self.rows[i] = std.mem.zeroes(raw.PulseUiModelRow);
             self.rows[i].size = @sizeOf(raw.PulseUiModelRow);

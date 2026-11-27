@@ -380,8 +380,9 @@ pub const Content = struct {
             self.addButton("vcs.action.trust-cancel", loc(lang, "Cancel review", "取消确认"), command_trust_cancel);
         } else {
             const snapshot = view.snapshot orelse return;
+            if (view.stale) return;
             self.addExecutableInput(lang);
-            self.add("vcs.setup-help", "", loc(lang, "Leave empty for the configured or detected path. Change saved paths in VCS settings. Detection never runs or approves a program.", "留空使用已配置或检测到的路径；可在 VCS 设置中更改。检测不会运行或授权程序。"));
+            self.add("vcs.setup-help", "", loc(lang, "Leave empty for configured, previously saved, or detected tool path, in that order. A saved record is not verified until explicit reuse.", "留空依次使用已配置、曾授权或检测到的工具路径。持久记录须明确选择复用后才能验证。"));
             const kinds = [_]identity.Kind{ .git, .jj, .svn };
             const ids = [_][]const u8{ "vcs.candidate.git", "vcs.candidate.jj", "vcs.candidate.svn" };
             const button_ids = [_][]const u8{ "vcs.action.trust-git", "vcs.action.trust-jj", "vcs.action.trust-svn" };
@@ -389,11 +390,23 @@ pub const Content = struct {
             const en = [_][]const u8{ "Review Git access", "Review Jujutsu access", "Review SVN access" };
             const zh = [_][]const u8{ "确认 Git 访问", "确认 Jujutsu 访问", "确认 SVN 访问" };
             const actions = [_][]const u8{ command_trust_git, command_trust_jj, command_trust_svn };
-            for (kinds, ids, button_ids, labels, en, zh, actions) |kind, id, button_id, label, english, chinese, action| {
+            const saved_ids = [_][]const u8{ "vcs.saved.git", "vcs.saved.jj", "vcs.saved.svn" };
+            const saved_paths = [_][]const u8{ "vcs.saved-path.git", "vcs.saved-path.jj", "vcs.saved-path.svn" };
+            for (kinds, ids, button_ids, labels, en, zh, actions, saved_ids, saved_paths) |kind, id, button_id, label, english, chinese, action, saved_id, saved_path| {
                 if (!snapshot.previewHas(kind)) continue;
                 if (snapshot.previewTool(kind)) |path| {
                     self.add(id, label, path.slice());
                 } else self.add(id, label, loc(lang, "Not found; enter the installed path", "未找到，请填写已安装路径"));
+                if (view.saved_trust_configured) {
+                    const hint = snapshot.savedHint(kind);
+                    self.add(saved_id, label, switch (hint.state) {
+                        .not_checked => loc(lang, "Saved approval not checked", "尚未检查持久授权"),
+                        .absent => loc(lang, "No saved approval observed", "未发现持久授权"),
+                        .recorded => loc(lang, "Saved record observed; NOT revalidated", "发现持久授权记录，尚未重新验证"),
+                        .unavailable => loc(lang, "Saved approval unavailable", "无法读取持久授权"),
+                    });
+                    if (hint.executable) |path| self.add(saved_path, loc(lang, "Saved tool: ", "记录中的工具："), path.slice());
+                }
                 self.addButton(button_id, loc(lang, english, chinese), action);
             }
         }
@@ -624,6 +637,11 @@ test "saved local approval commands require an explicit reviewed view" {
     try std.testing.expectEqual(@as(u32, 14), tree.command_count);
     try std.testing.expect(content.textFor("vcs.action.trust-remember") == null);
     try std.testing.expect(content.textFor("vcs.action.trust-forget-all") != null);
+    view.snapshot.?.preview_kinds = 1;
+    view.snapshot.?.preview_saved[0] = .{ .state = .recorded, .executable = try identity.Path.init("git.exe") };
+    content.buildInteractive(.en, &view, &tree);
+    try std.testing.expectEqualStrings("Git: Saved record observed; NOT revalidated", content.textFor("vcs.saved.git").?);
+    try std.testing.expectEqualStrings("Saved tool: git.exe", content.textFor("vcs.saved-path.git").?);
     view.local_review = .{ .root = workspace.root, .executable = try identity.Path.init("git.exe"), .kind = .git, .generation = 1 };
     content.buildInteractive(.en, &view, &tree);
     try std.testing.expect(content.textFor("vcs.action.trust-remember") != null);

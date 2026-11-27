@@ -750,7 +750,7 @@ pub const Binding = struct {
         if (!snapshot.previewHas(kind)) return error.Permission;
         const index = contract.Snapshot.previewIndex(kind) orelse return error.Argument;
         const executable = if (needed == 0)
-            self.configured_tools[index] orelse snapshot.previewTool(kind) orelse return error.Argument
+            self.configured_tools[index] orelse snapshot.savedHint(kind).executable orelse snapshot.previewTool(kind) orelse return error.Argument
         else
             identity.Path.init(bytes[0..needed]) catch return error.Argument;
         // No tool discovery or execution occurs here. Confirmation owns
@@ -829,12 +829,16 @@ pub const Binding = struct {
             self.local_review = null;
             self.recent.clear();
             self.setup_issue = .all_forgotten;
+            if (self.controller.current.snapshot) |*snapshot| snapshot.preview_saved = @splat(.{ .state = .absent });
         } else {
             const review = try self.reviewedCurrent();
             try (access.forget orelse return error.Unavailable)(access.ctx, &review);
             self.local_review = null;
             self.recent.clear();
             self.setup_issue = .forgotten;
+            if (self.controller.current.snapshot) |*snapshot| {
+                if (contract.Snapshot.previewIndex(review.kind)) |index| snapshot.preview_saved[index] = .{ .state = .absent };
+            }
         }
     }
 
@@ -1511,8 +1515,9 @@ const MockUi = struct {
         const self: *MockUi = @ptrCast(@alignCast(user orelse return abi.error_argument));
         if (id != 7 or callback == null or data == null) return abi.error_argument;
         const name = abi.slice(command) orelse return abi.error_argument;
-        const local = self.commands_expected == 10 and (panel.trustKind(name) != null or std.mem.eql(u8, name, panel.command_trust_confirm) or std.mem.eql(u8, name, panel.command_trust_cancel) or std.mem.eql(u8, name, panel.command_trust_reset));
-        if (panel.parseCommand(name) == null and !(self.commands_expected >= 4 and std.mem.eql(u8, name, panel.command_revoke)) and !local) return abi.error_argument;
+        const local = self.commands_expected >= 10 and (panel.trustKind(name) != null or std.mem.eql(u8, name, panel.command_trust_confirm) or std.mem.eql(u8, name, panel.command_trust_cancel) or std.mem.eql(u8, name, panel.command_trust_reset));
+        const saved = self.commands_expected == 14 and (std.mem.eql(u8, name, panel.command_trust_remember) or std.mem.eql(u8, name, panel.command_trust_reuse) or std.mem.eql(u8, name, panel.command_trust_forget) or std.mem.eql(u8, name, panel.command_trust_forget_all));
+        if (panel.parseCommand(name) == null and !(self.commands_expected >= 4 and std.mem.eql(u8, name, panel.command_revoke)) and !local and !saved) return abi.error_argument;
         self.subscriptions += 1;
         if (self.subscriptions == self.fail_subscribe_at) return abi.error_permission;
         self.callback = callback;
@@ -1552,7 +1557,7 @@ const MockUi = struct {
             .create = &create,
             .update = &update,
             .subscribe_command = &subscribe,
-            .get_state = if (self.commands_expected == 10) &getState else null,
+            .get_state = if (self.commands_expected >= 10) &getState else null,
             .unsubscribe = &unsubscribe,
             .close = &close,
         };
@@ -2191,6 +2196,20 @@ const LocalAccessFixture = struct {
     revoked: usize = 0,
     finished: usize = 0,
     resets: usize = 0,
+    forgotten: usize = 0,
+    forgotten_kind: ?identity.Kind = null,
+
+    fn forget(user: *anyopaque, review: *const panel.LocalReview) host_mod.Error!void {
+        const self: *LocalAccessFixture = @ptrCast(@alignCast(user));
+        self.forgotten += 1;
+        self.forgotten_kind = review.kind;
+    }
+
+    fn forgetAll(user: *anyopaque) host_mod.Error!void {
+        const self: *LocalAccessFixture = @ptrCast(@alignCast(user));
+        self.forgotten += 1;
+        self.forgotten_kind = null;
+    }
 
     fn authorize(user: *anyopaque, review: *const panel.LocalReview) host_mod.Error!Resolver {
         const self: *LocalAccessFixture = @ptrCast(@alignCast(user));
@@ -2309,4 +2328,41 @@ test "recent snapshots separate provider workspace and revalidated trust fingerp
     try std.testing.expect(cache.get(&git, @splat(2)) == null);
     cache.clear();
     try std.testing.expect(cache.get(&git, token) == null);
+}
+
+test "saved record can be reviewed and revoked without a discovered executable or CLI authorization" {
+    var mock: Mock = .{};
+    var preview: MockResolver = .{ .host_task = &mock };
+    var trusted: MockResolver = .{ .host_task = &mock };
+    var access: LocalAccessFixture = .{ .resolver = &trusted };
+    var model: MockUi = .{ .commands_expected = 14, .executable = "" };
+    var navigation: MockNavigation = .{};
+    var binding = try Binding.init(mock.table(), .en);
+    try binding.configureMetadataPreview(preview.resolver());
+    try binding.configureLocalAccess(.{ .ctx = &access, .authorize = &LocalAccessFixture.authorize, .revoke = &LocalAccessFixture.revoke, .finish = &LocalAccessFixture.finish, .reset = &LocalAccessFixture.reset, .forget = &LocalAccessFixture.forget, .forget_all = &LocalAccessFixture.forgetAll, .revoke_saved = &LocalAccessFixture.revoke });
+    try binding.openWithTable(model.table());
+    try binding.openNavigationWithTable(navigation.table());
+    try binding.pump();
+    mock.runWork();
+    try binding.pump();
+    mock.runWork();
+    try binding.pump();
+    binding.controller.current.snapshot.?.preview_kinds = 3;
+    binding.controller.current.snapshot.?.preview_saved[0] = .{ .state = .recorded, .executable = try identity.Path.init("C:\\old\\git.exe") };
+    binding.controller.current.snapshot.?.preview_saved[1] = .{ .state = .recorded, .executable = try identity.Path.init("C:\\old\\jj.exe") };
+    model.click(7, panel.command_trust_git);
+    try std.testing.expect(binding.local_review.?.executable.eql("C:\\old\\git.exe"));
+    try std.testing.expectEqual(@as(usize, 0), access.authorized);
+    model.click(7, panel.command_trust_forget);
+    try std.testing.expectEqual(@as(usize, 1), access.forgotten);
+    try std.testing.expectEqual(identity.Kind.git, access.forgotten_kind.?);
+    try std.testing.expectEqual(contract.SavedHint.State.absent, binding.controller.current.snapshot.?.preview_saved[0].state);
+    try std.testing.expectEqual(contract.SavedHint.State.recorded, binding.controller.current.snapshot.?.preview_saved[1].state);
+    model.click(7, panel.command_trust_forget_all);
+    try std.testing.expectEqual(@as(usize, 2), access.forgotten);
+    try std.testing.expectEqual(contract.SavedHint.State.absent, binding.controller.current.snapshot.?.preview_saved[1].state);
+    try std.testing.expect(binding.metadata_only);
+    try std.testing.expectEqual(@as(usize, 0), access.authorized);
+    try binding.requestStop();
+    try binding.finishLocalAccess();
 }

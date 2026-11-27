@@ -84,6 +84,14 @@ pub const CountAvailability = struct {
     behind: Availability = .not_queried,
 };
 
+/// Saved-record metadata is only an observation, never executable admission.
+/// A recorded path may no longer exist or match its original fingerprint.
+pub const SavedHint = struct {
+    pub const State = enum { not_checked, absent, recorded, unavailable };
+    state: State = .not_checked,
+    executable: ?identity.Path = null,
+};
+
 /// What a read-only summary can say. Absent fields carry the reason through
 /// `availability` instead of pretending the repository is empty.
 pub const Snapshot = struct {
@@ -102,6 +110,7 @@ pub const Snapshot = struct {
     remote_web: Text = .{},
     preview_kinds: u8 = 0,
     preview_tools: [3]?identity.Path = .{ null, null, null },
+    preview_saved: [3]SavedHint = @splat(.{}),
 
     pub fn previewIndex(kind: identity.Kind) ?usize {
         return switch (kind) {
@@ -115,6 +124,11 @@ pub const Snapshot = struct {
     pub fn previewHas(self: *const Snapshot, kind: identity.Kind) bool {
         const index = previewIndex(kind) orelse return false;
         return self.preview_kinds & (@as(u8, 1) << @as(u3, @intCast(index))) != 0;
+    }
+
+    pub fn savedHint(self: *const Snapshot, kind: identity.Kind) SavedHint {
+        const index = previewIndex(kind) orelse return .{};
+        return self.preview_saved[index];
     }
 
     pub fn previewTool(self: *const Snapshot, kind: identity.Kind) ?identity.Path {

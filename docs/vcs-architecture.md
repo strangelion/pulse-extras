@@ -334,5 +334,10 @@ Stable record identity is independent of mutable root or forge URL. The native
 project-first settings surface uses paged rows and explicit selection/edit
 version checks. Directory jump uses the pinned pulse.directories API on host
 workers and existing snapshot entry routing, never arbitrary shell execution.
-Lexical duplicate checks are conservative, not physical identity. Persistent
-execution grants are a separate unfinished security domain.
+Lexical duplicate checks are supplemented by explicit background fixed-drive
+identity observation on add/relink. Persistent local grants are kept in a
+separate DPAPI namespace and revalidated on command admission. Current-root
+preview can observe at most three saved records without CLI execution;
+observed metadata does not establish grant validity. Real host acceptance,
+unobservable physical aliases, and missing-root grant enumeration remain
+limitations.

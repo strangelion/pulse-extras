@@ -145,7 +145,7 @@ once. No claim that local trust is a filesystem/network sandbox.
 4d53927 already contains V2 migrated project bookmarks, 64-record capacity,
 12-row paging, name/tags/favorites/search/accepted-navigation recency, supported
 folder route and in-panel session reset. This follow-up adds explicit saved
-local trust and identity-bound stale snapshot reuse. [a676805 / 45856710161](https://github.com/strangelion/pulse-extras/actions/runs/45856710161) passed full regression. The selected-folder and project-identity follow-up requires its own exact regression.
+local trust and identity-bound stale snapshot reuse. [a676805 / 45856710161](https://github.com/strangelion/pulse-extras/actions/runs/45856710161) passed full regression. [a387067 / 45922243671](https://github.com/strangelion/pulse-extras/actions/runs/45922243671) passed all required lanes for selected-folder routing, project identity/cancellation and the earlier persistent trust code. Saved-record inspection and recency display require their own exact regression.
 
 **Outcome:** the project library is a primary, useful VCS entry, not a settings
 appendix; users can manage multiple projects without repeatedly typing paths.
@@ -390,5 +390,16 @@ Unobservable candidate roots fail closed; unobservable existing roots cannot
 be certified as duplicates and are not deleted. Editing metadata at an
 unchanged missing root remains possible. This is not a race-free identity
 registry, nor support for junctions or linked worktrees. Pending work blocks
-conflicting owner edits and is cancelled/drained at teardown. Full source CI,
-physical fixture coverage and real-host acceptance remain gates; P2B stays active.
+conflicting owner edits and is cancelled/drained at teardown. Full source CI passed at a387067. The deterministic alias/cancellation fixture is not a real filesystem alias test. Real-host acceptance remains deferred; P2B stays active pending exact new regression and exit review.
+
+The current-root metadata worker now inspects at most three saved approval
+slots for detected provider scopes. The UI distinguishes absent, observed
+but unverified, and unreadable records, and displays the stored tool path.
+An unavailable original executable does not prevent explicit review and
+scope revocation. Tool precedence is explicit entry, configured, saved,
+then discovered; reuse still requires complete original admission checks.
+No automatic execution, all-record scan, credential access, or new grant
+format. Revocation without a detectable repository marker remains possible
+via revoke-all; arbitrary grant enumeration is not implemented. Project
+rows show the recorded accepted-navigation order (not a wall-clock time).
+Exact new regression is required before declaring development complete.

@@ -414,6 +414,12 @@ const SavedLocal = struct {
             return self.kind == review.kind and review.root.eql(self.root);
         }
 
+        fn hint(self: Record, review: *const panel.LocalReview, generation: u64) Error!contract.SavedHint {
+            // Do not reveal a different project/provider occupying this slot.
+            if (self.generation != generation or !self.sameScope(review)) return .{ .state = .absent };
+            return .{ .state = .recorded, .executable = identity.Path.init(self.executable) catch return error.Parse };
+        }
+
         fn matches(self: Record, review: *const panel.LocalReview, generation: u64, fingerprint: [32]u8) bool {
             return self.generation == generation and self.sameScope(review) and review.executable.eql(self.executable) and std.mem.eql(u8, &self.fingerprint, &fingerprint);
         }
@@ -452,6 +458,16 @@ const SavedLocal = struct {
         errdefer allocator.free(decoded);
         _ = try Record.parse(decoded);
         return decoded;
+    }
+
+    fn inspect(review: *const panel.LocalReview) Error!contract.SavedHint {
+        const generation = try epoch();
+        const bytes = (try loadSlot(review)) orelse return .{ .state = .absent };
+        defer allocator.free(bytes);
+        const record = try Record.parse(bytes);
+        const result = try record.hint(review, generation);
+        if (try epoch() != generation) return error.Permission;
+        return result;
     }
 
     fn require(review: *const panel.LocalReview, generation: u64, fingerprint: [32]u8, expected: ?Nonce) Error!Nonce {
@@ -949,6 +965,13 @@ fn summarizePreview(user: *anyopaque, workspace: *const identity.Workspace) Erro
     const description = std.fmt.bufPrint(&detail, "Repository markers: {s}. Working-copy status not queried.", .{labels[0..used]}) catch return error.ResourceLimit;
     snapshot.detail = contract.Text.init(description) catch return error.Parse;
     suggestTools(&snapshot);
+    // Only the current root and detected provider scopes, on the existing
+    // metadata worker. A saved record is not a current identity/digest check.
+    for ([_]identity.Kind{ .git, .jj, .svn }, 0..) |kind, index| {
+        if (!snapshot.previewHas(kind)) continue;
+        const scope: panel.LocalReview = .{ .root = workspace.root, .kind = kind, .executable = .{}, .generation = 0 };
+        snapshot.preview_saved[index] = SavedLocal.inspect(&scope) catch .{ .state = .unavailable };
+    }
     if (snapshot.previewHas(.git)) {
         var path: [identity.max_path_bytes]u8 = undefined;
         var bytes: [4096]u8 = undefined;
@@ -1156,11 +1179,18 @@ test "saved local records pin exact root provider executable identity and epoch"
     const bytes = try SavedLocal.encode(&review, 9, digest, nonce, &buffer);
     const record = try SavedLocal.Record.parse(bytes);
     try std.testing.expect(record.matches(&review, 9, digest));
+    const hint = try record.hint(&review, 9);
+    try std.testing.expectEqual(contract.SavedHint.State.recorded, hint.state);
+    try std.testing.expect(hint.executable.?.eql(exe));
+    try std.testing.expectEqual(contract.SavedHint.State.absent, (try record.hint(&review, 10)).state);
     try std.testing.expectEqualSlices(u8, &nonce, &record.nonce);
     try std.testing.expect(!record.matches(&review, 10, digest));
     try std.testing.expect(!record.matches(&review, 9, @splat(0x5b)));
     review.kind = .jj;
     try std.testing.expect(!record.matches(&review, 9, digest));
+    const unrelated = try record.hint(&review, 9);
+    try std.testing.expectEqual(contract.SavedHint.State.absent, unrelated.state);
+    try std.testing.expect(unrelated.executable == null);
     review.kind = .git;
     try std.testing.expectError(error.Parse, SavedLocal.Record.parse(bytes[0 .. bytes.len - 1]));
     if (comptime builtin.os.tag == .windows) {

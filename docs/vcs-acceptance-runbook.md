@@ -361,4 +361,21 @@ cancel/deactivate during validation, unchanged missing-root metadata edit,
 no repository mutations and no execution grants. Existing unobservable roots
 are not certified unique. No HOST PASS or new release is claimed.
 
-Selected-folder follow-up run [45919918480](https://github.com/strangelion/pulse-extras/actions/runs/45919918480) failed compilation (C selection entry pointer and shadowed callback name); both errors are corrected in the next candidate. The identity worker now has explicit cancel, suppresses even raced completed results, and retains the immutable input through failed task release. Added deterministic identity fixtures for alias, missing root, cancel/release failure, and successful versioned write. These fixtures are not real filesystem alias or installed host evidence; exact new CI remains required.
+Selected-folder follow-up run [45919918480](https://github.com/strangelion/pulse-extras/actions/runs/45919918480) failed compilation (C selection entry pointer and shadowed callback name); both errors were corrected and [a387067 / 45922243671](https://github.com/strangelion/pulse-extras/actions/runs/45922243671) passed all required lanes. The identity worker now has explicit cancel, suppresses even raced completed results, and retains the immutable input through failed task release. Added deterministic identity fixtures for alias, missing root, cancel/release failure, and successful versioned write. These fixtures are not real filesystem alias or installed host evidence; exact new CI remains required.
+
+### Scoped saved-record inspection
+
+Current-root metadata preview reads the bounded DPAPI slot for each detected
+Git/JJ/SVN scope without launching a tool. An expired epoch or a collision
+with another scope reveals no record/path; malformed or unreadable data
+is shown as unavailable. A recorded path is explicitly NOT revalidated.
+Review uses the saved path when no explicit/configured path takes precedence;
+use the existing scope revoke action even if the executable is missing.
+Reuse still performs the full pin/digest/epoch/nonce checks. Refresh to
+observe changes from another window. Revoke-all remains the fallback for
+missing markers or unreadable scopes. No enumeration of all grants or
+changes to the strict approval store. Verify per-provider isolation, missing
+executable, stale navigation, concurrent revoke, and no CLI on inspect/revoke.
+The fixture exercises scoped review and revoke without CLI authorization;
+actual Windows persistence and host UI remain deferred. Project open order
+is shown as the host settings version of accepted navigation, not a timestamp.
