@@ -122,7 +122,6 @@ test "choices filter, deduplicate and retain an explicit empty selection" {
     try std.testing.expectEqualStrings("laptop", peers.selected(1).?);
 }
 
-
 test "bounded options never select beyond the represented rows" {
     var list: List = .{};
     var buffer: [32]u8 = undefined;

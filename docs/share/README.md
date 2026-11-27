@@ -407,3 +407,7 @@ embedded settings page reports the host's actual confirmation or conflict.
 A failed inventory query clears that category of choices, and manual refresh
 can retry a failed model update. The picker API is optional and does not
 replace the original explicit path validation. Session-only history remains.
+
+Dynamic short-code pairing: see [pairing implementation contract](pairing.md).
+The local pair-window policy and tests are present, but the network adapter
+and UI are not enabled; existing fingerprint enrollment remains in use.
