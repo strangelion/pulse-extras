@@ -47,3 +47,6 @@ The manual Refresh button remains required. Forced termination recovery is
 read-only and native destination-stage automatic recovery is not implemented.
 Report these limitations; never claim automatic restart recovery or stable
 release readiness. P3 multi-file, resume, and P4 directory access are separate.
+
+Windows CI verifies managed-mode saved-peer loopback (including protected
+store/spool admission). This is still distinct from the installed host test.

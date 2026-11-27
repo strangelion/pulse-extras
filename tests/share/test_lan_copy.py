@@ -22,13 +22,38 @@ def digest(path):
 
 
 class Child:
-    def __init__(self, args, log):
+    def __init__(self, args, log, managed=False):
         self.stderr = log.open("w+", encoding="utf-8")
-        self.process = subprocess.Popen(
-            [str(LAN), *map(str, args)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr,
-            text=True, encoding="utf-8", errors="replace", bufsize=1,
-        )
+        command = [str(LAN), *map(str, args)]
+        kwargs = {}
+        handle = None
+        try:
+            if managed:
+                import ctypes
+                import os
+                from ctypes import wintypes
+                kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+                kernel.CreateEventW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR)
+                kernel.CreateEventW.restype = wintypes.HANDLE
+                kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+                kernel.CloseHandle.restype = wintypes.BOOL
+                handle = kernel.CreateEventW(None, True, False, None)
+                if not handle:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                os.set_handle_inheritable(handle, True)
+                command[1:1] = ["--managed-cancel-handle", format(handle, "x")]
+                kwargs["startupinfo"] = subprocess.STARTUPINFO(lpAttributeList={"handle_list": [handle]})
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            self.process = subprocess.Popen(
+                command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr,
+                text=True, encoding="utf-8", errors="replace", bufsize=1, **kwargs,
+            )
+        except BaseException:
+            self.stderr.close()
+            raise
+        finally:
+            if handle:
+                kernel.CloseHandle(handle)
         self.lines = queue.Queue()
         self.history = []
         self.reader = threading.Thread(target=self.read, daemon=True)
@@ -128,13 +153,13 @@ class LanCopy(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="pulse-share-pair-") as temp:
             root = Path(temp).resolve(strict=True)
             a, b = root / "a", root / "b"
-            a.mkdir()
-            b.mkdir()
             def run(operation, store, *args, answer=None, want=0):
                 p = subprocess.run([str(LAN), operation, "--store", str(store), *args],
                                    input=answer, capture_output=True, text=True, timeout=30)
                 self.assertEqual(p.returncode, want, (p.stdout, p.stderr))
                 return p.stdout
+            run("private-init", a)
+            run("private-init", b)
             a_pin = run("identity-init", a).split()[-1]
             b_pin = run("identity-init", b).split()[-1]
             self.assertEqual(len(a_pin), 64)
@@ -145,7 +170,7 @@ class LanCopy(unittest.TestCase):
             self.assertIn(b_pin, run("peer-list", a))
             dest, spool = root / "destination", root / "spool"
             dest.mkdir()
-            spool.mkdir()
+            run("private-init", spool)
             for i in range(2):
                 source = root / f"paired-{i}.bin"
                 source.write_bytes(b"paired transfer" * 4096)
@@ -155,12 +180,12 @@ class LanCopy(unittest.TestCase):
                     "--supervisor", SUPERVISOR, "--supervisor-sha256", digest(SUPERVISOR),
                     "--worker", WORKER, "--worker-sha256", digest(WORKER),
                     "--store", b, "--paired", "a",
-                ], root / "receiver.log")
+                ], root / "receiver.log", managed=True)
                 try:
                     endpoint = receiver.expect("LISTEN ")
                     receiver.expect("PAIRED ")
                     sender = Child(["send", "--bind", "127.0.0.1", "--peer", endpoint,
-                                    "--source", source, "--store", a, "--paired", "b"], root / "sender.log")
+                                    "--source", source, "--store", a, "--paired", "b"], root / "sender.log", managed=True)
                     try:
                         sender.expect("PAIRED ")
                         receiver.expect("OFFER ")

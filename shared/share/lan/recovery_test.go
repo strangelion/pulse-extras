@@ -23,6 +23,9 @@ func TestPrivateDirectoryExclusive(t *testing.T){
 	path:=filepath.Join(root,"private")
 	if err:=createPrivateDirectory(path);err!=nil{t.Fatal(err)}
 	if err:=auditPrivateDirectory(path);err!=nil{t.Fatal(err)}
+	canonical,err:=filepath.EvalSymlinks(path)
+	if err!=nil{t.Fatal(err)}
+	if err:=auditPrivateDirectory(canonical);err!=nil{t.Fatal(err)}
 	ordinary:=filepath.Join(root,"ordinary")
 	if err:=os.Mkdir(ordinary,0700);err!=nil{t.Fatal(err)}
 	if err:=auditPrivateDirectory(ordinary);err==nil{t.Fatal("accepted an inherited ACL")}

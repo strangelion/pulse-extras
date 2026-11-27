@@ -351,3 +351,13 @@ are outputs; `real_host_accepted` remains false. No install, signing or release
 registration is performed. Use matching trusted helper inputs from a passed
 run. The developer only chooses an existing trusted parent for the fresh output.
 See [acceptance runbook](acceptance.md) for isolated profile and two-device tests.
+
+Windows path admission checks each existing directory component for reparse
+attributes, normalizes ordinary DOS aliases, verifies unchanged directory
+identity and fixed local volume, then checks the exact protected DACL. The
+2026-11-27 CI failure at `TestPrivateDirectoryExclusive` was a path-string
+comparison rejection, not a TLS or DPAPI failure. Short-name normalization
+is not proof of a reparse point. Tests cover ordinary paths and, where the
+OS permits, 8.3 aliases and directory symlinks. Saved-peer loopback now also
+uses inherited managed cancellation events and protected stores/spool in both
+child processes, without claiming actual Pulse host acceptance.
