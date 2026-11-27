@@ -33,7 +33,7 @@ pub const Request = struct {
     browse: bool = false,
     channels: Field = .{},
     sources: Field = .{},
-    resume: Field = .{},
+    resume_path: Field = .{},
     clipboard: Field = .{},
     delivery: Field = .{},
     remote_path: Field = .{},
@@ -553,7 +553,7 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
         },
         .receive => {
             if (request.batch) {
-                if (request.resume.len != 0) try command.pair("--resume", request.resume.slice());
+                if (request.resume_path.len != 0) try command.pair("--resume", request.resume_path.slice());
                 if (request.clipboard_receive) {
                     try command.arg("--accept-clipboard");
                     if (request.clipboard.len != 0) try command.pair("--clipboard-type", request.clipboard.slice());

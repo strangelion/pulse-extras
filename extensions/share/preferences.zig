@@ -29,8 +29,17 @@ pub const Values = struct {
 
     fn encode(self: *const Values, buffer: []u8) ![]const u8 {
         return std.fmt.bufPrint(buffer, "v3\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}", .{
-            self.value(0), self.value(1), self.value(2), self.value(4), self.value(5), self.value(6), self.value(8),
-            self.value(9), self.value(10), self.value(12), self.value(13),
+            self.value(0),
+            self.value(1),
+            self.value(2),
+            self.value(4),
+            self.value(5),
+            self.value(6),
+            self.value(8),
+            self.value(9),
+            self.value(10),
+            self.value(12),
+            self.value(13),
         });
     }
 

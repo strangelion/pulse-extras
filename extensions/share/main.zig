@@ -316,7 +316,7 @@ const Instance = struct {
             }
             next.browse = std.mem.eql(u8, batch_action, "share-root-offer") or std.mem.eql(u8, batch_action, "share-root-receive");
             if (mode == .receive) {
-                try self.readField("resume", &next.resume);
+                try self.readField("resume", &next.resume_path);
                 if (next.browse) {
                     try self.readField("remote-path", &next.remote_path);
                     try self.readField("browse-offset", &next.browse_offset);
