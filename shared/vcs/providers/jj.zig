@@ -194,7 +194,10 @@ pub const Jj = struct {
         const history = request.kind == .history or request.kind == .file_history;
         var outcome = self.execution.execute(self.runner, .{ .argv = argv, .timeout_ns = 10 * std.time.ns_per_s, .stdout_limit = if (history) 128 * 1024 else contract.DetailText.capacity, .stderr_limit = 64 * 1024 }) catch |err| return mapRunError(err);
         defer outcome.deinit();
-        if (!outcome.succeeded()) return mapFailure(outcome.stderr);
+        if (!outcome.succeeded()) {
+            if (@import("builtin").is_test and self.execution == .compatibility) std.debug.print("VCS fixture detail {s}: exit={any}, stderr={s}\n", .{ @tagName(request.kind), outcome.exit_code, outcome.stderr[0..@min(outcome.stderr.len, 1024)] });
+            return mapFailure(outcome.stderr);
+        }
         var remaining: []const u8 = outcome.stdout;
         if (history) {
             for (0..request.offset) |_| {

@@ -151,6 +151,10 @@ jobs:
           CI_LEVEL: ${{ needs.scope.outputs.level }}
           PULSE_REQUIRE_GIT: '1'
           PULSE_REQUIRE_JJ: '1'
+          # Test fixtures must not inherit runner-installed LFS or system config.
+          # Local repository configuration remains visible to the guard tests.
+          GIT_CONFIG_NOSYSTEM: '1'
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/pulse-vcs-ci-no-global-config
       - name: Build production extensions
         if: needs.scope.outputs.level != 'companion'
         run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all

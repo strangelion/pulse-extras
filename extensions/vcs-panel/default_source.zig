@@ -761,7 +761,7 @@ const LocalSession = struct {
         self.checkSaved(review) catch return error.UnapprovedExecutable;
         if (review.kind == .svn and contract.detailAllowed(.svn, review.executable.slice(), review.root.slice(), request.argv)) {
             const arg = request.argv[request.argv.len - 1];
-            const target = arg[0 .. arg.len - 1];
+            const target = if (std.mem.endsWith(u8, arg, "@")) arg[0 .. arg.len - 1] else arg;
             if (!review.root.eql(target)) {
                 evidence.observeLocalTarget(target) catch return error.UnapprovedExecutable;
                 // Do not treat a nested checkout as the approved working copy.

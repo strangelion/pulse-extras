@@ -276,13 +276,19 @@ pub const Git = struct {
             const guard_args = try guard.build(.git, self.executable.slice(), workspace.root.slice(), &.{ .kind = guard_kind });
             var checked = self.execution.execute(self.runner, .{ .argv = guard_args, .timeout_ns = 5 * std.time.ns_per_s, .stdout_limit = 4096, .stderr_limit = 4096 }) catch |err| return mapRunError(err);
             defer checked.deinit();
-            if (checked.status != .exited or checked.exit_code != 1 or checked.stdout.len != 0 or checked.stderr.len != 0) return error.Permission;
+            if (checked.status != .exited or checked.exit_code != 1 or checked.stdout.len != 0 or checked.stderr.len != 0) {
+                if (@import("builtin").is_test and self.execution == .compatibility) std.debug.print("Git fixture guard {s}: exit={any}, stdout bytes={d}, stderr bytes={d}\n", .{ @tagName(guard_kind), checked.exit_code, checked.stdout.len, checked.stderr.len });
+                return error.Permission;
+            }
         }
         var command: contract.DetailCommand = .{};
         const argv = try command.build(.git, self.executable.slice(), workspace.root.slice(), request);
         var outcome = self.execution.execute(self.runner, .{ .argv = argv, .timeout_ns = 10 * std.time.ns_per_s, .stdout_limit = contract.DetailText.capacity, .stderr_limit = 64 * 1024 }) catch |err| return mapRunError(err);
         defer outcome.deinit();
-        if (!outcome.succeeded()) return mapFailure(outcome.stderr);
+        if (!outcome.succeeded()) {
+            if (@import("builtin").is_test and self.execution == .compatibility) std.debug.print("VCS fixture detail {s}: exit={any}, stderr={s}\n", .{ @tagName(request.kind), outcome.exit_code, outcome.stderr[0..@min(outcome.stderr.len, 1024)] });
+            return mapFailure(outcome.stderr);
+        }
         return contract.DetailText.init(outcome.stdout);
     }
 

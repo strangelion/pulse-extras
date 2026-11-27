@@ -483,3 +483,14 @@ allows only the exact GIT_NO_LAZY_FETCH=1 environment value, suppresses
 permission-denied detail results and rejects an SVN target in a nested
 checkout. Adds working diff and environment regression assertions. Exact
 new full CI is mandatory; the previous failed gate is not a test pass.
+
+P3A follow-up regression 5e70df2 / 45928869724 passed formatting and Linux
+compilation, but the Linux integration gate reported 683 passed, 15 skipped,
+3 failed (Git working diff guard, JJ file history, SVN working diff).
+This repair isolates the compatibility fixture from ambient system/global
+Git configuration, retains the deliberate local-filter denial, uses a fixed
+JJ commit-ID/file-ancestry revset, and supplies a plain non-pegged SVN
+working-copy diff target with empty depth (no directory recursion).
+Only compatibility test builds emit bounded detail failure diagnostics;
+approved host sessions do not log raw tool output. These repairs require
+the exact new CI and installed acceptance remains deferred.

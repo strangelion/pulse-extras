@@ -398,7 +398,7 @@ const detail_specs = [_]Spec{
     .{ .provider = .git, .kind = .refs, .args = &.{ "$exe", "--no-pager", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "$root", "for-each-ref", "--count=128", "--format=%(objectname) %(refname)", "refs/heads", "refs/tags", "refs/remotes" } },
     .{ .provider = .git, .kind = .workspaces, .args = &.{ "$exe", "--no-pager", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "$root", "worktree", "list", "--porcelain" } },
     .{ .provider = .jj, .kind = .history, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "log", "-r", "$ancestors", "--no-graph", "$jj_limit", "-T", "commit_id ++ \" \" ++ change_id ++ \" \" ++ description.first_line() ++ \"\\n\"" } },
-    .{ .provider = .jj, .kind = .file_history, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "log", "-r", "$ancestors", "--no-graph", "$jj_limit", "-T", "commit_id ++ \" \" ++ change_id ++ \" \" ++ description.first_line() ++ \"\\n\"", "$fileset" } },
+    .{ .provider = .jj, .kind = .file_history, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "log", "-r", "$file_ancestors", "--no-graph", "$jj_limit", "-T", "commit_id ++ \" \" ++ change_id ++ \" \" ++ description.first_line() ++ \"\\n\"" } },
     .{ .provider = .jj, .kind = .revision_info, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "log", "-r", "$rev", "--no-graph", "-T", "commit_id ++ \"\\n\" ++ change_id ++ \"\\n\" ++ description" } },
     .{ .provider = .jj, .kind = .working_diff, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "diff", "--git", "-r", "$rev", "$fileset" } },
     .{ .provider = .jj, .kind = .revision_diff, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "diff", "--git", "-r", "$rev", "$fileset" } },
@@ -407,7 +407,7 @@ const detail_specs = [_]Spec{
     .{ .provider = .jj, .kind = .workspaces, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "workspace", "list" } },
     .{ .provider = .jj, .kind = .operations, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "op", "log", "--no-graph", "--limit", "32" } },
     .{ .provider = .svn, .kind = .local_info, .args = &.{ "$exe", "info", "--non-interactive", "--no-auth-cache", "--xml", "--", "$target" } },
-    .{ .provider = .svn, .kind = .working_diff, .args = &.{ "$exe", "diff", "--non-interactive", "--no-auth-cache", "--internal-diff", "--", "$target" } },
+    .{ .provider = .svn, .kind = .working_diff, .args = &.{ "$exe", "diff", "--non-interactive", "--no-auth-cache", "--internal-diff", "--depth", "empty", "--", "$plain_target" } },
     .{ .provider = .svn, .kind = .content, .args = &.{ "$exe", "cat", "--non-interactive", "--no-auth-cache", "-r", "BASE", "--", "$target" } },
     .{ .provider = .svn, .kind = .properties, .args = &.{ "$exe", "proplist", "--non-interactive", "--no-auth-cache", "--xml", "--", "$target" } },
 };
@@ -424,9 +424,10 @@ fn eqArg(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-fn validSvnTarget(root: []const u8, value: []const u8) bool {
-    if (!std.mem.endsWith(u8, value, "@")) return false;
-    const target = value[0 .. value.len - 1];
+fn validSvnTarget(root: []const u8, value: []const u8, peg: bool) bool {
+    if (peg and !std.mem.endsWith(u8, value, "@")) return false;
+    const target = if (peg) value[0 .. value.len - 1] else value;
+    if (std.mem.indexOfScalar(u8, target, '@') != null) return false;
     if (eqArg(target, root)) return true;
     if (target.len <= root.len + 1 or !std.mem.startsWith(u8, target, root) or target[root.len] != std.fs.path.sep) return false;
     const relative = target[root.len + 1 ..];
@@ -452,7 +453,18 @@ fn matchToken(kind: identity.Kind, root: []const u8, exe: []const u8, token: []c
         const n = std.fmt.parseInt(u16, actual[8..], 10) catch return false;
         return n >= 32 and n <= 256 and n % 32 == 0;
     }
-    if (eqArg(token, "$ancestors")) return std.mem.startsWith(u8, actual, "::") and safeRevision(kind, actual[2..]);
+    if (eqArg(token, "$ancestors")) {
+        const prefix = "::commit_id(";
+        return actual.len > prefix.len and std.mem.startsWith(u8, actual, prefix) and actual[actual.len - 1] == ')' and safeRevision(kind, actual[prefix.len .. actual.len - 1]);
+    }
+    if (eqArg(token, "$file_ancestors")) {
+        const prefix = "::commit_id(";
+        const middle = ") & files(root-file:\"";
+        if (!std.mem.startsWith(u8, actual, prefix) or !std.mem.endsWith(u8, actual, "\")")) return false;
+        const boundary = std.mem.indexOf(u8, actual, middle) orelse return false;
+        if (boundary < prefix.len or boundary + middle.len + 2 >= actual.len) return false;
+        return safeRevision(kind, actual[prefix.len..boundary]) and safeRelativePath(actual[boundary + middle.len .. actual.len - 2]);
+    }
     if (eqArg(token, "$blob")) {
         const colon = std.mem.indexOfScalar(u8, actual, ':') orelse return false;
         return safeRevision(kind, actual[0..colon]) and safeRelativePath(actual[colon + 1 ..]);
@@ -461,7 +473,8 @@ fn matchToken(kind: identity.Kind, root: []const u8, exe: []const u8, token: []c
         const prefix = "root-file:\"";
         return actual.len > prefix.len and std.mem.startsWith(u8, actual, prefix) and actual[actual.len - 1] == '"' and safeRelativePath(actual[prefix.len .. actual.len - 1]);
     }
-    if (eqArg(token, "$target")) return validSvnTarget(root, actual);
+    if (eqArg(token, "$target")) return validSvnTarget(root, actual, true);
+    if (eqArg(token, "$plain_target")) return !eqArg(root, actual) and validSvnTarget(root, actual, false);
     return eqArg(token, actual);
 }
 
@@ -508,17 +521,20 @@ pub const DetailCommand = struct {
                     if (request.offset > 224 or request.offset % 32 != 0) return error.ResourceLimit;
                     break :blk std.fmt.bufPrint(&self.skip, "--limit={d}", .{request.offset + 32}) catch return error.ResourceLimit;
                 } else if (eqArg(token, "$ancestors"))
-                    std.fmt.bufPrint(&self.scratch, "::{s}", .{rev}) catch return error.ResourceLimit
+                    std.fmt.bufPrint(&self.scratch, "::commit_id({s})", .{rev}) catch return error.ResourceLimit
+                else if (eqArg(token, "$file_ancestors"))
+                    std.fmt.bufPrint(&self.scratch, "::commit_id({s}) & files(root-file:\"{s}\")", .{ rev, path }) catch return error.ResourceLimit
                 else if (eqArg(token, "$blob"))
                     std.fmt.bufPrint(&self.scratch, "{s}:{s}", .{ rev, path }) catch return error.ResourceLimit
                 else if (eqArg(token, "$fileset"))
                     std.fmt.bufPrint(&self.scratch, "root-file:\"{s}\"", .{path}) catch return error.ResourceLimit
-                else if (eqArg(token, "$target")) blk: {
+                else if (eqArg(token, "$target") or eqArg(token, "$plain_target")) blk: {
+                    const suffix = if (eqArg(token, "$target")) "@" else "";
                     if (path.len == 0 and request.kind != .local_info and request.kind != .properties) return error.Permission;
                     const target = if (path.len == 0)
-                        std.fmt.bufPrint(&self.scratch, "{s}@", .{root}) catch return error.ResourceLimit
+                        std.fmt.bufPrint(&self.scratch, "{s}{s}", .{ root, suffix }) catch return error.ResourceLimit
                     else
-                        std.fmt.bufPrint(&self.scratch, "{s}" ++ std.fs.path.sep_str ++ "{s}@", .{ root, path }) catch return error.ResourceLimit;
+                        std.fmt.bufPrint(&self.scratch, "{s}" ++ std.fs.path.sep_str ++ "{s}{s}", .{ root, path, suffix }) catch return error.ResourceLimit;
                     for (self.scratch[root.len..target.len]) |*byte| {
                         if (byte.* == '/') byte.* = std.fs.path.sep;
                     }
@@ -691,4 +707,38 @@ test "detail text distinguishes binary encoding and resource limit" {
     try std.testing.expectEqualStrings("", detail.nextChunk(&cursor).?);
     try std.testing.expectEqualStrings("中文", detail.nextChunk(&cursor).?);
     try std.testing.expect(detail.nextChunk(&cursor) == null);
+}
+
+test "SVN non-pegged diff uses a plain local file and excludes directory recursion" {
+    const root = if (@import("builtin").os.tag == .windows) "C:\\repo" else "/repo";
+    var command: DetailCommand = .{};
+    const argv = try command.build(.svn, "svn", root, &.{ .kind = .working_diff, .path = try identity.Path.init("dir/a.txt") });
+    const target = argv[argv.len - 1];
+    try std.testing.expect(!std.mem.endsWith(u8, target, "@"));
+    try std.testing.expect(detailAllowed(.svn, "svn", root, argv));
+    command.argv[argv.len - 1] = root;
+    try std.testing.expect(!detailAllowed(.svn, "svn", root, command.argv[0..argv.len]));
+    command.argv[argv.len - 1] = "https://example.invalid/repo";
+    try std.testing.expect(!detailAllowed(.svn, "svn", root, command.argv[0..argv.len]));
+    const content = try command.build(.svn, "svn", root, &.{ .kind = .content, .path = try identity.Path.init("dir/a.txt") });
+    try std.testing.expect(std.mem.endsWith(u8, content[content.len - 1], "@"));
+}
+
+test "JJ file history is an exact anchored revision intersection" {
+    const rev = try identity.RevisionId.init(.jj, "0123456789012345678901234567890123456789");
+    const operation_bytes: [128]u8 = @splat('a');
+    var command: DetailCommand = .{};
+    const argv = try command.build(.jj, "jj", "repo", &.{ .kind = .file_history, .revision = rev, .operation = try Text.init(&operation_bytes), .path = try identity.Path.init("dir/a b.txt") });
+    try std.testing.expect(detailAllowed(.jj, "jj", "repo", argv));
+    var found = false;
+    for (argv, 0..) |arg, i| {
+        if (std.mem.startsWith(u8, arg, "::commit_id(")) {
+            try std.testing.expectEqualStrings("::commit_id(0123456789012345678901234567890123456789) & files(root-file:\"dir/a b.txt\")", arg);
+            command.argv[i] = "::commit_id(0123456789012345678901234567890123456789) | all()";
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+    try std.testing.expect(!detailAllowed(.jj, "jj", "repo", command.argv[0..argv.len]));
 }
