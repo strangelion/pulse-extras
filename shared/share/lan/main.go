@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -171,7 +170,7 @@ func sender(ctx context.Context,c console,args []string) error {
 	conn:=tls.Client(raw,tlsConfig(id,pin,false))
 	if err:=raw.SetDeadline(time.Now().Add(10*time.Second));err!=nil{return err}
 	if err:=conn.HandshakeContext(ctx);err!=nil{return fmt.Errorf("pairing failed: %w",err)}
-	if err:=sendFile(conn,file,offer{name:name,size:size,digest:digest});err!=nil{return err}
+	if err:=sendFileProgress(conn,file,offer{name:name,size:size,digest:digest},consoleProgress);err!=nil{return err}
 	fmt.Println("COMPLETED remote commit acknowledged")
 	return nil
 }
@@ -216,12 +215,7 @@ func (n nativeCommit) commit(o offer,path string) error {
 	if err:=verifyBinary(n.worker,n.workerPin);err!=nil{return err}
 	ctx,cancel:=context.WithTimeout(n.ctx,10*time.Minute)
 	defer cancel()
-	cmd:=exec.CommandContext(ctx,n.supervisor,"--confirm-verified-copy",n.worker,
-		fmt.Sprintf("%x",n.workerPin),path,n.destination,o.name,fmt.Sprintf("%x",o.digest))
-	cmd.Stdout=io.Discard
-	cmd.Stderr=os.Stderr
-	if err:=cmd.Run();err!=nil{return fmt.Errorf("native commit failed: %w",err)}
-	return nil
+	return runNativeCommit(ctx,n.supervisor,n.worker,fmt.Sprintf("%x",n.workerPin),path,n.destination,o.name,fmt.Sprintf("%x",o.digest))
 }
 
 func receiver(ctx context.Context,c console,args []string) error {
@@ -295,10 +289,10 @@ func receiver(ctx context.Context,c console,args []string) error {
 		defer stopTransfer()
 		stopAnnounce()
 		listener.Close()
-		err=receiveFile(conn,sp,func(o offer)(bool,error){
+		err=receiveFileProgress(conn,sp,func(o offer)(bool,error){
 			line,err:=c.prompt(fmt.Sprintf("OFFER %q (%d bytes), accept? Enter yes:",o.name,o.size))
 			return line=="yes",err
-		},native.commit)
+		},native.commit,consoleProgress)
 		if err!=nil{return err}
 		fmt.Println("COMPLETED local file committed")
 		return nil
@@ -313,6 +307,12 @@ func run(ctx context.Context,args []string) error {
 	c:=console{ctx,scanner}
 	switch args[0]{
 	case "identity-init","identity-show","peer-add","peer-list","peer-revoke":return manageTrust(c,args[0],args[1:])
+	case "private-init","recovery-list":
+		f:=flags(args[0])
+		root:=f.String("store","","explicit absolute directory")
+		if err:=noExtra(f,args[1:]);err!=nil{return err}
+		if args[0]=="private-init"{return createPrivateDirectory(*root)}
+		return inspectRecovery(*root)
 	case "send":return sender(ctx,c,args[1:])
 	case "receive":return receiver(ctx,c,args[1:])
 	case "discover":
@@ -325,6 +325,8 @@ func run(ctx context.Context,args []string) error {
 	default:return errors.New("unknown operation")
 	}
 }
+
+func consoleProgress(done,total uint64){fmt.Printf("PROGRESS %d %d\n",done,total)}
 
 func main(){
 	ctx,cancel:=signal.NotifyContext(context.Background(),os.Interrupt)

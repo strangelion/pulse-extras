@@ -267,10 +267,8 @@ LAN and host lifecycle acceptance remain outstanding.
 The panel uses the V1 UI model `get_state` and host-owned tasks. It supports
 one selected regular file, explicit local IP/peer address, existing saved peer
 and store, explicit receive destination and private spool, plus discover,
-send, receive, refresh and cancel. No automatic reception. A separate console
-still shows discovery and the per-file approval prompt; the UI task tracks
-completion and cancellation. Initial identity creation and peer enrollment
-remain in the CLI. Closing a panel does not silently cancel its task; use the
+send, receive, refresh and cancel. No automatic reception. The UI task reports discovery and per-file approval
+through inherited pipes and includes identity creation and peer management. Closing a panel does not silently cancel its task; use the
 cancel button or disable the extension. On re-open, refresh the retained task.
 
 Build the three sibling executables first, then bind their exact SHA-256s
@@ -282,9 +280,37 @@ tools. Never infer trust from PATH or a user-entered executable path.
 The worker task checks all three digest-pinned regular local sibling files,
 keeps their handles open through the child lifetime, launches the LAN process
 suspended, assigns a private job (three process cap, 512 MiB total commit),
-then resumes with its own console. Only the cancellation event is inherited.
+then resumes without a console. Only the cancellation event and local standard
+input/output pipe ends are inherited.
 Host cancellation signals it, allows a bounded grace period, and drains the
 job. Forced termination or cancellation during P1 commit can leave a stage or
-an already committed file; report uncertain, never promise rollback. Recovery,
-fully native peer/approval UI, and physical two-PC and host lifecycle testing
-remain outstanding. This is not a production release.
+an already committed file; report uncertain, never promise rollback. Read-only recovery inspection is available; durable restart recovery,
+physical two-PC and host lifecycle testing remain outstanding. This is not a production release.
+
+### P2 managed panel follow-up
+
+The development panel now uses bounded inherited input/output pipes rather than
+a separate console. Refresh displays the current task message; approve or decline
+only after reviewing the current generation of the prompt. Device identity,
+peer listing/enrollment/revocation, explicit private-directory creation and
+read-only recovery inspection are task commands. No silent acceptance. The
+same `Store` field selects the explicit directory for private-init/recovery-list.
+Full host and two-device acceptance are still required.
+
+Byte progress is emitted at most four times per second plus start/end; the
+host task reports completed/total bytes. The private-directory command creates
+only a new current-user-only protected DACL directory, never modifies an
+existing directory. Recovery inspection is intentionally read-only: names are
+unverified hints and do not authorize deletion. Automatic restart cleanup of
+P1 or network stages needs a separate durable ownership journal and remains
+unimplemented. UI/host acceptance is still required.
+
+The LAN process now sends P1 a private inherited cancellation event and allows
+an eight-second graceful commit cleanup before forced termination. The outer
+host job still drains the process tree; a lost receipt or forced interruption
+remains an uncertain outcome. New CI tests cover exclusive private-directory
+creation, non-destructive recovery inspection, progress and prompt generation.
+
+The Windows CLI integration also starts a receive session with an inherited
+cancellation event and verifies cancellation while awaiting pairing leaves
+no destination or spool files. This is not an actual Pulse host UI test.

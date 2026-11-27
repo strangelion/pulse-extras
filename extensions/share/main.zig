@@ -8,13 +8,13 @@ const context = @import("pulse_context");
 const ui = @import("pulse_ui_model");
 const diag = @import("pulse_diagnostics");
 
-const raw = @import("pulse_raw");
+const pulse_raw = @import("pulse_raw");
 const async_host = @import("pulse_async_host");
 const managed = @import("managed.zig");
 const allocator = std.heap.page_allocator;
-const command_names = [_][]const u8{ "share-discover", "share-send", "share-receive", "share-refresh", "share-cancel" };
-const field_names = [_][]const u8{ "bind", "peer", "store", "paired", "destination", "spool", "port" };
-const field_labels = [_][]const u8{ "本机 IP / Local IP", "对端 IP:端口 / Peer", "设备存储目录 / Store", "已配对设备 / Peer label", "接收目录 / Destination", "私有暂存目录 / Spool", "监听端口 / Port" };
+const command_names = [_][]const u8{ "share-discover", "share-send", "share-receive", "share-refresh", "share-cancel", "share-identity-init", "share-identity-show", "share-peer-add", "share-peer-list", "share-peer-revoke", "share-private-init", "share-recovery-list", "share-approve", "share-decline" };
+const field_names = [_][]const u8{ "bind", "peer", "store", "paired", "destination", "spool", "port", "fingerprint" };
+const field_labels = [_][]const u8{ "本机 IP / Local IP", "对端 IP:端口 / Peer", "设备存储目录 / Store", "已配对设备 / Peer label", "接收目录 / Destination", "私有暂存目录 / Spool", "监听端口 / Port", "对端完整 SHA-256 / Peer fingerprint" };
 
 const Instance = struct {
     host: host_mod.Host,
@@ -23,10 +23,13 @@ const Instance = struct {
     panel: ?ui.Panel = null,
     task: ?async_host.Task = null,
     request: managed.Request = .{},
+    decisions: managed.Decisions = .{},
+    shown_prompt: u32 = 0,
     selected: managed.Field = .{},
     active: bool = false,
 
     fn close(self: *Instance) host_mod.Error!void {
+        self.shown_prompt = 0;
         if (self.panel) |*panel| {
             try panel.close();
             self.panel = null;
@@ -40,21 +43,50 @@ const Instance = struct {
         }
     }
 
+    const Snapshot = struct {
+        text: [4096]u8 = undefined,
+        len: usize = 0,
+        fn capture(user: ?*anyopaque, snap: [*c]const pulse_raw.PulseTaskSnapshot) callconv(.c) void {
+            const self: *Snapshot = @ptrCast(@alignCast(user orelse return));
+            if (snap == null or snap.*.size < @sizeOf(pulse_raw.PulseTaskSnapshot)) return;
+            const v = snap.*.progress.current_item;
+            if (v.length > self.text.len) return;
+            const value = abi.slice(v) orelse return;
+            @memcpy(self.text[0..value.len], value);
+            self.len = value.len;
+        }
+    };
+
     fn refresh(self: *Instance) void {
+        self.shown_prompt = 0;
         if (self.task) |*task| {
-            if (!task.occupied()) return self.status("空闲 / Idle");
+            if (!task.occupied()) return;
             const state = task.poll() catch return self.status("任务状态不可用 / Task state unavailable");
-            switch (state) {
-                .running => self.status("运行中 / Running — see separate console"),
-                .cancelling => self.status("正在取消 / Cancelling"),
-                .completed => self.status("完成 / Completed"),
-                .cancelled => self.status("已取消 / Cancelled"),
-                .failed, .partial => self.status("失败或结果不确定 / Failed or uncertain — inspect task details"),
+            var snap: Snapshot = .{};
+            const get = task.table.get orelse return;
+            host_mod.mapStatus(get(task.table.context, task.id, &Snapshot.capture, &snap)) catch return self.status("任务详情不可用");
+            const value = snap.text[0..snap.len];
+            const prefix: []const u8 = switch (state) {
+                .running => "运行中 / Running",
+                .cancelling => "正在取消 / Cancelling",
+                .completed => "完成 / Completed",
+                .cancelled => "已取消 / Cancelled",
+                .failed, .partial => "失败或结果不确定 / Failed or uncertain",
+            };
+            var buffer: [4300]u8 = undefined;
+            const detail = std.fmt.bufPrint(&buffer, "{s}\n{s}", .{ prefix, value }) catch prefix;
+            const panel = if (self.panel) |*p| p else return;
+            const states = [_]ui.State{.{ .key = abi.view("status"), .value = abi.view(detail) }};
+            panel.setStates(&states) catch return;
+            if (state == .running and std.mem.startsWith(u8, value, "PROMPT ")) {
+                const stop = std.mem.indexOfScalar(u8, value[7..], ' ') orelse return;
+                const generation = std.fmt.parseInt(u32, value[7..][0..stop], 10) catch 0;
+                if (generation > 0 and generation <= 16) self.shown_prompt = generation;
             }
             if (state.terminal()) task.releaseTerminal() catch {
                 self.status("终态任务尚未释放 / Terminal task not released");
             };
-        } else self.status("空闲 / Idle");
+        }
     }
 
     fn readField(self: *Instance, key: []const u8, field: *managed.Field) host_mod.Error!void {
@@ -75,11 +107,16 @@ const Instance = struct {
             self.task = try async_host.Task.init(try async_host.taskTable(self.host));
         }
         var next: managed.Request = .{ .mode = mode };
-        try self.readField("bind", &next.bind);
-        if (mode != .discover) {
-            try self.readField("store", &next.store);
-            try self.readField("paired", &next.paired);
+        switch (mode) {
+            .discover, .send, .receive => try self.readField("bind", &next.bind),
+            else => {},
         }
+        if (mode != .discover) try self.readField("store", &next.store);
+        switch (mode) {
+            .send, .receive, .peer_add, .peer_revoke => try self.readField("paired", &next.paired),
+            else => {},
+        }
+        if (mode == .peer_add) try self.readField("fingerprint", &next.fingerprint);
         if (mode == .send) {
             next.source = self.selected;
             try self.readField("peer", &next.peer);
@@ -91,18 +128,21 @@ const Instance = struct {
         }
         next.validate() catch return error.Argument;
         self.request = next;
-        var descriptor = std.mem.zeroes(raw.PulseTaskDescriptor);
-        descriptor.size = @sizeOf(raw.PulseTaskDescriptor);
+        self.shown_prompt = 0;
+        self.decisions.answer.store(0, .release);
+        var descriptor = std.mem.zeroes(pulse_raw.PulseTaskDescriptor);
+        descriptor.size = @sizeOf(pulse_raw.PulseTaskDescriptor);
         descriptor.title = abi.view(switch (mode) {
             .discover => "Pulse Share discovery",
             .send => "Pulse Share send selected file",
             .receive => "Pulse Share receive",
+            else => "Pulse Share device management",
         });
         descriptor.type = abi.view("share");
         descriptor.work = &work;
         descriptor.user = self;
         try self.task.?.start(&descriptor);
-        self.status("已启动 / Started — review the separate console");
+        self.status("已启动 / Started — 刷新查看详情");
     }
 
     fn open(self: *Instance, count: ?u32) host_mod.Error!void {
@@ -112,16 +152,16 @@ const Instance = struct {
             std.fmt.bufPrint(&selection_buffer, "Selected items / 已选中: {d}", .{n}) catch return error.State
         else
             "Selection unavailable / 选中项不可用";
-        var children: [17]ui.Node = undefined;
+        var children: [5 + field_names.len + command_names.len]ui.Node = undefined;
         children[0] = ui.text("Pulse Share / 文件共享");
         children[0].id = abi.view("title");
         children[1] = ui.text(selection);
         children[1].id = abi.view("selection");
         children[2] = ui.text(if (self.selected.len != 0) self.selected.slice() else "请选择一个普通文件以发送 / Select one regular file to send");
         children[2].id = abi.view("source");
-        children[3] = ui.text(if (managed.configured()) "使用已配对设备；接收确认在独立控制台 / Saved peers; confirm receives in console" else "未绑定开发版 Worker 摘要 / Development worker digests not configured");
+        children[3] = ui.text(if (managed.configured()) "使用已配对设备；刷新后核对请求再确认 / Refresh and review requests before approval" else "未绑定开发版 Worker 摘要 / Development worker digests not configured");
         children[3].id = abi.view("notice");
-        var states: [8]ui.State = undefined;
+        var states: [field_names.len + 1]ui.State = undefined;
         for (field_names, field_labels, 0..) |key, label, i| {
             var node = ui.node(ui.NodeKind.text_input);
             node.id = abi.view(key);
@@ -133,14 +173,14 @@ const Instance = struct {
         var status_node = ui.node(ui.NodeKind.text);
         status_node.id = abi.view("status-line");
         status_node.binding = .{ .present = 1, .value = abi.view("state.status") };
-        children[11] = status_node;
-        states[7] = .{ .key = abi.view("status"), .value = abi.view("空闲 / Idle") };
-        const labels = [_][]const u8{ "发现设备 / Discover", "发送选中文件 / Send", "接收文件 / Receive", "刷新任务 / Refresh", "取消任务 / Cancel" };
+        children[4 + field_names.len] = status_node;
+        states[field_names.len] = .{ .key = abi.view("status"), .value = abi.view("空闲 / Idle") };
+        const labels = [_][]const u8{ "发现设备 / Discover", "发送选中文件 / Send", "接收文件 / Receive", "刷新任务 / Refresh", "取消任务 / Cancel", "创建设备身份", "显示身份指纹", "添加配对", "列出配对", "撤销配对", "创建私有目录", "检查残留暂存", "批准当前请求", "拒绝当前请求" };
         var declared: [command_names.len]abi.StringView = undefined;
         for (command_names, labels, 0..) |name, label, i| {
             declared[i] = abi.view(name);
-            children[12 + i] = ui.button(label, name);
-            children[12 + i].id = abi.view(name);
+            children[5 + field_names.len + i] = ui.button(label, name);
+            children[5 + field_names.len + i].id = abi.view(name);
         }
         var root = ui.node(ui.NodeKind.stack);
         root.id = abi.view("share-root");
@@ -164,18 +204,17 @@ const Instance = struct {
     }
 };
 
-fn work(user: ?*anyopaque, context_ptr: [*c]const raw.PulseTaskContext) callconv(.c) raw.PulseTaskState {
+fn work(user: ?*anyopaque, context_ptr: [*c]const pulse_raw.PulseTaskContext) callconv(.c) pulse_raw.PulseTaskState {
     const self: *Instance = @ptrCast(@alignCast(user orelse return 4));
     if (context_ptr == null) return 4;
-    const ctx: *const raw.PulseTaskContext = &context_ptr.*;
-    var progress = std.mem.zeroes(raw.PulseTaskProgress);
-    progress.size = @sizeOf(raw.PulseTaskProgress);
+    const ctx: *const pulse_raw.PulseTaskContext = &context_ptr.*;
+    var progress = std.mem.zeroes(pulse_raw.PulseTaskProgress);
+    progress.size = @sizeOf(pulse_raw.PulseTaskProgress);
     progress.percent = std.math.maxInt(u32);
-    progress.current_item = abi.view("Separate native console / 独立控制台");
+    progress.current_item = abi.view("正在准备任务 / Preparing task");
     if (ctx.report) |report| _ = report(ctx.context, &progress);
-    managed.run(&self.request, ctx) catch |err| {
-        progress.@"error" = abi.view(@errorName(err));
-        if (ctx.report) |report| _ = report(ctx.context, &progress);
+    managed.run(&self.request, ctx, &self.decisions) catch |err| {
+        diag.status("share-task-failed", @intFromError(err));
         return if (err == error.Cancelled) 5 else 4;
     };
     return 2;
@@ -187,11 +226,18 @@ fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv
     const name = abi.slice(command) orelse return;
     if (std.mem.eql(u8, name, "share-refresh")) return self.refresh();
     if (std.mem.eql(u8, name, "share-cancel")) {
+        self.shown_prompt = 0;
         if (self.task) |*task| {
             task.cancel() catch return self.status("取消请求失败 / Cancel request failed");
             self.status("取消已请求 / Cancellation requested");
         }
         return;
+    }
+    if (std.mem.eql(u8, name, "share-approve") or std.mem.eql(u8, name, "share-decline")) {
+        if (self.shown_prompt == 0) return self.status("请先刷新并核对当前请求");
+        self.decisions.submit(self.shown_prompt, std.mem.eql(u8, name, "share-approve"));
+        self.shown_prompt = 0;
+        return self.status("确认已提交 / Confirmation queued");
     }
     const mode: managed.Mode = if (std.mem.eql(u8, name, "share-discover"))
         .discover
@@ -199,6 +245,20 @@ fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv
         .send
     else if (std.mem.eql(u8, name, "share-receive"))
         .receive
+    else if (std.mem.eql(u8, name, "share-identity-init"))
+        .identity_init
+    else if (std.mem.eql(u8, name, "share-identity-show"))
+        .identity_show
+    else if (std.mem.eql(u8, name, "share-peer-add"))
+        .peer_add
+    else if (std.mem.eql(u8, name, "share-peer-list"))
+        .peer_list
+    else if (std.mem.eql(u8, name, "share-peer-revoke"))
+        .peer_revoke
+    else if (std.mem.eql(u8, name, "share-private-init"))
+        .private_init
+    else if (std.mem.eql(u8, name, "share-recovery-list"))
+        .recovery_list
     else
         return;
     self.start(mode) catch |err| self.status(@errorName(err));
@@ -213,7 +273,8 @@ fn invoke(user: ?*anyopaque, _: commands.CommandId, snapshot: [*c]const commands
     else
         null;
     if (count == 1 and snapshot.*.entries != null) {
-        const entry = &snapshot.*.entries[0];
+        const entries: [*]const context.SelectionEntry = @ptrCast(snapshot.*.entries);
+        const entry = &entries[0];
         if (entry.size >= @sizeOf(context.SelectionEntry) and entry.flags & context.EntryFlag.directory == 0) {
             if (context.entryPath(entry)) |path| self.selected.set(path) catch {};
         }

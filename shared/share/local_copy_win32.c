@@ -363,18 +363,36 @@ int main(void) {
     int argc = 0;
     wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv || !((argc == 7 && !wcscmp(argv[1], L"--confirm-local-copy")) ||
-                   (argc == 8 && !wcscmp(argv[1], L"--confirm-verified-copy")))) {
+                   (argc == 8 && !wcscmp(argv[1], L"--confirm-verified-copy")) ||
+                   (argc == 9 && !wcscmp(argv[1], L"--confirm-managed-copy")))) {
         if (argv) LocalFree(argv);
         fputs("Usage: pulse-share-local --confirm-local-copy worker.exe sha256 source destination-directory leaf\n"
               "       pulse-share-local --confirm-verified-copy worker.exe sha256 source destination-directory leaf source-sha256\n", stderr);
         return SHARE_PROTOCOL;
     }
-    cancel_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (!cancel_event || !SetConsoleCtrlHandler(console_cancel, TRUE)) {
-        close_handle(&cancel_event); LocalFree(argv); return SHARE_CONTAINMENT;
+    if (argc == 9) {
+        const wchar_t *value = argv[8];
+        wchar_t *end = NULL;
+        if (!*value || wcslen(value) > 16) { LocalFree(argv); return SHARE_PROTOCOL; }
+        for (const wchar_t *p = value; *p; ++p)
+            if (!((*p >= L'0' && *p <= L'9') || (*p >= L'a' && *p <= L'f'))) {
+                LocalFree(argv); return SHARE_PROTOCOL;
+            }
+        unsigned long long handle = wcstoull(value, &end, 16);
+        cancel_event = (HANDLE)(uintptr_t)handle;
+        if (!end || *end || !cancel_event || cancel_event == INVALID_HANDLE_VALUE ||
+            !SetHandleInformation(cancel_event, HANDLE_FLAG_INHERIT, 0) ||
+            WaitForSingleObject(cancel_event, 0) == WAIT_FAILED) {
+            LocalFree(argv); return SHARE_CONTAINMENT;
+        }
+    } else {
+        cancel_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (!cancel_event || !SetConsoleCtrlHandler(console_cancel, TRUE)) {
+            close_handle(&cancel_event); LocalFree(argv); return SHARE_CONTAINMENT;
+        }
     }
-    int result = copy_local(argv[2], argv[3], argv[4], argv[5], argv[6], argc == 8 ? argv[7] : NULL);
-    SetConsoleCtrlHandler(console_cancel, FALSE);
+    int result = copy_local(argv[2], argv[3], argv[4], argv[5], argv[6], argc >= 8 ? argv[7] : NULL);
+    if (argc != 9) SetConsoleCtrlHandler(console_cancel, FALSE);
     /* Process exit owns event lifetime; don't race a dispatched handler. */
     LocalFree(argv);
     printf("PULSE_SHARE_LOCAL_V1 %d\n", result);

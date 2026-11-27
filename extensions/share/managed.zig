@@ -5,7 +5,7 @@ const builtin = @import("builtin");
 const config = @import("share_config");
 const raw = @import("pulse_raw");
 
-pub const Mode = enum { discover, send, receive };
+pub const Mode = enum { discover, send, receive, identity_init, identity_show, peer_add, peer_list, peer_revoke, private_init, recovery_list };
 pub const Field = struct {
     bytes: [2048]u8 = @splat(0),
     len: usize = 0,
@@ -32,8 +32,24 @@ pub const Request = struct {
     destination: Field = .{},
     spool: Field = .{},
     port: Field = .{},
+    fingerprint: Field = .{},
 
     pub fn validate(self: *const Request) !void {
+        switch (self.mode) {
+            .identity_init, .identity_show, .peer_list, .private_init, .recovery_list => {
+                if (self.store.len == 0) return error.InvalidInput;
+                return;
+            },
+            .peer_add, .peer_revoke => {
+                if (self.store.len == 0 or self.paired.len == 0) return error.InvalidInput;
+                if (self.mode == .peer_add) {
+                    if (self.fingerprint.len != 64) return error.InvalidInput;
+                    for (self.fingerprint.slice()) |ch| if (!std.ascii.isHex(ch)) return error.InvalidInput;
+                }
+                return;
+            },
+            else => {},
+        }
         if (self.bind.len == 0) return error.InvalidInput;
         if (self.mode == .discover) return;
         if (self.store.len == 0 or self.paired.len == 0) return error.InvalidInput;
@@ -125,6 +141,10 @@ extern "kernel32" fn GetFileType(Handle) callconv(.winapi) u32;
 extern "kernel32" fn ReadFile(Handle, [*]u8, u32, *u32, ?*anyopaque) callconv(.winapi) i32;
 extern "kernel32" fn CloseHandle(Handle) callconv(.winapi) i32;
 extern "kernel32" fn CreateEventW(*const Security, i32, i32, ?[*:0]const u16) callconv(.winapi) Handle;
+extern "kernel32" fn CreatePipe(*Handle, *Handle, *const Security, u32) callconv(.winapi) i32;
+extern "kernel32" fn SetHandleInformation(Handle, u32, u32) callconv(.winapi) i32;
+extern "kernel32" fn PeekNamedPipe(Handle, ?*anyopaque, u32, ?*u32, *u32, ?*u32) callconv(.winapi) i32;
+extern "kernel32" fn WriteFile(Handle, [*]const u8, u32, *u32, ?*anyopaque) callconv(.winapi) i32;
 extern "kernel32" fn SetEvent(Handle) callconv(.winapi) i32;
 extern "kernel32" fn InitializeProcThreadAttributeList(?*anyopaque, u32, u32, *usize) callconv(.winapi) i32;
 extern "kernel32" fn UpdateProcThreadAttribute(*anyopaque, u32, usize, *const anyopaque, usize, ?*anyopaque, ?*usize) callconv(.winapi) i32;
@@ -240,8 +260,119 @@ fn drain(job: Handle) bool {
     return false;
 }
 
-pub fn run(request: *const Request, ctx: *const raw.PulseTaskContext) !void {
+// UI writes only an answer for the exact prompt generation shown by Refresh.
+// Host task owns all pipe handles and never invokes UI functions.
+pub const Decisions = struct {
+    answer: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
+    pub fn submit(self: *Decisions, generation: u32, yes: bool) void {
+        self.answer.store(generation * 2 + @as(u32, if (yes) 1 else 0), .release);
+    }
+};
+
+const Output = struct {
+    line: [4096]u8 = undefined,
+    len: usize = 0,
+    generation: u32 = 0,
+    waiting: bool = false,
+    inventory: [3000]u8 = undefined,
+    inventory_len: usize = 0,
+    inventory_truncated: bool = false,
+    done_bytes: u64 = 0,
+    total_bytes: u64 = 0,
+
+    fn report(self: *Output, ctx: *const raw.PulseTaskContext, msg: []const u8) void {
+        var p = std.mem.zeroes(raw.PulseTaskProgress);
+        p.size = @sizeOf(raw.PulseTaskProgress);
+        p.percent = std.math.maxInt(u32);
+        p.completed_bytes = self.done_bytes;
+        p.total_bytes = self.total_bytes;
+        p.current_item = .{ .data = msg.ptr, .length = @intCast(msg.len) };
+        if (ctx.report) |send| _ = send(ctx.context, &p);
+    }
+
+    fn writeAnswer(input: Handle, bytes: []const u8) !void {
+        var n: u32 = 0;
+        if (WriteFile(input, bytes.ptr, @intCast(bytes.len), &n, null) == 0 or n != bytes.len) return error.PromptWrite;
+    }
+
+    fn consume(self: *Output, byte: u8, input: Handle, request: *const Request, ctx: *const raw.PulseTaskContext) !void {
+        if (byte == '\r') return;
+        if (byte != '\n') {
+            if (self.len == self.line.len) return error.OutputLimit;
+            self.line[self.len] = byte;
+            self.len += 1;
+            return;
+        }
+        const line = self.line[0..self.len];
+        defer self.len = 0;
+        if (!std.unicode.utf8ValidateSlice(line)) return error.OutputEncoding;
+        if (std.mem.startsWith(u8, line, "Enter the other device's full fingerprint") and request.mode == .peer_add) {
+            var pin_line: [65]u8 = undefined;
+            @memcpy(pin_line[0..64], request.fingerprint.slice());
+            pin_line[64] = '\n';
+            return writeAnswer(input, &pin_line);
+        }
+        if (std.mem.startsWith(u8, line, "PROGRESS ")) {
+            var parts = std.mem.splitScalar(u8, line[9..], ' ');
+            const done = std.fmt.parseInt(u64, parts.next() orelse return error.OutputProtocol, 10) catch return error.OutputProtocol;
+            const total = std.fmt.parseInt(u64, parts.next() orelse return error.OutputProtocol, 10) catch return error.OutputProtocol;
+            if (parts.next() != null or done > total or done < self.done_bytes or total < self.total_bytes or total > 1024 * 1024 * 1024 * @as(u64, 1024)) return error.OutputProtocol;
+            self.done_bytes = done;
+            self.total_bytes = total;
+            self.report(ctx, line);
+            return;
+        }
+        if (std.mem.startsWith(u8, line, "OFFER ") or std.mem.startsWith(u8, line, "Trust ") or std.mem.startsWith(u8, line, "Revoke ")) {
+            if (self.waiting or self.generation >= 16) return error.PromptProtocol;
+            self.generation += 1;
+            self.waiting = true;
+            var msg: [4200]u8 = undefined;
+            const prompt = try std.fmt.bufPrint(&msg, "PROMPT {d} {s}", .{ self.generation, line });
+            self.report(ctx, prompt);
+        } else if (!self.waiting and line.len != 0) {
+            if (request.mode == .discover or request.mode == .peer_list or request.mode == .recovery_list) {
+                if (!self.inventory_truncated and line.len + 1 + 32 <= self.inventory.len - self.inventory_len) {
+                    @memcpy(self.inventory[self.inventory_len..][0..line.len], line);
+                    self.inventory_len += line.len;
+                    self.inventory[self.inventory_len] = '\n';
+                    self.inventory_len += 1;
+                } else if (!self.inventory_truncated) {
+                    const note = "[inventory truncated]\n";
+                    @memcpy(self.inventory[self.inventory_len..][0..note.len], note);
+                    self.inventory_len += note.len;
+                    self.inventory_truncated = true;
+                }
+                self.report(ctx, self.inventory[0..self.inventory_len]);
+            } else self.report(ctx, line);
+        }
+    }
+
+    fn pump(self: *Output, output: Handle, input: Handle, request: *const Request, ctx: *const raw.PulseTaskContext, decisions: *Decisions) !void {
+        // Bound work per tick. The child cannot block the UI or allocate
+        // unbounded output in the host; on protocol error the job is drained.
+        var available: u32 = 0;
+        if (PeekNamedPipe(output, null, 0, null, &available, null) != 0 and available != 0) {
+            var bytes: [4096]u8 = undefined;
+            var got: u32 = 0;
+            if (ReadFile(output, &bytes, @min(available, @as(u32, bytes.len)), &got, null) == 0) return error.OutputRead;
+            for (bytes[0..got]) |byte| try self.consume(byte, input, request, ctx);
+        }
+        if (self.waiting and !cancelled(ctx)) {
+            const answer = decisions.answer.load(.acquire);
+            if (answer >= 2 and answer / 2 == self.generation) {
+                try writeAnswer(input, if (answer & 1 != 0) "yes\n" else "no\n");
+                self.waiting = false;
+                self.report(ctx, "Confirmation sent / 已提交确认");
+            }
+        }
+    }
+};
+
+pub fn run(request: *const Request, ctx: *const raw.PulseTaskContext, decisions: *Decisions) !void {
     if (comptime builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return error.UnsupportedPlatform;
+    var output: Output = .{};
+    errdefer |err| output.report(ctx, @errorName(err));
     try request.validate();
     if (!configured()) return error.Unconfigured;
     if (cancelled(ctx)) return error.Cancelled;
@@ -271,10 +402,27 @@ pub fn run(request: *const Request, ctx: *const raw.PulseTaskContext) !void {
     try command.wide(std.mem.sliceTo(&lan, 0));
     var handle_text: [32]u8 = undefined;
     try command.pair("--managed-cancel-handle", try std.fmt.bufPrint(&handle_text, "{x}", .{event}));
-    try command.arg(@tagName(request.mode));
-    try command.pair("--bind", request.bind.slice());
+    try command.arg(switch (request.mode) {
+        .identity_init => "identity-init",
+        .identity_show => "identity-show",
+        .peer_add => "peer-add",
+        .peer_list => "peer-list",
+        .peer_revoke => "peer-revoke",
+        .private_init => "private-init",
+        .recovery_list => "recovery-list",
+        else => @tagName(request.mode),
+    });
+    switch (request.mode) {
+        .discover, .send, .receive => try command.pair("--bind", request.bind.slice()),
+        else => {},
+    }
     switch (request.mode) {
         .discover => {},
+        .identity_init, .identity_show, .peer_list, .private_init, .recovery_list => try command.pair("--store", request.store.slice()),
+        .peer_add, .peer_revoke => {
+            try command.pair("--store", request.store.slice());
+            try command.pair("--name", request.paired.slice());
+        },
         .send => {
             try command.pair("--peer", request.peer.slice());
             try command.pair("--source", request.source.slice());
@@ -312,14 +460,38 @@ pub fn run(request: *const Request, ctx: *const raw.PulseTaskContext) !void {
     const attrs: *anyopaque = @ptrCast(storage.ptr);
     if (InitializeProcThreadAttributeList(attrs, 1, 0, &size) == 0) return error.Attributes;
     defer DeleteProcThreadAttributeList(attrs);
-    if (UpdateProcThreadAttribute(attrs, 0, 0x00020002, &event, @sizeOf(Handle), null, null) == 0) return error.Attributes;
+    var input_read: Handle = 0;
+    var input_write: Handle = 0;
+    var output_read: Handle = 0;
+    var output_write: Handle = 0;
+    defer if (input_read != 0) {
+        _ = CloseHandle(input_read);
+    };
+    defer if (input_write != 0) {
+        _ = CloseHandle(input_write);
+    };
+    defer if (output_read != 0) {
+        _ = CloseHandle(output_read);
+    };
+    defer if (output_write != 0) {
+        _ = CloseHandle(output_write);
+    };
+    if (CreatePipe(&input_read, &input_write, &security, 4096) == 0 or
+        CreatePipe(&output_read, &output_write, &security, 8192) == 0) return error.Pipe;
+    if (SetHandleInformation(input_write, 1, 0) == 0 or SetHandleInformation(output_read, 1, 0) == 0) return error.Pipe;
+    const handles = [_]Handle{ event, input_read, output_write };
+    if (UpdateProcThreadAttribute(attrs, 0, 0x00020002, &handles, @sizeOf(@TypeOf(handles)), null, null) == 0) return error.Attributes;
     var si: StartupEx = .{ .attributes = attrs };
+    si.base.flags = 0x100;
+    si.base.stdin = input_read;
+    si.base.stdout = output_write;
+    si.base.stderr = output_write;
     var cwd: Path = @splat(0);
     const cwd_len = GetSystemDirectoryW(&cwd, cwd.len);
     if (cwd_len == 0 or cwd_len >= cwd.len) return error.SystemDirectory;
     var child: Process = .{};
     if (cancelled(ctx)) return error.Cancelled;
-    if (CreateProcessW(&lan, &command.data, null, null, 1, 0x00080000 | 4 | 16, null, &cwd, &si, &child) == 0) return error.Spawn;
+    if (CreateProcessW(&lan, &command.data, null, null, 1, 0x00080000 | 4 | 0x08000000, null, &cwd, &si, &child) == 0) return error.Spawn;
     defer _ = CloseHandle(child.thread);
     defer _ = CloseHandle(child.process);
     if (AssignProcessToJobObject(job, child.process) == 0) {
@@ -330,11 +502,29 @@ pub fn run(request: *const Request, ctx: *const raw.PulseTaskContext) !void {
         if (!drain(job)) return error.Drain;
         return error.Spawn;
     }
+    _ = CloseHandle(input_read);
+    input_read = 0;
+    _ = CloseHandle(output_write);
+    output_write = 0;
     const start = GetTickCount64();
     var stop_at: ?u64 = null;
     while (true) {
+        output.pump(output_read, input_write, request, ctx, decisions) catch |err| {
+            if (!drain(job)) return error.Drain;
+            return err;
+        };
         const wait = WaitForSingleObject(child.process, 100);
-        if (wait == 0) break;
+        if (wait == 0) {
+            for (0..16) |_| {
+                var available: u32 = 0;
+                if (PeekNamedPipe(output_read, null, 0, null, &available, null) == 0 or available == 0) break;
+                output.pump(output_read, input_write, request, ctx, decisions) catch |err| {
+                    if (!drain(job)) return error.Drain;
+                    return err;
+                };
+            }
+            break;
+        }
         if (wait != 258) {
             if (!drain(job)) return error.Drain;
             return error.Wait;
@@ -382,4 +572,19 @@ test "command quoting preserves trailing slash and rejects quotes" {
     try command.arg("--bind");
     try std.testing.expectEqualSlices(u16, std.unicode.wtf8ToWtf16LeStringLiteral("\"C:\\a b\\\\\" \"--bind\""), command.data[0..command.len]);
     try std.testing.expectError(error.InvalidInput, command.arg("a\"b"));
+}
+
+test "decision generation and bounded request admission" {
+    var decisions: Decisions = .{};
+    decisions.submit(1, true);
+    try std.testing.expectEqual(@as(u32, 3), decisions.answer.load(.acquire));
+    decisions.submit(2, false);
+    try std.testing.expectEqual(@as(u32, 4), decisions.answer.load(.acquire));
+    var request: Request = .{ .mode = .peer_add };
+    try request.store.set("C:\\private");
+    try request.paired.set("peer");
+    try request.fingerprint.set("invalid");
+    try std.testing.expectError(error.InvalidInput, request.validate());
+    try request.fingerprint.set("0123456789abcdef" ** 4);
+    try request.validate();
 }

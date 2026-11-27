@@ -186,13 +186,33 @@ func readStatus(r io.Reader, expected byte) error {
 	return nil
 }
 
-func sendFile(c net.Conn,f *os.File,o offer) error {
+func sendFile(c net.Conn,f *os.File,o offer) error { return sendFileProgress(c,f,o,nil) }
+
+type progressWriter struct {
+	w io.Writer
+	total,done uint64
+	last time.Time
+	report func(uint64,uint64)
+}
+func (p *progressWriter) Write(b []byte)(int,error){
+	n,err:=p.w.Write(b)
+	p.done+=uint64(n)
+	if p.report!=nil && (p.done==p.total || time.Since(p.last)>=250*time.Millisecond){
+		p.report(p.done,p.total)
+		p.last=time.Now()
+	}
+	return n,err
+}
+
+func sendFileProgress(c net.Conn,f *os.File,o offer,report func(uint64,uint64)) error {
 	if err:=c.SetDeadline(time.Now().Add(offerTimeout));err!=nil{return err}
 	if err:=writeOffer(c,o);err!=nil{return err}
 	if err:=readStatus(c,1);err!=nil{return err}
 	if err:=c.SetDeadline(time.Now().Add(transferTimeout));err!=nil{return err}
 	h:=sha256.New()
-	n,err:=io.CopyBuffer(io.MultiWriter(c,h),io.LimitReader(f,int64(o.size)),make([]byte,chunk))
+	p:=&progressWriter{w:io.MultiWriter(c,h),total:o.size,report:report}
+	if report!=nil{report(0,o.size)}
+	n,err:=io.CopyBuffer(p,io.LimitReader(f,int64(o.size)),make([]byte,chunk))
 	if err!=nil{return err}
 	if uint64(n)!=o.size || !bytes.Equal(h.Sum(nil),o.digest[:]){
 		return errors.New("source changed during send")
@@ -209,7 +229,10 @@ type commitFunc func(offer,string) error
 // Spool parent is explicitly approved locally; no peer path is ever used to
 // create the temporary file. Native commit performs the final no-overwrite
 // copy. The caller supplies a user-private directory (Windows ACL inherited).
-func receiveFile(c net.Conn,spool string,approve approveFunc,commit commitFunc) (result error) {
+func receiveFile(c net.Conn,spool string,approve approveFunc,commit commitFunc) error {
+	return receiveFileProgress(c,spool,approve,commit,nil)
+}
+func receiveFileProgress(c net.Conn,spool string,approve approveFunc,commit commitFunc,report func(uint64,uint64)) (result error) {
 	if err:=c.SetDeadline(time.Now().Add(offerTimeout));err!=nil{return err}
 	o,err:=readOffer(c)
 	if err!=nil{return err}
@@ -237,7 +260,9 @@ func receiveFile(c net.Conn,spool string,approve approveFunc,commit commitFunc) 
 	if err:=writeAll(c,[]byte{1});err!=nil{return err}
 	if err:=c.SetDeadline(time.Now().Add(transferTimeout));err!=nil{return err}
 	h:=sha256.New()
-	n,err:=io.CopyBuffer(io.MultiWriter(f,h),io.LimitReader(c,int64(o.size)),make([]byte,chunk))
+	p:=&progressWriter{w:io.MultiWriter(f,h),total:o.size,report:report}
+	if report!=nil{report(0,o.size)}
+	n,err:=io.CopyBuffer(p,io.LimitReader(c,int64(o.size)),make([]byte,chunk))
 	if err!=nil{return err}
 	if uint64(n)!=o.size || !bytes.Equal(h.Sum(nil),o.digest[:]){
 		return errors.New("received length or SHA-256 mismatch")

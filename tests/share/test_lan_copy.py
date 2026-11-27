@@ -181,6 +181,62 @@ class LanCopy(unittest.TestCase):
             self.assertNotEqual(p.returncode, 0)
             self.assertNotIn("PAIRED ", p.stdout)
 
+    def test_managed_cancel_waiting_for_connection(self):
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateEventW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR)
+        kernel.CreateEventW.restype = wintypes.HANDLE
+        kernel.SetEvent.argtypes = (wintypes.HANDLE,)
+        kernel.SetEvent.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel.CloseHandle.restype = wintypes.BOOL
+        with tempfile.TemporaryDirectory(prefix="pulse-share-cancel-") as tmp:
+            root = Path(tmp).resolve(strict=True)
+            store = root / "store"
+            dest = root / "destination"
+            spool = root / "spool"
+            for path in (store, dest, spool):
+                path.mkdir()
+            handle = kernel.CreateEventW(None, True, False, None)
+            if not handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            process = None
+            try:
+                import os
+                os.set_handle_inheritable(handle, True)
+                si = subprocess.STARTUPINFO(lpAttributeList={"handle_list": [handle]})
+                args = [str(LAN), "--managed-cancel-handle", format(handle, "x"),
+                        "receive", "--bind", "127.0.0.1", "--port", "0",
+                        "--directory", str(dest), "--spool", str(spool),
+                        "--supervisor", str(SUPERVISOR), "--supervisor-sha256", digest(SUPERVISOR),
+                        "--worker", str(WORKER), "--worker-sha256", digest(WORKER)]
+                process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                                           startupinfo=si, creationflags=subprocess.CREATE_NO_WINDOW)
+                os.set_handle_inheritable(handle, False)
+                lines = queue.Queue()
+                def read_lines():
+                    for line in process.stdout:
+                        lines.put(line)
+                thread = threading.Thread(target=read_lines, daemon=True)
+                thread.start()
+                self.assertTrue(lines.get(timeout=15).startswith("LISTEN "))
+                self.assertTrue(kernel.SetEvent(handle))
+                self.assertNotEqual(process.wait(timeout=15), 0)
+                self.assertEqual(list(dest.iterdir()), [])
+                self.assertEqual(list(spool.iterdir()), [])
+            finally:
+                if process is not None:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=10)
+                    process.stdin.close()
+                    process.stdout.close()
+                    process.stderr.close()
+                kernel.CloseHandle(handle)
+
     def test_ipv4(self):
         self.transfer("127.0.0.1")
 
