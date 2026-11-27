@@ -450,3 +450,7 @@ unknown/not-queried counts, different project selection, missing panel and
 settings reload. Confirm exact external invocation is shown before launch.
 CI must pass the independent Windows-header ABI assertions; live HTTP and
 actual external clients remain final installed acceptance items.
+
+### Mercurial candidate acceptance
+
+Required pinned 7.2.4 local fixture on Windows/Linux: detect/configure, consent/revoke, tracked modification/copy/untracked, hook skipped, branch/tag/bookmark, history and file history with offset, selected content and Diff. Unit fixtures cover missing/ignored/conflicts, malformed NUL records, path/revset injection, remote/shared requirements, controlled environment. Test installed HG executable path, project save/reload/relink, provider switch and revoke, nested/subrepo and unsupported format rejection, no staging/network/write, UI selection, cancellation and unload. No installed host claim; exact CI pending. Other providers not implemented.

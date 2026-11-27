@@ -40,3 +40,5 @@ P3B bb362dd / 45930749443 failed VCS settings compilation on both OSes;
 Companion desktop lane was blocked by the same production build error.
 Consolidated compile repair, local summary dashboard and Windows ABI fixture
 require exact full CI. Live client/HTTP and installed UI: NOT RUN.
+
+P3B supported-scope full CI passed 2d08926 / 45932279549; installed/live client/API HOST DEFERRED. P3C Mercurial candidate includes required pinned real fixtures and provider-scoped grants; exact full CI and installed acceptance pending. Unsupported formats, subrepositories, authenticated API and other providers remain explicit limitations.

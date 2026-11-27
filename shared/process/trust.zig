@@ -131,6 +131,10 @@ fn validateEnvironmentInternal(map: *const std.process.Environ.Map, git_global: 
             (std.mem.eql(u8, key, "GIT_OPTIONAL_LOCKS") and std.mem.eql(u8, value, "0")) or
             (std.mem.eql(u8, key, "GIT_CONFIG_NOSYSTEM") and std.mem.eql(u8, value, "1")) or
             (std.mem.eql(u8, key, "GIT_NO_LAZY_FETCH") and std.mem.eql(u8, value, "1")) or
+            (std.mem.eql(u8, key, "HGPLAIN") and std.mem.eql(u8, value, "1")) or
+            (std.mem.eql(u8, key, "HGRCPATH") and value.len == 0) or
+            (std.mem.eql(u8, key, "HGRCSKIPREPO") and std.mem.eql(u8, value, "1")) or
+            (std.mem.eql(u8, key, "HGENCODING") and std.mem.eql(u8, value, "UTF-8")) or
             (std.mem.eql(u8, key, "GIT_CONFIG_GLOBAL") and git_global != null and std.mem.eql(u8, value, git_global.?)) or
             (git_global != null and (std.mem.eql(u8, key, "HOME") or std.mem.eql(u8, key, "XDG_CONFIG_HOME"))) or
             (git_global != null and std.mem.eql(u8, key, "GIT_ATTR_NOSYSTEM") and std.mem.eql(u8, value, "1"));
@@ -213,4 +217,16 @@ test "approved environment admits only the exact no lazy fetch value" {
         try map.put("GIT_NO_LAZY_FETCH", value);
         try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
     }
+}
+
+test "Mercurial controlled environment permits only fixed isolation values" {
+    var map = std.process.Environ.Map.init(std.testing.allocator);
+    defer map.deinit();
+    try map.put("HGPLAIN", "1");
+    try map.put("HGRCPATH", "");
+    try map.put("HGRCSKIPREPO", "1");
+    try map.put("HGENCODING", "UTF-8");
+    try validateEnvironment(&map);
+    try map.put("HGRCPATH", "unreviewed-config");
+    try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
 }

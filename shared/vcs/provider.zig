@@ -203,14 +203,15 @@ pub const Snapshot = struct {
     /// Metadata preview hints only; none is executable approval.
     remote_web: Text = .{},
     preview_kinds: u8 = 0,
-    preview_tools: [3]?identity.Path = .{ null, null, null },
-    preview_saved: [3]SavedHint = @splat(.{}),
+    preview_tools: [4]?identity.Path = @splat(null),
+    preview_saved: [4]SavedHint = @splat(.{}),
 
     pub fn previewIndex(kind: identity.Kind) ?usize {
         return switch (kind) {
             .git => 0,
             .jj => 1,
             .svn => 2,
+            .hg => 3,
             else => null,
         };
     }
@@ -278,7 +279,7 @@ test "forge links reject credentials, redirects and non-repository paths" {
 
 /// Bounded local read-only detail. The exact same command grammar is used
 /// for construction and for authorization at the process admission boundary.
-pub const DetailKind = enum { history, file_history, revision_info, working_diff, staged_diff, revision_diff, content, refs, workspaces, operations, local_info, properties, guard, filter_guard, jj_pin, jj_status_revision, jj_status_diff };
+pub const DetailKind = enum { history, file_history, revision_info, working_diff, staged_diff, revision_diff, content, refs, workspaces, operations, local_info, properties, guard, filter_guard, jj_pin, jj_status_revision, jj_status_diff, hg_root, hg_parents, hg_branch, hg_status, hg_conflicts, hg_tags, hg_bookmarks };
 
 pub const DetailRequest = struct {
     kind: DetailKind,
@@ -296,7 +297,7 @@ pub fn safeRelativePath(value: []const u8) bool {
     var parts = std.mem.splitScalar(u8, value, '/');
     while (parts.next()) |part| {
         if (part.len == 0 or part[0] == '-' or part[part.len - 1] == '.' or part[part.len - 1] == ' ') return false;
-        for ([_][]const u8{ ".git", ".jj", ".svn" }) |bad| {
+        for ([_][]const u8{ ".git", ".jj", ".svn", ".hg" }) |bad| {
             if (std.ascii.eqlIgnoreCase(part, bad)) return false;
         }
         const stem = part[0 .. std.mem.indexOfScalar(u8, part, '.') orelse part.len];
@@ -308,7 +309,7 @@ pub fn safeRelativePath(value: []const u8) bool {
 }
 
 pub fn safeRevision(kind: identity.Kind, value: []const u8) bool {
-    if (kind != .git and kind != .jj) return false;
+    if (kind != .git and kind != .jj and kind != .hg) return false;
     if (value.len != 40 and !(kind == .git and value.len == 64)) return false;
     for (value) |byte| {
         if (!std.ascii.isHex(byte)) return false;
@@ -383,6 +384,20 @@ pub const DetailText = struct {
 
 const Spec = struct { provider: identity.Kind, kind: DetailKind, args: []const []const u8 };
 const detail_specs = [_]Spec{
+    .{ .provider = .hg, .kind = .hg_root, .args = &.{ "$exe", "--cwd", "$root", "--repository", "$root", "--noninteractive", "--config", "ui.paginate=never", "root" } },
+    .{ .provider = .hg, .kind = .hg_parents, .args = &.{ "$exe", "--cwd", "$root", "--repository", "$root", "--noninteractive", "--config", "ui.paginate=never", "parents", "--template", "{node}\\n" } },
+    .{ .provider = .hg, .kind = .hg_branch, .args = &.{ "$exe", "--cwd", "$root", "--repository", "$root", "--noninteractive", "--config", "ui.paginate=never", "branch" } },
+    .{ .provider = .hg, .kind = .hg_status, .args = &.{ "$exe", "--cwd", "$root", "--repository", "$root", "--noninteractive", "--config", "ui.paginate=never", "status", "--modified", "--added", "--removed", "--deleted", "--unknown", "--ignored", "--copies", "--print0" } },
+    .{ .provider = .hg, .kind = .hg_conflicts, .args = &.{ "$exe", "--cwd", "$root", "--repository", "$root", "--noninteractive", "--config", "ui.paginate=never", "resolve", "--list", "--template", "{mergestatus} {path}\\0" } },
+    .{ .provider = .hg, .kind = .history, .args = &.{ "$exe", "--cwd", "$root", "--repository", "$root", "--noninteractive", "--config", "ui.paginate=never", "log", "--rev", "$hg_history", "--template", "{node} {desc|firstline}\\n" } },
+    .{ .provider = .hg, .kind = .file_history, .args = &.{ "$exe", "--cwd", "$root", "--repository", "$root", "--noninteractive", "--config", "ui.paginate=never", "log", "--rev", "$hg_file_history", "--template", "{node} {desc|firstline}\\n" } },
+    .{ .provider = .hg, .kind = .revision_info, .args = &.{ "$exe", "--cwd", "$root", "--repository", "$root", "--noninteractive", "--config", "ui.paginate=never", "log", "--rev", "$hg_id", "--template", "{node}\\n{branch}\\n{author}\\n{date|isodate}\\n{desc}\\n" } },
+    .{ .provider = .hg, .kind = .working_diff, .args = &.{ "$exe", "--cwd", "$root", "--repository", "$root", "--noninteractive", "--config", "ui.paginate=never", "diff", "--git", "--", "$hg_path" } },
+    .{ .provider = .hg, .kind = .revision_diff, .args = &.{ "$exe", "--cwd", "$root", "--repository", "$root", "--noninteractive", "--config", "ui.paginate=never", "diff", "--git", "--change", "$hg_id", "--", "$hg_path" } },
+    .{ .provider = .hg, .kind = .content, .args = &.{ "$exe", "--cwd", "$root", "--repository", "$root", "--noninteractive", "--config", "ui.paginate=never", "cat", "--rev", "$hg_id", "--", "$hg_path" } },
+    .{ .provider = .hg, .kind = .refs, .args = &.{ "$exe", "--cwd", "$root", "--repository", "$root", "--noninteractive", "--config", "ui.paginate=never", "branches", "--closed", "--template", "branch {branch} {node}\\n" } },
+    .{ .provider = .hg, .kind = .hg_tags, .args = &.{ "$exe", "--cwd", "$root", "--repository", "$root", "--noninteractive", "--config", "ui.paginate=never", "tags", "--template", "tag {tag} {node}\\n" } },
+    .{ .provider = .hg, .kind = .hg_bookmarks, .args = &.{ "$exe", "--cwd", "$root", "--repository", "$root", "--noninteractive", "--config", "ui.paginate=never", "bookmarks", "--template", "bookmark {bookmark} {node}\\n" } },
     .{ .provider = .jj, .kind = .jj_pin, .args = &.{ "$exe", "--ignore-working-copy", "--at-op=@", "--no-pager", "--color=never", "-R", "$root", "op", "log", "--no-graph", "--limit", "1", "-T", "id" } },
     .{ .provider = .jj, .kind = .jj_status_revision, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "log", "-r", "@", "--no-graph", "-T", "change_id.short() ++ \"\\t\" ++ commit_id ++ \"\\t\" ++ bookmarks.join(\" \") ++ \"\\t\" ++ if(conflict, \"conflict\", \"ok\")" } },
     .{ .provider = .jj, .kind = .jj_status_diff, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "diff", "--summary", "-r", "$rev" } },
@@ -413,7 +428,10 @@ const detail_specs = [_]Spec{
 };
 
 pub fn detailSupported(provider: identity.Kind, kind: DetailKind) bool {
-    if (kind == .guard or kind == .filter_guard or kind == .jj_pin or kind == .jj_status_revision or kind == .jj_status_diff) return false;
+    switch (kind) {
+        .guard, .filter_guard, .jj_pin, .jj_status_revision, .jj_status_diff, .hg_root, .hg_parents, .hg_branch, .hg_status, .hg_conflicts, .hg_tags, .hg_bookmarks => return false,
+        else => {},
+    }
     for (detail_specs) |spec| {
         if (spec.provider == provider and spec.kind == kind) return true;
     }
@@ -437,10 +455,37 @@ fn validSvnTarget(root: []const u8, value: []const u8, peg: bool) bool {
     return safeRelativePath(normalized[0..relative.len]);
 }
 
+fn matchHgHistory(actual: []const u8, file: bool) bool {
+    const prefix = "limit(reverse(ancestors(id(\"";
+    if (!std.mem.startsWith(u8, actual, prefix) or actual.len <= prefix.len + 40 or !std.mem.endsWith(u8, actual, ")")) return false;
+    const revision = actual[prefix.len..][0..40];
+    if (!safeRevision(.hg, revision)) return false;
+    var tail = actual[prefix.len + 40 ..];
+    if (file) {
+        const middle = "\")) & file(\"path:";
+        if (!std.mem.startsWith(u8, tail, middle)) return false;
+        tail = tail[middle.len..];
+        const end = std.mem.indexOf(u8, tail, "\")),32,") orelse return false;
+        if (!safeRelativePath(tail[0..end])) return false;
+        tail = tail[end + "\")),32,".len ..];
+    } else {
+        const middle = "\"))),32,";
+        if (!std.mem.startsWith(u8, tail, middle)) return false;
+        tail = tail[middle.len..];
+    }
+    if (tail.len < 2) return false;
+    const offset = std.fmt.parseInt(u16, tail[0 .. tail.len - 1], 10) catch return false;
+    return offset <= 4096 and offset % 32 == 0;
+}
+
 fn matchToken(kind: identity.Kind, root: []const u8, exe: []const u8, token: []const u8, actual: []const u8) bool {
     if (eqArg(token, "$exe")) return eqArg(exe, actual);
     if (eqArg(token, "$root")) return eqArg(root, actual);
     if (eqArg(token, "$rev")) return safeRevision(kind, actual);
+    if (eqArg(token, "$hg_id")) return std.mem.startsWith(u8, actual, "id(\"") and std.mem.endsWith(u8, actual, "\")") and actual.len == 46 and safeRevision(.hg, actual[4..44]);
+    if (eqArg(token, "$hg_path")) return std.mem.startsWith(u8, actual, "path:") and safeRelativePath(actual[5..]);
+    if (eqArg(token, "$hg_history")) return matchHgHistory(actual, false);
+    if (eqArg(token, "$hg_file_history")) return matchHgHistory(actual, true);
     if (eqArg(token, "$path")) return safeRelativePath(actual);
     if (eqArg(token, "$skip")) {
         if (!std.mem.startsWith(u8, actual, "--skip=")) return false;
@@ -513,6 +558,14 @@ pub const DetailCommand = struct {
                     rev
                 else if (eqArg(token, "$path"))
                     path
+                else if (eqArg(token, "$hg_id"))
+                    std.fmt.bufPrint(&self.op, "id(\"{s}\")", .{rev}) catch return error.ResourceLimit
+                else if (eqArg(token, "$hg_path"))
+                    std.fmt.bufPrint(&self.scratch, "path:{s}", .{path}) catch return error.ResourceLimit
+                else if (eqArg(token, "$hg_history"))
+                    std.fmt.bufPrint(&self.scratch, "limit(reverse(ancestors(id(\"{s}\"))),32,{d})", .{ rev, request.offset }) catch return error.ResourceLimit
+                else if (eqArg(token, "$hg_file_history"))
+                    std.fmt.bufPrint(&self.scratch, "limit(reverse(ancestors(id(\"{s}\")) & file(\"path:{s}\")),32,{d})", .{ rev, path, request.offset }) catch return error.ResourceLimit
                 else if (eqArg(token, "$skip"))
                     std.fmt.bufPrint(&self.skip, "--skip={d}", .{request.offset}) catch return error.ResourceLimit
                 else if (eqArg(token, "$op"))
@@ -741,4 +794,16 @@ test "JJ file history is an exact anchored revision intersection" {
     }
     try std.testing.expect(found);
     try std.testing.expect(!detailAllowed(.jj, "jj", "repo", command.argv[0..argv.len]));
+}
+
+test "Mercurial exact grammar rejects revision expressions and path escapes" {
+    const revision = try identity.RevisionId.init(.hg, "0123456789012345678901234567890123456789");
+    var command: DetailCommand = .{};
+    const request: DetailRequest = .{ .kind = .file_history, .path = try identity.Path.init("src/a.txt"), .revision = revision, .offset = 32 };
+    const argv = try command.build(.hg, "hg", "repo", &request);
+    try std.testing.expect(detailAllowed(.hg, "hg", "repo", argv));
+    try std.testing.expect(!detailAllowed(.hg, "hg", "other", argv));
+    try std.testing.expect(!matchHgHistory("limit(reverse(ancestors(id(\"0123456789012345678901234567890123456789\")) & file(\"path:../secret\")),32,32)", true));
+    try std.testing.expect(!matchHgHistory("all()", false));
+    try std.testing.expect(!detailSupported(.hg, .staged_diff));
 }

@@ -19,6 +19,7 @@ const panel = @import("vcs_panel");
 const git_mod = @import("vcs_git");
 const jj_mod = @import("vcs_jj");
 const svn_mod = @import("vcs_svn");
+const hg_mod = @import("vcs_hg");
 const host_query = @import("vcs_host_query");
 const capabilities = @import("vcs_capabilities");
 
@@ -413,6 +414,7 @@ const SavedLocal = struct {
                 @backingInt(identity.Kind.git) => .git,
                 @backingInt(identity.Kind.jj) => .jj,
                 @backingInt(identity.Kind.svn) => .svn,
+                @backingInt(identity.Kind.hg) => .hg,
                 else => return error.Parse,
             };
             const root_len = std.mem.readInt(u16, bytes[17..19], .little);
@@ -549,6 +551,7 @@ const LocalSession = struct {
     git: git_mod.Git = undefined,
     jj: jj_mod.Jj = undefined,
     svn: svn_mod.Svn = undefined,
+    hg: hg_mod.Hg = undefined,
 
     const Pins = struct {
         executable: evidence.FileIdentity,
@@ -562,6 +565,7 @@ const LocalSession = struct {
             .git => .git,
             .jj => .jj,
             .svn => .svn,
+            .hg => .hg,
             else => null,
         };
     }
@@ -635,6 +639,7 @@ const LocalSession = struct {
             .git => ".git",
             .jj => ".jj",
             .svn => ".svn",
+            .hg => ".hg",
             else => return error.Unsupported,
         };
         return std.fmt.bufPrint(bytes, "{s}\\{s}", .{ review.root.slice(), marker }) catch error.ResourceLimit;
@@ -707,6 +712,11 @@ const LocalSession = struct {
         for ([_][]const u8{ "SystemRoot", "WINDIR", "LANG", "LC_ALL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_NO_LAZY_FETCH" }, [_][]const u8{ system, system, "C", "C", "1", "0", "0", "1" }) |key, value| {
             self.environment.put(key, value) catch return error.OutOfMemory;
         }
+        if (review.kind == .hg) {
+            for ([_][]const u8{ "HGPLAIN", "HGRCPATH", "HGRCSKIPREPO", "HGENCODING" }, [_][]const u8{ "1", "", "1", "UTF-8" }) |key, value| {
+                self.environment.put(key, value) catch return error.OutOfMemory;
+            }
+        }
         if (self.runner == null) self.runner = process.Runner.init(allocator, io);
         const runner = if (self.runner) |*value| value else return error.Io;
         runner.configureApproved(.{ .path = review.executable.slice(), .digest = digest }, 15 * std.time.ns_per_s) catch return error.Permission;
@@ -747,6 +757,22 @@ const LocalSession = struct {
         };
     }
 
+    fn checkHgLayout(review: *const panel.LocalReview) Error!void {
+        var path: [identity.max_path_bytes]u8 = undefined;
+        var bytes: [4096]u8 = undefined;
+        const root = review.root.slice();
+        for ([_][]const u8{ ".hg\\sharedpath", ".hgsub", ".hgsubstate" }) |suffix| {
+            const target = std.fmt.bufPrint(&path, "{s}\\{s}", .{ root, suffix }) catch return error.ResourceLimit;
+            try evidence.requireAbsent(target);
+        }
+        const store = std.fmt.bufPrint(&path, "{s}\\.hg\\store", .{root}) catch return error.ResourceLimit;
+        _ = try evidence.observeIdentity(store, true);
+        for ([_][]const u8{ ".hg\\requires", ".hg\\store\\requires" }) |suffix| {
+            const target = std.fmt.bufPrint(&path, "{s}\\{s}", .{ root, suffix }) catch return error.ResourceLimit;
+            try evidence.validateHgRequirements(try evidence.readPreviewFile(target, &bytes));
+        }
+    }
+
     fn checkRequest(user: *anyopaque, runner: *process.Runner, request: process.Request) process.Error!void {
         const self: *LocalSession = @ptrCast(@alignCast(user));
         const review = if (self.review) |*value| value else return error.UnapprovedExecutable;
@@ -759,6 +785,7 @@ const LocalSession = struct {
             !allowedCommand(review, request.argv)) return error.UnapprovedExecutable;
         self.checkPins(review) catch return error.UnapprovedExecutable;
         self.checkSaved(review) catch return error.UnapprovedExecutable;
+        if (review.kind == .hg and !argvEqual(request.argv, &.{ review.executable.slice(), "--version" })) checkHgLayout(review) catch return error.UnapprovedExecutable;
         if (review.kind == .svn and contract.detailAllowed(.svn, review.executable.slice(), review.root.slice(), request.argv)) {
             const arg = request.argv[request.argv.len - 1];
             const target = if (std.mem.endsWith(u8, arg, "@")) arg[0 .. arg.len - 1] else arg;
@@ -821,6 +848,11 @@ const LocalSession = struct {
                 self.svn.detail_version = report.version;
                 break :blk self.svn.provider();
             },
+            .hg => blk: {
+                self.hg = hg_mod.Hg.initApproved(runner, review.executable, probe, execution) catch return error.Permission;
+                try self.hg.verifyRoot(&workspace);
+                break :blk self.hg.provider();
+            },
             else => return error.Unsupported,
         };
         if (review.mode == .remember and self.saved_nonce == null) {
@@ -844,7 +876,7 @@ const LocalSession = struct {
 
 fn previewLookup(_: *anyopaque, path: []const u8) detect.EntryType {
     const name = std.fs.path.basename(path);
-    if (!std.mem.eql(u8, name, ".git") and !std.mem.eql(u8, name, ".jj") and !std.mem.eql(u8, name, ".svn")) return .missing;
+    if (!std.mem.eql(u8, name, ".git") and !std.mem.eql(u8, name, ".jj") and !std.mem.eql(u8, name, ".svn") and !std.mem.eql(u8, name, ".hg")) return .missing;
     _ = evidence.observeIdentity(path, true) catch {
         // A Git worktree marker can be a file. Never follow its contents.
         if (!std.mem.eql(u8, name, ".git")) return .missing;
@@ -861,7 +893,7 @@ fn detectPreview(user: *anyopaque, path: []const u8, out: *detect.Result) void {
 fn nearestCandidate(result: *const detect.Result) ?detect.Candidate {
     var nearest: ?detect.Candidate = null;
     for (result.slice()) |candidate| {
-        if (candidate.kind != .git and candidate.kind != .jj and candidate.kind != .svn) continue;
+        if (candidate.kind != .git and candidate.kind != .jj and candidate.kind != .svn and candidate.kind != .hg) continue;
         if (nearest) |current| {
             if (candidate.root.len <= current.root.len) continue;
         }
@@ -931,7 +963,7 @@ fn suggestTools(snapshot: *contract.Snapshot) void {
         if (!approval.strictPath(directory)) continue;
         // Observe directory before probing entries; never enumerate or run.
         _ = evidence.observeIdentity(directory, true) catch continue;
-        for ([_]identity.Kind{ .git, .jj, .svn }, 0..) |kind, index| {
+        for ([_]identity.Kind{ .git, .jj, .svn, .hg }, 0..) |kind, index| {
             if (!snapshot.previewHas(kind) or snapshot.preview_tools[index] != null) continue;
             const selected = LocalSession.tool(kind) orelse continue;
             const path = std.fmt.bufPrint(&buffer, "{s}\\{s}", .{ directory, selected.exeName() }) catch continue;
@@ -978,7 +1010,7 @@ fn summarizePreview(user: *anyopaque, workspace: *const identity.Workspace) Erro
     var snapshot: contract.Snapshot = .{ .workspace = workspace.*, .availability = .not_queried };
     var labels: [96]u8 = undefined;
     var used: usize = 0;
-    for ([_]identity.Kind{ .git, .jj, .svn }) |kind| {
+    for ([_]identity.Kind{ .git, .jj, .svn, .hg }) |kind| {
         if (found.find(kind)) |candidate| {
             if (!candidate.root.eql(workspace.root.slice())) continue;
             const index = contract.Snapshot.previewIndex(kind) orelse continue;
@@ -998,7 +1030,7 @@ fn summarizePreview(user: *anyopaque, workspace: *const identity.Workspace) Erro
     suggestTools(&snapshot);
     // Only the current root and detected provider scopes, on the existing
     // metadata worker. A saved record is not a current identity/digest check.
-    for ([_]identity.Kind{ .git, .jj, .svn }, 0..) |kind, index| {
+    for ([_]identity.Kind{ .git, .jj, .svn, .hg }, 0..) |kind, index| {
         if (!snapshot.previewHas(kind)) continue;
         const scope: panel.LocalReview = .{ .root = workspace.root, .kind = kind, .executable = .{}, .generation = 0 };
         snapshot.preview_saved[index] = SavedLocal.inspect(&scope) catch .{ .state = .unavailable };
@@ -1024,7 +1056,7 @@ fn summarizePreview(user: *anyopaque, workspace: *const identity.Workspace) Erro
 
 test "preview provider uses a value vtable for each supported kind" {
     var context_byte: u8 = 0;
-    for ([_]identity.Kind{ .git, .jj, .svn }) |kind| {
+    for ([_]identity.Kind{ .git, .jj, .svn, .hg }) |kind| {
         const provider = previewProvider(&context_byte, kind);
         try std.testing.expectEqual(kind, provider.kind);
         try std.testing.expect(provider.supports(.status));
@@ -1232,4 +1264,19 @@ test "saved local records pin exact root provider executable identity and epoch"
         try std.testing.expectEqualSlices(u8, bytes, decoded);
         try std.testing.expectError(error.Permission, transform(sealed, true));
     }
+}
+
+test "trusted local mode queries ordinary Mercurial and rejects repository config hook" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const config = @import("vcs_test_config");
+    if (config.hg_working_copy.len == 0) return cli.integrationUnavailable(.hg);
+    const executable = try fixtureTool(.hg);
+    var root = try identity.Path.init(config.hg_working_copy);
+    for (root.bytes[0..root.len]) |*byte| {
+        if (byte.* == '/') byte.* = '\\';
+    }
+    const snapshot = try exerciseLocalFixture(.hg, executable, root);
+    try std.testing.expect(snapshot.revision != null);
+    try std.testing.expect(snapshot.changes.modified >= 2);
+    try std.testing.expectEqual(@as(u32, 1), snapshot.changes.untracked);
 }

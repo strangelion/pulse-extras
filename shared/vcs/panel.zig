@@ -24,6 +24,7 @@ pub const command_revoke = "vcs.revoke";
 pub const command_trust_git = "vcs.trust.git";
 pub const command_trust_jj = "vcs.trust.jj";
 pub const command_trust_svn = "vcs.trust.svn";
+pub const command_trust_hg = "vcs.trust.hg";
 pub const command_trust_confirm = "vcs.trust.confirm";
 pub const command_trust_cancel = "vcs.trust.cancel";
 pub const command_trust_reset = "vcs.trust.reset";
@@ -47,7 +48,7 @@ pub const revision_pick_actions = [_][]const u8{ "vcs.rev.0", "vcs.rev.1", "vcs.
 pub const command_detail_prev = "vcs.detail.prev";
 pub const command_detail_next = "vcs.detail.next";
 pub const advanced_commands = detail_actions ++ pick_actions ++ revision_pick_actions ++ [_][]const u8{ command_detail_prev, command_detail_next };
-pub const full_command_count = 17 + advanced_commands.len;
+pub const full_command_count = 18 + advanced_commands.len;
 
 pub fn isDetailCommand(name: []const u8) bool {
     for (advanced_commands) |command| {
@@ -76,6 +77,7 @@ pub fn trustKind(name: []const u8) ?identity.Kind {
     if (std.mem.eql(u8, name, command_trust_git)) return .git;
     if (std.mem.eql(u8, name, command_trust_jj)) return .jj;
     if (std.mem.eql(u8, name, command_trust_svn)) return .svn;
+    if (std.mem.eql(u8, name, command_trust_hg)) return .hg;
     return null;
 }
 pub const Command = enum { refresh, cancel, check };
@@ -436,6 +438,7 @@ pub const Content = struct {
 
     fn addDetails(self: *Content, lang: Language, view: *const View, kind: identity.Kind) void {
         self.add("vcs.detail.heading", "", loc(lang, "Local read-only details", "本地只读详情"));
+        if (kind == .hg) self.add("vcs.detail.hg-limit", "", loc(lang, "Local Mercurial only; shared/subrepositories and upstream distance unsupported. History uses first parent as default anchor.", "仅本地 Mercurial；不支持共享/子仓库及远端距离。历史默认以第一父版本为锚点。"));
         if (kind == .svn) self.add("vcs.detail.svn-limit", "", loc(lang, "Server history is not authorized; BASE/diff require a supported pristine-copy version.", "服务器历史未授权；本地 BASE 与差异需要支持完整 pristine 副本的版本。"));
         if (kind == .jj) self.add("vcs.detail.jj-limit", "", loc(lang, "Recorded revisions only; unsnapshotted edits are not included.", "仅已记录版本，不包含尚未快照的编辑。"));
         if (view.detail_pending) {
@@ -444,7 +447,7 @@ pub const Content = struct {
         }
         self.detailInput(state_detail_path, loc(lang, "File (relative to repository; select above or enter)", "文件（相对仓库路径；在上方选中或填写）"));
         if (kind != .svn) self.detailInput(state_detail_revision, loc(lang, "Full commit ID (empty uses current recorded revision)", "完整提交 ID（留空使用当前已记录版本）"));
-        if (kind == .git) self.detailInput(state_history_offset, loc(lang, "History offset (0, 32, 64 ... up to 4096)", "历史偏移（0、32、64……至 4096）")) else if (kind == .jj) self.detailInput(state_history_offset, loc(lang, "History offset (0, 32, 64 ... up to 224)", "历史偏移（0、32、64……至 224）"));
+        if (kind == .git or kind == .hg) self.detailInput(state_history_offset, loc(lang, "History offset (0, 32, 64 ... up to 4096)", "历史偏移（0、32、64……至 4096）")) else if (kind == .jj) self.detailInput(state_history_offset, loc(lang, "History offset (0, 32, 64 ... up to 224)", "历史偏移（0、32、64……至 224）"));
         const en = [_][]const u8{ "History (32 revisions)", "File history", "Revision details", "Working / recorded file diff", "Staged file diff", "Revision file diff", "Revision file content / BASE", "References / bookmarks", "Workspaces", "Operation log", "Local revision metadata", "Local property names" };
         const zh = [_][]const u8{ "提交历史（32 条）", "文件历史", "版本详情", "工作区 / 已记录文件差异", "暂存文件差异", "版本文件差异", "版本文件内容 / BASE", "引用 / 书签", "工作区", "操作日志", "本地版本元数据", "本地属性名" };
         for (detail_kinds, 0..) |action, i| {
@@ -534,15 +537,15 @@ pub const Content = struct {
             if (view.stale) return;
             self.addExecutableInput(lang);
             self.add("vcs.setup-help", "", loc(lang, "Leave empty for configured, previously saved, or detected tool path, in that order. A saved record is not verified until explicit reuse.", "留空依次使用已配置、曾授权或检测到的工具路径。持久记录须明确选择复用后才能验证。"));
-            const kinds = [_]identity.Kind{ .git, .jj, .svn };
-            const ids = [_][]const u8{ "vcs.candidate.git", "vcs.candidate.jj", "vcs.candidate.svn" };
-            const button_ids = [_][]const u8{ "vcs.action.trust-git", "vcs.action.trust-jj", "vcs.action.trust-svn" };
-            const labels = [_][]const u8{ "Git: ", "Jujutsu: ", "SVN: " };
-            const en = [_][]const u8{ "Review Git access", "Review Jujutsu access", "Review SVN access" };
-            const zh = [_][]const u8{ "确认 Git 访问", "确认 Jujutsu 访问", "确认 SVN 访问" };
-            const actions = [_][]const u8{ command_trust_git, command_trust_jj, command_trust_svn };
-            const saved_ids = [_][]const u8{ "vcs.saved.git", "vcs.saved.jj", "vcs.saved.svn" };
-            const saved_paths = [_][]const u8{ "vcs.saved-path.git", "vcs.saved-path.jj", "vcs.saved-path.svn" };
+            const kinds = [_]identity.Kind{ .git, .jj, .svn, .hg };
+            const ids = [_][]const u8{ "vcs.candidate.git", "vcs.candidate.jj", "vcs.candidate.svn", "vcs.candidate.hg" };
+            const button_ids = [_][]const u8{ "vcs.action.trust-git", "vcs.action.trust-jj", "vcs.action.trust-svn", "vcs.action.trust-hg" };
+            const labels = [_][]const u8{ "Git: ", "Jujutsu: ", "SVN: ", "Mercurial: " };
+            const en = [_][]const u8{ "Review Git access", "Review Jujutsu access", "Review SVN access", "Review Mercurial access" };
+            const zh = [_][]const u8{ "确认 Git 访问", "确认 Jujutsu 访问", "确认 SVN 访问", "确认 Mercurial 访问" };
+            const actions = [_][]const u8{ command_trust_git, command_trust_jj, command_trust_svn, command_trust_hg };
+            const saved_ids = [_][]const u8{ "vcs.saved.git", "vcs.saved.jj", "vcs.saved.svn", "vcs.saved.hg" };
+            const saved_paths = [_][]const u8{ "vcs.saved-path.git", "vcs.saved-path.jj", "vcs.saved-path.svn", "vcs.saved-path.hg" };
             for (kinds, ids, button_ids, labels, en, zh, actions, saved_ids, saved_paths) |kind, id, button_id, label, english, chinese, action, saved_id, saved_path| {
                 if (!snapshot.previewHas(kind)) continue;
                 if (snapshot.previewTool(kind)) |path| {
@@ -567,11 +570,11 @@ pub const Content = struct {
     /// The owner still validates commands against current controller state.
     pub fn buildInteractive(self: *Content, lang: Language, view: *const View, tree: *ui.Tree) void {
         self.build(lang, view, tree);
-        const base_commands = [_]abi.StringView{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check), abi.view(command_revoke), abi.view(command_trust_git), abi.view(command_trust_jj), abi.view(command_trust_svn), abi.view(command_trust_confirm), abi.view(command_trust_cancel), abi.view(command_trust_reset), abi.view(command_trust_remember), abi.view(command_trust_reuse), abi.view(command_trust_forget), abi.view(command_trust_forget_all), abi.view(command_file_filter), abi.view(command_file_prev), abi.view(command_file_next) };
+        const base_commands = [_]abi.StringView{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check), abi.view(command_revoke), abi.view(command_trust_git), abi.view(command_trust_jj), abi.view(command_trust_svn), abi.view(command_trust_hg), abi.view(command_trust_confirm), abi.view(command_trust_cancel), abi.view(command_trust_reset), abi.view(command_trust_remember), abi.view(command_trust_reuse), abi.view(command_trust_forget), abi.view(command_trust_forget_all), abi.view(command_file_filter), abi.view(command_file_prev), abi.view(command_file_next) };
         @memcpy(self.commands[0..base_commands.len], &base_commands);
         for (advanced_commands, base_commands.len..) |command, i| self.commands[i] = abi.view(command);
         tree.commands = &self.commands;
-        tree.command_count = if (view.local_setup and view.saved_trust_configured) (if (view.file_controls) @as(u32, full_command_count) else 14) else if (view.local_setup) 10 else if (view.revocation_configured) 4 else 3;
+        tree.command_count = if (view.local_setup and view.saved_trust_configured) (if (view.file_controls) @as(u32, full_command_count) else 15) else if (view.local_setup) 11 else if (view.revocation_configured) 4 else 3;
         if (view.local_setup) {
             self.states[0] = .{ .key = abi.view(state_executable), .value = abi.view("") };
             tree.states = &self.states;
@@ -754,9 +757,9 @@ test "local trust setup shows explicit review and never claims status without co
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     const workspace = try identity.Workspace.init(.git, "C:\\repo", "C:\\repo");
-    var view: View = .{ .phase = .ready, .workspace = workspace, .metadata_only = true, .local_setup = true, .snapshot = .{ .workspace = workspace, .availability = .not_queried, .preview_kinds = 3, .preview_tools = .{ try identity.Path.init("C:\\tools\\git.exe"), null, null } } };
+    var view: View = .{ .phase = .ready, .workspace = workspace, .metadata_only = true, .local_setup = true, .snapshot = .{ .workspace = workspace, .availability = .not_queried, .preview_kinds = 3, .preview_tools = .{ try identity.Path.init("C:\\tools\\git.exe"), null, null, null } } };
     content.buildInteractive(.en, &view, &tree);
-    try std.testing.expectEqual(@as(u32, 10), tree.command_count);
+    try std.testing.expectEqual(@as(u32, 11), tree.command_count);
     try std.testing.expectEqual(@as(u32, 1), tree.state_count);
     try std.testing.expect(content.textFor("vcs.status-unavailable") != null);
     try std.testing.expect(content.textFor("vcs.review-warning") == null);
@@ -791,7 +794,7 @@ test "saved local approval commands require an explicit reviewed view" {
     const workspace = try identity.Workspace.init(.git, "root", "root");
     var view: View = .{ .phase = .ready, .workspace = workspace, .snapshot = .{ .workspace = workspace }, .metadata_only = true, .local_setup = true, .saved_trust_configured = true };
     content.buildInteractive(.en, &view, &tree);
-    try std.testing.expectEqual(@as(u32, 14), tree.command_count);
+    try std.testing.expectEqual(@as(u32, 15), tree.command_count);
     try std.testing.expect(content.textFor("vcs.action.trust-remember") == null);
     try std.testing.expect(content.textFor("vcs.action.trust-forget-all") != null);
     view.snapshot.?.preview_kinds = 1;

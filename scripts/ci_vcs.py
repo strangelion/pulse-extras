@@ -160,13 +160,34 @@ def svn_fixture():
         out.write(f"PULSE_TEST_SVN_WC={wc}\nPULSE_REQUIRE_SVN=1\n")
 
 
+def hg_fixture():
+    root = Path(tempfile.mkdtemp(prefix="pulse-hg-", dir=os.environ["RUNNER_TEMP"]))
+    env = dict(os.environ, HGPLAIN="1", HGRCPATH="", HGRCSKIPREPO="1", HGENCODING="UTF-8")
+    def hg(*args):
+        subprocess.run(["hg", *args], cwd=root, env=env, check=True, timeout=30)
+    hg("init")
+    (root / "tracked.txt").write_bytes(b"original\n")
+    hg("add", "tracked.txt")
+    hg("commit", "-u", "Pulse Fixture", "-m", "initial")
+    hg("bookmark", "fixture")
+    hg("copy", "tracked.txt", "copy.txt")
+    (root / "tracked.txt").write_bytes(b"changed\n")
+    (root / "untracked.txt").write_bytes(b"new\n")
+    # A failing hook must never run in the controlled read session.
+    (root / ".hg" / "hgrc").write_text("[hooks]\npre-status = exit 73\n", encoding="utf-8")
+    with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as out:
+        out.write(f"PULSE_TEST_HG_WC={root}\nPULSE_REQUIRE_HG=1\nHGPLAIN=1\nHGRCPATH=\nHGRCSKIPREPO=1\nHGENCODING=UTF-8\n")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["jj", "svn-windows", "svn-fixture"])
+    parser.add_argument("action", choices=["jj", "svn-windows", "svn-fixture", "hg-fixture"])
     args = parser.parse_args()
     if args.action == "jj":
         install_jj()
     elif args.action == "svn-windows":
         install_windows_svn()
+    elif args.action == "hg-fixture":
+        hg_fixture()
     else:
         svn_fixture()

@@ -403,3 +403,7 @@ labelled by scope, not presented as continuously updated data. The exact
 external command is visible at review. Paired Zig and independent Windows
 C-header assertions check startup/process layouts and WinHTTP constants;
 these checks do not prove live transport or actual application behavior.
+
+### P3C Mercurial local candidate
+
+The fourth ordinary provider uses the existing project, authorization, worker and detail contracts. Mercurial is not staged; native M/A/R/!/ ?/I and copy sources are parsed from NUL status, conflict list separately. First working parent is the default immutable history anchor (merge indicated); history uses a bounded exact ID revset with offset and literal path intersection. Branch/tag/bookmark references are collected from fixed templates; no network distance or server operations. The process gate checks ordinary local metadata and known store requirements, forbids shared/subrepositories and disables ambient and repository config using documented Mercurial environment variables. Existing grants retain their original provider IDs; new HG records use their own scope. Exact CI and installed acceptance remain pending.

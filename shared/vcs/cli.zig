@@ -107,6 +107,7 @@ pub fn minimumVersion(tool: Tool) ?Version {
         .git => .{ .major = 2, .minor = 31 },
         .jj => .{ .major = 0, .minor = 46 },
         .svn => .{ .major = 1, .minor = 14 },
+        .hg => .{ .major = 7, .minor = 2, .patch = 4 },
         else => null,
     };
 }
@@ -308,6 +309,7 @@ pub fn integrationUnavailable(tool: Tool) error{ SkipZigTest, RequiredVcsUnavail
         .git => test_config.require_git,
         .jj => test_config.require_jj,
         .svn => test_config.require_svn,
+        .hg => test_config.require_hg,
         else => false,
     };
     return if (required) error.RequiredVcsUnavailable else error.SkipZigTest;

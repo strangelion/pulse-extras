@@ -137,6 +137,12 @@ jobs:
       - name: Prepare real Windows SVN working copy
         if: runner.os == 'Windows' && (needs.scope.outputs.level == 'vcs' || needs.scope.outputs.level == 'full')
         run: python scripts/ci_vcs.py svn-fixture
+      - name: Provision pinned Mercurial and ordinary local fixture
+        if: needs.scope.outputs.level == 'vcs' || needs.scope.outputs.level == 'full'
+        run: |
+          python -m pip install --disable-pip-version-check --only-binary=:all: mercurial==7.2.4
+          hg --version
+          python scripts/ci_vcs.py hg-fixture
       - name: Scope-selected unit and integration tests
         timeout-minutes: 15
         shell: bash

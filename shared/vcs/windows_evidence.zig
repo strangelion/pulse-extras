@@ -409,6 +409,27 @@ pub fn observeLocalTarget(path: []const u8) Error!void {
     _ = try observeIdentity(path, attrs & directory_attribute != 0);
 }
 
+/// Fail closed on inaccessible, aliased or present targets. Only an ordinary
+/// existing parent and ERROR_FILE_NOT_FOUND prove this optional leaf absent.
+pub fn requireAbsent(path: []const u8) Error!void {
+    if (comptime builtin.os.tag != .windows) return error.Unsupported;
+    const parent = std.fs.path.dirname(path) orelse return error.Permission;
+    _ = try observeIdentity(parent, true);
+    const wide = try Wide.init(path);
+    if (GetFileAttributesW(wide.z()) != invalid_attributes or GetLastError() != 2) return error.Permission;
+}
+
+pub fn validateHgRequirements(bytes: []const u8) Error!void {
+    if (bytes.len == 0 or bytes.len > 4096) return error.Permission;
+    var lines = std.mem.tokenizeAny(u8, bytes, "\r\n");
+    while (lines.next()) |line| {
+        const known = [_][]const u8{ "share-safe", "store", "fncache", "dotencode", "revlogv1", "generaldelta", "sparserevlog", "revlog-compression-zstd", "dirstate-v2", "persistent-nodemap", "bookmarksinstore" };
+        for (known) |requirement| {
+            if (std.mem.eql(u8, line, requirement)) break;
+        } else return error.Unsupported;
+    }
+}
+
 /// Small fixed-size local metadata preview. No config interpretation, links,
 /// remote volumes, writes or process execution. The caller treats bytes as
 /// untrusted display data; this does not establish authorization evidence.
@@ -1289,4 +1310,11 @@ test "ancestor ACL allows only unrelated sibling creation and not deletion" {
     try inspectAcl(&inherited, owner, &principals, &hash);
     inherited[9] = 0x10;
     try std.testing.expectError(error.Permission, inspectAcl(&inherited, owner, &principals, &hash));
+}
+
+test "Mercurial ordinary store requirements reject shared and remote formats" {
+    try validateHgRequirements("share-safe\n");
+    try validateHgRequirements("revlogv1\nstore\nfncache\ngeneraldelta\n");
+    try std.testing.expectError(error.Unsupported, validateHgRequirements("share-safe\nshared\n"));
+    try std.testing.expectError(error.Unsupported, validateHgRequirements("remotefilelog\n"));
 }

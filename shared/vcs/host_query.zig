@@ -580,7 +580,7 @@ pub const Binding = struct {
     metadata_only: bool = false,
     local_access: ?LocalAccess = null,
     local_ui: bool = false,
-    configured_tools: [3]?identity.Path = .{ null, null, null },
+    configured_tools: [4]?identity.Path = @splat(null),
     verified_version: contract.Text = .{},
     recent: RecentSnapshots = .{},
     cache_token: ?[32]u8 = null,
@@ -721,9 +721,9 @@ pub const Binding = struct {
             return error.State;
         }
         self.model = .{ .table = table, .id = id };
-        const base_commands = [_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check, panel.command_revoke, panel.command_trust_git, panel.command_trust_jj, panel.command_trust_svn, panel.command_trust_confirm, panel.command_trust_cancel, panel.command_trust_reset, panel.command_trust_remember, panel.command_trust_reuse, panel.command_trust_forget, panel.command_trust_forget_all, panel.command_file_filter, panel.command_file_prev, panel.command_file_next };
+        const base_commands = [_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check, panel.command_revoke, panel.command_trust_git, panel.command_trust_jj, panel.command_trust_svn, panel.command_trust_hg, panel.command_trust_confirm, panel.command_trust_cancel, panel.command_trust_reset, panel.command_trust_remember, panel.command_trust_reuse, panel.command_trust_forget, panel.command_trust_forget_all, panel.command_file_filter, panel.command_file_prev, panel.command_file_next };
         const commands = base_commands ++ panel.advanced_commands;
-        for (commands[0..if (self.local_ui and self.savedTrustAvailable()) @as(usize, panel.full_command_count) else if (self.local_ui) @as(usize, 10) else if (self.revocation != null) @as(usize, 4) else 3]) |name| {
+        for (commands[0..if (self.local_ui and self.savedTrustAvailable()) @as(usize, panel.full_command_count) else if (self.local_ui) @as(usize, 11) else if (self.revocation != null) @as(usize, 4) else 3]) |name| {
             _ = self.model.?.subscribeCommand(name, &onCommand, self) catch |err| {
                 self.last_error = err;
                 // Close invalidates all subscriptions, including any partial
@@ -1070,7 +1070,7 @@ pub const Binding = struct {
             var path = files.slice(row.path);
             if (workspace.kind == .svn and std.mem.startsWith(u8, path, workspace.root.slice()) and path.len > workspace.root.len and (path[workspace.root.len] == '/' or path[workspace.root.len] == '\\')) path = path[workspace.root.len + 1 ..];
             var normalized: [identity.max_path_bytes]u8 = undefined;
-            for (path, 0..) |byte, i| normalized[i] = if (workspace.kind == .svn and byte == '\\') '/' else byte;
+            for (path, 0..) |byte, i| normalized[i] = if ((workspace.kind == .svn or workspace.kind == .hg) and byte == '\\') '/' else byte;
             const relative = normalized[0..path.len];
             if (!contract.safeRelativePath(relative)) return error.Argument;
             const candidate = identity.Path.init(relative) catch return error.Argument;
@@ -1153,7 +1153,7 @@ pub const Binding = struct {
                         var bytes: [17]u8 = undefined;
                         const entered = try self.readDetailState(panel.state_history_offset, &bytes);
                         const offset = if (entered.len == 0) 0 else std.fmt.parseInt(u16, entered, 10) catch return error.Argument;
-                        if (offset > @as(u16, if (workspace.kind == .git) 4096 else 224) or offset % 32 != 0) return error.Argument;
+                        if (offset > @as(u16, if (workspace.kind == .git or workspace.kind == .hg) 4096 else 224) or offset % 32 != 0) return error.Argument;
                         request.offset = offset;
                         self.history_offset = contract.Text.init(entered) catch return error.Argument;
                     }
@@ -1919,8 +1919,8 @@ const MockUi = struct {
         const self: *MockUi = @ptrCast(@alignCast(user orelse return abi.error_argument));
         if (id != 7 or callback == null or data == null) return abi.error_argument;
         const name = abi.slice(command) orelse return abi.error_argument;
-        const local = self.commands_expected >= 10 and (panel.trustKind(name) != null or std.mem.eql(u8, name, panel.command_trust_confirm) or std.mem.eql(u8, name, panel.command_trust_cancel) or std.mem.eql(u8, name, panel.command_trust_reset));
-        const saved = self.commands_expected >= 14 and (std.mem.eql(u8, name, panel.command_trust_remember) or std.mem.eql(u8, name, panel.command_trust_reuse) or std.mem.eql(u8, name, panel.command_trust_forget) or std.mem.eql(u8, name, panel.command_trust_forget_all));
+        const local = self.commands_expected >= 11 and (panel.trustKind(name) != null or std.mem.eql(u8, name, panel.command_trust_confirm) or std.mem.eql(u8, name, panel.command_trust_cancel) or std.mem.eql(u8, name, panel.command_trust_reset));
+        const saved = self.commands_expected >= 15 and (std.mem.eql(u8, name, panel.command_trust_remember) or std.mem.eql(u8, name, panel.command_trust_reuse) or std.mem.eql(u8, name, panel.command_trust_forget) or std.mem.eql(u8, name, panel.command_trust_forget_all));
         if (panel.parseCommand(name) == null and !(self.commands_expected >= 4 and std.mem.eql(u8, name, panel.command_revoke)) and !local and !saved and !(self.commands_expected == panel.full_command_count and (panel.isFileCommand(name) or panel.isDetailCommand(name)))) return abi.error_argument;
         self.subscriptions += 1;
         if (self.subscriptions == self.fail_subscribe_at) return abi.error_permission;
@@ -1961,7 +1961,7 @@ const MockUi = struct {
             .create = &create,
             .update = &update,
             .subscribe_command = &subscribe,
-            .get_state = if (self.commands_expected >= 10) &getState else null,
+            .get_state = if (self.commands_expected >= 11) &getState else null,
             .unsubscribe = &unsubscribe,
             .close = &close,
         };
@@ -2643,14 +2643,14 @@ test "local consent is two step, navigation bound, and released only after drain
     var preview: MockResolver = .{ .host_task = &mock };
     var trusted: MockResolver = .{ .host_task = &mock };
     var access: LocalAccessFixture = .{ .resolver = &trusted };
-    var model: MockUi = .{ .commands_expected = 10 };
+    var model: MockUi = .{ .commands_expected = 11 };
     var navigation: MockNavigation = .{};
     var binding = try Binding.init(mock.table(), .en);
     try binding.configureMetadataPreview(preview.resolver());
     try binding.configureLocalAccess(.{ .ctx = &access, .authorize = &LocalAccessFixture.authorize, .revoke = &LocalAccessFixture.revoke, .finish = &LocalAccessFixture.finish, .reset = &LocalAccessFixture.reset });
     try binding.openWithTable(model.table());
     try binding.openNavigationWithTable(navigation.table());
-    try std.testing.expectEqual(@as(usize, 10), model.subscriptions);
+    try std.testing.expectEqual(@as(usize, 11), model.subscriptions);
     try binding.pump();
     mock.runWork();
     try binding.pump();

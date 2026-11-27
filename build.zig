@@ -21,6 +21,7 @@ const Modules = struct {
     vcs_git: *std.Build.Module,
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
+    vcs_hg: *std.Build.Module,
     all: [42]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module, companion_config: *std.Build.Module) Modules {
@@ -334,6 +335,21 @@ const Modules = struct {
                 .{ .name = "vcs_test_config", .module = vcs_test_config },
             },
         });
+        const vcs_hg = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/providers/hg.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "vcs_capabilities", .module = vcs_capabilities },
+                .{ .name = "vcs_cli", .module = vcs_cli },
+                .{ .name = "vcs_detect", .module = vcs_detect },
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_provider", .module = vcs_provider },
+                .{ .name = "vcs_session", .module = vcs_session },
+                .{ .name = "pulse_process", .module = process_mod },
+                .{ .name = "vcs_test_config", .module = vcs_test_config },
+            },
+        });
         const vcs_approval = b.createModule(.{
             .root_source_file = b.path("shared/vcs/approval.zig"),
             .target = target,
@@ -375,7 +391,7 @@ const Modules = struct {
                 .{ .name = "pulse_process", .module = process_mod },
             },
         });
-        var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod, .vcs_capabilities = vcs_capabilities, .vcs_identity = vcs_identity, .vcs_risk = vcs_risk, .vcs_detect = vcs_detect, .vcs_provider = vcs_provider, .vcs_cli = vcs_cli, .vcs_snapshot = vcs_snapshot, .vcs_git = vcs_git, .vcs_jj = vcs_jj, .vcs_svn = vcs_svn };
+        var modules = Modules{ .raw = raw, .abi = abi, .host = host, .commands = commands, .context = context_mod, .ui_model = ui_model, .ui_mount = ui_mount, .diagnostics = diagnostics, .process = process_mod, .text = text_mod, .vcs_capabilities = vcs_capabilities, .vcs_identity = vcs_identity, .vcs_risk = vcs_risk, .vcs_detect = vcs_detect, .vcs_provider = vcs_provider, .vcs_cli = vcs_cli, .vcs_snapshot = vcs_snapshot, .vcs_git = vcs_git, .vcs_jj = vcs_jj, .vcs_svn = vcs_svn, .vcs_hg = vcs_hg };
         modules.all = .{
             .{ .name = "companion_library", .module = companion_library },
             .{ .name = "companion_config", .module = companion_config },
@@ -418,6 +434,7 @@ const Modules = struct {
             .{ .name = "vcs_windows_evidence", .module = vcs_windows_evidence },
             .{ .name = "vcs_jj", .module = vcs_jj },
             .{ .name = "vcs_svn", .module = vcs_svn },
+            .{ .name = "vcs_hg", .module = vcs_hg },
             .{ .name = "vcs_test_config", .module = vcs_test_config },
         };
         return modules;
@@ -444,6 +461,8 @@ pub fn build(b: *std.Build) void {
     vcs_test_options.addOption(bool, "require_jj", std.mem.eql(u8, environ.get("PULSE_REQUIRE_JJ") orelse "", "1"));
     vcs_test_options.addOption(bool, "require_svn", std.mem.eql(u8, environ.get("PULSE_REQUIRE_SVN") orelse "", "1"));
     vcs_test_options.addOption([]const u8, "svn_working_copy", environ.get("PULSE_TEST_SVN_WC") orelse "");
+    vcs_test_options.addOption(bool, "require_hg", std.mem.eql(u8, environ.get("PULSE_REQUIRE_HG") orelse "", "1"));
+    vcs_test_options.addOption([]const u8, "hg_working_copy", environ.get("PULSE_TEST_HG_WC") orelse "");
     const vcs_test_config = vcs_test_options.createModule();
 
     const companion_options = b.addOptions();
@@ -705,6 +724,7 @@ pub fn build(b: *std.Build) void {
         "shared/vcs/providers/git.zig",
         "shared/vcs/providers/jj.zig",
         "shared/vcs/providers/svn.zig",
+        "shared/vcs/providers/hg.zig",
         "shared/companion_extension.zig",
         "shared/companion/openpets_protocol.zig",
         "shared/companion/openpets_lease.zig",
@@ -752,7 +772,7 @@ pub fn build(b: *std.Build) void {
         const runtime = std.mem.startsWith(u8, source, "shared/runtime/") or std.mem.startsWith(u8, source, "shared/process/");
         if (runtime or std.mem.startsWith(u8, source, "shared/companion/") or std.mem.eql(u8, source, "extensions/companion/main.zig") or std.mem.eql(u8, source, "shared/companion_extension.zig"))
             companion_tests.dependOn(&run.step);
-        if (runtime or std.mem.startsWith(u8, source, "shared/vcs/"))
+        if (runtime or std.mem.startsWith(u8, source, "shared/vcs/") or std.mem.startsWith(u8, source, "extensions/vcs-panel/"))
             vcs_tests.dependOn(&run.step);
     }
 }

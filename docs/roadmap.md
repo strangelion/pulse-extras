@@ -227,7 +227,7 @@ three primary providers, with native semantics and bounded content.
 positive real fixture and negative malformed/large/binary/rename/path traversal
 tests, no unreviewed mutation or network access, full CI and installed UI tests.
 
-### P3B — Remote forge and external client integration (active; consolidated candidate)
+### P3B — Remote forge and external client integration (DEV COMPLETE / HOST DEFERRED, supported scope)
 
 **Outcome:** saved projects expose verified remote and local client actions
 without requiring an account for ordinary local VCS use.
@@ -258,7 +258,7 @@ credential absence/revocation/offline/redaction/unsafe URL tests and explicit
 real-host smoke with consenting account where needed. Do not mark API support
 complete from a webpage link; unavailable external account tests are NOT RUN.
 
-### P3C — Additional providers (after P3A baseline)
+### P3C — Additional providers (active: Mercurial candidate)
 
 Mercurial first, then Perforce where justified; Sapling, Fossil and Plastic
 only if demand and a supported tool contract exist. Deliver each selected
@@ -555,3 +555,9 @@ The published GitHub Desktop CLI docs describe github PATH but do not
 establish an exact direct Windows executable contract; keep manual fallback.
 Authenticated API remains optional and unavailable; no account authorization
 assumed. Full new code gate required, installed/live transport still deferred.
+
+### P3B exit and P3C Mercurial candidate
+
+[2d08926 / 45932279549](https://github.com/strangelion/pulse-extras/actions/runs/45932279549) passed all six required jobs, including Windows ABI and Companion lanes. P3B supported-scope code gate is complete; authenticated API and unverified client adapters remain intentionally unavailable, live/installed checks HOST DEFERRED.
+
+P3C starts with one Mercurial vertical slice: non-executing ordinary .hg detection, exact configured/detected hg path, separate provider-scoped review and remembered grant/revoke, project record, native status including copy/missing/ignored/untracked and unresolved conflicts, 32-entry anchored history pages and file history, revision info/content, working/revision diff, branch/tag/bookmark inventory, existing file selection and bounded text UI. No staging, server distance, remote operations, writes or shared/subrepository support. Baseline 7.2.4, CI provisions the pinned binary wheel and local fixture on both OSes. Controlled session uses exact HGPLAIN=1, HGRCPATH empty, HGRCSKIPREPO=1, HGENCODING=UTF-8; the ordinary .hg/store layout and requirements are independently checked before every repository command. Config hooks must not execute (fixture includes a failing pre-status hook). This is not a sandbox: trusted installation and repository remain necessary; reject unknown metadata requirements, .hg/sharedpath and .hgsub/.hgsubstate. Documentation: https://www.mercurial-scm.org/help/topics/environment and https://mercurial-scm.org/help/topics/revisions . New code is a candidate; exact cross-platform CI and installed acceptance NOT RUN. Perforce and other VCS require their own complete implementation, not stubs. No Companion or SDK changes.

@@ -22,11 +22,11 @@ const forge = @import("forge.zig");
 const max_projects = 64;
 const page_size = 12;
 const max_value = 1024;
-const keys = [_][]const u8{ "tool.git", "tool.jj", "tool.svn" };
-const names = [_][]const u8{ "Git", "Jujutsu", "Subversion" };
-const tools = [_]cli.Tool{ .git, .jj, .svn };
-const fields = [_][]const u8{ "settings.git", "settings.jj", "settings.svn" };
-const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump", "vcs.projects.cancel-identity", "vcs.projects.inspect-grants", "vcs.projects.revoke-git", "vcs.projects.revoke-jj", "vcs.projects.revoke-svn", "vcs.forge.issues", "vcs.forge.reviews", "vcs.forge.ci", "vcs.forge.releases", "vcs.forge.discover", "vcs.forge.remote.0", "vcs.forge.remote.1", "vcs.forge.remote.2", "vcs.forge.remote.3", "vcs.forge.remote.4", "vcs.forge.remote.5", "vcs.forge.metadata", "vcs.client.save-code", "vcs.client.save-svn", "vcs.client.review-code", "vcs.client.review-svn", "vcs.client.confirm", "vcs.client.cancel", "vcs.integration.cancel", "vcs.projects.local-summary", "vcs.projects.clear-summary" };
+const keys = [_][]const u8{ "tool.git", "tool.jj", "tool.svn", "tool.hg" };
+const names = [_][]const u8{ "Git", "Jujutsu", "Subversion", "Mercurial" };
+const tools = [_]cli.Tool{ .git, .jj, .svn, .hg };
+const fields = [_][]const u8{ "settings.git", "settings.jj", "settings.svn", "settings.hg" };
+const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump", "vcs.projects.cancel-identity", "vcs.projects.inspect-grants", "vcs.projects.revoke-git", "vcs.projects.revoke-jj", "vcs.projects.revoke-svn", "vcs.forge.issues", "vcs.forge.reviews", "vcs.forge.ci", "vcs.forge.releases", "vcs.forge.discover", "vcs.forge.remote.0", "vcs.forge.remote.1", "vcs.forge.remote.2", "vcs.forge.remote.3", "vcs.forge.remote.4", "vcs.forge.remote.5", "vcs.forge.metadata", "vcs.client.save-code", "vcs.client.save-svn", "vcs.client.review-code", "vcs.client.review-svn", "vcs.client.confirm", "vcs.client.cancel", "vcs.integration.cancel", "vcs.projects.local-summary", "vcs.projects.clear-summary", "vcs.settings.save-hg", "vcs.settings.browse-hg", "vcs.projects.revoke-hg" };
 const clients = [_]forge.Client{ .vscode, .tortoise_svn };
 const client_keys = [_][]const u8{ "client.vscode", "client.tortoise_svn" };
 const client_fields = [_][]const u8{ "settings.client.vscode", "settings.client.tortoise_svn" };
@@ -39,7 +39,7 @@ const search_key = "settings.project.search";
 const project_prefix = "project.";
 const key_len = project_prefix.len + 32;
 
-pub const Tools = [3]?identity.Path;
+pub const Tools = [4]?identity.Path;
 const locale_key = "ui.locale";
 
 pub const Locale = enum {
@@ -230,7 +230,7 @@ const Project = struct {
 
     fn parseKind(value: []const u8) !?identity.Kind {
         if (std.mem.eql(u8, value, "-")) return null;
-        for ([_]identity.Kind{ .git, .jj, .svn }) |kind| {
+        for ([_]identity.Kind{ .git, .jj, .svn, .hg }) |kind| {
             if (std.mem.eql(u8, value, @tagName(kind))) return kind;
         }
         return error.InvalidSettings;
@@ -310,6 +310,10 @@ fn sameRoot(a: []const u8, b: []const u8) bool {
     return if (builtin.os.tag == .windows) std.ascii.eqlIgnoreCase(a, b) else std.mem.eql(u8, a, b);
 }
 
+fn toolMask(index: usize) u8 {
+    return if (index == 3) 64 else @as(u8, 1) << @as(u3, @intCast(index));
+}
+
 fn toolPath(index: usize, value: []const u8) !?identity.Path {
     if (index >= tools.len or value.len > max_value) return error.InvalidSettings;
     if (value.len == 0) return null;
@@ -320,7 +324,7 @@ fn toolPath(index: usize, value: []const u8) !?identity.Path {
 const Stored = struct {
     version: u64 = 0,
     locale: Locale = .auto,
-    tools: Tools = .{ null, null, null },
+    tools: Tools = @splat(null),
     client_paths: [clients.len]?identity.Path = @splat(null),
     projects: [max_projects]Project = undefined,
     count: usize = 0,
@@ -356,7 +360,7 @@ const Stored = struct {
     fn decode(value: raw.PulseSettings, out: *Stored) !void {
         if (value.version > (1 << 53) - 1 or value.count > 1024 or (value.count != 0 and value.values == null)) return error.InvalidSettings;
         out.* = .{ .version = value.version };
-        var seen: [3]bool = @splat(false);
+        var seen: [4]bool = @splat(false);
         var seen_locale = false;
         var seen_clients: [clients.len]bool = @splat(false);
         for (0..value.count) |n| {
@@ -404,7 +408,7 @@ const GrantReview = struct {
     key: [key_len]u8,
     root: identity.Path,
     version: u64,
-    hints: [3]contract.SavedHint = @splat(.{}),
+    hints: [4]contract.SavedHint = @splat(.{}),
 };
 
 const GrantJob = struct {
@@ -412,7 +416,7 @@ const GrantJob = struct {
     revoke: ?identity.Kind = null,
 };
 
-const grant_kinds = [_]identity.Kind{ .git, .jj, .svn };
+const grant_kinds = [_]identity.Kind{ .git, .jj, .svn, .hg };
 
 const Scope = struct {
     key: [key_len]u8,
@@ -458,7 +462,7 @@ const Content = struct {
     nodes: [128]ui.Node = undefined,
     len: usize = 0,
     root: ui.Node = undefined,
-    states: [11]ui.State = undefined,
+    states: [12]ui.State = undefined,
     vocabulary: [commands.len]abi.StringView = undefined,
     rows: [page_size]raw.PulseUiModelRow = undefined,
     cells: [page_size][8]abi.StringView = undefined,
@@ -466,7 +470,7 @@ const Content = struct {
     recency_labels: [page_size][32]u8 = undefined,
     page_label: [96]u8 = undefined,
     edit_label: [128]u8 = undefined,
-    grant_labels: [3][96]u8 = undefined,
+    grant_labels: [4][96]u8 = undefined,
     remote_labels: [forge.Remotes.capacity][384]u8 = undefined,
     meta_label: [256]u8 = undefined,
     local_label: [256]u8 = undefined,
@@ -633,10 +637,10 @@ const Content = struct {
         if (owner.grant_review) |*review| {
             self.add(ui.text(tr(lang, "Reviewed approval scope (no execution; select this same row before revoking)", "已检查授权范围（不执行；撤销前请选中同一项目）")), "settings.grants.heading");
             self.add(ui.text(review.root.slice()), "settings.grants.root");
-            const ids_grant = [_][]const u8{ "settings.grants.git", "settings.grants.jj", "settings.grants.svn" };
-            const ids_path = [_][]const u8{ "settings.grants.git.path", "settings.grants.jj.path", "settings.grants.svn.path" };
-            const en = [_][]const u8{ "Revoke Git approval", "Revoke Jujutsu approval", "Revoke SVN approval" };
-            const zh = [_][]const u8{ "撤销 Git 授权", "撤销 Jujutsu 授权", "撤销 SVN 授权" };
+            const ids_grant = [_][]const u8{ "settings.grants.git", "settings.grants.jj", "settings.grants.svn", "settings.grants.hg" };
+            const ids_path = [_][]const u8{ "settings.grants.git.path", "settings.grants.jj.path", "settings.grants.svn.path", "settings.grants.hg.path" };
+            const en = [_][]const u8{ "Revoke Git approval", "Revoke Jujutsu approval", "Revoke SVN approval", "Revoke Mercurial approval" };
+            const zh = [_][]const u8{ "撤销 Git 授权", "撤销 Jujutsu 授权", "撤销 SVN 授权", "撤销 Mercurial 授权" };
             for (review.hints, grant_kinds, 0..) |hint, kind, i| {
                 const label = switch (hint.state) {
                     .not_checked => tr(lang, "Not checked", "未检查"),
@@ -646,7 +650,7 @@ const Content = struct {
                 };
                 self.add(ui.text(std.fmt.bufPrint(&self.grant_labels[i], "{s}: {s}", .{ kind.displayName(), label }) catch ""), ids_grant[i]);
                 if (hint.executable) |*path| self.add(ui.text(path.slice()), ids_path[i]);
-                self.button(27 + i, tr(lang, en[i], zh[i]), idle and review.version == owner.stored.version and hint.state == .recorded);
+                self.button(if (i == 3) 53 else 27 + i, tr(lang, en[i], zh[i]), idle and review.version == owner.stored.version and hint.state == .recorded);
             }
         }
         if (owner.checkingProject() and !owner.grant_revoke_pending) self.button(25, tr(lang, "Cancel pending check", "取消待处理检查"), !owner.project_discard);
@@ -671,9 +675,9 @@ const Content = struct {
         self.button(14, "简体中文", idle and owner.stored.locale != .zh);
         for (fields, names, 0..) |field, name, i| {
             self.input(field, name, idle);
-            self.button(1 + i, tr(lang, "Save path (empty restores detection)", "保存路径（留空恢复自动检测）"), idle);
-            if (owner.picker != null) self.button(4 + i, tr(lang, "Browse tool folder", "浏览工具所在文件夹"), idle);
-            self.states[i] = .{ .key = abi.view(field), .value = abi.view(if (owner.stored.tools[i]) |*path| path.slice() else "") };
+            self.button(if (i == 3) 51 else 1 + i, tr(lang, "Save path (empty restores detection)", "保存路径（留空恢复自动检测）"), idle);
+            if (owner.picker != null) self.button(if (i == 3) 52 else 4 + i, tr(lang, "Browse tool folder", "浏览工具所在文件夹"), idle);
+            self.states[if (i == 3) 11 else i] = .{ .key = abi.view(field), .value = abi.view(if (owner.stored.tools[i]) |*path| path.slice() else "") };
         }
         self.add(ui.text(tr(lang, "External client paths · save does not launch or grant VCS access", "外部客户端路径 · 保存不启动或授予 VCS 权限")), "settings.client.heading");
         self.add(ui.text(tr(lang, "GitHub Desktop direct launch is not yet verified; use its documented github command manually. Sourcetree / GitKraken adapters unavailable.", "GitHub Desktop 直接启动尚未验证，可手动使用官方 github 命令；Sourcetree / GitKraken 适配暂不可用。")), "settings.client.unsupported");
@@ -861,10 +865,10 @@ pub const Settings = struct {
     fn syncTools(self: *Settings, mask: u8) void {
         if (!self.render_ok) return;
         const model = if (self.panel) |*value| value else return;
-        var states: [6]ui.State = undefined;
+        var states: [7]ui.State = undefined;
         var count: usize = 0;
         for (fields, 0..) |field, i| {
-            if (mask & (@as(u8, 1) << @as(u3, @intCast(i))) == 0) continue;
+            if (mask & toolMask(i) == 0) continue;
             states[count] = .{ .key = abi.view(field), .value = abi.view(if (self.stored.tools[i]) |*path| path.slice() else "") };
             count += 1;
         }
@@ -941,7 +945,7 @@ pub const Settings = struct {
         const get = resources.settings_get orelse return;
         var id: u64 = 0;
         self.grant_review = null;
-        self.sync_mask = 63;
+        self.sync_mask = 127;
         const status = get(resources.context, completed, self, &id);
         self.admitted(status, id, raw.PULSE_RESOURCES_SETTINGS_GET);
     }
@@ -954,7 +958,7 @@ pub const Settings = struct {
         self.grant_review = null;
         self.sync_mask = if (std.mem.startsWith(u8, key, project_prefix)) 8 else 0;
         for (keys, 0..) |tool_key, i| {
-            if (std.mem.eql(u8, key, tool_key)) self.sync_mask = @as(u8, 1) << @as(u3, @intCast(i));
+            if (std.mem.eql(u8, key, tool_key)) self.sync_mask = toolMask(i);
         }
         for (client_keys, 0..) |client_key, i| {
             if (std.mem.eql(u8, key, client_key)) self.sync_mask = @as(u8, 16) << @as(u3, @intCast(i));
@@ -1611,6 +1615,9 @@ pub const Settings = struct {
                 50 => {
                     self.local_summary = null;
                 },
+                51 => self.saveTool(3),
+                52 => self.browse(3),
+                53 => self.revokeGrant(.hg),
                 else => return,
             };
             result catch |err| {
@@ -1937,7 +1944,7 @@ test "settings writes use exact version and preserve drafts on conflict or unrel
     const initial: raw.PulseResourcesReply = .{ .size = @sizeOf(raw.PulseResourcesReply), .operation = raw.PULSE_RESOURCES_SETTINGS_GET, .request_id = 4, .status = abi.ok, .settings = .{ .version = 9 } };
     Settings.completed(owner, &initial);
     try std.testing.expect(owner.loaded and owner.render_ok);
-    try std.testing.expectEqual(@as(usize, 5), fixture.synced);
+    try std.testing.expectEqual(@as(usize, 6), fixture.synced);
     Settings.onCommand(owner, 8, abi.view(commands[1]));
     try std.testing.expectEqual(@as(usize, 0), fixture.calls);
     Settings.onCommand(owner, 7, abi.view(commands[1]));
