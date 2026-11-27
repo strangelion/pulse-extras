@@ -579,3 +579,21 @@ credentials; the installation itself remains trusted, not sandboxed.
 Mercurial 7.2.4 minimum and pinned wheel unchanged. Root cause of the
 nonzero version exit is not yet established; fresh exact CI required.
 Perforce work remains gated on the Mercurial regression.
+
+Mercurial d06abe8 / 45934907652 failed: the Windows independent preflight
+and contained approved version probe both exited 255, stderr 48 bytes;
+preflight reported missing python312.dll. The wheel's executable loads
+Python dynamically (upstream exewrapper.c), so neither a longer timeout
+nor a Job Object change fixes this missing dependency. CI now assembles
+its documented adjacent hg-python private runtime layout from the hosted
+CPython standard library and DLLs, with the pinned Mercurial wheel in the
+private site-packages, and uses the same unchanged launcher/script for
+fixture construction, minimal-environment preflight and mandatory native
+test. No production PATH/PYTHONPATH inheritance, registry changes, OS
+sandbox downgrade, automatic user runtime installation or DLL copying.
+The previous environment regression test also used nonexistent Zig
+Environ.Map.remove; restore the approved value instead, then independently
+reject PYTHONPATH. Both OS checks and Companion desktop were blocked by
+that common test compile error. Add explicit native setup guidance for Hg
+installations requiring a private runtime. New exact CI required; private
+layout compatibility not yet proven. Perforce stays gated.

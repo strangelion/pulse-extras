@@ -239,7 +239,8 @@ test "Mercurial Python user site isolation admits only exact disabling value" {
     try validateEnvironment(&map);
     try map.put("PYTHONNOUSERSITE", "0");
     try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
-    _ = map.remove("PYTHONNOUSERSITE");
+    try map.put("PYTHONNOUSERSITE", "1");
+    try validateEnvironment(&map);
     try map.put("PYTHONPATH", ".");
     try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
 }

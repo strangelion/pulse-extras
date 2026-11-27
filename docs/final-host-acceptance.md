@@ -42,3 +42,7 @@ Consolidated compile repair, local summary dashboard and Windows ABI fixture
 require exact full CI. Live client/HTTP and installed UI: NOT RUN.
 
 P3B supported-scope full CI passed 2d08926 / 45932279549; installed/live client/API HOST DEFERRED. P3C Mercurial candidate includes required pinned real fixtures and provider-scoped grants; exact full CI and installed acceptance pending. Unsupported formats, subrepositories, authenticated API and other providers remain explicit limitations.
+
+P3C d06abe8 / 45934907652: Windows Hg missing python312.dll, shared Zig
+environment test API compile error. Private CI runtime and test repair
+pending exact full CI; installed user runtime/host acceptance NOT RUN.

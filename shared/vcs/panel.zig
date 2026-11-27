@@ -548,6 +548,7 @@ pub const Content = struct {
             const saved_paths = [_][]const u8{ "vcs.saved-path.git", "vcs.saved-path.jj", "vcs.saved-path.svn", "vcs.saved-path.hg" };
             for (kinds, ids, button_ids, labels, en, zh, actions, saved_ids, saved_paths) |kind, id, button_id, label, english, chinese, action, saved_id, saved_path| {
                 if (!snapshot.previewHas(kind)) continue;
+                if (kind == .hg) self.add("vcs.setup.hg-runtime", "", loc(lang, "Mercurial needs a self-contained installation that starts without inherited PATH or Python search paths. A pip launcher may need its own adjacent hg-python runtime. Select that installation; no runtime is downloaded by this plugin.", "Mercurial 须使用无需继承 PATH 或 Python 搜索路径即可启动的安装。pip 启动器可能需要相邻的 hg-python 私有运行时；请选用此类安装，插件不会自行下载运行时。"));
                 if (snapshot.previewTool(kind)) |path| {
                     self.add(id, label, path.slice());
                 } else self.add(id, label, loc(lang, "Not found; enter the installed path", "未找到，请填写已安装路径"));

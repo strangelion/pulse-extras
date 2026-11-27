@@ -461,3 +461,12 @@ version/root/status preflight with the mandatory contained approved test.
 Do not bypass the job or inherit ambient Python paths to achieve a pass.
 Probe diagnostics in Zig tests disclose only status, exit code and sizes;
 preflight stderr is bounded and limited to the generated CI fixture.
+
+Windows wheel regression d06abe8 / 45934907652 confirmed a missing Python
+DLL independent of the Zig wrapper. Require a private adjacent hg-python
+runtime for the CI wheel; the plugin never downloads or repairs user
+installations. Verify minimal environment version/root/status and the
+mandatory contained real provider test, then negative config hook, shared
+store and path tests. Also verify that an unresolved launcher fails closed
+with setup guidance, not a fallback to inherited PATH or Python search
+paths. Installed user-side acceptance remains NOT RUN.

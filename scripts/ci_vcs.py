@@ -7,6 +7,8 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
+import sysconfig
 import tempfile
 import time
 from http.client import IncompleteRead
@@ -160,11 +162,59 @@ def svn_fixture():
         out.write(f"PULSE_TEST_SVN_WC={wc}\nPULSE_REQUIRE_SVN=1\n")
 
 
+def prepare_windows_hg():
+    """Use upstream exewrapper.c's private hg-python layout, not ambient PATH.
+
+    The pinned wheel is installed by the workflow with the hosted CPython.
+    Its hg.exe and neighboring hg script are copied unchanged. Only this
+    ephemeral CI installation is assembled; the plugin never copies DLLs.
+    https://sources.debian.org/src/mercurial/7.2.4-2/mercurial/exewrapper.c/
+    """
+    scripts = Path(sysconfig.get_path("scripts"))
+    exe, script = scripts / "hg.exe", scripts / "hg"
+    if not exe.is_file() or not script.is_file():
+        raise RuntimeError("Expected pinned wheel hg.exe and adjacent hg script")
+    source = Path(sys.base_prefix)
+    dll = source / f"python{sys.version_info.major}{sys.version_info.minor}.dll"
+    if not dll.is_file() or not (source / "Lib" / "encodings").is_dir():
+        raise RuntimeError("Hosted CPython runtime incomplete")
+    install = Path(tempfile.mkdtemp(prefix="pulse-hg-tools-", dir=os.environ["RUNNER_TEMP"]))
+    private = install / "hg-python"
+    private.mkdir()
+    shutil.copy2(exe, install / "hg.exe")
+    shutil.copy2(script, install / "hg")
+    # Copy standard library and native runtime, never the runner's global
+    # site-packages. Py_SetPythonHome points to this exact private directory.
+    shutil.copytree(source / "Lib", private / "Lib",
+                    ignore=shutil.ignore_patterns("site-packages", "__pycache__"))
+    if (source / "DLLs").is_dir():
+        shutil.copytree(source / "DLLs", private / "DLLs")
+    for library in source.glob("*.dll"):
+        if library.is_file():
+            shutil.copy2(library, private / library.name)
+    if (source / "python.exe").is_file():
+        shutil.copy2(source / "python.exe", private / "python.exe")
+    if not (private / dll.name).is_file():
+        raise RuntimeError("Private Python DLL was not copied")
+    # Install the same pinned package into the isolated runtime, not a
+    # mutable user-site directory. Never execute arbitrary repo scripts.
+    subprocess.run([sys.executable, "-m", "pip", "install",
+                    "--disable-pip-version-check", "--only-binary=:all:",
+                    "--target", str(private / "Lib" / "site-packages"),
+                    "mercurial==7.2.4"], check=True, timeout=180)
+    with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as out:
+        out.write(str(install) + "\n")
+    return str(install / "hg.exe")
+
+
 def hg_fixture():
     root = Path(tempfile.mkdtemp(prefix="pulse-hg-", dir=os.environ["RUNNER_TEMP"]))
+    exe = prepare_windows_hg() if platform.system() == "Windows" else shutil.which("hg")
+    if not exe:
+        raise RuntimeError("Mercurial executable missing")
     env = dict(os.environ, HGPLAIN="1", HGRCPATH="", HGRCSKIPREPO="1", HGENCODING="UTF-8", PYTHONNOUSERSITE="1")
     def hg(*args):
-        subprocess.run(["hg", *args], cwd=root, env=env, check=True, timeout=30)
+        subprocess.run([exe, *args], cwd=root, env=env, check=True, timeout=30)
     hg("init")
     (root / "tracked.txt").write_bytes(b"original\n")
     hg("add", "tracked.txt")
@@ -178,9 +228,6 @@ def hg_fixture():
     if platform.system() == "Windows":
         # Same explicit environment and neutral cwd as LocalSession, but
         # without the Zig job wrapper. Diagnose launcher vs containment.
-        exe = shutil.which("hg.exe")
-        if not exe:
-            raise RuntimeError("Mercurial executable missing")
         system = os.environ["SystemRoot"]
         minimal = {
             "SystemRoot": system, "WINDIR": system, "LANG": "C",
@@ -190,6 +237,7 @@ def hg_fixture():
             "HGRCPATH": "", "HGRCSKIPREPO": "1",
             "HGENCODING": "UTF-8", "PYTHONNOUSERSITE": "1",
         }
+        preflight_ok = True
         for label, args in (
             ("version", ["--version"]),
             ("root", ["--cwd", str(root), "--repository", str(root), "--noninteractive", "--config", "ui.paginate=never", "root"]),
@@ -202,13 +250,16 @@ def hg_fixture():
                 print(f"Hg minimal-environment {label}: exit={result.returncode}, "
                       f"stdout_bytes={len(result.stdout)}, stderr_bytes={len(result.stderr)}")
                 if result.returncode:
+                    preflight_ok = False
                     # Only a generated CI fixture and pinned installation;
                     # never log production repository CLI output.
                     print(repr(result.stderr[:1024]))
             except (OSError, subprocess.TimeoutExpired) as exc:
+                preflight_ok = False
                 print(f"Hg minimal-environment {label}: {type(exc).__name__}")
-        # Preflight is diagnostic, not a replacement for the mandatory
-        # approved Runner test below; leave it enabled even if this fails.
+        if not preflight_ok:
+            raise RuntimeError("Private Hg installation failed minimal-environment preflight")
+        # This preflight does not replace the mandatory approved Runner test.
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as out:
         out.write(f"PULSE_TEST_HG_WC={root}\nPULSE_REQUIRE_HG=1\nHGPLAIN=1\nHGRCPATH=\nHGRCSKIPREPO=1\nHGENCODING=UTF-8\nPYTHONNOUSERSITE=1\n")
 
