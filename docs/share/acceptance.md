@@ -93,3 +93,17 @@ Verify the two discovery lists distinguish file reception and dynamic pairing.
 Only the numeric endpoint and service type are advertised, never the short
 code or certificate. Confirm the advertisement stops when the code clears;
 numeric manual entry remains usable when multicast is unavailable.
+
+## Planned content-sharing acceptance (stage 2)
+
+See [roadmap](roadmap.md) for required implementation; all checks in this
+section are NOT RUN until the features exist. Verify clipboard text/image,
+ordinary CF_HDROP files/folders, cut-as-copy, busy clipboard, cancellation,
+no automatic sync by default, no clipboard overwrite/echo loop or content
+in logs. Test Tray Shelf only through a supported snapshot interface; record
+SDK unavailable if absent. Optional host staging must report actual commit
+outcome and preserve verified bytes/no-overwrite. Exercise block/whole-file
+hash failures, changed source, interrupted resume, malformed paths, quota,
+read-only grants/revocation, and global 1/2/4/8/16/32-channel resource budgets
+under mixed jobs. Record measured throughput and peak/idle CPU, memory,
+handles, sockets and disk I/O; do not infer performance from loopback CI.

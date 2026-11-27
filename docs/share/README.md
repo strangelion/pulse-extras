@@ -1,10 +1,17 @@
 # Pulse Share — development plan
 
-Status: P1 local worker CI passed at 24b1ec7 (run 45995525015).
-P2 is an experimental, opt-in LAN CLI with TLS 1.3, mutual ephemeral certificate
-pinning, discovery and explicit receive confirmation. P2's new CI and physical
-two-computer acceptance are outstanding. Pulse UI does not launch this tool.
-Do not publish or add a release.toml until transport and host acceptance pass.
+Current status: the consolidated connection candidate at e0f8eca integrates
+native dynamic pairing, pinned CPace helper, explicit routed connections and
+hybrid TLS key exchange. Its CI and real two-device/host acceptance are still
+required. See the [authoritative remaining roadmap](roadmap.md) for the three
+remaining delivery stages and agreed requirements. No release registration
+or stable release until acceptance passes.
+
+The older P0–P5 descriptions and commands below preserve implementation
+history. They are not separate remaining delivery stages. Where historical
+status or CLI instructions conflict with the current candidate, the
+consolidated connection section, pairing contract and latest acceptance
+runbook take precedence. Use only a matching current CI artifact.
 
 ## Scope and architecture
 
@@ -23,7 +30,7 @@ explicit first-pair confirmation and revocation. Discovery is an untrusted
 hint, not an authorization decision. No automatic firewall rules, public
 listeners, UPnP, external relay or unrestricted drive exposure.
 
-## Stages
+## Historical implementation milestones (P0–P5)
 
 - P0 (this commit): development manifest, native menu and read-only status UI;
   bounded single-file receive state, approval, ordered chunks, streaming
@@ -335,7 +342,11 @@ sessions outside Pulse retain the documented operator-managed private-directory
 prerequisite. This is not a defense against hostile same-user or administrator
 changes or a race-free ancestor containment guarantee.
 
-## Isolated P2 acceptance package
+## Isolated P2 acceptance package (historical three-helper instructions)
+
+For the current four-helper candidate, use the latest matching Windows artifact
+including `pulse-share-pake.exe` and `pulse-share-pake-notices.txt`; the current
+staging script requires these. Do not reuse a historical three-helper artifact.
 
 After the full branch regression succeeds, download `share-acceptance-inputs`
 from the same Windows run, or build all three helpers locally with the pinned
@@ -451,3 +462,8 @@ post-quantum authenticated. Go 1.25+ is required; CI stays pinned to 1.27.4.
 Legacy saved defaults migrate from v1 to v2, with optional endpoint/source
 suggestions, not automatic authorization. Real Pulse 1.0.62 modal behavior,
 secret non-retention and two-PC overlay/proxy use still require acceptance.
+
+The [remaining roadmap](roadmap.md) is the source of truth for new work, including
+clipboard content/files, Tray Shelf integration, unified integrity checks and a
+shared adaptive 32-channel ceiling. These are planned, not implemented by this
+documentation revision.
