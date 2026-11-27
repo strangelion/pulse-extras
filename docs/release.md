@@ -209,6 +209,21 @@ evidence; real-host GUI acceptance and rollback. Keep these separate from
 unsigned preview publication. Do not add empty secrets, signing placeholders,
 or auto-merge before these controls are implemented and reviewed.
 
+### Public-host manifest compatibility
+
+The pinned public Pulse 1.0.60 manifest parser at SDK revision
+`b32436831a066e18448b2810bef4bf989024fc68` accepts only
+`apiVersion`, `id`, `name`, `resources` and `native`.
+The later locally captured 1.0.61 SDK supports the `activation` field;
+do not include it in formal release templates until a compatible public
+host and schema are reviewed and pinned. Development/test templates retain
+their explicit startup activation for newer-host acceptance; they are not
+the public release templates. No automatic field stripping or validation
+bypass is used. Confirm actual settings-page startup behavior on the
+target host before stable promotion. Release CI retains official author
+tool logs and isolated installer logs as a seven-day diagnostic artifact,
+including on package failure.
+
 ## 3C. GitHub stable promotion and local signing
 
 Stable GitHub publication is independent of official registry approval; this repository requires publisher signatures for stable promotion.
@@ -235,6 +250,16 @@ to restrict main and require an appropriate reviewer where the plan permits.
 The environment name alone is not an approval control. Configure both environments before use: `release-signing` and `stable-release`, main-only, with required reviewer(s). A single maintainer must allow self-review or arrange a distinct reviewer; disable admin bypass if appropriate.
 
 The signing environment alone contains Secret `PULSE_SIGNING_PRIVATE_KEY` (Base64 CNG private blob), and Variables `PULSE_SIGNING_PUBLIC_KEY` (Base64 public blob) and `PULSE_PUBLISHER_FINGERPRINT` (lowercase SHA-256). The reviewed public identity and registry tool revision are fixed in `sdk/publisher.toml`. Key rotation requires a reviewed update, not merely changing variables. A separate read-only prepare job checks exact candidate hashes and acceptance before requesting signing approval; the signing job verifies the public fingerprint, signs the original manifest with the pinned official Windows CLI and removes the temporary private file. Only signatures, public publisher records and signature evidence are uploaded. The final protected publish job verifies the original package, acceptance and signatures again using the pinned public fingerprint and official verifier; it receives no signing secret. Missing keys, mismatched fingerprints, bad signatures or missing evidence block publication. The original build evidence is not rewritten; separate signing evidence records the verified signature.
+
+Owner-reported legacy local key location (2026-11-27):
+`.local/PulseSigning/pulse-extras/` relative to this checkout. This is a
+location note only, not a CI input, not a verified inventory, and not a
+request to generate another key. The directory is ignored by Git, but ignored
+files are not a security boundary and can be removed by local cleanup.
+Keep an encrypted backup outside the checkout and preferably relocate the
+existing key pair outside all repositories (do not regenerate it).
+The optional local signing wrapper deliberately rejects in-repository key
+paths, including ignored paths. Environment signing does not use this location.
 
 For optional local signing, the actual official keygen/sign/verify CLI is
 in **jimmgreen/pulse-extensions**, not the public Pulse SDK checkout.

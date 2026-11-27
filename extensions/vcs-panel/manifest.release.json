@@ -2,7 +2,6 @@
   "apiVersion": 1,
   "id": "strangelion.vcs",
   "name": "VCS Panel",
-  "activation": "startup",
   "resources": [
     "settings.own",
     "context.read",

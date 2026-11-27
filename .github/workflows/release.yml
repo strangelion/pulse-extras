@@ -85,6 +85,19 @@ jobs:
           persist-credentials: false
       - name: Build and verify selected packages
         run: python scripts/release_workflow.py build
+      - name: Preserve official packaging diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-release-package-logs
+          path: |
+            .local/release-work/setup.log
+            .local/release-work/package-*/stage/native-manifest.log
+            .local/release-work/package-*/stage/pack.log
+            .local/release-work/package-*/stage/verify.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Preserve exact verified candidates
         uses: actions/upload-artifact@v4
         with:
