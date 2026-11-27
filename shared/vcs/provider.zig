@@ -92,6 +92,98 @@ pub const SavedHint = struct {
     executable: ?identity.Path = null,
 };
 
+/// Display-only file status records. Paths are never CLI arguments.
+/// Compact bounded arena avoids one 2 KiB Path per row in every cache entry.
+pub const FileList = struct {
+    pub const capacity = 64;
+    pub const byte_capacity = 8192;
+    pub const page_size = 8;
+    pub const Kind = enum {
+        modified,
+        added,
+        deleted,
+        renamed,
+        copied,
+        conflict,
+        untracked,
+        ignored,
+        missing,
+        replaced,
+        obstructed,
+        incomplete,
+        property,
+        external,
+        unknown,
+
+        pub fn label(self: Kind) []const u8 {
+            return @tagName(self);
+        }
+    };
+    pub const Span = struct {
+        offset: u16 = 0,
+        len: u16 = 0,
+    };
+    pub const Row = struct {
+        path: Span,
+        original: Span = .{},
+        kind: Kind,
+        /// Git XY, otherwise zero. Never infer staging for JJ or SVN.
+        xy: [2]u8 = .{ 0, 0 },
+        property_changed: bool = false,
+        tree_conflict: bool = false,
+        revision: ?u64 = null,
+    };
+    available: bool = false,
+    omitted: u32 = 0,
+    count: u8 = 0,
+    used: u16 = 0,
+    rows: [capacity]Row = undefined,
+    bytes: [byte_capacity]u8 = undefined,
+
+    fn valid(value: []const u8) bool {
+        return value.len != 0 and value.len <= identity.max_path_bytes and std.unicode.utf8ValidateSlice(value) and std.mem.indexOfScalar(u8, value, 0) == null;
+    }
+
+    fn store(self: *FileList, value: []const u8) Span {
+        const offset = self.used;
+        @memcpy(self.bytes[offset..][0..value.len], value);
+        self.used += @intCast(value.len);
+        return .{ .offset = offset, .len = @intCast(value.len) };
+    }
+
+    pub fn omit(self: *FileList) void {
+        self.omitted +|= 1;
+    }
+
+    pub fn add(self: *FileList, path: []const u8, original: []const u8, row: Row) void {
+        if (!valid(path) or (original.len != 0 and !valid(original)) or self.count == capacity or @as(usize, self.used) + path.len + original.len > byte_capacity) {
+            self.omit();
+            return;
+        }
+        var entry = row;
+        entry.path = self.store(path);
+        if (original.len != 0) entry.original = self.store(original);
+        self.rows[self.count] = entry;
+        self.count += 1;
+    }
+
+    pub fn slice(self: *const FileList, span: Span) []const u8 {
+        return self.bytes[span.offset..][0..span.len];
+    }
+
+    pub fn matches(self: *const FileList, row: Row, filter: []const u8) bool {
+        return filter.len == 0 or std.mem.indexOf(u8, self.slice(row.path), filter) != null or std.mem.indexOf(u8, self.slice(row.original), filter) != null or std.mem.indexOf(u8, row.kind.label(), filter) != null;
+    }
+
+    pub fn matchCount(self: *const FileList, filter: []const u8) usize {
+        var count: usize = 0;
+        for (self.rows[0..self.count]) |row| {
+            if (self.matches(row, filter)) count += 1;
+        }
+        return count;
+    }
+};
+
 /// What a read-only summary can say. Absent fields carry the reason through
 /// `availability` instead of pretending the repository is empty.
 pub const Snapshot = struct {
@@ -101,6 +193,7 @@ pub const Snapshot = struct {
     /// Branch, bookmark, stream or trunk-relative path, depending on the VCS.
     reference: Text = .{},
     changes: Changes = .{},
+    files: FileList = .{},
     counts: CountAvailability = .{},
     /// Some providers report only whether a revision has conflicts.
     has_conflict: ?bool = null,
@@ -290,4 +383,20 @@ test "bounded text reports overflow instead of truncating" {
 test "bounded text rejects invalid UTF-8 and embedded NUL" {
     try std.testing.expectError(error.InvalidText, Text.init("bad\xff"));
     try std.testing.expectError(error.InvalidText, Text.init("bad\x00"));
+}
+
+test "file arena bounds retained rows and preserves omissions and exact names" {
+    var list: FileList = .{ .available = true };
+    list.add("new name", "old name", .{ .path = .{}, .kind = .renamed, .xy = .{ 'R', '.' } });
+    try std.testing.expectEqualStrings("old name", list.slice(list.rows[0].original));
+    try std.testing.expectEqual(@as(usize, 1), list.matchCount("old"));
+    list.add("bad\xff", "", .{ .path = .{}, .kind = .modified });
+    for (0..FileList.capacity) |_| list.add("a", "", .{ .path = .{}, .kind = .modified });
+    try std.testing.expectEqual(@as(u8, FileList.capacity), list.count);
+    try std.testing.expectEqual(@as(u32, 2), list.omitted);
+    var large: FileList = .{ .available = true };
+    const path: [identity.max_path_bytes]u8 = @splat('x');
+    for (0..5) |_| large.add(&path, "", .{ .path = .{}, .kind = .modified });
+    try std.testing.expectEqual(@as(u8, 4), large.count);
+    try std.testing.expectEqual(@as(u32, 1), large.omitted);
 }

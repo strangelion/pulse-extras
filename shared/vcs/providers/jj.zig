@@ -66,6 +66,29 @@ pub fn countDiff(text: []const u8, changes: *contract.Changes) void {
     }
 }
 
+/// JJ summary is display-only, especially compact rename expressions.
+pub fn listDiff(text: []const u8, files: *contract.FileList) void {
+    files.* = .{ .available = true };
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trimEnd(u8, raw_line, "\r");
+        if (line.len == 0) continue;
+        if (line.len < 3 or line[1] != ' ') {
+            files.omit();
+            continue;
+        }
+        const kind: contract.FileList.Kind = switch (line[0]) {
+            'M' => .modified,
+            'A' => .added,
+            'D' => .deleted,
+            'R' => .renamed,
+            'C' => .copied,
+            else => .unknown,
+        };
+        files.add(line[2..], "", .{ .path = .{}, .kind = kind });
+    }
+}
+
 pub const Jj = struct {
     runner: *run.Runner,
     executable: identity.Path,
@@ -140,6 +163,7 @@ pub const Jj = struct {
         };
         if (!diff_out.succeeded()) return mapFailure(diff_out.stderr);
         countDiff(diff_out.stdout, &snapshot.changes);
+        listDiff(diff_out.stdout, &snapshot.files);
         return snapshot;
     }
 
@@ -274,6 +298,8 @@ test "reads a real jj repository without creating snapshots" {
     try std.testing.expectEqualStrings(before.stdout, after.stdout);
     try std.testing.expectEqual(contract.Availability.ready, snapshot.availability);
     try std.testing.expect(snapshot.detail.eql("working copy not snapshotted (read-only query)"));
+    try std.testing.expect(snapshot.files.available);
+    try std.testing.expectEqual(@as(u8, 0), snapshot.files.count);
 }
 
 fn testSessionClock() i64 {
@@ -284,4 +310,13 @@ test "revision parser rejects missing unknown or extra fields" {
     try std.testing.expectError(error.Malformed, parseRevision("abc\tdef\t\tok"));
     try std.testing.expectError(error.Malformed, parseRevision("abc\t1111111111111111111111111111111111111111\t\tmaybe"));
     try std.testing.expectError(error.Malformed, parseRevision("abc\t1111111111111111111111111111111111111111\t\tok\textra"));
+}
+
+test "JJ recorded summary preserves rename expression and reports unknown records" {
+    var files: contract.FileList = .{};
+    listDiff("M src/main.zig\nR {old => new}.txt\nX unusual\nheader\n", &files);
+    try std.testing.expectEqual(@as(u8, 3), files.count);
+    try std.testing.expectEqualStrings("{old => new}.txt", files.slice(files.rows[1].path));
+    try std.testing.expectEqual(contract.FileList.Kind.unknown, files.rows[2].kind);
+    try std.testing.expectEqual(@as(u32, 1), files.omitted);
 }

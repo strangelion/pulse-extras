@@ -140,12 +140,12 @@ disable/exit. Record exact artifacts and results using
 unavailable, complete code and automated work then report the missing case set
 once. No claim that local trust is a filesystem/network sandbox.
 
-### P2B — Project manager and persistent trust (active)
+### P2B — Project manager and persistent trust (DEV COMPLETE / HOST DEFERRED)
 
 4d53927 already contains V2 migrated project bookmarks, 64-record capacity,
 12-row paging, name/tags/favorites/search/accepted-navigation recency, supported
 folder route and in-panel session reset. This follow-up adds explicit saved
-local trust and identity-bound stale snapshot reuse. [a676805 / 45856710161](https://github.com/strangelion/pulse-extras/actions/runs/45856710161) passed full regression. [a387067 / 45922243671](https://github.com/strangelion/pulse-extras/actions/runs/45922243671) passed all required lanes for selected-folder routing, project identity/cancellation and the earlier persistent trust code. [8b94fb4 / 45923906700](https://github.com/strangelion/pulse-extras/actions/runs/45923906700) passed all required lanes for saved-record inspection and recency display. The project-library scope management follow-up requires exact new regression.
+local trust and identity-bound stale snapshot reuse. [a676805 / 45856710161](https://github.com/strangelion/pulse-extras/actions/runs/45856710161) passed full regression. [a387067 / 45922243671](https://github.com/strangelion/pulse-extras/actions/runs/45922243671) passed all required lanes for selected-folder routing, project identity/cancellation and the earlier persistent trust code. [8b94fb4 / 45923906700](https://github.com/strangelion/pulse-extras/actions/runs/45923906700) passed all required lanes for saved-record inspection and recency display. [147449b / 45925323667](https://github.com/strangelion/pulse-extras/actions/runs/45925323667) passed the full code regression for project-library scope management. Owner policy permits P3A development; installed acceptance remains deferred.
 
 **Outcome:** the project library is a primary, useful VCS entry, not a settings
 appendix; users can manage multiple projects without repeatedly typing paths.
@@ -200,7 +200,7 @@ stable certification. Do not repeatedly publish tiny partial milestones.
 
 ## P3 — Read-only advanced functions
 
-### P3A — Complete local read-only workspace
+### P3A — Complete local read-only workspace (active)
 
 **Outcome:** one consistent project/status/history/diff interface for all
 three primary providers, with native semantics and bounded content.
@@ -416,7 +416,20 @@ removed; durable revocation is separately reported after worker completion.
 No automatic grant creation or full-store enumeration. Missing/moved roots
 can be handled without navigating to them; revoking all remains the fallback
 for unbookmarked and unreadable scopes. The fixtures cover selection/version
-changes, scope isolation and no settings mutation. This candidate still needs
-exact full CI; installed restart, physical identity evidence and actual host
-routing remain in the final acceptance register. Do not start P3A on a failed
+changes, scope isolation and no settings mutation. Exact full CI passed at 147449b / 45925323667; installed restart, physical identity evidence and actual host routing remain in the final acceptance register. Do not start P3A on a failed
 gate or claim installed acceptance. No new release.
+
+### P3A file-status vertical slice (candidate)
+
+Reuse the exact already-admitted status output of Git, recorded JJ and local
+SVN. A compact owned 64-row/8 KiB path arena retains typed file records,
+Git XY/rename source, JJ compact rename expression, SVN property/tree flags
+and per-entry revision where reported. Invalid/oversized or omitted rows are
+counted independently from full summary counts. No new CLI or network access.
+Eight-row native pages and explicit case-sensitive retained-record search
+are bound to the existing workspace generation and fresh ready view; stale
+snapshots are display-only. Real CLI fixtures and malformed/overflow fixtures
+cover the first slice. History, revision/file content, selected-file diff,
+refs/workspaces, full provider-native detail and right-click file inspection
+remain P3A requirements, not completed by this candidate. SVN server history
+requires separate authorization. No SDK baseline changes or new release.

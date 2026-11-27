@@ -493,6 +493,8 @@ pub const Binding = struct {
     recent: RecentSnapshots = .{},
     cache_token: ?[32]u8 = null,
     local_review: ?panel.LocalReview = null,
+    file_page: usize = 0,
+    file_filter: contract.Text = .{},
     setup_issue: ?panel.SetupIssue = null,
     revocation: ?Revocation = null,
     approved_root: ?identity.Path = null,
@@ -584,6 +586,9 @@ pub const Binding = struct {
         current.local_setup = self.local_ui;
         current.reset_configured = if (self.local_access) |access| access.reset != null else false;
         current.saved_trust_configured = self.savedTrustAvailable();
+        current.file_controls = self.local_ui and self.savedTrustAvailable();
+        current.file_page = self.file_page;
+        current.file_filter = self.file_filter;
         current.saved_trust_selected = self.saved_trust_selected;
         current.tool_version = self.verified_version;
         if (current.snapshot) |*snapshot| {
@@ -609,8 +614,8 @@ pub const Binding = struct {
             return error.State;
         }
         self.model = .{ .table = table, .id = id };
-        const commands = [_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check, panel.command_revoke, panel.command_trust_git, panel.command_trust_jj, panel.command_trust_svn, panel.command_trust_confirm, panel.command_trust_cancel, panel.command_trust_reset, panel.command_trust_remember, panel.command_trust_reuse, panel.command_trust_forget, panel.command_trust_forget_all };
-        for (commands[0..if (self.local_ui and self.savedTrustAvailable()) @as(usize, 14) else if (self.local_ui) @as(usize, 10) else if (self.revocation != null) @as(usize, 4) else 3]) |name| {
+        const commands = [_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check, panel.command_revoke, panel.command_trust_git, panel.command_trust_jj, panel.command_trust_svn, panel.command_trust_confirm, panel.command_trust_cancel, panel.command_trust_reset, panel.command_trust_remember, panel.command_trust_reuse, panel.command_trust_forget, panel.command_trust_forget_all, panel.command_file_filter, panel.command_file_prev, panel.command_file_next };
+        for (commands[0..if (self.local_ui and self.savedTrustAvailable()) @as(usize, 17) else if (self.local_ui) @as(usize, 10) else if (self.revocation != null) @as(usize, 4) else 3]) |name| {
             _ = self.model.?.subscribeCommand(name, &onCommand, self) catch |err| {
                 self.last_error = err;
                 // Close invalidates all subscriptions, including any partial
@@ -710,6 +715,8 @@ pub const Binding = struct {
             failure = err;
         };
         if (failure) |err| return err;
+        self.file_page = 0;
+        self.file_filter = .{};
         self.navigation_generation = latest.generation;
         if (!self.approval_locked and self.resolver != null and self.navigation.pending and latest.directory() != null) self.controller.current = .{ .phase = .queued };
     }
@@ -857,6 +864,32 @@ pub const Binding = struct {
         }
     }
 
+    fn fileCommand(self: *Binding, name: []const u8) host_mod.Error!void {
+        if (!self.local_ui or !self.savedTrustAvailable() or self.metadata_only or self.approval_locked) return error.Permission;
+        try self.navigation.refreshCurrent();
+        try self.invalidateNavigation();
+        const current = &self.controller.current;
+        if (current.phase != .ready or current.stale or self.navigation.pending or self.controller.query.task.occupied() or self.resolution.task.occupied()) return error.State;
+        const snapshot = if (current.snapshot) |*value| value else return error.State;
+        if (!snapshot.files.available) return error.Unavailable;
+        if (std.mem.eql(u8, name, panel.command_file_filter)) {
+            const model = self.model orelse return error.State;
+            const get = model.table.get_state orelse return error.Unavailable;
+            var bytes: [contract.Text.capacity + 1]u8 = undefined;
+            var needed: u32 = 0;
+            try host_mod.mapStatus(get(model.table.context, model.id, abi.view(panel.state_file_filter), &bytes, bytes.len, &needed));
+            if (needed >= bytes.len) return error.Argument;
+            self.file_filter = contract.Text.init(bytes[0..needed]) catch return error.Argument;
+            self.file_page = 0;
+        } else if (std.mem.eql(u8, name, panel.command_file_prev)) {
+            self.file_page -|= 1;
+        } else {
+            const total = snapshot.files.matchCount(self.file_filter.slice());
+            if ((self.file_page + 1) * contract.FileList.page_size < total) self.file_page += 1;
+        }
+        try self.render();
+    }
+
     fn localCommand(self: *Binding, name: []const u8) bool {
         if (!self.local_ui) return false;
         self.setup_issue = null;
@@ -904,6 +937,13 @@ pub const Binding = struct {
         if (model.id != id) return;
         const name = abi.slice(command) orelse return;
         self.last_error = null;
+        if (panel.isFileCommand(name)) {
+            self.fileCommand(name) catch |err| {
+                self.last_error = err;
+                self.render() catch {};
+            };
+            return;
+        }
         if (self.localCommand(name)) return;
         if (std.mem.eql(u8, name, panel.command_revoke)) {
             self.revokeApproval() catch |err| {
@@ -1038,6 +1078,7 @@ pub const Binding = struct {
         const latest = self.navigation.latest orelse return error.State;
         if (latest.directory() == null) return error.State;
         self.local_review = null;
+        self.file_page = 0;
         self.verified_version = .{};
         self.cache_token = null;
         self.navigation.pending = true;
@@ -1170,6 +1211,9 @@ pub const Binding = struct {
         current.local_setup = self.local_ui;
         current.reset_configured = if (self.local_access) |access| access.reset != null else false;
         current.saved_trust_configured = self.savedTrustAvailable();
+        current.file_controls = self.local_ui and self.savedTrustAvailable();
+        current.file_page = self.file_page;
+        current.file_filter = self.file_filter;
         current.saved_trust_selected = self.saved_trust_selected;
         current.tool_version = self.verified_version;
         if (current.snapshot) |*snapshot| {
@@ -1562,8 +1606,8 @@ const MockUi = struct {
         if (id != 7 or callback == null or data == null) return abi.error_argument;
         const name = abi.slice(command) orelse return abi.error_argument;
         const local = self.commands_expected >= 10 and (panel.trustKind(name) != null or std.mem.eql(u8, name, panel.command_trust_confirm) or std.mem.eql(u8, name, panel.command_trust_cancel) or std.mem.eql(u8, name, panel.command_trust_reset));
-        const saved = self.commands_expected == 14 and (std.mem.eql(u8, name, panel.command_trust_remember) or std.mem.eql(u8, name, panel.command_trust_reuse) or std.mem.eql(u8, name, panel.command_trust_forget) or std.mem.eql(u8, name, panel.command_trust_forget_all));
-        if (panel.parseCommand(name) == null and !(self.commands_expected >= 4 and std.mem.eql(u8, name, panel.command_revoke)) and !local and !saved) return abi.error_argument;
+        const saved = self.commands_expected >= 14 and (std.mem.eql(u8, name, panel.command_trust_remember) or std.mem.eql(u8, name, panel.command_trust_reuse) or std.mem.eql(u8, name, panel.command_trust_forget) or std.mem.eql(u8, name, panel.command_trust_forget_all));
+        if (panel.parseCommand(name) == null and !(self.commands_expected >= 4 and std.mem.eql(u8, name, panel.command_revoke)) and !local and !saved and !(self.commands_expected == 17 and panel.isFileCommand(name))) return abi.error_argument;
         self.subscriptions += 1;
         if (self.subscriptions == self.fail_subscribe_at) return abi.error_permission;
         self.callback = callback;
@@ -2384,7 +2428,7 @@ test "saved record can be reviewed and revoked without a discovered executable o
     var preview: MockResolver = .{ .host_task = &mock };
     var trusted: MockResolver = .{ .host_task = &mock };
     var access: LocalAccessFixture = .{ .resolver = &trusted };
-    var model: MockUi = .{ .commands_expected = 14, .executable = "" };
+    var model: MockUi = .{ .commands_expected = 17, .executable = "" };
     var navigation: MockNavigation = .{};
     var binding = try Binding.init(mock.table(), .en);
     try binding.configureMetadataPreview(preview.resolver());

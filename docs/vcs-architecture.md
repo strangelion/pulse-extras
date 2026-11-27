@@ -344,3 +344,16 @@ checks the reviewed record/version and locally invalidates matching saved
 session admission and cache. The durable worker outcome remains separate.
 Real host acceptance, unobservable physical aliases and all-store grant
 enumeration remain limitations.
+
+### P3A file status candidate
+
+The existing status worker now returns a bounded display-only file arena in
+its owned snapshot. Full counts remain independent of retained rows. Git
+porcelain v2 retains XY and rename source; JJ summary retains the recorded
+commit's compact rename expression (not an executable path); SVN local XML
+retains decoded built-in entities, property/tree conflict and entry revision.
+Numeric/custom entity paths are omitted, not misrepresented. Eight-row
+paging and case-sensitive search do not start a process. A new navigation
+clears the filter and page, and stale data is explicitly read-only. Never
+construct CLI targets from these display strings. Full history, diff, refs
+and file selection are not yet implemented; exact candidate CI is pending.

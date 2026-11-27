@@ -32,6 +32,14 @@ pub const command_trust_reuse = "vcs.trust.reuse";
 pub const command_trust_forget = "vcs.trust.forget";
 pub const command_trust_forget_all = "vcs.trust.forget-all";
 pub const state_executable = "vcs.executable";
+pub const state_file_filter = "vcs.files.filter";
+pub const command_file_filter = "vcs.files.search";
+pub const command_file_prev = "vcs.files.prev";
+pub const command_file_next = "vcs.files.next";
+
+pub fn isFileCommand(name: []const u8) bool {
+    return std.mem.eql(u8, name, command_file_filter) or std.mem.eql(u8, name, command_file_prev) or std.mem.eql(u8, name, command_file_next);
+}
 
 pub const TrustMode = enum { session, remember, reuse };
 
@@ -62,6 +70,9 @@ pub fn parseCommand(name: []const u8) ?Command {
 
 pub const View = struct {
     phase: Phase,
+    file_page: usize = 0,
+    file_filter: contract.Text = .{},
+    file_controls: bool = false,
     workspace: ?identity.Workspace = null,
     snapshot: ?contract.Snapshot = null,
     stale: bool = false,
@@ -235,14 +246,14 @@ fn failureLabel(lang: Language, err: contract.Error) []const u8 {
 /// All visible data is copied; no references into the View or cache remain.
 /// build is read-only; buildInteractive declares the fixed owner commands.
 pub const Content = struct {
-    const capacity = 44;
+    const capacity = 64;
     const line_bytes = identity.max_path_bytes + 64;
     lines: [capacity][line_bytes]u8 = undefined,
     nodes: [capacity]ui.Node = undefined,
     len: usize = 0,
     root: ui.Node = undefined,
-    commands: [14]abi.StringView = undefined,
-    states: [1]ui.State = undefined,
+    commands: [17]abi.StringView = undefined,
+    states: [2]ui.State = undefined,
 
     fn add(self: *Content, id: []const u8, label: []const u8, value: []const u8) void {
         std.debug.assert(self.len < capacity);
@@ -324,6 +335,7 @@ pub const Content = struct {
                 self.count(lang, "vcs.ahead", loc(lang, "Ahead: ", "领先："), snapshot.changes.ahead, snapshot.counts.ahead, snapshot.availability);
                 self.count(lang, "vcs.behind", loc(lang, "Behind: ", "落后："), snapshot.changes.behind, snapshot.counts.behind, snapshot.availability);
                 if (snapshot.detail.slice().len != 0) self.add("vcs.detail", "", snapshot.detail.slice());
+                if (!view.approval_required and snapshot.files.available) self.addFiles(lang, view, &snapshot.files);
             }
         }
         self.root = ui.node(ui.NodeKind.stack);
@@ -333,6 +345,51 @@ pub const Content = struct {
         tree.* = std.mem.zeroes(ui.Tree);
         tree.size = @sizeOf(ui.Tree);
         tree.root = &self.root;
+    }
+
+    fn addFiles(self: *Content, lang: Language, view: *const View, files: *const contract.FileList) void {
+        const filter = view.file_filter.slice();
+        const total = files.matchCount(filter);
+        const page_count = @max(1, (total + contract.FileList.page_size - 1) / contract.FileList.page_size);
+        const page = @min(view.file_page, page_count - 1);
+        var heading: [96]u8 = undefined;
+        self.add("vcs.files.heading", loc(lang, "File status: ", "文件状态："), std.fmt.bufPrint(&heading, "{d}/{d} · {d}/{d}", .{ page + 1, page_count, total, files.count }) catch "");
+        if (files.omitted != 0) {
+            var count_text: [16]u8 = undefined;
+            self.add("vcs.files.omitted", loc(lang, "Not retained (limit/invalid path/unknown record): ", "未保留（上限、无效路径或未知记录）："), std.fmt.bufPrint(&count_text, "{d}", .{files.omitted}) catch "");
+        }
+        const ids = [_][]const u8{ "vcs.file.0", "vcs.file.1", "vcs.file.2", "vcs.file.3", "vcs.file.4", "vcs.file.5", "vcs.file.6", "vcs.file.7" };
+        const sources = [_][]const u8{ "vcs.file.source.0", "vcs.file.source.1", "vcs.file.source.2", "vcs.file.source.3", "vcs.file.source.4", "vcs.file.source.5", "vcs.file.source.6", "vcs.file.source.7" };
+        var matched: usize = 0;
+        var shown: usize = 0;
+        for (files.rows[0..files.count]) |row| {
+            if (!files.matches(row, filter)) continue;
+            matched += 1;
+            if (matched <= page * contract.FileList.page_size) continue;
+            if (shown == ids.len) break;
+            var label: [64]u8 = undefined;
+            const prefix = if (row.xy[0] != 0)
+                std.fmt.bufPrint(&label, "[{c}{c}] {s}: ", .{ row.xy[0], row.xy[1], row.kind.label() }) catch ""
+            else if (row.revision) |rev|
+                std.fmt.bufPrint(&label, "{s} r{d}{s}{s}: ", .{ row.kind.label(), rev, if (row.property_changed) " P" else "", if (row.tree_conflict) " T" else "" }) catch ""
+            else
+                std.fmt.bufPrint(&label, "{s}{s}{s}: ", .{ row.kind.label(), if (row.property_changed) " P" else "", if (row.tree_conflict) " T" else "" }) catch "";
+            self.add(ids[shown], prefix, files.slice(row.path));
+            if (row.original.len != 0) self.add(sources[shown], loc(lang, "From: ", "原路径："), files.slice(row.original));
+            shown += 1;
+        }
+        if (shown == 0) self.add("vcs.files.empty", "", loc(lang, "No matching retained records", "没有匹配的已保留记录"));
+        if (view.file_controls and !view.stale and view.phase == .ready) {
+            var node = ui.node(ui.NodeKind.text_input);
+            node.id = abi.view(state_file_filter);
+            node.state = .{ .present = 1, .value = abi.view(state_file_filter) };
+            node.text = .{ .present = 1, .value = abi.view(loc(lang, "Search retained path/status (case-sensitive)", "搜索已保留路径或状态（区分大小写）")) };
+            self.nodes[self.len] = node;
+            self.len += 1;
+            self.addButton("vcs.files.search.action", loc(lang, "Search / clear", "搜索 / 清除"), command_file_filter);
+            if (page > 0) self.addButton("vcs.files.prev.action", loc(lang, "Previous files", "上一页文件"), command_file_prev);
+            if (page + 1 < page_count) self.addButton("vcs.files.next.action", loc(lang, "Next files", "下一页文件"), command_file_next);
+        }
     }
 
     fn addButton(self: *Content, id: []const u8, label: []const u8, command: []const u8) void {
@@ -416,13 +473,14 @@ pub const Content = struct {
     /// The owner still validates commands against current controller state.
     pub fn buildInteractive(self: *Content, lang: Language, view: *const View, tree: *ui.Tree) void {
         self.build(lang, view, tree);
-        self.commands = .{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check), abi.view(command_revoke), abi.view(command_trust_git), abi.view(command_trust_jj), abi.view(command_trust_svn), abi.view(command_trust_confirm), abi.view(command_trust_cancel), abi.view(command_trust_reset), abi.view(command_trust_remember), abi.view(command_trust_reuse), abi.view(command_trust_forget), abi.view(command_trust_forget_all) };
+        self.commands = .{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check), abi.view(command_revoke), abi.view(command_trust_git), abi.view(command_trust_jj), abi.view(command_trust_svn), abi.view(command_trust_confirm), abi.view(command_trust_cancel), abi.view(command_trust_reset), abi.view(command_trust_remember), abi.view(command_trust_reuse), abi.view(command_trust_forget), abi.view(command_trust_forget_all), abi.view(command_file_filter), abi.view(command_file_prev), abi.view(command_file_next) };
         tree.commands = &self.commands;
-        tree.command_count = if (view.local_setup and view.saved_trust_configured) 14 else if (view.local_setup) 10 else if (view.revocation_configured) 4 else 3;
+        tree.command_count = if (view.local_setup and view.saved_trust_configured) (if (view.file_controls) @as(u32, 17) else 14) else if (view.local_setup) 10 else if (view.revocation_configured) 4 else 3;
         if (view.local_setup) {
             self.states[0] = .{ .key = abi.view(state_executable), .value = abi.view("") };
             tree.states = &self.states;
-            tree.state_count = self.states.len;
+            self.states[1] = .{ .key = abi.view(state_file_filter), .value = abi.view(view.file_filter.slice()) };
+            tree.state_count = if (view.file_controls) 2 else 1;
             self.addLocalSetup(lang, view);
             if (view.reset_configured and (!view.metadata_only or view.approval_required)) self.addButton("vcs.action.trust-reset", loc(lang, "Choose repository / provider again", "重新选择仓库 / 版本控制类型"), command_trust_reset);
         }

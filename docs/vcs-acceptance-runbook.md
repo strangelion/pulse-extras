@@ -396,3 +396,7 @@ and unobservable aliases remain intentionally unsupported; use revoke-all
 when no specific scope is available. Verify missing/moved root, distinct
 providers, concurrent windows, failure/release and installed restart in the
 consolidated acceptance. Mocked scope fixtures are not registry or host proof.
+
+### P3A file status candidate acceptance
+
+P2B code gate passed at [147449b / 45925323667](https://github.com/strangelion/pulse-extras/actions/runs/45925323667). For P3A, verify the bounded eight-row file display in Git, JJ and SVN, Git rename source/XY, JJ recorded-only label, SVN property/tree conflict and per-entry revision. Exercise >64 paths, oversized/invalid paths, search, previous/next, refresh, navigation, cancellation, revoke and stale snapshot. Counts must not be reduced to retained rows; paging/search may not execute CLI. History, file selection, diff, refs and native installed UI remain open. New source regression required.

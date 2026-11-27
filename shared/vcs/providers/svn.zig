@@ -61,8 +61,36 @@ fn eq(a: []const u8, b: []const u8) bool {
 /// Commit/author and unrelated attributes are not interpreted. Transactional:
 /// malformed output leaves the caller's counts unchanged.
 pub fn countStatus(xml: []const u8, changes: *contract.Changes) XmlError!void {
+    var files: contract.FileList = .{};
+    try parseStatus(xml, changes, &files);
+}
+
+/// Decode XML's five built-in entities only. Numeric/custom entities or
+/// oversized paths are omitted rather than shown as a different filename.
+fn displayPath(raw_path: []const u8, buffer: []u8) ?[]const u8 {
+    var input = raw_path;
+    var used: usize = 0;
+    while (input.len != 0) {
+        if (used == buffer.len) return null;
+        if (input[0] != '&') {
+            buffer[used] = input[0];
+            input = input[1..];
+        } else {
+            const end = std.mem.indexOfScalar(u8, input, ';') orelse return null;
+            const entity = input[1..end];
+            buffer[used] = if (eq(entity, "amp")) '&' else if (eq(entity, "lt")) '<' else if (eq(entity, "gt")) '>' else if (eq(entity, "quot")) '"' else if (eq(entity, "apos")) '\'' else return null;
+            input = input[end + 1 ..];
+        }
+        used += 1;
+    }
+    return buffer[0..used];
+}
+
+pub fn parseStatus(xml: []const u8, changes: *contract.Changes, files: *contract.FileList) XmlError!void {
     if (xml.len > limit or !std.unicode.utf8ValidateSlice(xml) or std.mem.indexOfScalar(u8, xml, 0) != null) return error.Malformed;
     var parsed: contract.Changes = .{};
+    var listed: contract.FileList = .{ .available = true };
+    var entry_path: ?[]const u8 = null;
     var stack: [16][]const u8 = undefined;
     var depth: usize = 0;
     var seen_root = false;
@@ -101,11 +129,13 @@ pub fn countStatus(xml: []const u8, changes: *contract.Changes) XmlError!void {
         if (entry) {
             if (depth == 0 or (!eq(stack[depth - 1], "target") and !eq(stack[depth - 1], "changelist"))) return error.Malformed;
             seen_entry_status = false;
+            entry_path = null;
         }
         if (wc_status and (depth == 0 or !eq(stack[depth - 1], "entry") or seen_entry_status)) return error.Malformed;
         var item: ?[]const u8 = null;
         var props: ?[]const u8 = null;
         var tree_conflict: ?[]const u8 = null;
+        var revision: ?[]const u8 = null;
         var closed = false;
         while (true) {
             skipSpace(xml, &index);
@@ -136,8 +166,12 @@ pub fn countStatus(xml: []const u8, changes: *contract.Changes) XmlError!void {
             if (index >= xml.len) return error.Malformed;
             const value = xml[start..index];
             index += 1;
+            if (entry and eq(key, "path")) {
+                if (entry_path != null) return error.Malformed;
+                entry_path = value;
+            }
             if (!wc_status) continue;
-            const slot = if (eq(key, "item")) &item else if (eq(key, "props")) &props else if (eq(key, "tree-conflicted")) &tree_conflict else continue;
+            const slot = if (eq(key, "item")) &item else if (eq(key, "props")) &props else if (eq(key, "tree-conflicted")) &tree_conflict else if (eq(key, "revision")) &revision else continue;
             if (slot.* != null) return error.Malformed;
             slot.* = value;
         }
@@ -157,6 +191,38 @@ pub fn countStatus(xml: []const u8, changes: *contract.Changes) XmlError!void {
             } else if (changed or eq(property, "modified")) {
                 parsed.modified += 1;
             }
+            const kind: ?contract.FileList.Kind = if (conflict)
+                .conflict
+            else if (eq(state, "unversioned"))
+                .untracked
+            else if (eq(state, "ignored"))
+                .ignored
+            else if (eq(state, "added"))
+                .added
+            else if (eq(state, "deleted"))
+                .deleted
+            else if (eq(state, "replaced"))
+                .replaced
+            else if (eq(state, "missing"))
+                .missing
+            else if (eq(state, "obstructed"))
+                .obstructed
+            else if (eq(state, "incomplete"))
+                .incomplete
+            else if (eq(state, "external"))
+                .external
+            else if (eq(state, "modified"))
+                .modified
+            else if (eq(property, "modified"))
+                .property
+            else
+                null;
+            if (kind) |value| {
+                var buffer: [identity.max_path_bytes]u8 = undefined;
+                if (displayPath(entry_path orelse "", &buffer)) |path| {
+                    listed.add(path, "", .{ .path = .{}, .kind = value, .property_changed = eq(property, "modified") or eq(property, "conflicted"), .tree_conflict = eq(tree, "true"), .revision = if (revision) |r| std.fmt.parseInt(u64, r, 10) catch null else null });
+                } else listed.omit();
+            }
             seen_entry_status = true;
         }
         if (closed) {
@@ -169,6 +235,7 @@ pub fn countStatus(xml: []const u8, changes: *contract.Changes) XmlError!void {
     }
     if (!seen_root or depth != 0) return error.Malformed;
     changes.* = parsed;
+    files.* = listed;
 }
 
 pub const Svn = struct {
@@ -223,7 +290,7 @@ pub const Svn = struct {
             });
             defer status_outcome.deinit();
             if (!status_outcome.succeeded()) return mapFailure(status_outcome.stderr);
-            countStatus(status_outcome.stdout, &snapshot.changes) catch return error.Parse;
+            parseStatus(status_outcome.stdout, &snapshot.changes, &snapshot.files) catch return error.Parse;
         }
         snapshot.counts = .{
             .staged = .unsupported,
@@ -373,6 +440,8 @@ test "reads a real local SVN working copy prepared by integration CI" {
     try std.testing.expect(snapshot.revision != null);
     try std.testing.expectEqual(@as(u32, 1), snapshot.changes.modified);
     try std.testing.expectEqual(@as(u32, 1), snapshot.changes.untracked);
+    try std.testing.expect(snapshot.files.available);
+    try std.testing.expect(snapshot.files.count >= 2);
 }
 
 fn testSessionClock() i64 {
@@ -398,4 +467,18 @@ test "malformed SVN output is rejected without publishing partial counts" {
         try std.testing.expectError(error.Malformed, countStatus(fixture, &changes));
         try std.testing.expectEqual(@as(u32, 17), changes.modified);
     }
+}
+
+test "SVN file details decode entities and retain tree and property conflict metadata" {
+    var changes: contract.Changes = .{};
+    var files: contract.FileList = .{};
+    try parseStatus("<status><target><entry path='a&amp;b'><wc-status item='normal' props='modified' revision='12'/></entry><entry path='old'><wc-status item='missing' props='none' tree-conflicted='true' revision='9'/></entry><entry path='bad&#10;name'><wc-status item='unversioned' props='none'/></entry></target></status>", &changes, &files);
+    try std.testing.expectEqual(@as(u8, 2), files.count);
+    try std.testing.expectEqualStrings("a&b", files.slice(files.rows[0].path));
+    try std.testing.expectEqual(contract.FileList.Kind.property, files.rows[0].kind);
+    try std.testing.expectEqual(@as(u64, 12), files.rows[0].revision.?);
+    try std.testing.expect(files.rows[1].tree_conflict);
+    try std.testing.expectEqual(@as(u32, 1), files.omitted);
+    try std.testing.expectError(error.Malformed, parseStatus("<status><target><entry path='a'><wc-status item='modified' props='none'/></entry></target>", &changes, &files));
+    try std.testing.expectEqual(@as(u8, 2), files.count);
 }

@@ -28,13 +28,14 @@ pub const Status = struct {
     seen_ab: bool = false,
     distance_known: bool = false,
     changes: Changes = .{},
+    files: contract.FileList = .{ .available = true },
 };
 
 const ParseError = error{ Malformed, TooManyFields };
 
 /// Parses `git status --porcelain=v2 --branch -z`. Records are NUL separated;
 /// a rename record carries its original path as the next record, which this
-/// parser skips because only counts and branch data are needed.
+/// parser retains as a distinct display-only source path.
 pub fn parseStatus(text: []const u8) ParseError!Status {
     if (text.len > parse_limit or (text.len != 0 and text[text.len - 1] != 0)) return error.Malformed;
     var status = Status{};
@@ -46,16 +47,33 @@ pub fn parseStatus(text: []const u8) ParseError!Status {
             '1', '2' => {
                 const xy = firstField(record, 1) orelse return error.Malformed;
                 if (xy.len != 2 or std.mem.indexOfScalar(u8, ".MADRCUT", xy[0]) == null or std.mem.indexOfScalar(u8, ".MADRCUT", xy[1]) == null) return error.Malformed;
-                if (record[0] == '2') {
-                    const original = records.next() orelse return error.Malformed;
-                    if (original.len == 0) return error.Malformed;
-                }
+                const original = if (record[0] == '2') records.next() orelse return error.Malformed else "";
+                if (record[0] == '2' and original.len == 0) return error.Malformed;
+                const path = pathAfterFields(record, if (record[0] == '2') 9 else 8) orelse return error.Malformed;
+                const kind: contract.FileList.Kind = if (record[0] == '2')
+                    (if (xy[0] == 'C' or xy[1] == 'C') .copied else .renamed)
+                else if (xy[0] == 'D' or xy[1] == 'D')
+                    .deleted
+                else if (xy[0] == 'A' or xy[1] == 'A')
+                    .added
+                else
+                    .modified;
+                status.files.add(path, original, .{ .path = .{}, .kind = kind, .xy = xy[0..2].* });
                 countWorktree(xy, &status.changes);
             },
-            'u' => status.changes.conflicted += 1,
-            '?' => status.changes.untracked += 1,
-            '!' => {},
-            else => {},
+            'u' => {
+                status.changes.conflicted += 1;
+                const path = pathAfterFields(record, 10) orelse return error.Malformed;
+                const xy = firstField(record, 1) orelse return error.Malformed;
+                if (xy.len != 2) return error.Malformed;
+                status.files.add(path, "", .{ .path = .{}, .kind = .conflict, .xy = xy[0..2].* });
+            },
+            '?', '!' => {
+                if (record.len < 3 or record[1] != ' ') return error.Malformed;
+                if (record[0] == '?') status.changes.untracked += 1;
+                status.files.add(record[2..], "", .{ .path = .{}, .kind = if (record[0] == '?') .untracked else .ignored });
+            },
+            else => status.files.omit(),
         }
     }
     return status;
@@ -113,6 +131,16 @@ fn parseAheadBehind(value: []const u8, changes: *Changes) ParseError!bool {
     changes.ahead = a;
     changes.behind = b;
     return true;
+}
+
+fn pathAfterFields(record: []const u8, count: usize) ?[]const u8 {
+    var rest = record;
+    for (0..count) |_| {
+        const space_index = std.mem.indexOfScalar(u8, rest, ' ') orelse return null;
+        if (space_index == 0) return null;
+        rest = rest[space_index + 1 ..];
+    }
+    return if (rest.len != 0) rest else null;
 }
 
 fn firstField(record: []const u8, index: usize) ?[]const u8 {
@@ -212,6 +240,7 @@ pub const Git = struct {
             .workspace = workspace.*,
             .revision = status.oid,
             .changes = status.changes,
+            .files = status.files,
             .counts = .{
                 .staged = .ready,
                 .modified = .ready,
@@ -314,6 +343,10 @@ test "parses branch, ahead/behind and change counts" {
     try std.testing.expectEqual(@as(u32, 1), status.changes.untracked);
     try std.testing.expectEqual(@as(u32, 1), status.changes.conflicted);
     try std.testing.expect(status.oid != null);
+    try std.testing.expectEqual(@as(u8, 5), status.files.count);
+    try std.testing.expectEqualStrings("new name.txt", status.files.slice(status.files.rows[2].path));
+    try std.testing.expectEqualStrings("old name.txt", status.files.slice(status.files.rows[2].original));
+    try std.testing.expectEqual(contract.FileList.Kind.conflict, status.files.rows[4].kind);
 }
 
 test "detached head is reported instead of a branch name" {
@@ -398,6 +431,9 @@ test "reads a real repository end to end when git is installed" {
     if (dirty.failure) |failure| return failure;
     try std.testing.expectEqual(panel.Phase.ready, dirty.phase);
     try std.testing.expectEqual(@as(u32, 1), dirty.snapshot.?.changes.modified);
+    const files = &dirty.snapshot.?.files;
+    try std.testing.expectEqual(@as(u8, 1), files.count);
+    try std.testing.expectEqualStrings("work.txt", files.slice(files.rows[0].path));
     var content: panel.Content = undefined;
     var tree: @import("pulse_ui_model").Tree = undefined;
     content.build(.en, &dirty, &tree);
