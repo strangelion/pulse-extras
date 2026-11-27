@@ -16,6 +16,7 @@ const mount = @import("pulse_ui_mount");
 const settings_mod = @import("settings.zig");
 const vcs_panel = @import("vcs_panel");
 const identity = @import("vcs_identity");
+const contract = @import("vcs_provider");
 
 const allocator = std.heap.page_allocator;
 
@@ -83,8 +84,30 @@ const Instance = struct {
     }
 
     fn openSettings(self: *Instance) void {
-        if (self.settings == null) self.settings = .{ .host = self.host, .user = self, .current = &currentProject, .updated = &settingsUpdated, .folder_opened = &selectedFolderOpened };
+        if (self.settings == null) {
+            self.settings = .{ .host = self.host, .user = self, .current = &currentProject, .updated = &settingsUpdated, .folder_opened = &selectedFolderOpened };
+            if (comptime @hasDecl(source, "inspectProjectGrant") and @hasDecl(source, "forgetProjectGrant")) {
+                self.settings.?.grant_access = .{ .inspect = &inspectProjectGrant, .forget = &forgetProjectGrant, .invalidate = &invalidateProjectGrant };
+            }
+        }
         if (self.settings) |*settings| settings.open() catch |err| diag.status("vcs-settings-open", @intFromError(err));
+    }
+
+    fn inspectProjectGrant(_: *anyopaque, root: *const identity.Path, kind: identity.Kind) contract.SavedHint {
+        if (comptime @hasDecl(source, "inspectProjectGrant")) return source.inspectProjectGrant(root, kind);
+        return .{ .state = .unavailable };
+    }
+
+    fn forgetProjectGrant(_: *anyopaque, root: *const identity.Path, kind: identity.Kind) host_mod.Error!void {
+        if (comptime @hasDecl(source, "forgetProjectGrant")) return source.forgetProjectGrant(root, kind);
+        return error.Unavailable;
+    }
+
+    fn invalidateProjectGrant(user: *anyopaque, root: *const identity.Path, kind: identity.Kind) void {
+        const self: *Instance = @ptrCast(@alignCast(user));
+        if (self.binding) |*binding| {
+            binding.invalidateSavedScope(root, kind) catch |err| diag.status("vcs-grant-invalidate", @intFromError(err));
+        }
     }
 
     fn selectedFolderOpened(user: *anyopaque) void {

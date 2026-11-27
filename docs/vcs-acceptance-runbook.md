@@ -377,5 +377,22 @@ missing markers or unreadable scopes. No enumeration of all grants or
 changes to the strict approval store. Verify per-provider isolation, missing
 executable, stale navigation, concurrent revoke, and no CLI on inspect/revoke.
 The fixture exercises scoped review and revoke without CLI authorization;
-actual Windows persistence and host UI remain deferred. Project open order
+[8b94fb4 / 45923906700](https://github.com/strangelion/pulse-extras/actions/runs/45923906700) passed full CI. Actual Windows persistence and host UI remain deferred. Project open order
 is shown as the host settings version of accepted navigation, not a timestamp.
+
+### Project-library approval management, including missing roots
+
+Select a saved project in settings, choose Inspect selected project saved
+approvals, then Check pending task result. The exact stored root and three
+provider records are shown without checking the filesystem or invoking CLI.
+Keep the same row selected and choose the specific provider revoke action;
+changes of row, path or settings version reject the request. Check pending
+result to observe the durable operation; revoke is not a rollback of a
+running command. Inspect again after a failed/unknown result. Matching saved
+sessions in this instance are locally locked; another instance rechecks the
+store before subsequent command admission. Removing a bookmark is not
+revoking a grant and never deletes repository files. All-record enumeration
+and unobservable aliases remain intentionally unsupported; use revoke-all
+when no specific scope is available. Verify missing/moved root, distinct
+providers, concurrent windows, failure/release and installed restart in the
+consolidated acceptance. Mocked scope fixtures are not registry or host proof.

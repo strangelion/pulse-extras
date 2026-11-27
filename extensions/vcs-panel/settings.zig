@@ -25,7 +25,7 @@ const keys = [_][]const u8{ "tool.git", "tool.jj", "tool.svn" };
 const names = [_][]const u8{ "Git", "Jujutsu", "Subversion" };
 const tools = [_]cli.Tool{ .git, .jj, .svn };
 const fields = [_][]const u8{ "settings.git", "settings.jj", "settings.svn" };
-const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump", "vcs.projects.cancel-identity" };
+const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump", "vcs.projects.cancel-identity", "vcs.projects.inspect-grants", "vcs.projects.revoke-git", "vcs.projects.revoke-jj", "vcs.projects.revoke-svn" };
 const root_key = "settings.project.root";
 const url_key = "settings.project.url";
 const selection_key = "settings.project.selected";
@@ -101,6 +101,11 @@ const Status = enum {
     identity_failed,
     identity_cancelled,
     folder_filled,
+    grants_pending,
+    grants_ready,
+    grant_revoke_pending,
+    grant_revoked,
+    grants_failed,
 
     fn label(self: Status, lang: vcs_panel.Language) []const u8 {
         return switch (self) {
@@ -132,6 +137,11 @@ const Status = enum {
             .identity_failed => tr(lang, "Folder identity could not be verified or already exists; no record written", "目录身份无法验证或已存在；未写入记录"),
             .identity_cancelled => tr(lang, "Project identity check cancelled; no record written", "已取消目录身份检查；未写入记录"),
             .folder_filled => tr(lang, "Selected folder filled; review before adding. No execution approval granted.", "已填入选中文件夹；确认后添加，不授予执行权限。"),
+            .grants_pending => tr(lang, "Reading selected project approval records; Check pending task result", "正在读取选中项目的授权记录；请检查待处理任务结果"),
+            .grants_ready => tr(lang, "Observed saved records; not verified for execution", "已读取持久授权记录，尚未验证执行权限"),
+            .grant_revoke_pending => tr(lang, "Revoking the reviewed scope; Check pending task result", "正在撤销已确认范围的授权；请检查待处理任务结果"),
+            .grant_revoked => tr(lang, "Scope revoke completed; running commands cannot be rolled back", "指定范围撤销已完成；已运行的命令无法回滚"),
+            .grants_failed => tr(lang, "Approval operation incomplete; inspect again before retrying", "授权操作未确认完成；请重新检查后再试"),
         };
     }
 };
@@ -333,8 +343,28 @@ const Stored = struct {
     }
 };
 
+pub const GrantAccess = struct {
+    inspect: *const fn (*anyopaque, *const identity.Path, identity.Kind) contract.SavedHint,
+    forget: *const fn (*anyopaque, *const identity.Path, identity.Kind) host_mod.Error!void,
+    invalidate: *const fn (*anyopaque, *const identity.Path, identity.Kind) void,
+};
+
+const GrantReview = struct {
+    key: [key_len]u8,
+    root: identity.Path,
+    version: u64,
+    hints: [3]contract.SavedHint = @splat(.{}),
+};
+
+const GrantJob = struct {
+    review: GrantReview,
+    revoke: ?identity.Kind = null,
+};
+
+const grant_kinds = [_]identity.Kind{ .git, .jj, .svn };
+
 const Content = struct {
-    nodes: [56]ui.Node = undefined,
+    nodes: [72]ui.Node = undefined,
     len: usize = 0,
     root: ui.Node = undefined,
     states: [9]ui.State = undefined,
@@ -345,6 +375,7 @@ const Content = struct {
     recency_labels: [page_size][32]u8 = undefined,
     page_label: [96]u8 = undefined,
     edit_label: [128]u8 = undefined,
+    grant_labels: [3][96]u8 = undefined,
 
     fn add(self: *Content, node: ui.Node, id: []const u8) void {
         std.debug.assert(self.len < self.nodes.len);
@@ -425,9 +456,29 @@ const Content = struct {
                 self.button(22, tr(lang, "Open selected project in Pulse", "在 Pulse 中打开选中项目"), idle);
             } else self.add(ui.text(tr(lang, "Host navigation unavailable: edit selected and open its path manually.", "宿主不支持跳转：编辑选中项目并手动打开路径。")), "settings.project.route-fallback");
             self.button(10, tr(lang, "Open remote repository in browser", "在浏览器打开远程仓库"), idle and (if (owner.browser) |*task| !task.occupied() else false));
+            if (owner.grant_access != null and owner.project_task != null) self.button(26, tr(lang, "Inspect selected project saved approvals", "检查选中项目的持久授权"), idle);
         } else self.add(ui.text(tr(lang, "No matching projects (up to 64 records)", "没有匹配项目（最多 64 项）")), "settings.project.empty");
         if (owner.route.busy()) self.button(24, tr(lang, "Cancel directory lookup", "取消目录查找"), true);
-        if (owner.checkingProject()) self.button(25, tr(lang, "Cancel identity check", "取消目录身份检查"), !owner.project_discard);
+        if (owner.grant_review) |*review| {
+            self.add(ui.text(tr(lang, "Reviewed approval scope (no execution; select this same row before revoking)", "已检查授权范围（不执行；撤销前请选中同一项目）")), "settings.grants.heading");
+            self.add(ui.text(review.root.slice()), "settings.grants.root");
+            const ids_grant = [_][]const u8{ "settings.grants.git", "settings.grants.jj", "settings.grants.svn" };
+            const ids_path = [_][]const u8{ "settings.grants.git.path", "settings.grants.jj.path", "settings.grants.svn.path" };
+            const en = [_][]const u8{ "Revoke Git approval", "Revoke Jujutsu approval", "Revoke SVN approval" };
+            const zh = [_][]const u8{ "撤销 Git 授权", "撤销 Jujutsu 授权", "撤销 SVN 授权" };
+            for (review.hints, grant_kinds, 0..) |hint, kind, i| {
+                const label = switch (hint.state) {
+                    .not_checked => tr(lang, "Not checked", "未检查"),
+                    .absent => tr(lang, "No record observed", "未发现记录"),
+                    .recorded => tr(lang, "Recorded; not revalidated", "存在记录；尚未验证"),
+                    .unavailable => tr(lang, "Unavailable", "无法读取"),
+                };
+                self.add(ui.text(std.fmt.bufPrint(&self.grant_labels[i], "{s}: {s}", .{ kind.displayName(), label }) catch ""), ids_grant[i]);
+                if (hint.executable) |*path| self.add(ui.text(path.slice()), ids_path[i]);
+                self.button(27 + i, tr(lang, en[i], zh[i]), idle and review.version == owner.stored.version and hint.state == .recorded);
+            }
+        }
+        if (owner.checkingProject() and !owner.grant_revoke_pending) self.button(25, tr(lang, "Cancel pending check", "取消待处理检查"), !owner.project_discard);
         self.button(11, tr(lang, "Check pending task result", "检查待处理任务结果"), owner.checkingProject() or (if (owner.browser) |*task| task.occupied() else false));
         const edit_text = if (owner.edit_key) |key| std.fmt.bufPrint(&self.edit_label, "{s}: {s}", .{ tr(lang, "Editing", "编辑"), &key }) catch "" else tr(lang, "New project", "新建项目");
         self.add(ui.text(edit_text), "settings.project.edit-mode");
@@ -472,6 +523,10 @@ pub const Settings = struct {
     current: *const fn (*anyopaque) ?Current,
     updated: *const fn (*anyopaque, Tools, vcs_panel.Language) void,
     folder_opened: ?*const fn (*anyopaque) void = null,
+    grant_access: ?GrantAccess = null,
+    grant_review: ?GrantReview = null,
+    grant_job: ?GrantJob = null,
+    grant_revoke_pending: bool = false,
     pages: ?raw.PulseSettingsPagesV1 = null,
     resources: ?raw.PulseResourcesV1 = null,
     panel: ?ui.Panel = null,
@@ -647,6 +702,7 @@ pub const Settings = struct {
         self.pending = 0;
         self.operation = 0;
         self.loaded = false;
+        self.grant_review = null;
         if (!self.active) return;
         if (reply.*.status != abi.ok or reply.*.operation != operation) {
             self.status = .conflict;
@@ -685,6 +741,7 @@ pub const Settings = struct {
         const resources = self.resources orelse return;
         const get = resources.settings_get orelse return;
         var id: u64 = 0;
+        self.grant_review = null;
         self.sync_mask = 15;
         const status = get(resources.context, completed, self, &id);
         self.admitted(status, id, raw.PULSE_RESOURCES_SETTINGS_GET);
@@ -695,6 +752,7 @@ pub const Settings = struct {
         const resources = self.resources orelse return;
         const set = resources.settings_set orelse return;
         var id: u64 = 0;
+        self.grant_review = null;
         self.sync_mask = if (std.mem.startsWith(u8, key, project_prefix)) 8 else 0;
         for (keys, 0..) |tool_key, i| {
             if (std.mem.eql(u8, key, tool_key)) self.sync_mask = @as(u8, 1) << @as(u3, @intCast(i));
@@ -793,6 +851,63 @@ pub const Settings = struct {
         try self.checkProject(&item);
     }
 
+    fn inspectGrants(self: *Settings) !void {
+        const item = try self.selected();
+        try self.startGrant(.{ .review = .{ .key = item.key, .root = item.root, .version = self.stored.version } });
+    }
+
+    fn revokeGrant(self: *Settings, kind: identity.Kind) !void {
+        const review = self.grant_review orelse return error.State;
+        const item = try self.selected();
+        const index = contract.Snapshot.previewIndex(kind) orelse return error.Argument;
+        if (review.version != self.stored.version or !std.mem.eql(u8, &review.key, &item.key) or !review.root.eql(item.root.slice()) or review.hints[index].state != .recorded) return error.State;
+        try self.startGrant(.{ .review = review, .revoke = kind });
+        // Close this instance's matching local admission immediately. A failed
+        // registry update is reported, not treated as a successful revocation.
+        self.grant_access.?.invalidate(self.user, &review.root, kind);
+    }
+
+    fn startGrant(self: *Settings, job: GrantJob) !void {
+        if (self.grant_access == null) return error.Unavailable;
+        const task = if (self.project_task) |*value| value else return error.Unavailable;
+        if (task.occupied()) return error.State;
+        self.grant_review = null;
+        self.grant_job = job;
+        self.grant_revoke_pending = job.revoke != null;
+        self.project_discard = false;
+        errdefer if (!task.occupied()) {
+            self.grant_job = null;
+            self.grant_revoke_pending = false;
+        };
+        const descriptor: async_host.Descriptor = .{
+            .size = @sizeOf(async_host.Descriptor),
+            .title = abi.view("Manage selected project saved approval"),
+            .type = abi.view("vcs.projects.grants"),
+            .work = &grantWork,
+            .user = self,
+        };
+        try task.start(&descriptor);
+        self.status = if (job.revoke != null) .grant_revoke_pending else .grants_pending;
+    }
+
+    fn grantWork(user: ?*anyopaque, work_context: [*c]const async_host.Context) callconv(.c) u32 {
+        const self: *Settings = @ptrCast(@alignCast(user orelse return @backingInt(async_host.TaskState.failed)));
+        if (work_context == null) return @backingInt(async_host.TaskState.failed);
+        const cancelled = work_context.*.cancelled orelse return @backingInt(async_host.TaskState.failed);
+        if (cancelled(work_context.*.context) != 0) return @backingInt(async_host.TaskState.cancelled);
+        const access = self.grant_access orelse return @backingInt(async_host.TaskState.failed);
+        const job = if (self.grant_job) |*value| value else return @backingInt(async_host.TaskState.failed);
+        if (job.revoke) |kind| {
+            access.forget(self.user, &job.review.root, kind) catch return @backingInt(async_host.TaskState.failed);
+        }
+        // No filesystem lookup or CLI. Revoke is scope based, not a rollback.
+        for (grant_kinds, 0..) |kind, i| {
+            if (cancelled(work_context.*.context) != 0) return @backingInt(async_host.TaskState.cancelled);
+            job.review.hints[i] = access.inspect(self.user, &job.review.root, kind);
+        }
+        return @backingInt(async_host.TaskState.completed);
+    }
+
     fn checkProject(self: *Settings, item: *const Project) !void {
         const task = if (self.project_task) |*value| value else return error.Unavailable;
         if (task.occupied()) return error.State;
@@ -833,7 +948,7 @@ pub const Settings = struct {
 
     fn cancelProject(self: *Settings) !void {
         const task = if (self.project_task) |*value| value else return error.State;
-        if (!task.occupied()) return error.State;
+        if (!task.occupied() or self.grant_revoke_pending) return error.State;
         // Cancellation suppresses publication even if completion already raced
         // the UI event. Keep the worker's immutable input until release.
         self.project_discard = true;
@@ -847,6 +962,19 @@ pub const Settings = struct {
         const state = try task.poll();
         if (!state.terminal()) return;
         try task.releaseTerminal();
+        if (self.grant_job) |job| {
+            self.grant_job = null;
+            self.grant_revoke_pending = false;
+            const discard_grant = self.project_discard;
+            self.project_discard = false;
+            self.status = .grants_failed;
+            if (!discard_grant and state == .completed and self.active and self.loaded and self.render_ok and self.pending == 0 and job.review.version == self.stored.version) {
+                self.grant_review = job.review;
+                self.status = if (job.revoke != null) .grant_revoked else .grants_ready;
+            }
+            self.render();
+            return;
+        }
         const item = self.checked_project;
         self.checked_project = null;
         const discard = self.project_discard;
@@ -1123,6 +1251,8 @@ pub const Settings = struct {
                 21 => self.pageBy(true),
                 22 => self.jump(),
                 23 => self.browse(tools.len),
+                26 => self.inspectGrants(),
+                27...29 => self.revokeGrant(grant_kinds[index - 27]),
                 else => return,
             };
             result catch |err| {
@@ -1185,6 +1315,9 @@ pub const Settings = struct {
         }
         self.project_task = null;
         self.checked_project = null;
+        self.grant_job = null;
+        self.grant_review = null;
+        self.grant_revoke_pending = false;
         self.pages = null;
         self.resources = null;
         self.picker = null;
@@ -1202,6 +1335,9 @@ pub const Settings = struct {
         if (self.project_task) |*task| task.retireAtHostDestroy();
         self.project_task = null;
         self.checked_project = null;
+        self.grant_job = null;
+        self.grant_review = null;
+        self.grant_revoke_pending = false;
         self.panel = null;
         self.page = 0;
         self.pending = 0;
@@ -1290,6 +1426,24 @@ const SettingsFixture = struct {
     task_descriptor: async_host.Descriptor = undefined,
     task_cancelled: bool = false,
     fail_task_release: bool = false,
+    grant_revoked: ?identity.Kind = null,
+    grant_invalidated: ?identity.Kind = null,
+
+    fn inspectGrant(user: *anyopaque, _: *const identity.Path, kind: identity.Kind) contract.SavedHint {
+        const self: *SettingsFixture = @ptrCast(@alignCast(user));
+        if (self.grant_revoked == kind) return .{ .state = .absent };
+        return .{ .state = .recorded };
+    }
+
+    fn forgetGrant(user: *anyopaque, _: *const identity.Path, kind: identity.Kind) host_mod.Error!void {
+        const self: *SettingsFixture = @ptrCast(@alignCast(user));
+        self.grant_revoked = kind;
+    }
+
+    fn invalidateGrant(user: *anyopaque, _: *const identity.Path, kind: identity.Kind) void {
+        const self: *SettingsFixture = @ptrCast(@alignCast(user));
+        self.grant_invalidated = kind;
+    }
 
     fn taskCreate(user: ?*anyopaque, descriptor: [*c]const async_host.Descriptor, id: [*c]u64) callconv(.c) abi.Status {
         const self: *SettingsFixture = @ptrCast(@alignCast(user orelse return abi.error_argument));
@@ -1596,4 +1750,53 @@ test "project identity validation rejects aliases and cancellation never publish
     try std.testing.expectEqual(@as(u64, 9), fixture.last_version);
     try std.testing.expectEqualStrings(&item.key, fixture.last_key[0..fixture.last_key_len]);
     try std.testing.expect(!owner.checkingProject() and owner.checked_project == null);
+}
+
+test "project grant review supports missing roots and rejects a changed selection or version" {
+    const root = if (builtin.os.tag == .windows) "C:\\missing\\repo" else "/missing/repo";
+    const other = if (builtin.os.tag == .windows) "C:\\missing\\other" else "/missing/other";
+    const item = try Project.make(root, "");
+    const second = try Project.make(other, "");
+    var fixture: SettingsFixture = .{ .input = &item.key };
+    const owner = try std.testing.allocator.create(Settings);
+    defer std.testing.allocator.destroy(owner);
+    owner.* = .{
+        .host = undefined,
+        .user = &fixture,
+        .current = &SettingsFixture.current,
+        .updated = &SettingsFixture.updated,
+        .active = true,
+        .loaded = true,
+        .render_ok = true,
+        .page = 7,
+        .panel = .{ .id = 7, .table = .{ .context = &fixture, .update = &SettingsFixture.update, .get_state = &SettingsFixture.getState } },
+        .project_task = try async_host.Task.init(fixture.taskTable()),
+        .grant_access = .{ .inspect = &SettingsFixture.inspectGrant, .forget = &SettingsFixture.forgetGrant, .invalidate = &SettingsFixture.invalidateGrant },
+    };
+    owner.stored.version = 4;
+    owner.stored.projects[0] = item;
+    owner.stored.projects[1] = second;
+    owner.stored.count = 2;
+    try owner.inspectGrants();
+    fixture.runProject();
+    try owner.pollProject();
+    try std.testing.expectEqual(Status.grants_ready, owner.status);
+    try std.testing.expect(owner.grant_review.?.root.eql(root));
+    fixture.input = &second.key;
+    try std.testing.expectError(error.State, owner.revokeGrant(.git));
+    fixture.input = &item.key;
+    owner.stored.version = 5;
+    try std.testing.expectError(error.State, owner.revokeGrant(.git));
+    try owner.inspectGrants();
+    fixture.runProject();
+    try owner.pollProject();
+    try owner.revokeGrant(.git);
+    try std.testing.expectEqual(identity.Kind.git, fixture.grant_invalidated.?);
+    try std.testing.expectError(error.State, owner.cancelProject());
+    fixture.runProject();
+    try owner.pollProject();
+    try std.testing.expectEqual(Status.grant_revoked, owner.status);
+    try std.testing.expectEqual(contract.SavedHint.State.absent, owner.grant_review.?.hints[0].state);
+    try std.testing.expectEqual(contract.SavedHint.State.recorded, owner.grant_review.?.hints[1].state);
+    try std.testing.expectEqual(@as(usize, 0), fixture.calls);
 }

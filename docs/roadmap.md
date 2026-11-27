@@ -145,7 +145,7 @@ once. No claim that local trust is a filesystem/network sandbox.
 4d53927 already contains V2 migrated project bookmarks, 64-record capacity,
 12-row paging, name/tags/favorites/search/accepted-navigation recency, supported
 folder route and in-panel session reset. This follow-up adds explicit saved
-local trust and identity-bound stale snapshot reuse. [a676805 / 45856710161](https://github.com/strangelion/pulse-extras/actions/runs/45856710161) passed full regression. [a387067 / 45922243671](https://github.com/strangelion/pulse-extras/actions/runs/45922243671) passed all required lanes for selected-folder routing, project identity/cancellation and the earlier persistent trust code. Saved-record inspection and recency display require their own exact regression.
+local trust and identity-bound stale snapshot reuse. [a676805 / 45856710161](https://github.com/strangelion/pulse-extras/actions/runs/45856710161) passed full regression. [a387067 / 45922243671](https://github.com/strangelion/pulse-extras/actions/runs/45922243671) passed all required lanes for selected-folder routing, project identity/cancellation and the earlier persistent trust code. [8b94fb4 / 45923906700](https://github.com/strangelion/pulse-extras/actions/runs/45923906700) passed all required lanes for saved-record inspection and recency display. The project-library scope management follow-up requires exact new regression.
 
 **Outcome:** the project library is a primary, useful VCS entry, not a settings
 appendix; users can manage multiple projects without repeatedly typing paths.
@@ -403,3 +403,20 @@ format. Revocation without a detectable repository marker remains possible
 via revoke-all; arbitrary grant enumeration is not implemented. Project
 rows show the recorded accepted-navigation order (not a wall-clock time).
 Exact new regression is required before declaring development complete.
+
+### P2B project-library scope management and exit review
+
+A selected project now exposes explicit background inspection of all three
+provider scopes, independent of repository markers or directory existence.
+The review shows its exact stored root and recorded tool paths. Scope revoke
+requires the same selected record, root and settings version; it does not
+modify the bookmark, files or unrelated provider scopes. A matching live saved
+session in this instance is locally locked at admission and its cached data
+removed; durable revocation is separately reported after worker completion.
+No automatic grant creation or full-store enumeration. Missing/moved roots
+can be handled without navigating to them; revoking all remains the fallback
+for unbookmarked and unreadable scopes. The fixtures cover selection/version
+changes, scope isolation and no settings mutation. This candidate still needs
+exact full CI; installed restart, physical identity evidence and actual host
+routing remain in the final acceptance register. Do not start P3A on a failed
+gate or claim installed acceptance. No new release.

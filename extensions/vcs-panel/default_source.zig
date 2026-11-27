@@ -320,6 +320,20 @@ pub fn configurePreview(binding: *host_query.Binding) host.Error!void {
     try binding.configureLocalAccess(.{ .ctx = local, .authorize = &LocalSession.authorize, .revoke = &LocalSession.revoke, .finish = &LocalSession.finish, .reset = &LocalSession.reset, .forget = &LocalSession.forget, .forget_all = &LocalSession.forgetAll, .revoke_saved = &LocalSession.revokeSavedActive });
 }
 
+// Explicit settings actions use only the selected lexical scope. They never
+// require the old directory/tool to exist and never authorize execution.
+pub fn inspectProjectGrant(root: *const identity.Path, kind: identity.Kind) contract.SavedHint {
+    if (!approval.strictPath(root.slice()) or contract.Snapshot.previewIndex(kind) == null) return .{ .state = .unavailable };
+    const scope: panel.LocalReview = .{ .root = root.*, .kind = kind, .executable = .{}, .generation = 0 };
+    return SavedLocal.inspect(&scope) catch .{ .state = .unavailable };
+}
+
+pub fn forgetProjectGrant(root: *const identity.Path, kind: identity.Kind) host.Error!void {
+    if (!approval.strictPath(root.slice()) or contract.Snapshot.previewIndex(kind) == null) return error.Argument;
+    const scope: panel.LocalReview = .{ .root = root.*, .kind = kind, .executable = .{}, .generation = 0 };
+    SavedLocal.forget(&scope) catch |err| return hostError(err);
+}
+
 // Separate DPAPI namespace from strict single-root Git audit and from the
 // host's project settings. 1024 bounded slots; a live hash-slot collision
 // refuses the write rather than silently replacing another root/provider.

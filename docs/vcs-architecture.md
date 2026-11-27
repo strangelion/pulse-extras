@@ -338,6 +338,9 @@ Lexical duplicate checks are supplemented by explicit background fixed-drive
 identity observation on add/relink. Persistent local grants are kept in a
 separate DPAPI namespace and revalidated on command admission. Current-root
 preview can observe at most three saved records without CLI execution;
-observed metadata does not establish grant validity. Real host acceptance,
-unobservable physical aliases, and missing-root grant enumeration remain
-limitations.
+observed metadata does not establish grant validity. Explicit selected-project
+scope inspection/revoke also works without a live root or marker. The owner
+checks the reviewed record/version and locally invalidates matching saved
+session admission and cache. The durable worker outcome remains separate.
+Real host acceptance, unobservable physical aliases and all-store grant
+enumeration remain limitations.

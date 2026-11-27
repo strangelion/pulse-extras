@@ -442,6 +442,18 @@ const RecentSnapshots = struct {
         if (self.len < self.entries.len) self.len += 1 else self.next = (self.next + 1) % self.entries.len;
     }
 
+    fn removeScope(self: *RecentSnapshots, root: *const identity.Path, kind: identity.Kind) void {
+        var i: usize = 0;
+        while (i < self.len) {
+            const entry = &self.entries[i];
+            if (entry.workspace.kind == kind and entry.workspace.root.eql(root.slice())) {
+                self.len -= 1;
+                if (i != self.len) self.entries[i] = self.entries[self.len];
+                self.next = 0;
+            } else i += 1;
+        }
+    }
+
     fn clear(self: *RecentSnapshots) void {
         self.len = 0;
         self.next = 0;
@@ -486,6 +498,7 @@ pub const Binding = struct {
     approved_root: ?identity.Path = null,
     persistent_revocation: bool = false,
     saved_trust_selected: bool = false,
+    local_approved_kind: ?identity.Kind = null,
     revocation_failed: bool = false,
     destroyed: bool = false,
     accepting: bool = false,
@@ -783,6 +796,7 @@ pub const Binding = struct {
         self.local_review = null;
         self.metadata_only = false;
         self.approved_root = review.root;
+        self.local_approved_kind = review.kind;
         self.saved_trust_selected = mode != .session;
         self.revocation = .{ .ctx = access.ctx, .revoke = if (self.saved_trust_selected) access.revoke_saved orelse return error.Unavailable else access.revoke };
         self.resolver = resolver;
@@ -811,6 +825,7 @@ pub const Binding = struct {
         try reset(access.ctx);
         self.revocation = null;
         self.saved_trust_selected = false;
+        self.local_approved_kind = null;
         self.revocation_failed = false;
         self.approved_root = null;
         self.resolver = preview;
@@ -959,6 +974,37 @@ pub const Binding = struct {
         };
         self.last_error = null;
         try self.render();
+    }
+
+    /// A separate project-library revoke has been explicitly admitted. Close
+    /// matching saved-session admission locally without issuing a second
+    /// registry mutation. The worker reports the durable operation result.
+    pub fn invalidateSavedScope(self: *Binding, root: *const identity.Path, kind: identity.Kind) host_mod.Error!void {
+        self.recent.removeScope(root, kind);
+        if (self.local_review) |review| {
+            if (review.kind == kind and review.root.eql(root.slice())) self.local_review = null;
+        }
+        if (self.metadata_only) {
+            if (self.controller.current.workspace) |*workspace| {
+                if (workspace.root.eql(root.slice())) {
+                    if (self.controller.current.snapshot) |*snapshot| {
+                        if (contract.Snapshot.previewIndex(kind)) |index| snapshot.preview_saved[index] = .{};
+                    }
+                }
+            }
+        }
+        if (self.accepting and self.saved_trust_selected and self.local_approved_kind == kind) {
+            if (self.approved_root) |*approved| {
+                if (approved.eql(root.slice())) {
+                    const access = self.local_access orelse return error.State;
+                    self.approval_locked = true;
+                    try access.revoke(access.ctx);
+                    try self.clear();
+                    return;
+                }
+            }
+        }
+        if (self.accepting) try self.render();
     }
 
     pub fn clear(self: *Binding) host_mod.Error!void {
@@ -2326,8 +2372,11 @@ test "recent snapshots separate provider workspace and revalidated trust fingerp
     try std.testing.expectEqual(@as(u32, 4), cache.get(&git, token).?.changes.modified);
     try std.testing.expectEqual(@as(u32, 7), cache.get(&jj, token).?.changes.modified);
     try std.testing.expect(cache.get(&git, @splat(2)) == null);
-    cache.clear();
+    cache.removeScope(&git.root, .git);
     try std.testing.expect(cache.get(&git, token) == null);
+    try std.testing.expectEqual(@as(u32, 7), cache.get(&jj, token).?.changes.modified);
+    cache.clear();
+    try std.testing.expect(cache.get(&jj, token) == null);
 }
 
 test "saved record can be reviewed and revoked without a discovered executable or CLI authorization" {

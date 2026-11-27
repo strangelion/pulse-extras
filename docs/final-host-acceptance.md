@@ -22,7 +22,7 @@ artifact and observed result.
 | Group | Required cases | Current status |
 | --- | --- | --- |
 | VCS P2A | All onboarding, settings, Git/JJ/SVN, denial/cancellation, native menu/locale/DPI | Code CI pass 4d53927; HOST DEFERRED |
-| VCS P2B | Saved projects migration, search/favorites/relink, routing, provider switching, durable grants and individual/all revoke, stale cache, restart and concurrent instances | a387067 full code CI passed; later scoped grant inspection candidate requires exact CI; HOST DEFERRED |
+| VCS P2B | Saved projects migration, search/favorites/relink, routing, provider switching, durable grants and individual/all revoke, stale cache, restart and concurrent instances | 8b94fb4 full code CI passed; project-library missing-root scope management candidate requires exact CI; HOST DEFERRED |
 | VCS P3A/P3B | Implemented read-only file/history/diff and forge/client integrations, when finished | Pending development |
 | Companion ordinary functionality | Import/download, library, market, runtime, profiles, menu, recovery and lifecycle | Owner-accepted development complete; final host smoke deferred |
 | Companion performance | Controlled actual Pulse-managed visible/hidden count ramp 1→1024, stop at safe measured ceiling; CPU/GPU/VRAM/private bytes/working set/handles/frame p50/p95/p99 and startup/stop latency | OPEN |
