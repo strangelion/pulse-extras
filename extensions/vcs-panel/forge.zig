@@ -241,6 +241,8 @@ pub fn httpStatus(code: u32) Metadata.Status {
 
 pub fn parseMetadata(base: []const u8, body: []const u8) Metadata {
     if (body.len > 64 * 1024) return .{ .status = .too_large };
+    var endpoint: [contract.Text.capacity + 16]u8 = undefined;
+    _ = githubPath(base, &endpoint) orelse return .{ .status = .invalid };
     const Wire = struct {
         html_url: []const u8,
         private: bool,
@@ -390,6 +392,8 @@ test "anonymous GitHub metadata accepts only matching public typed response" {
     try std.testing.expectEqual(@as(u64, 4), result.stars);
     try std.testing.expectEqual(Metadata.Status.invalid, parseMetadata("https://github.com/a/c", json).status);
     try std.testing.expectEqual(Metadata.Status.invalid, parseMetadata(base, "{}").status);
+    const oversized: [64 * 1024 + 1]u8 = @splat('x');
+    try std.testing.expectEqual(Metadata.Status.too_large, parseMetadata(base, &oversized).status);
     try std.testing.expectEqual(Metadata.Status.forbidden_or_limited, httpStatus(429));
     try std.testing.expectEqual(Metadata.Status.redirected, httpStatus(301));
     var endpoint: [128]u8 = undefined;

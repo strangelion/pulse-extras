@@ -26,7 +26,7 @@ const keys = [_][]const u8{ "tool.git", "tool.jj", "tool.svn" };
 const names = [_][]const u8{ "Git", "Jujutsu", "Subversion" };
 const tools = [_]cli.Tool{ .git, .jj, .svn };
 const fields = [_][]const u8{ "settings.git", "settings.jj", "settings.svn" };
-const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump", "vcs.projects.cancel-identity", "vcs.projects.inspect-grants", "vcs.projects.revoke-git", "vcs.projects.revoke-jj", "vcs.projects.revoke-svn", "vcs.forge.issues", "vcs.forge.reviews", "vcs.forge.ci", "vcs.forge.releases", "vcs.forge.discover", "vcs.forge.remote.0", "vcs.forge.remote.1", "vcs.forge.remote.2", "vcs.forge.remote.3", "vcs.forge.remote.4", "vcs.forge.remote.5", "vcs.forge.metadata", "vcs.client.save-code", "vcs.client.save-svn", "vcs.client.review-code", "vcs.client.review-svn", "vcs.client.confirm", "vcs.client.cancel" };
+const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump", "vcs.projects.cancel-identity", "vcs.projects.inspect-grants", "vcs.projects.revoke-git", "vcs.projects.revoke-jj", "vcs.projects.revoke-svn", "vcs.forge.issues", "vcs.forge.reviews", "vcs.forge.ci", "vcs.forge.releases", "vcs.forge.discover", "vcs.forge.remote.0", "vcs.forge.remote.1", "vcs.forge.remote.2", "vcs.forge.remote.3", "vcs.forge.remote.4", "vcs.forge.remote.5", "vcs.forge.metadata", "vcs.client.save-code", "vcs.client.save-svn", "vcs.client.review-code", "vcs.client.review-svn", "vcs.client.confirm", "vcs.client.cancel", "vcs.integration.cancel" };
 const clients = [_]forge.Client{ .vscode, .tortoise_svn };
 const client_keys = [_][]const u8{ "client.vscode", "client.tortoise_svn" };
 const client_fields = [_][]const u8{ "settings.client.vscode", "settings.client.tortoise_svn" };
@@ -117,6 +117,8 @@ const Status = enum {
     client_launched,
     client_failed,
     external_changed,
+    external_cancel_pending,
+    external_cancelled,
 
     fn label(self: Status, lang: vcs_panel.Language) []const u8 {
         return switch (self) {
@@ -160,6 +162,8 @@ const Status = enum {
             .client_launched => tr(lang, "External application started; its window and state are not verified", "外部程序已启动；未验证窗口及应用状态"),
             .client_failed => tr(lang, "External application could not be launched", "外部程序启动失败"),
             .external_changed => tr(lang, "Project or settings changed; result discarded", "项目或设置发生变化；已丢弃结果"),
+            .external_cancel_pending => tr(lang, "Cancellation requested; check result. An existing app/browser handoff cannot be undone.", "已请求取消；请检查结果。已完成的程序或浏览器启动无法撤回。"),
+            .external_cancelled => tr(lang, "Integration result discarded; completed handoff may remain open", "已丢弃联动结果；已启动的应用可能仍然打开"),
         };
     }
 };
@@ -438,8 +442,8 @@ const Content = struct {
     states: [11]ui.State = undefined,
     vocabulary: [commands.len]abi.StringView = undefined,
     rows: [page_size]raw.PulseUiModelRow = undefined,
-    cells: [page_size][7]abi.StringView = undefined,
-    columns: [7]raw.PulseUiModelColumn = undefined,
+    cells: [page_size][8]abi.StringView = undefined,
+    columns: [8]raw.PulseUiModelColumn = undefined,
     recency_labels: [page_size][32]u8 = undefined,
     page_label: [96]u8 = undefined,
     edit_label: [128]u8 = undefined,
@@ -470,10 +474,10 @@ const Content = struct {
 
     fn build(self: *Content, owner: *const Settings, tree: *ui.Tree) void {
         self.len = 0;
-        const idle = owner.loaded and owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned and !owner.route.busy() and !owner.checkingProject();
+        const idle = owner.loaded and owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned and !owner.route.busy() and !owner.checkingProject() and !owner.externalBusy();
         const lang = owner.stored.locale.language();
         self.add(ui.text(owner.status.label(lang)), "settings.status");
-        self.button(0, tr(lang, "Reload settings", "重新读取设置"), owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned and !owner.route.busy() and !owner.checkingProject());
+        self.button(0, tr(lang, "Reload settings", "重新读取设置"), owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned and !owner.route.busy() and !owner.checkingProject() and !owner.externalBusy());
         self.add(ui.text(tr(lang, "Projects · bookmarks only; no execution or trust", "项目库 · 记录项目，不自动授予权限")), "settings.projects");
         const visible = owner.visible();
         self.input(search_key, tr(lang, "Search name, path, tags or remote", "搜索名称、路径、标签或远程地址"), idle);
@@ -488,8 +492,8 @@ const Content = struct {
         self.states[6] = .{ .key = abi.view(name_key), .value = abi.view("") };
         self.states[7] = .{ .key = abi.view(tags_key), .value = abi.view("") };
         self.states[8] = .{ .key = abi.view(search_key), .value = abi.view(owner.search.slice()) };
-        const headers = [_][]const u8{ tr(lang, "Favorite", "收藏"), tr(lang, "Project", "项目"), tr(lang, "Provider hint", "类型提示"), tr(lang, "Local directory", "本地目录"), tr(lang, "Tags", "标签"), tr(lang, "Remote", "远程仓库"), tr(lang, "Open order", "打开顺序") };
-        const ids = [_][]const u8{ "favorite", "name", "provider", "path", "tags", "remote", "opened" };
+        const headers = [_][]const u8{ tr(lang, "Favorite", "收藏"), tr(lang, "Project", "项目"), tr(lang, "Provider hint", "类型提示"), tr(lang, "Local directory", "本地目录"), tr(lang, "Tags", "标签"), tr(lang, "Remote", "远程仓库"), tr(lang, "Address source", "地址来源"), tr(lang, "Open order", "打开顺序") };
+        const ids = [_][]const u8{ "favorite", "name", "provider", "path", "tags", "remote", "remote_source", "opened" };
         for (headers, ids, 0..) |heading, id, i| {
             self.columns[i] = std.mem.zeroes(raw.PulseUiModelColumn);
             self.columns[i].size = @sizeOf(raw.PulseUiModelColumn);
@@ -505,6 +509,7 @@ const Content = struct {
                 abi.view(project.root.slice()),
                 abi.view(project.tags.slice()),
                 abi.view(project.remote.slice()),
+                abi.view(if (project.remote.len == 0) "" else if (project.remote_detected) tr(lang, "Local hint", "本地检测") else tr(lang, "Manual / legacy", "手动 / 旧记录")),
                 abi.view(if (project.opened_order == 0) tr(lang, "Never", "未记录") else std.fmt.bufPrint(&self.recency_labels[i], "{d}", .{project.opened_order}) catch ""),
             };
             self.rows[i] = std.mem.zeroes(raw.PulseUiModelRow);
@@ -599,7 +604,8 @@ const Content = struct {
             }
         }
         if (owner.checkingProject() and !owner.grant_revoke_pending) self.button(25, tr(lang, "Cancel pending check", "取消待处理检查"), !owner.project_discard);
-        self.button(11, tr(lang, "Check pending task result", "检查待处理任务结果"), owner.checkingProject() or (if (owner.browser) |*task| task.occupied() else false));
+        self.button(11, tr(lang, "Check pending task result", "检查待处理任务结果"), owner.checkingProject() or owner.externalBusy());
+        if (owner.externalBusy()) self.button(48, tr(lang, "Cancel integration task", "取消联动任务"), !owner.external_discard);
         const edit_text = if (owner.edit_key) |key| std.fmt.bufPrint(&self.edit_label, "{s}: {s}", .{ tr(lang, "Editing", "编辑"), &key }) catch "" else tr(lang, "New project", "新建项目");
         self.add(ui.text(edit_text), "settings.project.edit-mode");
         self.button(15, tr(lang, "New project / clear form", "新建项目 / 清空表单"), idle);
@@ -674,6 +680,7 @@ pub const Settings = struct {
     picker_index: usize = 0,
     browser: ?async_host.Task = null,
     external_job: ?ExternalJob = null,
+    external_discard: bool = false,
     remote_review: ?RemoteReview = null,
     metadata_review: ?MetadataReview = null,
     client_review: ?ClientReview = null,
@@ -880,7 +887,7 @@ pub const Settings = struct {
     }
 
     fn reload(self: *Settings) void {
-        if (!self.active or self.pending != 0 or self.picker_request != 0 or self.poisoned or self.route.busy() or self.checkingProject()) return;
+        if (!self.active or self.pending != 0 or self.picker_request != 0 or self.poisoned or self.route.busy() or self.checkingProject() or self.externalBusy()) return;
         const resources = self.resources orelse return;
         const get = resources.settings_get orelse return;
         var id: u64 = 0;
@@ -1196,7 +1203,7 @@ pub const Settings = struct {
     // An explicit, freshly validated menu selection prepares the project
     // form and requests the same public navigation as a saved bookmark.
     pub fn openFolder(self: *Settings, path: []const u8) !void {
-        if (!self.active or !self.loaded or !self.render_ok or self.pending != 0 or self.picker_request != 0 or self.poisoned or self.route.busy() or self.checkingProject()) return error.State;
+        if (!self.active or !self.loaded or !self.render_ok or self.pending != 0 or self.picker_request != 0 or self.poisoned or self.route.busy() or self.checkingProject() or self.externalBusy()) return error.State;
         if (!approval.strictPath(path)) return error.Argument;
         const root = try identity.Path.init(path);
         if (self.stored.findRoot(path)) |index| {
@@ -1327,6 +1334,7 @@ pub const Settings = struct {
         const task = if (self.browser) |*value| value else return error.Unavailable;
         if (task.occupied()) return error.State;
         self.external_job = job;
+        self.external_discard = false;
         self.remote_result = null;
         self.metadata_result = null;
         const descriptor: async_host.Descriptor = .{
@@ -1393,6 +1401,14 @@ pub const Settings = struct {
         try self.startExternal(.{ .client = review });
     }
 
+    fn cancelExternal(self: *Settings) !void {
+        const task = if (self.browser) |*value| value else return error.Unavailable;
+        if (!task.occupied() or self.external_discard) return error.State;
+        self.external_discard = true;
+        self.status = .external_cancel_pending;
+        try task.cancel();
+    }
+
     fn pollBrowser(self: *Settings) !void {
         const task = if (self.browser) |*value| value else return;
         if (!task.occupied()) return;
@@ -1402,8 +1418,13 @@ pub const Settings = struct {
         const job = self.external_job orelse return error.State;
         defer {
             self.external_job = null;
+            self.external_discard = false;
             self.remote_result = null;
             self.metadata_result = null;
+        }
+        if (self.external_discard or state == .cancelled) {
+            self.status = .external_cancelled;
+            return;
         }
         const project = self.selected() catch {
             self.status = .external_changed;
@@ -1450,6 +1471,11 @@ pub const Settings = struct {
                 self.pollBrowser() catch |err| diag.status("vcs-settings-browser-poll", @intFromError(err));
                 self.render();
             }
+            return;
+        }
+        if (std.mem.eql(u8, name, commands[48])) {
+            self.cancelExternal() catch |err| diag.status("vcs-integration-cancel", @intFromError(err));
+            self.render();
             return;
         }
         if (std.mem.eql(u8, name, commands[25])) {
@@ -1510,7 +1536,9 @@ pub const Settings = struct {
                 42...43 => self.saveClient(index - 42),
                 44...45 => self.reviewClient(index - 44),
                 46 => self.confirmClient(),
-                47 => { self.client_review = null; },
+                47 => {
+                    self.client_review = null;
+                },
                 else => return,
             };
             result catch |err| {
@@ -1562,6 +1590,7 @@ pub const Settings = struct {
         }
         self.browser = null;
         self.external_job = null;
+        self.external_discard = false;
         self.remote_result = null;
         self.metadata_result = null;
         self.remote_review = null;
@@ -1597,6 +1626,7 @@ pub const Settings = struct {
         if (self.browser) |*task| task.retireAtHostDestroy();
         self.browser = null;
         self.external_job = null;
+        self.external_discard = false;
         self.remote_result = null;
         self.metadata_result = null;
         self.remote_review = null;
@@ -2084,4 +2114,66 @@ test "project remote provenance migrates old records and binds review to exact s
     try std.testing.expect(!scope.matches(&item, 8));
     item.remote = try contract.Text.init("https://github.com/a/c");
     try std.testing.expect(!scope.matches(&item, 7));
+}
+
+test "external task release and cancellation suppress stale project results" {
+    const root = if (builtin.os.tag == .windows) "C:\\work\\repo" else "/work/repo";
+    const other = if (builtin.os.tag == .windows) "C:\\work\\other" else "/work/other";
+    const item = try Project.make(root, "https://github.com/a/b");
+    const second = try Project.make(other, "https://github.com/a/c");
+    var fixture: SettingsFixture = .{ .input = &item.key };
+    const owner = try std.testing.allocator.create(Settings);
+    defer std.testing.allocator.destroy(owner);
+    owner.* = .{
+        .host = undefined,
+        .user = &fixture,
+        .current = &SettingsFixture.current,
+        .updated = &SettingsFixture.updated,
+        .active = true,
+        .loaded = true,
+        .render_ok = true,
+        .page = 7,
+        .panel = .{ .id = 7, .table = .{ .context = &fixture, .update = &SettingsFixture.update, .get_state = &SettingsFixture.getState } },
+        .browser = try async_host.Task.init(fixture.taskTable()),
+    };
+    owner.stored.version = 4;
+    owner.stored.projects[0] = item;
+    owner.stored.projects[1] = second;
+    owner.stored.count = 2;
+
+    // Inject only the completed transport fixture, never a real HTTP request.
+    try owner.fetchPublic();
+    owner.metadata_result = .{ .status = .ready, .stars = 42 };
+    fixture.task_state = .completed;
+    fixture.fail_task_release = true;
+    try std.testing.expectError(error.State, owner.pollBrowser());
+    try std.testing.expect(owner.metadata_review == null and owner.externalBusy());
+    fixture.fail_task_release = false;
+    try owner.pollBrowser();
+    try std.testing.expectEqual(@as(u64, 42), owner.metadata_review.?.value.stars);
+    try std.testing.expect(!owner.externalBusy());
+
+    try owner.fetchPublic();
+    owner.metadata_result = .{ .status = .ready, .stars = 99 };
+    fixture.task_state = .completed;
+    fixture.input = &second.key;
+    try owner.pollBrowser();
+    try std.testing.expectEqual(Status.external_changed, owner.status);
+    try std.testing.expect(owner.metadata_review == null);
+
+    fixture.input = &item.key;
+    try owner.fetchPublic();
+    try owner.cancelExternal();
+    owner.metadata_result = .{ .status = .ready, .stars = 100 };
+    fixture.task_state = .completed;
+    try owner.pollBrowser();
+    try std.testing.expectEqual(Status.external_cancelled, owner.status);
+    try std.testing.expect(owner.metadata_review == null and !owner.externalBusy());
+
+    const exe = if (builtin.os.tag == .windows) "C:\\Programs\\Code.exe" else "/opt/Code.exe";
+    owner.stored.client_paths[0] = (try forge.clientPath(.vscode, exe)).?;
+    try owner.reviewClient(0);
+    fixture.input = &second.key;
+    try std.testing.expectError(error.State, owner.confirmClient());
+    try std.testing.expect(!owner.externalBusy());
 }

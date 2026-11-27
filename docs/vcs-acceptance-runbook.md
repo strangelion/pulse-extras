@@ -441,3 +441,7 @@ oversized and malformed JSON, five-minute expiry, cancellation, selection
 change, settings update and unload during a task. No actual account
 credential or private endpoint test is authorized; no remote write.
 Tests are candidate fixtures; live transport/client/host NOT RUN.
+The integration cancel control discards any raced response after terminal
+release; it cannot undo an already launched user-owned app/browser. Verify
+that selection changes and failed release do not publish metadata, and that
+manual/legacy versus locally detected addresses are visible in the table.

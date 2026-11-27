@@ -534,3 +534,10 @@ private access remains browser-only. No credential or remote write action.
 Exact P3B full CI, independent Windows HTTP/launch ABI review, live consenting
 public endpoint/client tests and installed UI remain unverified. P3B remains
 active until exit review; no Companion change, no SDK change or release.
+
+P3B candidate e983c6b / 45930628317 failed the initial Linux Zig formatting
+check before compilation. The combined review repair applies the formatter
+correction, makes persisted remote provenance visible, disables conflicting
+settings actions during integration work and adds explicit cancel with
+terminal-release/stale-selection tests. No tests removed. Fresh exact CI
+required; live transport and external applications remain NOT RUN.
