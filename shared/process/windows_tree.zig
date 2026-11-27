@@ -235,11 +235,27 @@ test "Windows job times out a surviving descendant" {
     if (comptime builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
     const a = std.testing.allocator;
     const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Keep CMD's empty window title out of Windows argv quoting. The child
+    // writes a marker so an unrelated timeout cannot pass this test.
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "launch.cmd",
+        .data = "@echo off\r\nstart \"\" /b cmd.exe /d /c descendant.cmd >nul 2>&1\r\n",
+    });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "descendant.cmd",
+        .data = "@echo off\r\necho started>descendant.ready\r\nping.exe -n 20 127.0.0.1 >nul\r\n",
+    });
     try std.testing.expectError(error.Timeout, run(a, io, .{
-        .argv = &.{ "cmd", "/d", "/c", "start \"\" /b ping.exe -n 20 127.0.0.1 >nul" },
+        .argv = &.{ "cmd", "/d", "/c", "launch.cmd" },
+        .cwd = .{ .dir = tmp.dir },
         .stdout_limit = std.Io.Limit.limited(1024),
         .stderr_limit = std.Io.Limit.limited(1024),
-    }, 2 * std.time.ns_per_s));
+    }, 3 * std.time.ns_per_s));
+    const ready = try tmp.dir.readFileAlloc(io, "descendant.ready", a, .limited(32));
+    defer a.free(ready);
+    try std.testing.expectEqualStrings("started\r\n", ready);
 }
 
 test "Windows job rejects excess output and drains before reader release" {
