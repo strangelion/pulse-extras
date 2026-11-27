@@ -8,8 +8,18 @@ import tomllib
 
 _NATIVE_BUILD = ("zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe",)
 _COMPANION_MEMBERS = ("pulse_companion_runtime.dll", "pulse-pet-demo.exe")
+SHARE_HELPERS = ("lan", "local", "worker", "pake")
+SHARE_MEMBERS = tuple(f"pulse-share-{key}.exe" for key in SHARE_HELPERS) + (
+    "pulse-share-pake-notices.txt", "pulse-share-go-notices.txt",
+)
 _PROFILES = {
     "native": _NATIVE_BUILD,
+    "share": (
+        "zig build share-local -Doptimize=ReleaseSafe",
+        "go build (locked Share LAN module, Windows amd64)",
+        "cargo build --locked --release (pinned Share CPace toolchain)",
+        "zig build share-dev with all four helper digests",
+    ),
     "companion": _NATIVE_BUILD + (
         "zig build companion-runtime-bridge -Doptimize=ReleaseSafe",
         "zig build pet-demo -Doptimize=ReleaseSafe",
@@ -46,12 +56,17 @@ def discover(root: Path) -> dict:
         if not isinstance(profile, str) or profile not in _PROFILES or not flat_name(library, ".dll"):
             raise ValueError("invalid build profile or library: " + key)
         if (not isinstance(members, list)
-                or any(not flat_name(name, (".dll", ".exe")) for name in members)
+                or any(not flat_name(name, (".dll", ".exe", ".txt") if profile == "share"
+                                     else (".dll", ".exe")) for name in members)
                 or len({name.lower() for name in [library, *members]}) != len(members) + 1):
             raise ValueError("invalid or duplicate package members: " + key)
         if profile == "companion" and (library != "pulse_companion.dll"
                                       or tuple(members) != _COMPANION_MEMBERS):
             raise ValueError("invalid companion profile composition")
+        if profile == "share" and (key != "share" or ident != "strangelion.share"
+                                   or library != "pulse_share.dll"
+                                   or tuple(members) != SHARE_MEMBERS):
+            raise ValueError("invalid share profile composition")
         if data["manifest"] != "manifest.release.json":
             raise ValueError("only formal manifest templates may be released")
         manifest = descriptor.parent / data["manifest"]

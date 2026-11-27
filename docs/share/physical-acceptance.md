@@ -57,3 +57,13 @@ Network performance values depend on the hardware and route.
 Do not claim real-host acceptance or release readiness from the existence
 of this checklist. Send results for all cases together; only additional
 tests required by observed defects should need another run.
+
+## Preferred Action-built package
+
+Use the existing Upstream candidate compatibility Action on feature/share
+with request share=0.1.0-rc.1. Download upstream-candidate-packages/share,
+verify SHA256SUMS and use the official author tool with isolated stores.
+This replaces local compilation/staging for the ordinary test path.
+Record the exact package SHA-256 and actual installed host version;
+the candidate is unsigned and not a stable release. Do not activate
+strangelion.share-dev and strangelion.share simultaneously.

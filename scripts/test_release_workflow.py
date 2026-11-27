@@ -14,6 +14,12 @@ class ReleaseSelectionTests(unittest.TestCase):
     def test_single_selection(self):
         self.assertEqual(len(release.plan("vcs=0.1.0", "dry-run")), 1)
 
+    def test_share_selection(self):
+        items = release.plan("share=0.1.0-rc.1", "dry-run")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["asset"], "strangelion.share-0.1.0-rc.1.pulse-ext")
+        self.assertEqual(release.package.PRODUCTS["share"]["build_profile"], "share")
+
     def test_all(self):
         items = release.plan("all=0.2.0-rc.1", "draft")
         self.assertEqual({item["product"] for item in items}, set(release.package.PRODUCTS))

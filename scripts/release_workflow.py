@@ -20,6 +20,7 @@ import zipfile
 import package_common as common
 import package_release as package
 import upstream_pin
+import release_registry
 
 ROOT = package.ROOT
 MODES = {"dry-run", "draft", "publish-preview"}
@@ -136,6 +137,52 @@ def install_host(work: Path, pin: dict) -> Path:
     return pulse
 
 
+def build_share(prefix: Path, flags: list[str]) -> None:
+    """Build exact Windows helpers before compiling their digests into Share."""
+    binaries = prefix / "bin"
+    binaries.mkdir(parents=True, exist_ok=True)
+    lan = ROOT / "shared/share/lan"
+    pake = ROOT / "shared/share/pake"
+    # Toolchains match ordinary CI. Cargo selects the checked-in rust-toolchain.
+    if capture("go", "version").split()[2] != "go1.27.4":
+        raise RuntimeError("Share Go toolchain differs from pinned CI")
+    run("zig", "build", "share-local", *flags)
+    env = dict(os.environ, GOTOOLCHAIN="local", GOPROXY="https://proxy.golang.org",
+               GOSUMDB="sum.golang.org", GOFLAGS="-mod=readonly", CGO_ENABLED="0",
+               GOOS="windows", GOARCH="amd64", GOWORK="off")
+    def go(*args: str, timeout: int = 600) -> None:
+        subprocess.run(["go", *args], cwd=lan, env=env, check=True, timeout=timeout)
+    go("mod", "download")
+    go("mod", "verify")
+    env["GOPROXY"] = "off"
+    go("build", "-trimpath", "-o", str(binaries / "pulse-share-lan.exe"), ".")
+    subprocess.run([sys.executable, "collect_notices.py",
+                    str(binaries / "pulse-share-go-notices.txt")],
+                   cwd=lan, env=env, check=True, timeout=180)
+    target = "x86_64-pc-windows-msvc"
+    cargo_target = prefix / "cargo"
+    cargo_env = dict(os.environ, CARGO_TARGET_DIR=str(cargo_target))
+    subprocess.run(["cargo", "fetch", "--locked", "--target", target],
+                   cwd=pake, env=cargo_env, check=True, timeout=480)
+    cargo_env["CARGO_NET_OFFLINE"] = "true"
+    subprocess.run(["cargo", "build", "--locked", "--offline", "--release", "--target", target],
+                   cwd=pake, env=cargo_env, check=True, timeout=600)
+    src = cargo_target / target / "release/pulse-share-pake.exe"
+    common.copy_checked(src, binaries / src.name, common.sha256(src, common.FILE_MAX))
+    subprocess.run([sys.executable, "collect_notices.py",
+                    str(binaries / "pulse-share-pake-notices.txt")],
+                   cwd=pake, env=cargo_env, check=True, timeout=180)
+    # Fail closed if dependency preparation changed a tracked lock file.
+    if package.git("status", "--porcelain", "--untracked-files=normal"):
+        raise RuntimeError("Share dependency build changed the source tree")
+    digests = [
+        f"-Dshare-{key}-sha256=" + common.sha256(
+            binaries / f"pulse-share-{key}.exe", common.FILE_MAX)
+        for key in release_registry.SHARE_HELPERS
+    ]
+    run("zig", "build", "share-dev", "-Dtarget=x86_64-windows-msvc", *flags, *digests)
+
+
 def build(items: list[dict], output: Path, sdk: Path, *, candidate: bool = False) -> None:
     if sys.platform != "win32":
         raise RuntimeError("official package build requires Windows runner")
@@ -158,7 +205,11 @@ def build(items: list[dict], output: Path, sdk: Path, *, candidate: bool = False
         runtime = common.sha256(prefix / "bin/pulse_companion_runtime.dll", common.FILE_MAX)
         entry_flags.extend(["-Dcompanion-helper-sha256=" + helper,
                             "-Dcompanion-runtime-sha256=" + runtime])
-    run("zig", "build", "-Dtarget=x86_64-windows-msvc", *flags, *entry_flags)
+    profiles = {package.PRODUCTS[item["product"]]["build_profile"] for item in items}
+    if profiles - {"share"}:
+        run("zig", "build", "-Dtarget=x86_64-windows-msvc", *flags, *entry_flags)
+    if "share" in profiles:
+        build_share(prefix, flags)
     output.mkdir(parents=True, exist_ok=False)
     for item in items:
         product = item["product"]
@@ -328,12 +379,14 @@ def main() -> int:
     parser.add_argument("action", choices=["plan", "build", "sign", "publish", "candidate"])
     parser.add_argument("--out", type=Path, default=ROOT / ".local/release-output")
     parser.add_argument("--sdk", type=Path, default=ROOT / ".local/sdk")
+    parser.add_argument("--request", default="all=0.0.0-upstream",
+                        help="candidate only: product=SemVer selection")
     args = parser.parse_args()
     private_encoded = os.environ.pop("PULSE_SIGNING_PRIVATE_KEY", "")
     try:
         if args.action == "candidate":
             # This branch-only path never checks release tags or calls publication.
-            build(plan("all=0.0.0-upstream", "dry-run"), args.out.resolve(), args.sdk.resolve(), candidate=True)
+            build(plan(args.request, "dry-run"), args.out.resolve(), args.sdk.resolve(), candidate=True)
             return 0
         items = plan(os.environ["RELEASE_REQUEST"], os.environ["RELEASE_MODE"])
         source_revision()

@@ -2,6 +2,12 @@ name: Upstream candidate compatibility
 
 on:
   workflow_dispatch:
+    inputs:
+      request:
+        description: 'Unsigned candidate selection, e.g. share=0.1.0-rc.1 or all=0.0.0-upstream'
+        type: string
+        required: false
+        default: all=0.0.0-upstream
   pull_request:
     branches: [main]
     paths:
@@ -27,6 +33,8 @@ jobs:
     needs: regression
     runs-on: windows-latest
     timeout-minutes: 50
+    env:
+      CANDIDATE_REQUEST: ${{ inputs.request || 'all=0.0.0-upstream' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -46,8 +54,27 @@ jobs:
           ref: ${{ steps.upstream.outputs.revision }}
           path: .local/sdk
           persist-credentials: false
-      - name: Package every registered extension (never publish)
-        run: python scripts/release_workflow.py candidate --out .local/upstream-candidates
+      - name: Validate candidate product selection
+        id: selection
+        shell: pwsh
+        run: |
+          python -c 'import os,sys; sys.path.insert(0,"scripts"); import release_workflow as r; items=r.plan(os.environ["CANDIDATE_REQUEST"],"dry-run"); print("share="+str(any(x["product"]=="share" for x in items)).lower(),file=open(os.environ["GITHUB_OUTPUT"],"a",encoding="utf-8"))'
+      - name: Set up pinned Go for selected Share package
+        if: steps.selection.outputs.share == 'true'
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - name: Prepare pinned Rust for selected Share package
+        if: steps.selection.outputs.share == 'true'
+        working-directory: shared/share/pake
+        run: |
+          rustup show active-toolchain
+          rustc --version
+          rustup target add x86_64-pc-windows-msvc
+      - name: Package selected extensions (never publish)
+        shell: pwsh
+        run: python scripts/release_workflow.py candidate --request "$env:CANDIDATE_REQUEST" --out .local/upstream-candidates
       - name: Preserve candidate packages
         uses: actions/upload-artifact@v4
         with:

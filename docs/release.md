@@ -400,3 +400,19 @@ AI publication, no unnecessary jobs for docs. Maintain [testing](testing.md) and
 [roadmap](roadmap.md) with real evidence and actual current status.
 
 Isolated acceptance packaging is implemented separately by scripts/stage_vcs_test.py and extensions/vcs-panel/manifest.test.json. It delegates manifest generation, pack and verify to the official pinned tool and refuses existing output directories. No release signing, registry publication or installation is performed. Production eligibility remains blocked by the acceptance runbook.
+
+
+## Share packaging
+
+The existing release registry includes Share, with the fixed four helper
+executables and two Go/Rust third-party notices. Selecting share builds
+the locked Go and Rust modules, verifies their dependency preparation,
+then builds the DLL with all four helper SHA-256 values. The official
+author tool stages/verifies the complete archive. Other selected products
+do not require Share toolchains unless Share is also selected.
+
+For unsigned branch acceptance, dispatch Upstream candidate compatibility
+with request share=0.1.0-rc.1 (or another valid candidate SemVer).
+No additional workflow, signing or publication. The regular Extension
+release workflow remains main-only and stable promotion still requires
+exact accepted artifact evidence.

@@ -562,3 +562,21 @@ not a host package or a certification of every overlay. Heavy tests run
 on dedicated harness changes and can be dispatched for a release candidate.
 Use the same revision's ordinary Windows CI artifact for the physical package.
 The fixture script is non-destructive and does not access a real clipboard.
+
+
+### Action-built acceptance package
+
+Reuse the existing **Upstream candidate compatibility** workflow
+(upstream-candidate.yml), select feature/share and enter
+share=0.1.0-rc.1. Its upstream-candidate-packages artifact contains
+the official verified, unsigned Share package, manifest, release evidence
+and SHA256SUMS. The version is a candidate label, not a published release.
+No signing secrets or local compilers are required. Install only into a
+test profile with explicit native consent. The public SDK and installer
+remain pinned to Pulse 1.0.60; separately record actual host 1.0.62
+compatibility. Do not enable the development and formal packages together.
+
+The existing Extension release workflow supports the share product after
+merge to main. Share builds all four hash-bound helpers and both notices
+only when selected. Existing signing/publication/stable acceptance gates
+remain unchanged. No additional packaging workflow is introduced.
