@@ -106,6 +106,12 @@ jobs:
           rustc --version
           cargo --version
           cargo build --locked --release
+      - name: Stage Windows CPace helper
+        if: runner.os == 'Windows' && (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        shell: bash
+        run: |
+          cp shared/share/pake/target/release/pulse-share-pake.exe zig-out/bin/pulse-share-pake.exe
+          python shared/share/pake/collect_notices.py zig-out/bin/pulse-share-pake-notices.txt
       - name: Test Share LAN protocol, mutual TLS and CPace
         if: (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
         working-directory: shared/share/lan
@@ -140,7 +146,7 @@ jobs:
         if: (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
         shell: bash
         run: |
-          python -c 'import hashlib, pathlib, subprocess; p=pathlib.Path("zig-out/bin"); names=("lan","local","worker"); subprocess.run(["zig","build","share-dev","-Dtarget=x86_64-windows-msvc","-Doptimize=ReleaseSafe",*["-Dshare-"+n+"-sha256="+hashlib.sha256((p/("pulse-share-"+n+".exe")).read_bytes()).hexdigest() for n in names]],check=True)'
+          python -c 'import hashlib, os, pathlib, subprocess; p=pathlib.Path("zig-out/bin"); names=("lan","local","worker","pake") if os.name=="nt" else ("lan","local","worker"); subprocess.run(["zig","build","share-dev","-Dtarget=x86_64-windows-msvc","-Doptimize=ReleaseSafe",*["-Dshare-"+n+"-sha256="+hashlib.sha256((p/("pulse-share-"+n+".exe")).read_bytes()).hexdigest() for n in names]],check=True)'
       - name: Real Windows encrypted Share LAN loopback
         if: runner.os == 'Windows' && (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
         timeout-minutes: 5
@@ -156,6 +162,8 @@ jobs:
             zig-out/bin/pulse-share-lan.exe
             zig-out/bin/pulse-share-local.exe
             zig-out/bin/pulse-share-worker.exe
+            zig-out/bin/pulse-share-pake.exe
+            zig-out/bin/pulse-share-pake-notices.txt
             zig-out/bin/pulse_share.dll
       - name: Fast ZIP admission and extraction regression
         if: needs.scope.outputs.level != 'vcs' && needs.scope.outputs.level != 'share'

@@ -18,9 +18,10 @@ import (
 func candidateTLS(id identity,server bool)*tls.Config{
 	c:=&tls.Config{Certificates:[]tls.Certificate{id.cert},MinVersion:tls.VersionTLS13,
 		MaxVersion:tls.VersionTLS13,NextProtos:[]string{pairauth.Protocol},
+		CurvePreferences:[]tls.CurveID{tls.X25519MLKEM768},
 		SessionTicketsDisabled:true,InsecureSkipVerify:!server,
 		VerifyConnection:func(s tls.ConnectionState)error{
-			if s.NegotiatedProtocol!=pairauth.Protocol||len(s.PeerCertificates)!=1{return errors.New("unexpected test pairing certificate")}
+			if s.NegotiatedProtocol!=pairauth.Protocol||s.CurveID!=tls.X25519MLKEM768||len(s.PeerCertificates)!=1{return errors.New("unexpected test pairing certificate")}
 			now:=time.Now()
 			if now.Before(s.PeerCertificates[0].NotBefore)||now.After(s.PeerCertificates[0].NotAfter){return errors.New("expired test identity")}
 			return nil

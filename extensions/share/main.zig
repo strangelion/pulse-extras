@@ -16,7 +16,7 @@ const prefs = @import("preferences.zig");
 const choices = @import("choices.zig");
 const pickers = @import("pulse_pickers");
 const allocator = std.heap.page_allocator;
-const command_names = [_][]const u8{ "share-discover", "share-send", "share-receive", "share-refresh", "share-cancel", "share-identity-init", "share-identity-show", "share-peer-add", "share-peer-list", "share-peer-revoke", "share-private-init", "share-recovery-list", "share-approve", "share-decline", "share-apply-prefs", "share-receive-advertise", "share-interfaces", "share-spool-init", "share-spool-recovery", "share-use-local", "share-use-peer", "share-use-endpoint", "share-browse-destination", "share-browse-parent", "share-save-prefs" };
+const command_names = [_][]const u8{ "share-discover", "share-send", "share-receive", "share-refresh", "share-cancel", "share-identity-init", "share-identity-show", "share-peer-add", "share-peer-list", "share-peer-revoke", "share-private-init", "share-recovery-list", "share-approve", "share-decline", "share-apply-prefs", "share-receive-advertise", "share-interfaces", "share-spool-init", "share-spool-recovery", "share-use-local", "share-use-peer", "share-use-endpoint", "share-browse-destination", "share-browse-parent", "share-save-prefs", "share-pair-host", "share-pair-join", "share-send-routed", "share-receive-routed", "share-pair-host-routed", "share-pair-join-routed", "share-pair-host-advertise", "share-use-pair-endpoint" };
 const field_names = view.fields;
 
 const Instance = struct {
@@ -38,6 +38,7 @@ const Instance = struct {
     recorded_terminal: bool = false,
     local_choices: choices.List = .{},
     endpoint_choices: choices.List = .{},
+    pair_endpoint_choices: choices.List = .{},
     peer_choices: choices.List = .{},
     discovery_bind: managed.Field = .{},
     peer_store: managed.Field = .{},
@@ -52,11 +53,22 @@ const Instance = struct {
     request: managed.Request = .{},
     decisions: managed.Decisions = .{},
     shown_prompt: u32 = 0,
+    pair_dialog: ?pulse_raw.PulseDialogsV1 = null,
+    pair_dialog_id: u64 = 0,
+    pair_dialog_role: enum { none, host, join_input } = .none,
+    pair_dialog_poisoned: bool = false,
+    pair_dialog_routed: bool = false,
     selected: managed.Field = .{},
     active: bool = false,
 
     fn close(self: *Instance) host_mod.Error!void {
         self.shown_prompt = 0;
+        if (self.task) |*task| {
+            if (managed.pairingMode(self.request.mode) and task.occupied()) try task.cancel();
+        }
+        try self.closePairDialog();
+        self.decisions.join_code.store(0, .release);
+        self.decisions.display_code.store(0, .release);
         if (self.picker_request != 0) {
             const picker = self.picker orelse return error.State;
             const cancel = picker.cancel orelse return error.Unavailable;
@@ -119,6 +131,7 @@ const Instance = struct {
                 },
                 .discover => {
                     self.endpoint_choices = choices.parse(.endpoint, message);
+                    self.pair_endpoint_choices = choices.parse(.pair_endpoint, message);
                     self.discovery_bind = self.request.bind;
                     self.choices_dirty = true;
                 },
@@ -127,7 +140,7 @@ const Instance = struct {
                     self.peer_store = self.request.store;
                     self.choices_dirty = true;
                 },
-                .peer_add, .peer_revoke => {
+                .peer_add, .peer_revoke, .pair_host, .pair_join => {
                     self.peer_choices = .{};
                     self.choices_dirty = true;
                 },
@@ -142,9 +155,10 @@ const Instance = struct {
                 },
                 .discover => {
                     self.endpoint_choices = .{};
+                    self.pair_endpoint_choices = .{};
                     self.choices_dirty = true;
                 },
-                .peer_list, .peer_add, .peer_revoke => {
+                .peer_list, .peer_add, .peer_revoke, .pair_host, .pair_join => {
                     self.peer_choices = .{};
                     self.choices_dirty = true;
                 },
@@ -201,6 +215,9 @@ const Instance = struct {
             var buffer: [4300]u8 = undefined;
             const detail = std.fmt.bufPrint(&buffer, "{s}\n{s}", .{ prefix, value }) catch prefix;
             if (state.terminal()) {
+                self.decisions.display_code.store(0, .release);
+                self.decisions.join_code.store(0, .release);
+                if (self.pair_dialog_role == .host) self.closePairDialog() catch |err| diag.status("share-pair-dialog-close", @intFromError(err));
                 self.rememberTerminal(state, value);
                 self.last_len = @min(detail.len, self.last_result.len);
                 while (self.last_len > 0 and !std.unicode.utf8ValidateSlice(detail[0..self.last_len])) self.last_len -= 1;
@@ -225,6 +242,9 @@ const Instance = struct {
                     if (generation > 16 or self.decisions.answer.load(.acquire) / 2 == generation) generation = 0;
                 }
             }
+            self.shown_prompt = generation;
+            self.refreshPairDialog(detail);
+            generation = self.shown_prompt;
             const states = [_]ui.State{
                 .{ .key = abi.view("status"), .value = abi.view(detail) },
                 .{ .key = abi.view("progress"), .value = abi.view(progress) },
@@ -235,7 +255,14 @@ const Instance = struct {
                 .{ .key = abi.view("inventory"), .value = abi.view(if (self.inventory_len != 0) self.inventory[0..self.inventory_len] else "尚未读取设备或目录信息") },
                 .{ .key = abi.view("history"), .value = abi.view(if (self.history_len != 0) self.history[0..self.history_len] else "本次会话尚无传输记录") },
             };
-            panel.setStates(&states) catch return;
+            panel.setStates(&states) catch |err| {
+                // A host-closed panel cannot retain an active enrollment.
+                self.shown_prompt = 0;
+                if (managed.pairingMode(self.request.mode) and !state.terminal()) task.cancel() catch |cancel_err| diag.status("share-pair-cancel", @intFromError(cancel_err));
+                if (state.terminal()) task.releaseTerminal() catch |release_err| diag.status("share-task-release", @intFromError(release_err));
+                diag.status("share-panel-refresh", @intFromError(err));
+                return;
+            };
             self.shown_prompt = generation;
             if (state.terminal()) {
                 task.releaseTerminal() catch {
@@ -257,22 +284,24 @@ const Instance = struct {
         field.set(bytes[0..needed]) catch return error.Argument;
     }
 
-    fn start(self: *Instance, mode: managed.Mode, advertise: bool, use_spool: bool) host_mod.Error!void {
+    fn start(self: *Instance, mode: managed.Mode, advertise: bool, use_spool: bool, routed: bool, join_code: u32) host_mod.Error!void {
         if (!self.active or !managed.configured()) return error.Unavailable;
+        if (managed.pairingMode(mode) and !managed.pairingConfigured()) return error.Unavailable;
+        if (mode == .pair_join and (join_code == 0 or join_code > 100000000)) return error.Argument;
         if (self.picker_request != 0 or self.picker_poisoned) return error.State;
         if (self.task) |*task| {
             if (task.occupied()) return error.State;
         } else {
             self.task = try async_host.Task.init(try async_host.taskTable(self.host));
         }
-        var next: managed.Request = .{ .mode = mode, .advertise = advertise };
+        var next: managed.Request = .{ .mode = mode, .advertise = advertise, .routed = routed };
         switch (mode) {
-            .discover, .send, .receive => try self.readField("bind", &next.bind),
+            .discover, .send, .receive, .pair_host, .pair_join => try self.readField("bind", &next.bind),
             else => {},
         }
         if (mode != .discover and mode != .interfaces) try self.readField(if (use_spool) "spool" else "store", &next.store);
         switch (mode) {
-            .send, .receive, .peer_add, .peer_revoke => try self.readField("paired", &next.paired),
+            .send, .receive, .peer_add, .peer_revoke, .pair_host, .pair_join => try self.readField("paired", &next.paired),
             else => {},
         }
         if (mode == .peer_add) try self.readField("fingerprint", &next.fingerprint);
@@ -280,7 +309,13 @@ const Instance = struct {
             next.source = self.selected;
             try self.readField("peer", &next.peer);
         }
+        if (mode == .pair_host) {
+            try self.readField("port", &next.port);
+            if (routed) try self.readField("allowed-source", &next.allowed_source);
+        }
+        if (mode == .pair_join) try self.readField("peer", &next.peer);
         if (mode == .receive) {
+            if (routed) try self.readField("allowed-source", &next.allowed_source);
             try self.readField("destination", &next.destination);
             try self.readField("spool", &next.spool);
             try self.readField("port", &next.port);
@@ -290,12 +325,16 @@ const Instance = struct {
         self.recorded_terminal = false;
         self.shown_prompt = 0;
         self.decisions.answer.store(0, .release);
+        self.decisions.display_code.store(0, .release);
+        self.decisions.join_code.store(join_code, .release);
+        errdefer self.decisions.join_code.store(0, .release);
         var descriptor = std.mem.zeroes(pulse_raw.PulseTaskDescriptor);
         descriptor.size = @sizeOf(pulse_raw.PulseTaskDescriptor);
         descriptor.title = abi.view(switch (mode) {
             .discover => "Pulse Share discovery",
             .send => "Pulse Share send selected file",
             .receive => "Pulse Share receive",
+            .pair_host, .pair_join => "Pulse Share device pairing",
             else => "Pulse Share device management",
         });
         descriptor.type = abi.view("share");
@@ -316,6 +355,103 @@ const Instance = struct {
         self.refresh();
     }
 
+    // Host-drawn V1 modal: password state is never in the main panel,
+    // task snapshot, preference store, history or command line.
+    fn showPairDialog(self: *Instance, host: bool) host_mod.Error!void {
+        if (self.pair_dialog_id != 0 or self.pair_dialog_poisoned) return error.State;
+        if (!managed.pairingConfigured()) return error.Unavailable;
+        if (self.task) |*task| {
+            if (task.occupied()) return error.State;
+        }
+        const dialogs = try self.host.query(pulse_raw.PulseDialogsV1, "pulse.dialogs", 1);
+        const show = dialogs.show orelse return error.Unavailable;
+        if (dialogs.close == null or dialogs.set_states == null) return error.Unavailable;
+        var input = ui.node(ui.NodeKind.text_input);
+        input.id = abi.view("pair-input");
+        input.kind = .{ .present = 1, .value = abi.view("password") };
+        input.state = .{ .present = 1, .value = abi.view("pair-input") };
+        input.placeholder = .{ .present = 1, .value = abi.view("8 位数字") };
+        const display = [_]ui.Node{
+            view.bound("pair-code-text", "state.pair-code"),
+            view.bound("pair-detail-text", "state.pair-detail"),
+        };
+        const entry = [_]ui.Node{
+            view.text("pair-input-help", "输入对端屏幕显示的 8 位连接码。随后还需双方确认设备身份。", "body"),
+            input,
+        };
+        const root = view.container(ui.NodeKind.stack, "pair-dialog-root", if (host) &display else &entry);
+        const display_states = [_]ui.State{
+            .{ .key = abi.view("pair-code"), .value = abi.view("") },
+            .{ .key = abi.view("pair-detail"), .value = abi.view("等待生成连接码") },
+        };
+        const input_states = [_]ui.State{.{ .key = abi.view("pair-input"), .value = abi.view("") }};
+        const states: []const ui.State = if (host) &display_states else &input_states;
+        var tree = std.mem.zeroes(ui.Tree);
+        tree.size = @sizeOf(ui.Tree);
+        tree.root = &root;
+        tree.states = states.ptr;
+        tree.state_count = @intCast(states.len);
+        const buttons = [_]pulse_raw.PulseDialogButton{
+            .{ .size = @sizeOf(pulse_raw.PulseDialogButton), .kind = 1, .id = abi.view("approve"), .text = abi.view(if (host) "确认配对" else "连接") },
+            .{ .size = @sizeOf(pulse_raw.PulseDialogButton), .kind = 0, .id = abi.view("cancel"), .text = abi.view("取消") },
+        };
+        var request = std.mem.zeroes(pulse_raw.PulseDialogRequest);
+        request.size = @sizeOf(pulse_raw.PulseDialogRequest);
+        request.width = 520;
+        request.height = 200;
+        request.default_button = 1;
+        request.cancel_button = 1;
+        request.button_count = buttons.len;
+        request.title = abi.view(if (host) "动态连接码" else "输入连接码");
+        request.message = abi.view(if (host) "仅在对端认证成功且显示设备指纹后确认配对；提前关闭将取消。" else "请核对对端地址与配对名称。");
+        request.buttons = &buttons;
+        request.model = &tree;
+        var id: u64 = 0;
+        try host_mod.mapStatus(show(dialogs.context, &request, null, &pairDialogClosed, self, &id));
+        self.pair_dialog = dialogs;
+        if (id == 0) {
+            self.pair_dialog_poisoned = true;
+            return error.State;
+        }
+        self.pair_dialog_id = id;
+        self.pair_dialog_role = if (host) .host else .join_input;
+    }
+
+    fn closePairDialog(self: *Instance) host_mod.Error!void {
+        if (self.pair_dialog_poisoned) return error.State;
+        if (self.pair_dialog_id == 0) return;
+        const dialogs = self.pair_dialog orelse return error.State;
+        const close_fn = dialogs.close orelse return error.Unavailable;
+        // Suppress actions in a synchronous or deferred close callback.
+        self.pair_dialog_role = .none;
+        host_mod.mapStatus(close_fn(dialogs.context, self.pair_dialog_id)) catch |err| if (err != error.State) return err;
+        self.pair_dialog_id = 0;
+    }
+
+    fn refreshPairDialog(self: *Instance, detail: []const u8) void {
+        if (self.pair_dialog_role != .host or self.pair_dialog_id == 0) return;
+        const dialogs = self.pair_dialog orelse return;
+        const set = dialogs.set_states orelse return;
+        const packed_code = self.decisions.display_code.load(.acquire);
+        const code: u32 = @truncate(packed_code);
+        const seconds: u32 = @intCast(packed_code >> 32);
+        var buffer: [96]u8 = undefined;
+        defer @memset(&buffer, 0);
+        const display = if (code != 0 and code <= 100000000)
+            std.fmt.bufPrint(&buffer, "{d:0>8}  ·  约 {d} 秒后刷新", .{ code - 1, seconds }) catch ""
+        else
+            "";
+        const states = [_]ui.State{
+            .{ .key = abi.view("pair-code"), .value = abi.view(display) },
+            .{ .key = abi.view("pair-detail"), .value = abi.view(detail) },
+        };
+        host_mod.mapStatus(set(dialogs.context, self.pair_dialog_id, &states, states.len)) catch {
+            self.shown_prompt = 0;
+            if (self.task) |*task| task.cancel() catch |err| diag.status("share-pair-cancel", @intFromError(err));
+            self.closePairDialog() catch |err| diag.status("share-pair-dialog-close", @intFromError(err));
+        };
+    }
+
     fn savePreferences(self: *Instance) void {
         if (self.picker_request != 0 or self.picker_poisoned) return self.status("请先结束目录选择");
         if (self.task) |*task| {
@@ -332,7 +468,7 @@ const Instance = struct {
     fn applyPreferences(self: *Instance) void {
         if (!self.settings.loaded) return self.status("常用设置尚未读取，请先在扩展设置中重新读取");
         const panel = if (self.panel) |*p| p else return;
-        const indices = [_]usize{ 0, 2, 4, 5, 6 };
+        const indices = prefs.indices;
         var states: [indices.len]ui.State = undefined;
         for (indices, 0..) |index, n| states[n] = .{ .key = abi.view(field_names[index]), .value = abi.view(self.settings.saved.value(index)) };
         panel.setStates(&states) catch return self.status("无法应用设置");
@@ -353,6 +489,7 @@ const Instance = struct {
         const reset = [_]ui.State{
             .{ .key = abi.view("local-choice"), .value = abi.view("0") },
             .{ .key = abi.view("endpoint-choice"), .value = abi.view("0") },
+            .{ .key = abi.view("pair-endpoint-choice"), .value = abi.view("0") },
             .{ .key = abi.view("peer-choice"), .value = abi.view("0") },
         };
         panel.setStates(&reset) catch return self.status("无法重置设备选项，请重新打开面板");
@@ -368,6 +505,7 @@ const Instance = struct {
         const key: []const u8 = switch (kind) {
             .local => "local-choice",
             .endpoint => "endpoint-choice",
+            .pair_endpoint => "pair-endpoint-choice",
             .peer => "peer-choice",
         };
         var field: managed.Field = .{};
@@ -376,10 +514,11 @@ const Instance = struct {
         const list = switch (kind) {
             .local => &self.local_choices,
             .endpoint => &self.endpoint_choices,
+            .pair_endpoint => &self.pair_endpoint_choices,
             .peer => &self.peer_choices,
         };
         const value = list.selected(index) orelse return self.status("请选择有效条目");
-        if (kind == .endpoint) {
+        if (kind == .endpoint or kind == .pair_endpoint) {
             self.readField("bind", &field) catch return self.status("本机地址无效");
             if (!std.mem.eql(u8, field.slice(), self.discovery_bind.slice())) return self.status("本机地址已改变，请重新发现");
         }
@@ -389,7 +528,7 @@ const Instance = struct {
         }
         const target: []const u8 = switch (kind) {
             .local => "bind",
-            .endpoint => "peer",
+            .endpoint, .pair_endpoint => "peer",
             .peer => "paired",
         };
         const panel = if (self.panel) |*p| p else return;
@@ -464,11 +603,17 @@ const Instance = struct {
             view.button("显示我的指纹", "share-identity-show", "standard", "state.idle"),
         };
         const pair_actions = [_]ui.Node{
-            view.button("添加配对", "share-peer-add", "primary", "state.idle"),
+            view.button("开启动态连接码", "share-pair-host", "primary", "state.idle"),
+            view.button("开启连接码并允许发现", "share-pair-host-advertise", "standard", "state.idle"),
+            view.button("输入连接码", "share-pair-join", "primary", "state.idle"),
+            view.button("组网：开启连接码", "share-pair-host-routed", "standard", "state.idle"),
+            view.button("组网：输入连接码", "share-pair-join-routed", "standard", "state.idle"),
+            view.button("手动指纹配对", "share-peer-add", "standard", "state.idle"),
             view.button("撤销配对", "share-peer-revoke", "danger", "state.idle"),
         };
         var local_options: choices.Options = undefined;
         var endpoint_options: choices.Options = undefined;
+        var pair_endpoint_options: choices.Options = undefined;
         var peer_options: choices.Options = undefined;
         const inventory_children = [_]ui.Node{view.bound("inventory-text", "state.inventory")};
         const device_content = [_]ui.Node{
@@ -482,13 +627,19 @@ const Instance = struct {
             view.group("inventory-group", "最近一次查询", &inventory_children),
             fields[3],
             fields[7],
-            view.text("pair-help", "首次配对：通过独立可信渠道核对双方完整指纹；提交后在上方任务区确认。", "caption"),
+            view.select("pair-endpoint-options", "pair-endpoint-choice", "等待配对的附近设备", self.pair_endpoint_choices.options(&pair_endpoint_options)),
+            view.button("使用所选配对地址", "share-use-pair-endpoint", "standard", "state.idle"),
+            view.text("pair-help", "本地名称由你决定。动态码使用本机地址、身份目录及对端地址；组网配对仅限私有/虚拟组网地址，接收须在传输页填写实际来源 IP。公网请手动核对完整指纹。", "caption"),
             view.grid("pair-actions", &pair_actions),
         };
         const transfer_actions = [_]ui.Node{
             view.button("发送选中文件", "share-send", "primary", "state.idle"),
             view.button("接收一次", "share-receive", "standard", "state.idle"),
             view.button("接收并允许发现", "share-receive-advertise", "standard", "state.idle"),
+        };
+        const routed_actions = [_]ui.Node{
+            view.button("发送（组网/转发）", "share-send-routed", "standard", "state.idle"),
+            view.button("接收（组网/转发）", "share-receive-routed", "standard", "state.idle"),
         };
         const transfer_content = [_]ui.Node{
             view.text("selection", selection, "caption"),
@@ -498,6 +649,9 @@ const Instance = struct {
             fields[1],
             view.text("transfer-help", "使用设备页填写的本机地址与已配对设备。接收时仍须核对并批准每个请求。", "caption"),
             view.grid("transfer-actions", &transfer_actions),
+            view.text("routed-help", "高级：仅已配对设备。使用具体数字 IP 和端口；接收须填写实际 TCP 来源 IP（代理场景可为代理地址）。不自动映射端口。", "caption"),
+            fields[8],
+            view.grid("routed-actions", &routed_actions),
         };
         const setup_actions = [_]ui.Node{
             view.button("应用已保存设置", "share-apply-prefs", "standard", "state.idle"),
@@ -552,7 +706,7 @@ const Instance = struct {
             tabs,
         };
         const root = view.container(ui.NodeKind.stack, "share-root", &children);
-        var states: [field_names.len + 12]ui.State = undefined;
+        var states: [field_names.len + 13]ui.State = undefined;
         for (field_names, 0..) |key, n| {
             const value = if (self.draft_valid) self.draft[n].slice() else self.settings.saved.value(n);
             states[n] = .{ .key = abi.view(key), .value = abi.view(value) };
@@ -572,6 +726,7 @@ const Instance = struct {
         const selections = [_]ui.State{
             .{ .key = abi.view("local-choice"), .value = abi.view("0") },
             .{ .key = abi.view("endpoint-choice"), .value = abi.view("0") },
+            .{ .key = abi.view("pair-endpoint-choice"), .value = abi.view("0") },
             .{ .key = abi.view("peer-choice"), .value = abi.view("0") },
             .{ .key = abi.view("active-tab"), .value = abi.view("0") },
         };
@@ -625,15 +780,58 @@ fn work(user: ?*anyopaque, context_ptr: [*c]const pulse_raw.PulseTaskContext) ca
     return 2;
 }
 
+fn pairDialogClosed(user: ?*anyopaque, id: u64, status: abi.Status, button: abi.StringView, states: [*c]const ui.State, count: u32) callconv(.c) void {
+    const self: *Instance = @ptrCast(@alignCast(user orelse return));
+    if (id == 0 or id != self.pair_dialog_id) return;
+    const role = self.pair_dialog_role;
+    self.pair_dialog_id = 0;
+    self.pair_dialog_role = .none;
+    if (!self.active or role == .none) return;
+    const approved = status == abi.ok and std.mem.eql(u8, abi.slice(button) orelse "", "approve");
+    if (role == .host) {
+        if (approved and self.shown_prompt != 0) {
+            self.decisions.submit(self.shown_prompt, true);
+            self.shown_prompt = 0;
+            return;
+        }
+        self.shown_prompt = 0;
+        self.decisions.display_code.store(0, .release);
+        if (self.task) |*task| task.cancel() catch |err| diag.status("share-pair-cancel", @intFromError(err));
+        return;
+    }
+    if (!approved or count > 16 or states == null) return;
+    for (0..count) |i| {
+        if (!std.mem.eql(u8, abi.slice(states[i].key) orelse "", "pair-input")) continue;
+        const code = managed.parseCode(abi.slice(states[i].value) orelse "") catch return self.status("请输入完整 8 位数字连接码");
+        self.start(.pair_join, false, false, self.pair_dialog_routed, code) catch |err| self.status(@errorName(err));
+        return;
+    }
+}
+
 fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv(.c) void {
     const self: *Instance = @ptrCast(@alignCast(user orelse return));
     if (!self.active or self.panel == null or self.panel.?.id != panel_id) return;
     const name = abi.slice(command) orelse return;
     if (std.mem.eql(u8, name, "share-refresh")) return self.refresh();
+    if (std.mem.eql(u8, name, "share-pair-host") or std.mem.eql(u8, name, "share-pair-host-routed") or std.mem.eql(u8, name, "share-pair-host-advertise")) {
+        const routed = std.mem.eql(u8, name, "share-pair-host-routed");
+        self.showPairDialog(true) catch |err| return self.status(@errorName(err));
+        self.start(.pair_host, std.mem.eql(u8, name, "share-pair-host-advertise"), false, routed, 0) catch |err| {
+            self.closePairDialog() catch |close_err| diag.status("share-pair-dialog-close", @intFromError(close_err));
+            self.status(@errorName(err));
+        };
+        return;
+    }
+    if (std.mem.eql(u8, name, "share-pair-join") or std.mem.eql(u8, name, "share-pair-join-routed")) {
+        self.pair_dialog_routed = std.mem.eql(u8, name, "share-pair-join-routed");
+        self.showPairDialog(false) catch |err| self.status(@errorName(err));
+        return;
+    }
     if (std.mem.eql(u8, name, "share-apply-prefs")) return self.applyPreferences();
     if (std.mem.eql(u8, name, "share-save-prefs")) return self.savePreferences();
     if (std.mem.eql(u8, name, "share-use-local")) return self.applyChoice(.local);
     if (std.mem.eql(u8, name, "share-use-endpoint")) return self.applyChoice(.endpoint);
+    if (std.mem.eql(u8, name, "share-use-pair-endpoint")) return self.applyChoice(.pair_endpoint);
     if (std.mem.eql(u8, name, "share-use-peer")) return self.applyChoice(.peer);
     if (std.mem.eql(u8, name, "share-browse-parent")) return self.browse(true);
     if (std.mem.eql(u8, name, "share-browse-destination")) return self.browse(false);
@@ -666,9 +864,9 @@ fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv
     }
     const mode: managed.Mode = if (std.mem.eql(u8, name, "share-discover"))
         .discover
-    else if (std.mem.eql(u8, name, "share-send"))
+    else if (std.mem.eql(u8, name, "share-send") or std.mem.eql(u8, name, "share-send-routed"))
         .send
-    else if (std.mem.eql(u8, name, "share-receive") or std.mem.eql(u8, name, "share-receive-advertise"))
+    else if (std.mem.eql(u8, name, "share-receive") or std.mem.eql(u8, name, "share-receive-advertise") or std.mem.eql(u8, name, "share-receive-routed"))
         .receive
     else if (std.mem.eql(u8, name, "share-interfaces"))
         .interfaces
@@ -688,7 +886,7 @@ fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv
         .recovery_list
     else
         return;
-    self.start(mode, std.mem.eql(u8, name, "share-receive-advertise"), std.mem.eql(u8, name, "share-spool-init") or std.mem.eql(u8, name, "share-spool-recovery")) catch |err| self.status(switch (err) {
+    self.start(mode, std.mem.eql(u8, name, "share-receive-advertise"), std.mem.eql(u8, name, "share-spool-init") or std.mem.eql(u8, name, "share-spool-recovery"), std.mem.eql(u8, name, "share-send-routed") or std.mem.eql(u8, name, "share-receive-routed"), 0) catch |err| self.status(switch (err) {
         error.Argument => "参数不完整或无效，请检查设备和配置页",
         error.State => "已有任务，请先刷新或取消",
         error.Unavailable => "当前构建或宿主接口不支持此操作",

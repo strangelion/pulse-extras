@@ -3,7 +3,11 @@
 const std = @import("std");
 const abi = @import("pulse_abi");
 
-pub const Kind = enum { local, endpoint, peer };
+pub const Kind = enum { local, endpoint, pair_endpoint, peer };
+
+fn endpointKind(kind: Kind) bool {
+    return kind == .endpoint or kind == .pair_endpoint;
+}
 const max_choices = 24;
 
 pub const Choice = struct {
@@ -71,10 +75,10 @@ fn address(value: []const u8, kind: Kind) bool {
         if (c == ':') colon = true;
         if (c == '.') dot = true;
         if (zone and std.ascii.isDigit(c)) continue;
-        if (hex(c) or c == ':' or c == '.' or (kind == .endpoint and (c == '[' or c == ']'))) continue;
+        if (hex(c) or c == ':' or c == '.' or (endpointKind(kind) and (c == '[' or c == ']'))) continue;
         return false;
     }
-    if (kind == .endpoint and !colon) return false;
+    if (endpointKind(kind) and !colon) return false;
     return dot or colon;
 }
 
@@ -84,6 +88,7 @@ pub fn parse(kind: Kind, output: []const u8) List {
     const prefix: []const u8 = switch (kind) {
         .local => "LOCAL ",
         .endpoint => "UNVERIFIED ",
+        .pair_endpoint => "PAIR_UNVERIFIED ",
         .peer => "PEER ",
     };
     while (lines.next()) |line| {
@@ -101,7 +106,7 @@ pub fn parse(kind: Kind, output: []const u8) List {
             }
             if (!valid) continue;
         } else {
-            if (kind == .endpoint and end != rest.len) continue;
+            if (endpointKind(kind) and end != rest.len) continue;
             if (!address(token, kind)) continue;
         }
         result.add(token);
@@ -117,6 +122,9 @@ test "choices filter, deduplicate and retain an explicit empty selection" {
     try std.testing.expect(locals.selected(3) == null);
     const endpoints = parse(.endpoint, "UNVERIFIED 192.168.1.21:45843\nUNVERIFIED [fe80::2%12]:45843\nUNVERIFIED example.com:12\nUNVERIFIED 192.168.1.22:3 extra\n");
     try std.testing.expectEqual(@as(usize, 2), endpoints.count);
+    const pairing = parse(.pair_endpoint, "UNVERIFIED 192.168.1.21:42\nPAIR_UNVERIFIED [fe80::2%12]:45843\n");
+    try std.testing.expectEqual(@as(usize, 1), pairing.count);
+    try std.testing.expectEqualStrings("[fe80::2%12]:45843", pairing.selected(1).?);
     const peers = parse(.peer, "PEER laptop 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\nPEER ../bad 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\nPEER wrong invalid\n");
     try std.testing.expectEqual(@as(usize, 1), peers.count);
     try std.testing.expectEqualStrings("laptop", peers.selected(1).?);

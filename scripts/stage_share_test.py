@@ -17,7 +17,8 @@ import package_common as pkg
 
 ROOT = Path(__file__).resolve().parents[1]
 EXTENSION_ID = "strangelion.share-dev"
-HELPERS = ("lan", "local", "worker")
+HELPERS = ("lan", "local", "worker", "pake")
+NOTICE = "pulse-share-pake-notices.txt"
 
 
 def prepare(pulse: Path, tool: Path, binaries: Path, out: Path) -> dict:
@@ -54,6 +55,10 @@ def prepare(pulse: Path, tool: Path, binaries: Path, out: Path) -> dict:
         for (path, _), flag in zip(members, flags, strict=True):
             if pkg.sha256(path, pkg.FILE_MAX) != flag.split("=", 1)[1]:
                 raise RuntimeError("Helper changed during DLL compilation")
+        notice_source = binaries / NOTICE
+        notice = work / NOTICE
+        pkg.copy_checked(notice_source, notice, pkg.sha256(notice_source, pkg.FILE_MAX))
+        members.append((notice, NOTICE))
         return pkg.stage(pulse, tool, ROOT / "extensions/share/manifest.dev.json",
                          out, EXTENSION_ID, library, members)
 

@@ -430,3 +430,24 @@ retain full regression. The regression gate requires the selected job results;
 no failing test is converted into an optional success. The initial CI change
 itself necessarily runs full regression. No performance savings are claimed
 until a later Share-only push has measured timings.
+
+## Consolidated connection candidate
+
+Dynamic pairing is now wired to the host-drawn password/display modal and
+managed LAN worker. A fourth pinned sibling, `pulse-share-pake.exe`, is
+required for dynamic pairing; its locked dependency notices accompany the
+Windows artifact and staged package. No code is persisted or sent through
+ordinary task progress: only private pipe records and the dedicated modal
+carry the short code. The old manual fingerprint enrollment remains.
+Explicit routed send/receive requires saved certificate pins and an exact
+numeric TCP source for receiving. Private overlay pairing is opt-in and
+uses the same source restriction; public short-code pairing is disallowed.
+LAN discovery remains local and opt-in, with separate untrusted endpoint
+lists for pairing and file reception. Manual endpoint entry remains available. No DNS, relay,
+router mapping, firewall change, system mount or background server is added.
+All Share TLS connections require X25519MLKEM768; the certificate and CPace
+identity mechanisms are still classical, so do not call the whole system
+post-quantum authenticated. Go 1.25+ is required; CI stays pinned to 1.27.4.
+Legacy saved defaults migrate from v1 to v2, with optional endpoint/source
+suggestions, not automatic authorization. Real Pulse 1.0.62 modal behavior,
+secret non-retention and two-PC overlay/proxy use still require acceptance.

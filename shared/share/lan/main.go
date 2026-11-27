@@ -145,12 +145,14 @@ func openSource(path string) (*os.File,error) {
 func sender(ctx context.Context,c console,args []string) error {
 	f:=flags("send")
 	local:=f.String("bind","","local interface IP")
+	routed:=f.Bool("routed",false,"explicit routed connection to a saved peer")
 	peer:=f.String("peer","","numeric receiver IP:port")
 	source:=f.String("source","","explicit local source file")
 	store:=f.String("store","","existing user-private device store")
 	paired:=f.String("paired","","explicit saved peer label")
 	if err:=noExtra(f,args);err!=nil{return err}
-	b,err:=bindLocal(*local)
+	if *routed&&(*store==""||*paired==""){return errors.New("routed transfer requires an explicitly saved peer")}
+	b,err:=bindLocalMode(*local,*routed)
 	if err!=nil{return err}
 	addr,err:=b.peer(*peer)
 	if err!=nil{return err}
@@ -172,6 +174,7 @@ func sender(ctx context.Context,c console,args []string) error {
 	conn:=tls.Client(raw,tlsConfig(id,pin,false))
 	if err:=raw.SetDeadline(time.Now().Add(10*time.Second));err!=nil{return err}
 	if err:=conn.HandshakeContext(ctx);err!=nil{return fmt.Errorf("pairing failed: %w",err)}
+	fmt.Println("TLS",conn.ConnectionState().CurveID)
 	if err:=sendFileProgress(conn,file,offer{name:name,size:size,digest:digest},consoleProgress);err!=nil{return err}
 	fmt.Println("COMPLETED remote commit acknowledged")
 	return nil
@@ -223,6 +226,8 @@ func (n nativeCommit) commit(o offer,path string) error {
 func receiver(ctx context.Context,c console,args []string) error {
 	f:=flags("receive")
 	local:=f.String("bind","","local interface IP")
+	routed:=f.Bool("routed",false,"explicit routed receive from a saved peer")
+	allowedSource:=f.String("allowed-source","","exact expected TCP source IP for routed receive")
 	port:=f.Uint("port",0,"local TCP port (0 selects a free port)")
 	advert:=f.Bool("advertise",false,"opt-in multicast discovery on selected interface")
 	directory:=f.String("directory","","explicit destination directory")
@@ -236,8 +241,10 @@ func receiver(ctx context.Context,c console,args []string) error {
 	if err:=noExtra(f,args);err!=nil{return err}
 	if runtime.GOOS!="windows"{return errors.New("native receiving commit requires Windows")}
 	if *port>65535{return errors.New("invalid port")}
-	b,err:=bindLocal(*local)
+	if *routed&&(*store==""||*paired==""||*advert){return errors.New("routed receive requires a saved peer and disables discovery")}
+	b,err:=bindLocalMode(*local,*routed)
 	if err!=nil{return err}
+	if err=b.setAllowedSource(*allowedSource);err!=nil{return err}
 	dest,err:=existingPath(*directory,true)
 	if err!=nil{return err}
 	sp,err:=existingPath(*spool,true)
@@ -276,7 +283,7 @@ func receiver(ctx context.Context,c console,args []string) error {
 	for attempts:=0;attempts<8;attempts++{
 		raw,err:=listener.AcceptTCP()
 		if err!=nil{return err}
-		if !b.allows(raw.RemoteAddr().(*net.TCPAddr).AddrPort().Addr()){
+		if !b.allowsRemote(raw.RemoteAddr().(*net.TCPAddr).AddrPort().Addr()){
 			raw.Close()
 			continue
 		}
@@ -287,6 +294,7 @@ func receiver(ctx context.Context,c console,args []string) error {
 			fmt.Fprintln(os.Stderr,"Rejected unauthenticated connection")
 			continue
 		}
+		fmt.Println("TLS",conn.ConnectionState().CurveID)
 		defer raw.Close()
 		stopTransfer:=context.AfterFunc(ctx,func(){raw.Close()})
 		defer stopTransfer()
@@ -310,6 +318,7 @@ func run(ctx context.Context,args []string) error {
 	c:=console{ctx,scanner}
 	switch args[0]{
 	case "identity-init","identity-show","peer-add","peer-list","peer-revoke":return manageTrust(c,args[0],args[1:])
+	case "pair-host","pair-join":return managedPair(c,args[0],args[1:])
 	case "private-init","recovery-list":
 		f:=flags(args[0])
 		root:=f.String("store","","explicit absolute directory")

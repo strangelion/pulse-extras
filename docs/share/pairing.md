@@ -131,3 +131,22 @@ history or logs for codes. No production CLI or plugin invokes this controller
 yet: the helper digest chain, local secret channel, audit and packaging gates
 still apply. The test harness exercises live dynamic codes over loopback,
 bilateral approvals, both rejection directions, and an exclusive-write race.
+
+## Native connection candidate (supersedes earlier disabled-entry status)
+
+Managed `pair-host` and `pair-join` now use the verified fourth sibling and
+private `PAIRCODE` / `PAIRINPUT` pipe records. The host renders codes only in
+its separate modal, whose password entry is masked; code input is copied only
+for the next task, consumed once on stdin and cleared. Closing the display
+before verified consent cancels the task. The worker clears display state
+on attempt start, completion or cancellation. No general task progress,
+preferences or history contains the connection code. Host UI and lifecycle
+behavior must still be verified on the actual SDK host; this is a candidate,
+not a security audit or production approval. Both TLS transport and pairing
+require the hybrid X25519MLKEM768 group; CPace and ECDSA remain classical.
+Private routed/overlay pairing requires an explicit source address on the
+host and private or CGNAT numeric addresses on both ends; public endpoints
+use manual fingerprint enrollment. A user-selected TCP forward remains
+end-to-end TLS. LAN pairing can opt into a separate, endpoint-only multicast advertisement
+while a code is visible. A discovery result never proves identity. No
+discovery or route automation in routed mode.

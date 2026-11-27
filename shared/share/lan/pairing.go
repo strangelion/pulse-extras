@@ -71,9 +71,10 @@ func pairingTLS(id identity,server bool)*tls.Config{
 		Certificates:[]tls.Certificate{id.cert},
 		MinVersion:tls.VersionTLS13,MaxVersion:tls.VersionTLS13,
 		NextProtos:[]string{pairauth.Protocol},SessionTicketsDisabled:true,
+		CurvePreferences:[]tls.CurveID{tls.X25519MLKEM768},
 		InsecureSkipVerify:!server,
 		VerifyConnection:func(s tls.ConnectionState)error{
-			if s.NegotiatedProtocol!=pairauth.Protocol||len(s.PeerCertificates)!=1{
+			if s.NegotiatedProtocol!=pairauth.Protocol||s.CurveID!=tls.X25519MLKEM768||len(s.PeerCertificates)!=1{
 				return errors.New("unexpected pairing certificate")
 			}
 			cert:=s.PeerCertificates[0]
@@ -192,12 +193,13 @@ func hostPair(ctx context.Context,b binding,port uint16,p pairConfig,display pai
 			if ne,ok:=err.(net.Error);ok&&ne.Timeout(){continue}
 			return none,err
 		}
-		if !b.allows(raw.RemoteAddr().(*net.TCPAddr).AddrPort().Addr()){
+		if !b.allowsRemote(raw.RemoteAddr().(*net.TCPAddr).AddrPort().Addr()){
 			raw.Close()
 			continue
 		}
 		ticket,password,remaining,err:=window.Begin()
 		if err!=nil{raw.Close();return none,err}
+		display(endpoint,"",0)
 		attempt,cancelAttempt:=context.WithTimeout(authCtx,remaining)
 		secret:=[]byte(password)
 		conn,pin,authErr:=authenticatePair(attempt,raw,p,secret,true)

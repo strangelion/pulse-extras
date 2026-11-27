@@ -8,7 +8,8 @@ const managed = @import("managed.zig");
 const view = @import("presentation.zig");
 const diag = @import("pulse_diagnostics");
 
-pub const indices = [_]usize{ 0, 2, 4, 5, 6 };
+pub const indices = [_]usize{ 0, 1, 2, 4, 5, 6, 8 };
+const legacy_indices = [_]usize{ 0, 2, 4, 5, 6 };
 const key = "share.preferences.v1";
 const limit = 1024;
 const commands = [_][]const u8{ "share-prefs-load", "share-prefs-save" };
@@ -26,8 +27,8 @@ pub const Values = struct {
     }
 
     fn encode(self: *const Values, buffer: []u8) ![]const u8 {
-        return std.fmt.bufPrint(buffer, "v1\n{s}\n{s}\n{s}\n{s}\n{s}", .{
-            self.value(0), self.value(2), self.value(4), self.value(5), self.value(6),
+        return std.fmt.bufPrint(buffer, "v2\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}", .{
+            self.value(0), self.value(1), self.value(2), self.value(4), self.value(5), self.value(6), self.value(8),
         });
     }
 
@@ -35,8 +36,19 @@ pub const Values = struct {
         if (data.len > limit) return error.InvalidSettings;
         var result: Values = .{};
         var lines = std.mem.splitScalar(u8, data, '\n');
-        if (!std.mem.eql(u8, lines.next() orelse return error.InvalidSettings, "v1")) return error.InvalidSettings;
-        for (&result.fields) |*field| try field.set(lines.next() orelse return error.InvalidSettings);
+        const version = lines.next() orelse return error.InvalidSettings;
+        if (std.mem.eql(u8, version, "v1")) {
+            for (legacy_indices) |index| {
+                for (indices, 0..) |current, i| {
+                    if (current == index) {
+                        try result.fields[i].set(lines.next() orelse return error.InvalidSettings);
+                        break;
+                    }
+                }
+            }
+        } else if (std.mem.eql(u8, version, "v2")) {
+            for (&result.fields) |*field| try field.set(lines.next() orelse return error.InvalidSettings);
+        } else return error.InvalidSettings;
         if (lines.next() != null) return error.InvalidSettings;
         _ = try std.fmt.parseInt(u16, result.value(6), 10);
         return result;
@@ -235,12 +247,17 @@ pub const Settings = struct {
 
 test "preferences roundtrip and malformed data rejected" {
     var values: Values = .{};
-    try values.fields[1].set("C:\\中文\\identity");
-    try values.fields[4].set("45843");
+    try values.fields[2].set("C:\\中文\\identity");
+    try values.fields[5].set("45843");
+    try values.fields[6].set("100.64.1.2");
     var buffer: [limit]u8 = undefined;
     const decoded = try Values.decode(try values.encode(&buffer));
     try std.testing.expectEqualStrings("C:\\中文\\identity", decoded.value(2));
     try std.testing.expectEqualStrings("45843", decoded.value(6));
+    try std.testing.expectEqualStrings("100.64.1.2", decoded.value(8));
+    const legacy = try Values.decode("v1\n127.0.0.1\nC:\\identity\nD:\\received\nC:\\spool\n0");
+    try std.testing.expectEqualStrings("C:\\identity", legacy.value(2));
+    try std.testing.expectEqualStrings("", legacy.value(8));
     try std.testing.expectError(error.InvalidSettings, Values.decode("v2\n"));
     try std.testing.expectError(error.InvalidSettings, Values.decode("v1\n\n\n\n\n0\nextra"));
 }

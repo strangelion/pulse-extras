@@ -77,3 +77,19 @@ labels, exclusive creation and clear reporting of asymmetric write failures.
 The isolated controller tests are not acceptance of a native pairing page;
 no short-code host command is enabled until private code I/O and helper pinning
 are integrated and reviewed.
+
+Connection candidate additions: use a fresh four-helper artifact and verify
+all binary hashes and license notices. Test masked code input, countdown and
+rotation, premature confirm/cancel, modal close, host disable/exit, and that
+codes never appear in task snapshots, logs, settings or transfer history.
+On two machines exercise LAN and private overlay pairing; routed transfers
+must require a saved pin and the exact incoming TCP source. For an existing
+TCP forward or manual mapping, select the actual proxy/source address and
+verify TLS remains end-to-end. Confirm wrong source, wrong pin and
+classical-only TLS are rejected; no automatic public listener, mapping,
+discovery, trust or overwrite. Record actual group negotiation.
+
+Verify the two discovery lists distinguish file reception and dynamic pairing.
+Only the numeric endpoint and service type are advertised, never the short
+code or certificate. Confirm the advertisement stops when the code clears;
+numeric manual entry remains usable when multicast is unavailable.

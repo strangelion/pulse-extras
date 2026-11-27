@@ -28,7 +28,7 @@ func Confirm(ctx context.Context, conn *tls.Conn, localPin [32]byte, password []
 	if len(password)!=8 || !filepath.IsAbs(helper) {return none,errors.New("invalid local pairing configuration")}
 	for _,b:=range password {if b<'0'||b>'9'{return none,errors.New("invalid code format")}}
 	state:=conn.ConnectionState()
-	if !state.HandshakeComplete || state.Version!=tls.VersionTLS13 || state.NegotiatedProtocol!=Protocol || len(state.PeerCertificates)!=1 {
+	if !state.HandshakeComplete || state.Version!=tls.VersionTLS13 || state.CurveID!=tls.X25519MLKEM768 || state.NegotiatedProtocol!=Protocol || len(state.PeerCertificates)!=1 {
 		return none,errors.New("unexpected pairing transport")
 	}
 	peer:=sha256.Sum256(state.PeerCertificates[0].Raw)

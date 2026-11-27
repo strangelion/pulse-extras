@@ -20,7 +20,7 @@ func listLocalInterfaces()error{
 			prefix,err:=netip.ParsePrefix(addr.String())
 			if err!=nil{continue}
 			ip:=prefix.Addr().Unmap()
-			if !(ip.IsPrivate()||ip.IsLoopback()||ip.IsLinkLocalUnicast()){continue}
+			if !routedIP(ip){continue}
 			if ip.Is6()&&ip.IsLinkLocalUnicast(){ip=ip.WithZone(fmt.Sprint(iface.Index))}
 			name:=strings.Map(func(r rune)rune{if r<32||r==127{return ' '};return r},iface.Name)
 			fmt.Printf("LOCAL %s  %q\n",ip,name)

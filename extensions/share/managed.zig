@@ -6,7 +6,7 @@ const config = @import("share_config");
 const raw = @import("pulse_raw");
 const async_host = @import("pulse_async_host");
 
-pub const Mode = enum { discover, send, receive, identity_init, identity_show, peer_add, peer_list, peer_revoke, private_init, recovery_list, interfaces };
+pub const Mode = enum { discover, send, receive, identity_init, identity_show, peer_add, peer_list, peer_revoke, private_init, recovery_list, interfaces, pair_host, pair_join };
 pub const Field = struct {
     bytes: [2048]u8 = @splat(0),
     len: usize = 0,
@@ -26,6 +26,8 @@ pub const Field = struct {
 pub const Request = struct {
     mode: Mode = .discover,
     advertise: bool = false,
+    routed: bool = false,
+    allowed_source: Field = .{},
     bind: Field = .{},
     peer: Field = .{},
     store: Field = .{},
@@ -55,16 +57,35 @@ pub const Request = struct {
             },
             else => {},
         }
+        if (self.routed and (self.advertise or (self.mode != .send and self.mode != .receive and !pairingMode(self.mode)))) return error.InvalidInput;
+        if (self.routed and (self.mode == .receive or self.mode == .pair_host) and self.allowed_source.len == 0) return error.InvalidInput;
         if (self.bind.len == 0) return error.InvalidInput;
         if (self.mode == .discover) return;
         if (self.store.len == 0 or self.paired.len == 0) return error.InvalidInput;
         if (self.mode == .send and (self.peer.len == 0 or self.source.len == 0)) return error.InvalidInput;
+        if (self.mode == .pair_host and self.port.len == 0) return error.InvalidInput;
+        if (self.mode == .pair_join and self.peer.len == 0) return error.InvalidInput;
         if (self.mode == .receive and (self.destination.len == 0 or self.spool.len == 0 or self.port.len == 0)) return error.InvalidInput;
     }
 };
 
 pub fn configured() bool {
     return config.lan_sha256.len == 64 and config.local_sha256.len == 64 and config.worker_sha256.len == 64;
+}
+
+pub fn pairingConfigured() bool {
+    return configured() and config.pake_sha256.len == 64;
+}
+
+pub fn pairingMode(mode: Mode) bool {
+    return mode == .pair_host or mode == .pair_join;
+}
+
+pub fn parseCode(value: []const u8) !u32 {
+    if (value.len != 8) return error.InvalidInput;
+    for (value) |c| if (!std.ascii.isDigit(c)) return error.InvalidInput;
+    // Zero denotes no code; 00000000 is a valid code.
+    return (try std.fmt.parseInt(u32, value, 10)) + 1;
 }
 
 const Handle = usize;
@@ -269,6 +290,8 @@ fn drain(job: Handle) bool {
 // Host task owns all pipe handles and never invokes UI functions.
 pub const Decisions = struct {
     answer: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    join_code: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    display_code: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     pub fn submit(self: *Decisions, generation: u32, yes: bool) void {
         self.answer.store(generation * 2 + @as(u32, if (yes) 1 else 0), .release);
@@ -283,11 +306,13 @@ const Output = struct {
     inventory: [3000]u8 = undefined,
     inventory_len: usize = 0,
     inventory_truncated: bool = false,
+    had_report: bool = false,
     done_bytes: u64 = 0,
     total_bytes: u64 = 0,
     wake: ?*async_host.Wake = null,
 
     fn report(self: *Output, ctx: *const raw.PulseTaskContext, msg: []const u8) void {
+        self.had_report = true;
         var p = std.mem.zeroes(raw.PulseTaskProgress);
         p.size = @sizeOf(raw.PulseTaskProgress);
         p.percent = std.math.maxInt(u32);
@@ -303,7 +328,7 @@ const Output = struct {
         if (WriteFile(input, bytes.ptr, @intCast(bytes.len), &n, null) == 0 or n != bytes.len) return error.PromptWrite;
     }
 
-    fn consume(self: *Output, byte: u8, input: Handle, request: *const Request, ctx: *const raw.PulseTaskContext) !void {
+    fn consume(self: *Output, byte: u8, input: Handle, request: *const Request, ctx: *const raw.PulseTaskContext, decisions: *Decisions) !void {
         if (byte == '\r') return;
         if (byte != '\n') {
             if (self.len == self.line.len) return error.OutputLimit;
@@ -314,6 +339,30 @@ const Output = struct {
         const line = self.line[0..self.len];
         defer self.len = 0;
         if (!std.unicode.utf8ValidateSlice(line)) return error.OutputEncoding;
+        if (std.mem.startsWith(u8, line, "PAIRCODE ")) {
+            defer @memset(self.line[0..self.len], 0);
+            if (request.mode != .pair_host) return error.OutputProtocol;
+            if (std.mem.eql(u8, line, "PAIRCODE CLEAR")) {
+                decisions.display_code.store(0, .release);
+            } else {
+                var parts = std.mem.splitScalar(u8, line[9..], ' ');
+                const code = try parseCode(parts.next() orelse return error.OutputProtocol);
+                const seconds = std.fmt.parseInt(u32, parts.next() orelse return error.OutputProtocol, 10) catch return error.OutputProtocol;
+                if (parts.next() != null or seconds == 0 or seconds > 60) return error.OutputProtocol;
+                decisions.display_code.store((@as(u64, seconds) << 32) | code, .release);
+            }
+            if (self.wake) |wake| wake.request();
+            return;
+        }
+        if (std.mem.eql(u8, line, "PAIRINPUT")) {
+            if (request.mode != .pair_join or cancelled(ctx)) return error.OutputProtocol;
+            const code = decisions.join_code.swap(0, .acq_rel);
+            if (code == 0 or code > 100000000) return error.OutputProtocol;
+            var secret: [9]u8 = undefined;
+            defer @memset(&secret, 0);
+            const answer = try std.fmt.bufPrint(&secret, "{d:0>8}\n", .{code - 1});
+            return writeAnswer(input, answer);
+        }
         if (std.mem.startsWith(u8, line, "Enter the other device's full fingerprint") and request.mode == .peer_add) {
             var pin_line: [65]u8 = undefined;
             @memcpy(pin_line[0..64], request.fingerprint.slice());
@@ -363,7 +412,8 @@ const Output = struct {
             var bytes: [4096]u8 = undefined;
             var got: u32 = 0;
             if (ReadFile(output, &bytes, @min(available, @as(u32, bytes.len)), &got, null) == 0) return error.OutputRead;
-            for (bytes[0..got]) |byte| try self.consume(byte, input, request, ctx);
+            defer @memset(bytes[0..got], 0);
+            for (bytes[0..got]) |byte| try self.consume(byte, input, request, ctx, decisions);
         }
         if (self.waiting and !cancelled(ctx)) {
             const answer = decisions.answer.load(.acquire);
@@ -379,8 +429,14 @@ const Output = struct {
 pub fn run(request: *const Request, ctx: *const raw.PulseTaskContext, decisions: *Decisions, wake: ?*async_host.Wake) !void {
     if (comptime builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return error.UnsupportedPlatform;
     var output: Output = .{ .wake = wake };
+    defer {
+        decisions.join_code.store(0, .release);
+        decisions.display_code.store(0, .release);
+        @memset(&output.line, 0);
+        if (wake) |value| value.request();
+    }
     runInner(request, ctx, decisions, &output) catch |err| {
-        output.report(ctx, @errorName(err));
+        if (err != error.ChildFailed or !output.had_report) output.report(ctx, @errorName(err));
         return err;
     };
 }
@@ -408,6 +464,16 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
     defer _ = CloseHandle(local_pin);
     const worker_pin = try pin(&worker, config.worker_sha256);
     defer _ = CloseHandle(worker_pin);
+    var pake: Path = @splat(0);
+    var pake_pin: Handle = 0;
+    defer if (pake_pin != 0) {
+        _ = CloseHandle(pake_pin);
+    };
+    if (pairingMode(request.mode)) {
+        if (!pairingConfigured()) return error.Unconfigured;
+        pake = try sibling(root, "pulse-share-pake.exe");
+        pake_pin = try pin(&pake, config.pake_sha256);
+    }
     const security: Security = .{};
     const event = CreateEventW(&security, 1, 0, null);
     if (event == 0) return error.Event;
@@ -424,14 +490,30 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
         .peer_revoke => "peer-revoke",
         .private_init => "private-init",
         .recovery_list => "recovery-list",
+        .pair_host => "pair-host",
+        .pair_join => "pair-join",
         else => @tagName(request.mode),
     });
     switch (request.mode) {
-        .discover, .send, .receive => try command.pair("--bind", request.bind.slice()),
+        .discover, .send, .receive, .pair_host, .pair_join => try command.pair("--bind", request.bind.slice()),
         else => {},
     }
+    if (request.routed) try command.arg("--routed");
     switch (request.mode) {
         .discover, .interfaces => {},
+        .pair_host, .pair_join => {
+            try command.pair("--store", request.store.slice());
+            try command.pair("--name", request.paired.slice());
+            try command.arg("--pake");
+            try command.wide(std.mem.sliceTo(&pake, 0));
+            if (request.mode == .pair_host) {
+                if (request.advertise) try command.arg("--advertise");
+                try command.pair("--port", request.port.slice());
+                if (request.routed) try command.pair("--allowed-source", request.allowed_source.slice());
+            } else {
+                try command.pair("--peer", request.peer.slice());
+            }
+        },
         .identity_init, .identity_show, .peer_list, .private_init, .recovery_list => try command.pair("--store", request.store.slice()),
         .peer_add, .peer_revoke => {
             try command.pair("--store", request.store.slice());
@@ -445,6 +527,7 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
         },
         .receive => {
             if (request.advertise) try command.arg("--advertise");
+            if (request.routed) try command.pair("--allowed-source", request.allowed_source.slice());
             try command.pair("--port", request.port.slice());
             try command.pair("--directory", request.destination.slice());
             try command.pair("--spool", request.spool.slice());
@@ -607,4 +690,22 @@ test "decision generation and bounded request admission" {
     try std.testing.expectError(error.InvalidInput, request.validate());
     try request.fingerprint.set("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
     try request.validate();
+}
+
+test "pair code exact digits and routed receive admission" {
+    try std.testing.expectEqual(@as(u32, 1), try parseCode("00000000"));
+    try std.testing.expectEqual(@as(u32, 100000000), try parseCode("99999999"));
+    try std.testing.expectError(error.InvalidInput, parseCode("12 45678"));
+    var request: Request = .{ .mode = .receive, .routed = true };
+    try request.bind.set("100.64.1.1");
+    try request.store.set("C:\\private");
+    try request.paired.set("peer");
+    try request.destination.set("C:\\received");
+    try request.spool.set("C:\\spool");
+    try request.port.set("0");
+    try std.testing.expectError(error.InvalidInput, request.validate());
+    try request.allowed_source.set("100.64.1.2");
+    try request.validate();
+    request.advertise = true;
+    try std.testing.expectError(error.InvalidInput, request.validate());
 }
