@@ -144,6 +144,11 @@ func openSource(path string) (*os.File,error) {
 
 func sender(ctx context.Context,c console,args []string) error {
 	f:=flags("send")
+	batch:=f.Bool("batch",false,"explicit batch transfer")
+	sources:=f.String("sources","","explicit | separated local paths")
+	clip:=f.String("clipboard","","explicit clipboard text/image/files")
+	browse:=f.Bool("share-root",false,"offer selected read-only directory to saved peer")
+	channels:=f.Int("channels",0,"0 adaptive, 1..32 fixed")
 	useQUIC:=f.Bool("quic",false,"explicit QUIC transport; numeric endpoint, no fallback")
 	local:=f.String("bind","","local interface IP")
 	routed:=f.Bool("routed",false,"explicit routed connection to a saved peer")
@@ -157,6 +162,8 @@ func sender(ctx context.Context,c console,args []string) error {
 	if err!=nil{return err}
 	addr,err:=b.peer(*peer)
 	if err!=nil{return err}
+	if *batch{return sendBatchCLI(ctx,c,b,addr,*store,*paired,*source,*sources,*clip,*browse,*useQUIC,*channels)}
+	if *sources!=""||*clip!=""||*browse{return errors.New("content options require --batch")}
 	file,err:=openSource(*source)
 	if err!=nil{return err}
 	defer file.Close()
@@ -231,6 +238,15 @@ func (n nativeCommit) commit(o offer,path string) error {
 
 func receiver(ctx context.Context,c console,args []string) error {
 	f:=flags("receive")
+	batch:=f.Bool("batch",false,"explicit batch receive")
+	channels:=f.Int("channels",0,"0 adaptive, 1..32 fixed")
+	resume:=f.String("resume","","explicit local stage path")
+	allowClipboard:=f.Bool("accept-clipboard",false,"allow manually approved clipboard content")
+	clipboardType:=f.String("clipboard-type","","restrict receive to text/image/files; empty permits all manual types")
+	delivery:=f.String("delivery","folder","folder or clipboard")
+	browse:=f.Bool("browse",false,"receive a read-only directory offer")
+	remotePath:=f.String("remote-path","","exact offered relative path, . for all, empty for listing")
+	offset:=f.Int("browse-offset",0,"listing offset")
 	useQUIC:=f.Bool("quic",false,"explicit QUIC transport; no multicast advertising")
 	local:=f.String("bind","","local interface IP")
 	routed:=f.Bool("routed",false,"explicit routed receive from a saved peer")
@@ -248,6 +264,8 @@ func receiver(ctx context.Context,c console,args []string) error {
 	if err:=noExtra(f,args);err!=nil{return err}
 	if runtime.GOOS!="windows"{return errors.New("native receiving commit requires Windows")}
 	if *port>65535{return errors.New("invalid port")}
+	if *batch&&*advert{return errors.New("batch requires explicit numeric endpoint")}
+	if !*batch&&(*resume!=""||*allowClipboard||*delivery!="folder"||*browse||*remotePath!=""){return errors.New("content options require --batch")}
 	if *useQUIC&&*advert{return errors.New("QUIC requires explicit endpoint; multicast advertises TCP only")}
 	if *routed&&(*store==""||*paired==""||*advert){return errors.New("routed receive requires a saved peer and disables discovery")}
 	b,err:=bindLocalMode(*local,*routed)
@@ -269,6 +287,7 @@ func receiver(ctx context.Context,c console,args []string) error {
 	if err:=verifyBinary(sup,supPin);err!=nil{return err}
 	if err:=verifyBinary(work,workPin);err!=nil{return err}
 	native:=nativeCommit{sup,work,dest,supPin,workPin,ctx}
+	if *batch{return receiveBatchCLI(ctx,c,b,uint16(*port),*store,*paired,native,batchReceiveOptions{spool:sp,resume:*resume,channels:*channels,allowClipboard:*allowClipboard,clipboardType:*clipboardType,browse:*browse,remotePath:*remotePath,offset:*offset},*delivery,*useQUIC)}
 	if *useQUIC{
 		if err:=receiveQUICFile(ctx,c,b,uint16(*port),*store,*paired,sp,native.commit);err!=nil{return err}
 		fmt.Println("COMPLETED local file committed")
@@ -342,8 +361,9 @@ func run(ctx context.Context,args []string) error {
 		f:=flags("interfaces")
 		if err:=noExtra(f,args[1:]);err!=nil{return err}
 		return listLocalInterfaces()
-	case "send":return sender(ctx,c,args[1:])
-	case "receive":return receiver(ctx,c,args[1:])
+	case "send","receive":
+		if isManaged(ctx){release,err:=acquireTransferOwner();if err!=nil{return err};defer release()}
+		if args[0]=="send"{return sender(ctx,c,args[1:])};return receiver(ctx,c,args[1:])
 	case "discover":
 		f:=flags("discover")
 		local:=f.String("bind","","local interface IP")

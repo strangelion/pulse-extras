@@ -8,8 +8,9 @@ const managed = @import("managed.zig");
 const view = @import("presentation.zig");
 const diag = @import("pulse_diagnostics");
 
-pub const indices = [_]usize{ 0, 1, 2, 4, 5, 6, 8 };
+pub const indices = [_]usize{ 0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13 };
 const legacy_indices = [_]usize{ 0, 2, 4, 5, 6 };
+const v2_indices = [_]usize{ 0, 1, 2, 4, 5, 6, 8 };
 const key = "share.preferences.v1";
 const limit = 1024;
 const commands = [_][]const u8{ "share-prefs-load", "share-prefs-save" };
@@ -21,14 +22,15 @@ pub const Values = struct {
         for (indices, 0..) |n, i| {
             if (n != index) continue;
             const s = self.fields[i].slice();
-            return if (index == 6 and s.len == 0) "0" else s;
+            return if ((index == 6 or index == 10) and s.len == 0) "0" else s;
         }
         return "";
     }
 
     fn encode(self: *const Values, buffer: []u8) ![]const u8 {
-        return std.fmt.bufPrint(buffer, "v2\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}", .{
+        return std.fmt.bufPrint(buffer, "v3\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}", .{
             self.value(0), self.value(1), self.value(2), self.value(4), self.value(5), self.value(6), self.value(8),
+            self.value(9), self.value(10), self.value(12), self.value(13),
         });
     }
 
@@ -47,10 +49,20 @@ pub const Values = struct {
                 }
             }
         } else if (std.mem.eql(u8, version, "v2")) {
+            for (v2_indices) |index| {
+                for (indices, 0..) |current, i| {
+                    if (current == index) {
+                        try result.fields[i].set(lines.next() orelse return error.InvalidSettings);
+                        break;
+                    }
+                }
+            }
+        } else if (std.mem.eql(u8, version, "v3")) {
             for (&result.fields) |*field| try field.set(lines.next() orelse return error.InvalidSettings);
         } else return error.InvalidSettings;
         if (lines.next() != null) return error.InvalidSettings;
         _ = try std.fmt.parseInt(u16, result.value(6), 10);
+        if (try std.fmt.parseInt(u8, result.value(10), 10) > 32) return error.InvalidSettings;
         return result;
     }
 };

@@ -169,3 +169,20 @@ Native batch, clipboard, remote directories and shelf adapters are NOT_RUN
 and not enabled by these core changes. Include both third-party notices in
 acceptance package inventory. Do not imply the earlier probe validates this
 new implementation.
+
+
+## Integrated batch candidate
+
+NOT_RUN until matching CI. Test actual TCP/QUIC three-lane folder transfer,
+explicit persisted-stage resume, manifest-bound selection, invalid remote
+selection, text and bitmap codec limits, retained receipts and published
+payload removal, Windows owner mutex, and real two-process native folder
+publication. The managed receiver uses a trusted unmanaged sender fixture
+because two managed transfer owners for the same Windows user are denied.
+
+Final host acceptance must test destination collision/partial failure,
+1–32 channels/adaptive samples, full reconnect/resume, busy and changed
+clipboard, file references, read-only browse and selected subtree, cancellation
+and shutdown. Clipboard access uses Windows API and CI does not modify a real
+personal clipboard. Do not infer persistent background queue, automatic
+clipboard, unattended remote directory access or shelf acceptance.

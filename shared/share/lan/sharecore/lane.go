@@ -78,6 +78,7 @@ func NewSender(tx Transaction,m Manifest,b *Budget,open Source)(*Sender,error){
 func (s *Sender) ServeLane(ctx context.Context,conn LaneStream)error{
 	if conn==nil{return errors.New("missing lane adapter")}
 	defer conn.Close()
+	conn=watchedLane{conn}
 	stop:=context.AfterFunc(ctx,func(){conn.Close()});defer stop()
 	return s.b.run(ctx,func(buf []byte)error{
 		if err:=conn.SetDeadline(time.Now().Add(laneIdle));err!=nil{return err}

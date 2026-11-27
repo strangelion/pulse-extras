@@ -483,3 +483,30 @@ with the public checksum database, then set GOPROXY=off and GOFLAGS=-mod=readonl
 for test/build. The go.mod/go.sum are locked to the resolved probe graph;
 CI must reject changes during preparation. Do not use go get -u or go mod tidy
 in the build. This supersedes the historical standard-library-only note.
+
+
+### Batch transfer and manual content sessions
+
+On both endpoints choose --batch with a saved peer, and optionally --quic.
+Sender uses --source or --sources (Windows paths separated by |, quoted as one
+argument); receiver uses the existing destination/private spool/native helper
+arguments. --channels 0 is adaptive up to 32; 1..32 is a fixed ceiling, bounded
+by both peers. --resume explicitly selects a local incomplete direct-child
+stage under the private spool. Re-send exactly the original content and approve
+again; published or uncertain stages cannot be replayed. Batch discovery is
+not enabled. A managed transfer owner rejects another managed transfer for the
+same Windows user; developer CLI is for trusted local testing only.
+
+Sender --clipboard text/image/files reads the chosen Windows format only after
+an explicit action; receiver --accept-clipboard --delivery folder/clipboard
+and optional --clipboard-type text/image/files restricts the type.
+Default is folder, no clipboard receive or automatic sync. Only uncompressed
+bounded CF_DIB images are supported. Clipboard files are copied, not moved.
+A busy/changed destination clipboard is rejected. Direct Tray Shelf write is
+not available; use Pulse's manual clipboard import if supported by the host.
+
+For a one-session read-only directory offer use sender --share-root --source
+<directory>; receiver --browse with optional --browse-offset (20-entry pages),
+or --remote-path <exact manifest path> (or . for whole root) to download after
+approval. No remote writes, arbitrary roots or unattended directory access.
+Normal receive can explicitly approve an upload to a locally selected folder.

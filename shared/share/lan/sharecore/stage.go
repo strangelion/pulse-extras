@@ -300,3 +300,42 @@ func ParseLocalID(text string)(Digest,error){
 	if err!=nil{return out,err}
 	copy(out[:],data);return out,nil
 }
+
+// VerifiedBytes is a monotonic, bounded local receipt counter.
+func(s *Stage) VerifiedBytes()uint64{
+	s.mu.Lock();defer s.mu.Unlock()
+	var total uint64
+	for i,e:=range s.m.Entries{
+		for j:=range e.Blocks{if s.receipt[s.base[i]+j]==1{
+			total+=min(uint64(BlockSize),e.Size-uint64(j)*BlockSize)
+		}}
+	}
+	return total
+}
+
+// LocalStageID reads only a locally selected stage; Reopen subsequently
+// verifies the complete transaction identity, manifest and receipts.
+func LocalStageID(root string)(Digest,error){
+	if _,err:=ordinary(root,true);err!=nil{return Digest{},err}
+	data,err:=readExactFile(filepath.Join(root,"transaction.v2"),5+65*3)
+	if err!=nil{return Digest{},err}
+	if string(data[:5])!="PST2\n"||data[69]!='\n'||data[134]!='\n'||data[199]!='\n'{return Digest{},errors.New("invalid stage metadata")}
+	return ParseLocalID(string(data[5:69]))
+}
+
+// Release known payloads only after successful publication; keep the small
+// manifest/receipt/terminal markers as durable recovery/history evidence.
+func(s *Stage) ClearPublishedPayloads()error{
+	s.mu.Lock();defer s.mu.Unlock()
+	if !s.sealed||len(s.inflight)!=0{return ErrBusy}
+	data,err:=readExactFile(filepath.Join(s.root,"published.v2"),len("published\n"))
+	if err!=nil||string(data)!="published\n"{return ErrUncertain}
+	var result error
+	for i,e:=range s.m.Entries{
+		if e.Directory{continue}
+		path:=s.file(uint32(i))
+		if _,err:=ordinary(path,false);os.IsNotExist(err){continue}else if err!=nil{result=errors.Join(result,err);continue}
+		result=errors.Join(result,os.Remove(path))
+	}
+	return result
+}

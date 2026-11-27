@@ -28,6 +28,16 @@ pub const Request = struct {
     advertise: bool = false,
     routed: bool = false,
     quic: bool = false,
+    batch: bool = false,
+    clipboard_receive: bool = false,
+    browse: bool = false,
+    channels: Field = .{},
+    sources: Field = .{},
+    resume: Field = .{},
+    clipboard: Field = .{},
+    delivery: Field = .{},
+    remote_path: Field = .{},
+    browse_offset: Field = .{},
     allowed_source: Field = .{},
     bind: Field = .{},
     peer: Field = .{},
@@ -64,7 +74,12 @@ pub const Request = struct {
         if (self.bind.len == 0) return error.InvalidInput;
         if (self.mode == .discover) return;
         if (self.store.len == 0 or self.paired.len == 0) return error.InvalidInput;
-        if (self.mode == .send and (self.peer.len == 0 or self.source.len == 0)) return error.InvalidInput;
+        if (self.batch and (self.advertise or (self.mode != .send and self.mode != .receive))) return error.InvalidInput;
+        if (self.batch and self.channels.len != 0) {
+            const n = std.fmt.parseInt(u8, self.channels.slice(), 10) catch return error.InvalidInput;
+            if (n > 32) return error.InvalidInput;
+        }
+        if (self.mode == .send and (self.peer.len == 0 or (self.source.len == 0 and self.sources.len == 0 and self.clipboard.len == 0))) return error.InvalidInput;
         if (self.mode == .pair_host and self.port.len == 0) return error.InvalidInput;
         if (self.mode == .pair_join and self.peer.len == 0) return error.InvalidInput;
         if (self.mode == .receive and (self.destination.len == 0 or self.spool.len == 0 or self.port.len == 0)) return error.InvalidInput;
@@ -389,7 +404,7 @@ const Output = struct {
             const prompt = try std.fmt.bufPrint(&msg, "PROMPT {d} {s}", .{ self.generation, line });
             self.report(ctx, prompt);
         } else if (!self.waiting and line.len != 0) {
-            if (request.mode == .discover or request.mode == .peer_list or request.mode == .recovery_list or request.mode == .interfaces) {
+            if (request.mode == .discover or request.mode == .peer_list or request.mode == .recovery_list or request.mode == .interfaces or (request.browse and request.mode == .receive and request.remote_path.len == 0)) {
                 if (!self.inventory_truncated and line.len + 1 + 32 <= self.inventory.len - self.inventory_len) {
                     @memcpy(self.inventory[self.inventory_len..][0..line.len], line);
                     self.inventory_len += line.len;
@@ -502,6 +517,10 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
     }
     if (request.routed) try command.arg("--routed");
     if (request.quic) try command.arg("--quic");
+    if (request.batch) {
+        try command.arg("--batch");
+        if (request.channels.len != 0) try command.pair("--channels", request.channels.slice());
+    }
     switch (request.mode) {
         .discover, .interfaces => {},
         .pair_host, .pair_join => {
@@ -524,11 +543,28 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
         },
         .send => {
             try command.pair("--peer", request.peer.slice());
-            try command.pair("--source", request.source.slice());
+            if (request.batch) {
+                if (request.sources.len != 0) try command.pair("--sources", request.sources.slice());
+                if (request.clipboard.len != 0) try command.pair("--clipboard", request.clipboard.slice());
+                if (request.browse) try command.arg("--share-root");
+            } else try command.pair("--source", request.source.slice());
             try command.pair("--store", request.store.slice());
             try command.pair("--paired", request.paired.slice());
         },
         .receive => {
+            if (request.batch) {
+                if (request.resume.len != 0) try command.pair("--resume", request.resume.slice());
+                if (request.clipboard_receive) {
+                    try command.arg("--accept-clipboard");
+                    if (request.clipboard.len != 0) try command.pair("--clipboard-type", request.clipboard.slice());
+                }
+                if (request.delivery.len != 0) try command.pair("--delivery", request.delivery.slice());
+                if (request.browse) {
+                    try command.arg("--browse");
+                    if (request.remote_path.len != 0) try command.pair("--remote-path", request.remote_path.slice());
+                    if (request.browse_offset.len != 0) try command.pair("--browse-offset", request.browse_offset.slice());
+                }
+            }
             if (request.advertise) try command.arg("--advertise");
             if (request.routed) try command.pair("--allowed-source", request.allowed_source.slice());
             try command.pair("--port", request.port.slice());

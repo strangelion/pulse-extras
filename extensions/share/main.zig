@@ -16,7 +16,7 @@ const prefs = @import("preferences.zig");
 const choices = @import("choices.zig");
 const pickers = @import("pulse_pickers");
 const allocator = std.heap.page_allocator;
-const command_names = [_][]const u8{ "share-discover", "share-send", "share-receive", "share-refresh", "share-cancel", "share-identity-init", "share-identity-show", "share-peer-add", "share-peer-list", "share-peer-revoke", "share-private-init", "share-recovery-list", "share-approve", "share-decline", "share-apply-prefs", "share-receive-advertise", "share-interfaces", "share-spool-init", "share-spool-recovery", "share-use-local", "share-use-peer", "share-use-endpoint", "share-browse-destination", "share-browse-parent", "share-save-prefs", "share-pair-host", "share-pair-join", "share-send-routed", "share-receive-routed", "share-pair-host-routed", "share-pair-join-routed", "share-pair-host-advertise", "share-use-pair-endpoint", "share-send-quic", "share-receive-quic", "share-send-quic-routed", "share-receive-quic-routed" };
+const command_names = [_][]const u8{ "share-discover", "share-send", "share-receive", "share-refresh", "share-cancel", "share-identity-init", "share-identity-show", "share-peer-add", "share-peer-list", "share-peer-revoke", "share-private-init", "share-recovery-list", "share-approve", "share-decline", "share-apply-prefs", "share-receive-advertise", "share-interfaces", "share-spool-init", "share-spool-recovery", "share-use-local", "share-use-peer", "share-use-endpoint", "share-browse-destination", "share-browse-parent", "share-save-prefs", "share-pair-host", "share-pair-join", "share-send-routed", "share-receive-routed", "share-pair-host-routed", "share-pair-join-routed", "share-pair-host-advertise", "share-use-pair-endpoint", "share-send-quic", "share-receive-quic", "share-send-quic-routed", "share-receive-quic-routed", "share-batch-send", "share-batch-receive", "share-clipboard-send", "share-clipboard-receive", "share-root-offer", "share-root-receive" };
 const field_names = view.fields;
 
 const Instance = struct {
@@ -59,6 +59,7 @@ const Instance = struct {
     pair_dialog_poisoned: bool = false,
     pair_dialog_routed: bool = false,
     selected: managed.Field = .{},
+    selected_batch: managed.Field = .{},
     active: bool = false,
 
     fn close(self: *Instance) host_mod.Error!void {
@@ -165,7 +166,7 @@ const Instance = struct {
                 else => {},
             }
         }
-        if (self.request.mode == .interfaces or self.request.mode == .discover or self.request.mode == .peer_list or self.request.mode == .recovery_list) {
+        if (self.request.mode == .interfaces or self.request.mode == .discover or self.request.mode == .peer_list or self.request.mode == .recovery_list or (self.request.browse and self.request.mode == .receive and self.request.remote_path.len == 0)) {
             self.inventory_len = @min(message.len, self.inventory.len);
             // Child output has already been checked as UTF-8; avoid splitting a character.
             while (self.inventory_len > 0 and !std.unicode.utf8ValidateSlice(message[0..self.inventory_len])) self.inventory_len -= 1;
@@ -284,7 +285,7 @@ const Instance = struct {
         field.set(bytes[0..needed]) catch return error.Argument;
     }
 
-    fn start(self: *Instance, mode: managed.Mode, advertise: bool, use_spool: bool, routed: bool, join_code: u32, quic: bool) host_mod.Error!void {
+    fn start(self: *Instance, mode: managed.Mode, advertise: bool, use_spool: bool, routed: bool, join_code: u32, quic: bool, batch_action: []const u8) host_mod.Error!void {
         if (!self.active or !managed.configured()) return error.Unavailable;
         if (managed.pairingMode(mode) and !managed.pairingConfigured()) return error.Unavailable;
         if (mode == .pair_join and (join_code == 0 or join_code > 100000000)) return error.Argument;
@@ -295,6 +296,33 @@ const Instance = struct {
             self.task = try async_host.Task.init(try async_host.taskTable(self.host));
         }
         var next: managed.Request = .{ .mode = mode, .advertise = advertise, .routed = routed, .quic = quic };
+        if (batch_action.len != 0) {
+            next.batch = true;
+            var transport: managed.Field = .{};
+            try self.readField("batch-mode", &transport);
+            const value = transport.slice();
+            next.quic = std.mem.eql(u8, value, "quic") or std.mem.eql(u8, value, "quic-routed");
+            next.routed = std.mem.eql(u8, value, "tcp-routed") or std.mem.eql(u8, value, "quic-routed");
+            if (value.len != 0 and !next.quic and !next.routed and !std.mem.eql(u8, value, "tcp")) return error.Argument;
+            try self.readField("channels", &next.channels);
+            if (std.mem.eql(u8, batch_action, "share-clipboard-send")) {
+                try self.readField("clipboard-kind", &next.clipboard);
+                if (next.clipboard.len == 0) return error.Argument;
+            } else if (mode == .send) next.sources = self.selected_batch;
+            if (std.mem.eql(u8, batch_action, "share-clipboard-receive")) {
+                next.clipboard_receive = true;
+                try self.readField("clipboard-kind", &next.clipboard);
+                try self.readField("delivery", &next.delivery);
+            }
+            next.browse = std.mem.eql(u8, batch_action, "share-root-offer") or std.mem.eql(u8, batch_action, "share-root-receive");
+            if (mode == .receive) {
+                try self.readField("resume", &next.resume);
+                if (next.browse) {
+                    try self.readField("remote-path", &next.remote_path);
+                    try self.readField("browse-offset", &next.browse_offset);
+                }
+            }
+        }
         switch (mode) {
             .discover, .send, .receive, .pair_host, .pair_join => try self.readField("bind", &next.bind),
             else => {},
@@ -306,16 +334,16 @@ const Instance = struct {
         }
         if (mode == .peer_add) try self.readField("fingerprint", &next.fingerprint);
         if (mode == .send) {
-            next.source = self.selected;
+            if (!next.batch) next.source = self.selected;
             try self.readField("peer", &next.peer);
         }
         if (mode == .pair_host) {
             try self.readField("port", &next.port);
-            if (routed) try self.readField("allowed-source", &next.allowed_source);
+            if (next.routed) try self.readField("allowed-source", &next.allowed_source);
         }
         if (mode == .pair_join) try self.readField("peer", &next.peer);
         if (mode == .receive) {
-            if (routed) try self.readField("allowed-source", &next.allowed_source);
+            if (next.routed) try self.readField("allowed-source", &next.allowed_source);
             try self.readField("destination", &next.destination);
             try self.readField("spool", &next.spool);
             try self.readField("port", &next.port);
@@ -647,9 +675,17 @@ const Instance = struct {
             view.button("QUIC 组网发送", "share-send-quic-routed", "standard", "state.idle"),
             view.button("QUIC 组网接收", "share-receive-quic-routed", "standard", "state.idle"),
         };
+        const batch_actions = [_]ui.Node{
+            view.button("批量发送选中项", "share-batch-send", "primary", "state.idle"),
+            view.button("批量接收 / 恢复", "share-batch-receive", "standard", "state.idle"),
+            view.button("发送剪贴板", "share-clipboard-send", "standard", "state.idle"),
+            view.button("接收剪贴板", "share-clipboard-receive", "standard", "state.idle"),
+            view.button("提供只读目录", "share-root-offer", "standard", "state.idle"),
+            view.button("浏览 / 下载目录", "share-root-receive", "standard", "state.idle"),
+        };
         const transfer_content = [_]ui.Node{
             view.text("selection", selection, "caption"),
-            view.text("source", if (self.selected.len != 0) self.selected.slice() else "请从文件列表右键选中一个普通文件进行发送。", "body"),
+            view.text("source", if (self.selected.len != 0) self.selected.slice() else "普通发送需一个文件；批量发送可选文件和文件夹。", "body"),
             view.select("endpoint-options", "endpoint-choice", "发现的未验证地址", self.endpoint_choices.options(&endpoint_options)),
             view.button("使用所选对端地址", "share-use-endpoint", "standard", "state.idle"),
             fields[1],
@@ -660,6 +696,17 @@ const Instance = struct {
             view.grid("routed-actions", &routed_actions),
             view.text("quic-help", "QUIC：使用 UDP，双方手动选择 QUIC，不自动回退 TCP；目前仅单文件。", "caption"),
             view.grid("quic-actions", &quic_actions),
+            view.text("batch-help", "批量使用已配对设备。选择协议、通道和接收选项；多选路径受宿主命令长度限制。恢复须手动选择原事务。", "caption"),
+            fields[9],
+            fields[10],
+            fields[11],
+            fields[12],
+            fields[13],
+            fields[14],
+            fields[15],
+            view.text("shelf-help", "暂存区需宿主公开写入接口；目前可接收到系统剪贴板，再手动导入 Pulse。", "caption"),
+            view.grid("batch-actions", &batch_actions),
+            view.bound("batch-inventory", "state.inventory"),
         };
         const setup_actions = [_]ui.Node{
             view.button("应用已保存设置", "share-apply-prefs", "standard", "state.idle"),
@@ -811,7 +858,7 @@ fn pairDialogClosed(user: ?*anyopaque, id: u64, status: abi.Status, button: abi.
     for (0..count) |i| {
         if (!std.mem.eql(u8, abi.slice(states[i].key) orelse "", "pair-input")) continue;
         const code = managed.parseCode(abi.slice(states[i].value) orelse "") catch return self.status("请输入完整 8 位数字连接码");
-        self.start(.pair_join, false, false, self.pair_dialog_routed, code, false) catch |err| self.status(@errorName(err));
+        self.start(.pair_join, false, false, self.pair_dialog_routed, code, false, "") catch |err| self.status(@errorName(err));
         return;
     }
 }
@@ -824,7 +871,7 @@ fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv
     if (std.mem.eql(u8, name, "share-pair-host") or std.mem.eql(u8, name, "share-pair-host-routed") or std.mem.eql(u8, name, "share-pair-host-advertise")) {
         const routed = std.mem.eql(u8, name, "share-pair-host-routed");
         self.showPairDialog(true) catch |err| return self.status(@errorName(err));
-        self.start(.pair_host, std.mem.eql(u8, name, "share-pair-host-advertise"), false, routed, 0, false) catch |err| {
+        self.start(.pair_host, std.mem.eql(u8, name, "share-pair-host-advertise"), false, routed, 0, false, "") catch |err| {
             self.closePairDialog() catch |close_err| diag.status("share-pair-dialog-close", @intFromError(close_err));
             self.status(@errorName(err));
         };
@@ -870,6 +917,11 @@ fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv
         }
         return;
     }
+    if (std.mem.eql(u8, name, "share-batch-send") or std.mem.eql(u8, name, "share-batch-receive") or std.mem.eql(u8, name, "share-clipboard-send") or std.mem.eql(u8, name, "share-clipboard-receive") or std.mem.eql(u8, name, "share-root-offer") or std.mem.eql(u8, name, "share-root-receive")) {
+        const sending = std.mem.eql(u8, name, "share-batch-send") or std.mem.eql(u8, name, "share-clipboard-send") or std.mem.eql(u8, name, "share-root-offer");
+        self.start(if (sending) .send else .receive, false, false, false, 0, false, name) catch |err| self.status(@errorName(err));
+        return;
+    }
     const mode: managed.Mode = if (std.mem.eql(u8, name, "share-discover"))
         .discover
     else if (std.mem.eql(u8, name, "share-send") or std.mem.eql(u8, name, "share-send-routed") or std.mem.eql(u8, name, "share-send-quic") or std.mem.eql(u8, name, "share-send-quic-routed"))
@@ -894,7 +946,7 @@ fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv
         .recovery_list
     else
         return;
-    self.start(mode, std.mem.eql(u8, name, "share-receive-advertise"), std.mem.eql(u8, name, "share-spool-init") or std.mem.eql(u8, name, "share-spool-recovery"), std.mem.eql(u8, name, "share-send-routed") or std.mem.eql(u8, name, "share-receive-routed") or std.mem.eql(u8, name, "share-send-quic-routed") or std.mem.eql(u8, name, "share-receive-quic-routed"), 0, std.mem.eql(u8, name, "share-send-quic") or std.mem.eql(u8, name, "share-receive-quic") or std.mem.eql(u8, name, "share-send-quic-routed") or std.mem.eql(u8, name, "share-receive-quic-routed")) catch |err| self.status(switch (err) {
+    self.start(mode, std.mem.eql(u8, name, "share-receive-advertise"), std.mem.eql(u8, name, "share-spool-init") or std.mem.eql(u8, name, "share-spool-recovery"), std.mem.eql(u8, name, "share-send-routed") or std.mem.eql(u8, name, "share-receive-routed") or std.mem.eql(u8, name, "share-send-quic-routed") or std.mem.eql(u8, name, "share-receive-quic-routed"), 0, std.mem.eql(u8, name, "share-send-quic") or std.mem.eql(u8, name, "share-receive-quic") or std.mem.eql(u8, name, "share-send-quic-routed") or std.mem.eql(u8, name, "share-receive-quic-routed"), "") catch |err| self.status(switch (err) {
         error.Argument => "参数不完整或无效，请检查设备和配置页",
         error.State => "已有任务，请先刷新或取消",
         error.Unavailable => "当前构建或宿主接口不支持此操作",
@@ -906,6 +958,7 @@ fn invoke(user: ?*anyopaque, _: commands.CommandId, snapshot: [*c]const commands
     const self: *Instance = @ptrCast(@alignCast(user orelse return));
     if (!self.active) return;
     self.selected = .{};
+    self.selected_batch = .{};
     const count: ?u32 = if (snapshot != null and context.validSelection(snapshot))
         snapshot.*.entry_count
     else
@@ -915,6 +968,35 @@ fn invoke(user: ?*anyopaque, _: commands.CommandId, snapshot: [*c]const commands
         const entry = &entries[0];
         if (entry.size >= @sizeOf(context.SelectionEntry) and entry.flags & context.EntryFlag.directory == 0) {
             if (context.entryPath(entry)) |path| self.selected.set(path) catch {};
+        }
+    }
+    if (count) |n| {
+        if (n > 0 and n <= 64 and snapshot.*.entries != null) {
+            const entries: [*]const context.SelectionEntry = @ptrCast(snapshot.*.entries);
+            var joined_paths: [2048]u8 = undefined;
+            var len: usize = 0;
+            var valid = true;
+            for (entries[0..n]) |*entry| {
+                if (entry.size < @sizeOf(context.SelectionEntry)) {
+                    valid = false;
+                    break;
+                }
+                const path = context.entryPath(entry) orelse {
+                    valid = false;
+                    break;
+                };
+                if (std.mem.indexOfScalar(u8, path, '|') != null or path.len + len + 1 >= joined_paths.len) {
+                    valid = false;
+                    break;
+                }
+                if (len != 0) {
+                    joined_paths[len] = '|';
+                    len += 1;
+                }
+                @memcpy(joined_paths[len..][0..path.len], path);
+                len += path.len;
+            }
+            if (valid) self.selected_batch.set(joined_paths[0..len]) catch {};
         }
     }
     self.open(count) catch |err| diag.status("share-panel-open", @intFromError(err));

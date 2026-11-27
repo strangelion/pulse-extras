@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"pulse-extras/share-lan/sharecore"
 )
 
 func equalLocalPath(a,b string) bool {
@@ -27,6 +29,16 @@ func inspectRecovery(path string) error {
 	count:=0
 	for _,entry:=range entries{
 		name:=entry.Name()
+		if strings.HasPrefix(name,"share-v2-")&&entry.IsDir(){
+			path:=filepath.Join(root,name)
+			if _,err:=sharecore.LocalStageID(path);err==nil{
+				state:="resume candidate"
+				if _,err:=os.Lstat(filepath.Join(path,"publish.v2"));!os.IsNotExist(err){state="publication uncertain; inspect destination"}
+				if _,err:=os.Lstat(filepath.Join(path,"published.v2"));err==nil{state="published; never replay"}
+				fmt.Printf("RECOVERY BATCH %q %s\n",path,state);count++
+			}
+			continue
+		}
 		if strings.HasPrefix(name,"pulse-share-") || strings.HasPrefix(name,".pulse-share-") && strings.HasSuffix(name,".part"){
 			fmt.Printf("RECOVERY CANDIDATE %q (ownership and liveness unverified)\n",name)
 			if entry.IsDir() && strings.HasPrefix(name,"pulse-share-"){

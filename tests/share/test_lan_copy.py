@@ -157,6 +157,65 @@ class LanCopy(unittest.TestCase):
     def test_quic_no_overwrite(self):
         self.transfer("127.0.0.1", existing=True, quic=True)
 
+    def test_batch_native_folder_tcp_and_quic(self):
+        with tempfile.TemporaryDirectory(prefix="pulse-share-batch-") as temp:
+            root = Path(temp).resolve(strict=True)
+            a, b, spool = root / "a", root / "b", root / "spool"
+            def run(operation, store, *args, answer=None):
+                p = subprocess.run([str(LAN), operation, "--store", str(store), *args],
+                                   input=answer, capture_output=True, text=True, timeout=30)
+                self.assertEqual(p.returncode, 0, (p.stdout, p.stderr))
+                return p.stdout
+            for path in (a, b, spool):
+                run("private-init", path)
+            a_pin = run("identity-init", a).split()[-1]
+            b_pin = run("identity-init", b).split()[-1]
+            run("peer-add", a, "--name", "b", answer=b_pin+"\nyes\n")
+            run("peer-add", b, "--name", "a", answer=a_pin+"\nyes\n")
+            for use_quic in (False, True):
+                name = "quic" if use_quic else "tcp"
+                src = root / ("source-" + name)
+                src.mkdir()
+                (src / "empty").mkdir()
+                (src / "zero.bin").write_bytes(b"")
+                (src / "data.bin").write_bytes(bytes(range(256)) * 33000)
+                dest = root / ("dest-" + name)
+                dest.mkdir()
+                opts = ["--batch", "--channels", "3"] + (["--quic"] if use_quic else [])
+                receiver = Child([
+                    "receive", "--bind", "127.0.0.1", "--port", "0",
+                    "--directory", dest, "--spool", spool,
+                    "--supervisor", SUPERVISOR, "--supervisor-sha256", digest(SUPERVISOR),
+                    "--worker", WORKER, "--worker-sha256", digest(WORKER),
+                    "--store", b, "--paired", "a", *opts,
+                ], root / (name + "-recv.log"), managed=True)
+                try:
+                    receiver.expect("PAIRED ")
+                    endpoint = receiver.expect("LISTEN ")
+                    sender = Child(["send", "--bind", "127.0.0.1", "--peer", endpoint,
+                                    "--source", src, "--store", a, "--paired", "b", *opts],
+                                   root / (name + "-send.log"))
+                    try:
+                        sender.expect("PAIRED ")
+                        receiver.expect("OFFER ")
+                        receiver.answer("yes")
+                        self.assertEqual(sender.wait(), 0, sender.diagnostics())
+                        self.assertEqual(receiver.wait(), 0, receiver.diagnostics())
+                        target = dest / src.name
+                        self.assertTrue((target / "empty").is_dir())
+                        self.assertEqual((target / "zero.bin").stat().st_size, 0)
+                        self.assertEqual(digest(target / "data.bin"), digest(src / "data.bin"))
+                        self.assertFalse(list(dest.glob(".pulse-share-batch-*")))
+                    finally:
+                        sender.close()
+                finally:
+                    receiver.close()
+            records = list(spool.glob("share-v2-*"))
+            self.assertEqual(len(records), 2)
+            for record in records:
+                self.assertTrue((record / "published.v2").is_file())
+                self.assertFalse(list(record.glob("*.part")))
+
     def test_saved_device_and_revocation(self):
         with tempfile.TemporaryDirectory(prefix="pulse-share-pair-") as temp:
             root = Path(temp).resolve(strict=True)
@@ -192,8 +251,10 @@ class LanCopy(unittest.TestCase):
                 try:
                     endpoint = receiver.expect("LISTEN ")
                     receiver.expect("PAIRED ")
+                    # Only one managed transfer owner per Windows user.
+                    # The other role is a trusted developer CLI fixture.
                     sender = Child(["send", "--bind", "127.0.0.1", "--peer", endpoint,
-                                    "--source", source, "--store", a, "--paired", "b"], root / "sender.log", managed=True)
+                                    "--source", source, "--store", a, "--paired", "b"], root / "sender.log")
                     try:
                         sender.expect("PAIRED ")
                         receiver.expect("OFFER ")

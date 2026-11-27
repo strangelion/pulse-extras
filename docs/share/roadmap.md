@@ -369,3 +369,47 @@ publisher, persisted queue/recovery and global engine ownership, adaptive
 parallel lanes over TCP/QUIC, clipboard adapters/settings, remote directory
 grants/browsing and full UI remain outstanding. The shelf API is an external
 SDK dependency. Grouping remains unchanged; no separate acceptance phase.
+
+
+## Stage 2 integrated candidate (batch, clipboard and read-only directory sessions)
+
+- Explicit native batch commands use approved canonical manifests, negotiated
+  1–32 lane ceilings (0 selects measured adaptive admission), authenticated
+  TCP data connections or multiplexed QUIC streams, verified block receipts,
+  full-file revalidation, and the existing native no-overwrite file publisher.
+  Directory trees are assembled in a fresh private same-volume directory and
+  moved without replacement only after all entries pass. Interrupted publication
+  is uncertain, not automatically retried. Explicit local resume checks peer,
+  manifest and receipts. Full connection loss requires restarting both ends;
+  the scheduler retries interrupted lanes within the live control session.
+- UI exposes selected multi-root batches (up to 64 roots and a bounded 2048-byte
+  packed selection), transport, channels, resume path and manual clipboard
+  type/delivery. Existing single-file wire protocol is unchanged. Managed
+  send/receive uses a same-user global mutex; unmanaged developer CLI is not
+  covered by this lock. One active host task remains the panel rule.
+  Published payloads are removed while receipts remain for read-only recovery
+  history; no automatic destructive cleanup. Settings v3 migrates v1/v2 and
+  stores non-secret transport, channel and clipboard preferences, not a grant
+  or a resume path.
+- Clipboard text, uncompressed 24/32-bit CF_DIB image (normalized to BMP) and
+  CF_HDROP file/folder references are explicit manual actions. Receiver must
+  enable clipboard reception separately, approve the offer and choose folder
+  or clipboard, optionally restrict reception to one type. Clipboard delivery
+  checks local sequence before replacement; a changed or busy clipboard fails
+  closed. File references refer only to actual published local files. Text/image
+  payload is not printed. Clipboard replacement uses Windows EmptyClipboard
+  and SetClipboardData and cannot promise rollback if the latter fails.
+  Other image formats, continuous automatic sync, persistent per-peer automatic
+  grants and host Tray Shelf insertion are not enabled.
+- Explicit read-only directory offer to a saved peer exposes only the selected
+  manifest. The receiving user may list a 20-entry page or choose an exact
+  offered entry/subtree (or entire manifest) for verified download. No arbitrary
+  server path, automatic root exposure or remote mutation. An upload remains a
+  separate manually approved ordinary batch to an operator-selected destination.
+  Long-lived multi-root directory service and persistent remote grants are not
+  implemented. Native tests and physical acceptance still required.
+
+This candidate is not complete stage-2 acceptance: durable receipts are not a
+multi-job persistent queue; background clipboard synchronization and persistent
+remote-directory grant/service management remain open. The missing public Tray
+Shelf snapshot/write API remains an SDK dependency.

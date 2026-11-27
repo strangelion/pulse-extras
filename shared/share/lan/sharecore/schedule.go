@@ -45,6 +45,9 @@ func(w watchedLane) SetDeadline(t time.Time)error{return transportError(w.LaneSt
 
 // A joined local failure must not become retryable merely because a network
 // interruption happened at the same time (e.g. a failed stage-file close).
+// IsLaneInterrupted is true only for classified transport interruptions.
+func IsLaneInterrupted(err error)bool{return retryableOnly(err)}
+
 func retryableOnly(err error)bool{
 	if err==ErrLaneDisconnected{return true}
 	if err==nil{return false}
