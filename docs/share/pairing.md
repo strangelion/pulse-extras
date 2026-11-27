@@ -1,7 +1,7 @@
 # Dynamic pairing code — implementation contract
 
-Status: local policy and RFC-vector tests implemented. No network pairing
-listener, PAKE adapter, UI code display or new trust path is enabled yet.
+Status: local policy, CPace adapter and isolated enrollment controller implemented.
+No network pairing command or Pulse UI code display is enabled in the normal package.
 Manual certificate fingerprint pairing remains the only available enrollment.
 Do not release a short-code flow until the integration gates below pass.
 
@@ -115,3 +115,19 @@ toolchain and audit the dependency tree before inclusion in acceptance packages.
 Still required: pair-window integration, private code display/input, explicit
 bilateral enrollment consent, verified helper packaging and resource lifecycle,
 additional replay/interruption tests, and physical two-PC acceptance.
+
+## Enrollment controller candidate
+
+`pairing.go` combines the existing dynamic window, numeric on-link binding,
+mutual TLS proof of possession, CPace confirmation and explicit bilateral
+consent. The host consumes the code before showing consent, closes the listener,
+and saves only the authenticated certificate pin under a locally selected
+label. Both parties must approve before either attempts its exclusive write.
+Authenticated peer write status is a report, not proof of durable storage;
+interrupted or conflicting enrollment is reported as partial/uncertain without
+rollback or overwrite. The local display callback is private and nonblocking;
+the consent callback must respect cancellation. Neither callback may use task
+history or logs for codes. No production CLI or plugin invokes this controller
+yet: the helper digest chain, local secret channel, audit and packaging gates
+still apply. The test harness exercises live dynamic codes over loopback,
+bilateral approvals, both rejection directions, and an exclusive-write race.

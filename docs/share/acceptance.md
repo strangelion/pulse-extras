@@ -71,3 +71,9 @@ Save defaults from the main panel and confirm the host's result in its
 settings page; reopen the extension and verify values are retained. Test a
 failed query followed by a successful query and confirm stale entries are not
 selectable. Native folder picker fallback remains manual on unsupported hosts.
+
+Dynamic pairing controller: verify both approval directions, independent peer
+labels, exclusive creation and clear reporting of asymmetric write failures.
+The isolated controller tests are not acceptance of a native pairing page;
+no short-code host command is enabled until private code I/O and helper pinning
+are integrated and reviewed.
