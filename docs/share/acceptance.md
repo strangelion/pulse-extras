@@ -113,3 +113,25 @@ master disable overrides type/direction toggles, untrusted peers and absent
 per-peer grants fail, file references remain manual, and disabling auto-sync
 drains watchers/tasks without erasing local content. Native settings and real
 clipboard tests remain NOT RUN until the adapters are implemented.
+
+## Connection-stage exit evidence
+
+The transport-neutral scheduler and authenticated TCP batch adapter are
+candidate code. Record their matching CI run before setting automated results
+PASS; the preceding commit's CI is not evidence for this revision.
+
+| Case | Status before matching CI/physical test |
+| --- | --- |
+| Authenticated TCP forwarding, lane loss, fresh authorization and resume (automated) | NOT RUN |
+| IPv6 loopback pinned batch lane (automated; skip if unavailable) | NOT RUN |
+| Wrong incoming TCP source / invalid endpoint / revoked grant (automated) | NOT RUN |
+| Real native pairing, persistence, revoke and private dialogs | NOT RUN |
+| Physical IPv4 and IPv6 transfer in both directions | NOT RUN |
+| Tailscale, ZeroTier, WireGuard (each separately) | NOT RUN |
+| FRP TCP, Nginx stream, manual port mapping (each separately) | NOT RUN |
+| QUIC | DEFERRED — not implemented; no UDP transfer claim |
+
+The loopback forward is only a transparent TCP fixture; it does not establish
+compatibility with any specific external application. Native batch integration
+and physical reconnect are stage 2 gates. The current installed native
+single-file transfer is not automatically resumed after an interruption.

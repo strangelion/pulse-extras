@@ -287,3 +287,32 @@ acknowledgement or destination commit. QUIC remains a future optional backend;
 no QUIC implementation, native batch listener or real-device acceptance is
 claimed here. Native queue, single-owner service, control-plane approval and
 safe directory publisher are still integration gates.
+
+## Connection stage exit record
+
+Existing native dynamic pairing, device list and explicit routed settings are
+retained. The new TCP batch adapter connects the missing-block scheduler to
+mutually pinned TLS 1.3 / X25519MLKEM768 streams with explicit numeric binding,
+source admission and fresh local authorization before and after each handshake.
+A transparent loopback TCP forward exercises interrupted authenticated lanes
+and reconnect; an IPv6 loopback test and source/grant rejection cover the
+adapter. These are regression candidates, not a public batch listener or a
+Pulse host feature. A batch owner still must supply actual current grant/store
+checks and bound inbound admission; this is part of stage 2 control-plane
+integration. Existing single-file native commands keep their explicit
+single-session semantics and never retry uncertain publication.
+
+QUIC is explicitly deferred as an optional backend: current Go module is
+standard-library-only and CI builds with GOPROXY=off. Do not add a floating
+network dependency or relax hybrid TLS, pinning, protocol negotiation or
+explicit source authorization to make QUIC work. A separate reviewed, pinned
+implementation with reproducible offline dependencies, cancellation, stream
+resource budgets, hybrid-group verification and connection migration policy
+is required before enabling QUIC. TCP remains the sole implemented data
+transport; raw UDP remains advisory discovery only. No automatic protocol
+fallback. This is an explicit scope deviation from the proposed QUIC milestone,
+not a claim that QUIC works.
+
+Physical Pulse, IPv4/IPv6 LAN, VPN/overlay, external TCP passthrough and manual
+router mapping remain NOT RUN. See acceptance.md; stage 1 cannot be marked
+accepted until matching CI and physical cases pass. No stable publication.
