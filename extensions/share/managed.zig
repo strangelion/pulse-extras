@@ -44,7 +44,9 @@ pub const Request = struct {
                 if (self.store.len == 0 or self.paired.len == 0) return error.InvalidInput;
                 if (self.mode == .peer_add) {
                     if (self.fingerprint.len != 64) return error.InvalidInput;
-                    for (self.fingerprint.slice()) |ch| if (!std.ascii.isHex(ch)) return error.InvalidInput;
+                    for (self.fingerprint.slice()) |ch| {
+                        if (!((ch >= '0' and ch <= '9') or (ch >= 'a' and ch <= 'f') or (ch >= 'A' and ch <= 'F'))) return error.InvalidInput;
+                    }
                 }
                 return;
             },
@@ -592,6 +594,6 @@ test "decision generation and bounded request admission" {
     try request.paired.set("peer");
     try request.fingerprint.set("invalid");
     try std.testing.expectError(error.InvalidInput, request.validate());
-    try request.fingerprint.set("0123456789abcdef" ** 4);
+    try request.fingerprint.set("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
     try request.validate();
 }

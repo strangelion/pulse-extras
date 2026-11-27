@@ -334,3 +334,20 @@ rather than modified. Use a new directory for each store and spool. CLI
 sessions outside Pulse retain the documented operator-managed private-directory
 prerequisite. This is not a defense against hostile same-user or administrator
 changes or a race-free ancestor containment guarantee.
+
+## Isolated P2 acceptance package
+
+After the full branch regression succeeds, download `share-acceptance-inputs`
+from the same Windows run, or build all three helpers locally with the pinned
+toolchains. The artifact is not a signed release. With the matching branch
+checked out and its pinned Zig installed, use the stage helper:
+
+    python scripts/stage_share_test.py --pulse <Pulse.exe> --tool <official-pulse_ext.py> --binaries <helper-directory> --out .local/share-stage-1
+
+It copies all three helper executables to a fresh workspace, binds their exact
+SHA-256 values into a fresh DLL build, then uses the shared official staging
+and archive verification path. `candidate.pulse-ext` and `build-evidence.json`
+are outputs; `real_host_accepted` remains false. No install, signing or release
+registration is performed. Use matching trusted helper inputs from a passed
+run. The developer only chooses an existing trusted parent for the fresh output.
+See [acceptance runbook](acceptance.md) for isolated profile and two-device tests.

@@ -349,7 +349,9 @@ export fn PulsePluginEntryV1(host_ptr: ?*const abi.HostV1, out_ptr: ?*abi.Plugin
     const self = allocator.create(Instance) catch return abi.error_initialization;
     self.* = .{ .host = validated, .menu = table };
     var descriptor = commands.descriptor("strangelion.share.open", "Pulse Share / 文件共享", &invoke);
-    descriptor.kinds = commands.Kind.files | commands.Kind.directories | commands.Kind.background;
+    descriptor.kinds = commands.Kind.files | commands.Kind.directories;
+    descriptor.min_selection = 0;
+    descriptor.max_selection = 4096;
     descriptor.user = self;
     self.command_id = table.register(&descriptor) catch |err| {
         allocator.destroy(self);
