@@ -161,16 +161,19 @@ const Instance = struct {
 const Content = struct {
     declared: [commands.len]abi.StringView = undefined,
     navigation: [4]ui.Node = undefined,
-    // Maximum market view includes the preview diagnostic, manual task
-    // collection, queue, 12 results and selected detail simultaneously.
+    settings_sections: [6]ui.Node = undefined,
+    // The library's fallback can render 16 individual rows alongside
+    // selection, launch profiles, and recovery controls.
     children: [36]ui.Node = undefined,
     import_toolbar: [3]ui.Node = undefined,
     toolbar: [4]ui.Node = undefined,
     paging: [2]ui.Node = undefined,
     states: [30]ui.State = undefined,
     policy_fields: [16][64]u8 = undefined,
-    policy_nodes: [18]ui.Node = undefined,
+    policy_nodes: [10]ui.Node = undefined,
     policy_numeric: [4]ui.Node = undefined,
+    policy_pairs: [4][2]ui.Node = undefined,
+    policy_entries: [8]ui.Node = undefined,
     policy_text: [512]u8 = undefined,
     policy_actions: [3]ui.Node = undefined,
     visibility_actions: [4]ui.Node = undefined,
@@ -210,6 +213,7 @@ const Content = struct {
     market_detail_text: [640]u8 = undefined,
     market_detail_id: [64]u8 = undefined,
     market_description_id: [64]u8 = undefined,
+    market_results: [12]ui.Node = undefined,
     market_rows: [12][576]u8 = undefined,
     market_row_ids: [12][64]u8 = undefined,
     market_info: [256]u8 = undefined,
@@ -233,6 +237,7 @@ const Content = struct {
     running_search_toolbar: [2]ui.Node = undefined,
     running_paging: [2]ui.Node = undefined,
     limits_inputs: [2]ui.Node = undefined,
+    limits_pairs: [2][2]ui.Node = undefined,
     limits_count: [16]u8 = undefined,
     limits_memory: [16]u8 = undefined,
     limits_text: [320]u8 = undefined,
@@ -251,6 +256,12 @@ fn label(id: []const u8, body: []const u8) ui.Node {
     return node;
 }
 
+fn captionLabel(id: []const u8, body: []const u8) ui.Node {
+    var node = label(id, body);
+    node.role = .{ .present = 1, .value = abi.view("caption") };
+    return node;
+}
+
 // Older host renderers retain a text control when its ID is unchanged.
 // Give changed text a new identity, while preserving interactive state IDs.
 fn changingLabel(buffer: []u8, prefix: []const u8, body: []const u8) ui.Node {
@@ -262,6 +273,54 @@ fn action(id: []const u8, body: []const u8, command: []const u8, enabled: bool) 
     var node = ui.button(body, command);
     node.id = abi.view(id);
     node.enabled = .{ .present = 1, .value = @intFromBool(enabled) };
+    return node;
+}
+
+fn changingCaption(buffer: []u8, prefix: []const u8, body: []const u8) ui.Node {
+    var node = changingLabel(buffer, prefix, body);
+    node.role = .{ .present = 1, .value = abi.view("caption") };
+    return node;
+}
+
+fn styledAction(id: []const u8, body: []const u8, command: []const u8, enabled: bool, kind: []const u8, width: u16) ui.Node {
+    var node = action(id, body, command, enabled);
+    node.kind = .{ .present = 1, .value = abi.view(kind) };
+    if (width != 0) node.max_width = .{ .present = 1, .value = width };
+    return node;
+}
+
+fn stack(id: []const u8, children: []const ui.Node, gap: u16) ui.Node {
+    var node = ui.node(ui.NodeKind.stack);
+    node.id = abi.view(id);
+    node.gap = .{ .present = 1, .value = gap };
+    ui.withChildren(&node, children);
+    return node;
+}
+
+fn grid(id: []const u8, children: []const ui.Node, columns: u16) ui.Node {
+    var node = ui.node(ui.NodeKind.grid);
+    node.id = abi.view(id);
+    node.gap = .{ .present = 1, .value = 8 };
+    node.columns = .{ .present = 1, .value = columns };
+    ui.withChildren(&node, children);
+    return node;
+}
+
+fn settingsGroup(id: []const u8, title_: []const u8, children: []const ui.Node) ui.Node {
+    var node = ui.node(ui.NodeKind.group);
+    node.id = abi.view(id);
+    node.text = .{ .present = 1, .value = abi.view(title_) };
+    node.bordered = .{ .present = 1, .value = 1 };
+    node.gap = .{ .present = 1, .value = 8 };
+    ui.withChildren(&node, children);
+    return node;
+}
+
+fn emptyState(id: []const u8, text: []const u8, message: []const u8) ui.Node {
+    var node = ui.node(ui.NodeKind.empty_state);
+    node.id = abi.view(id);
+    node.text = .{ .present = 1, .value = abi.view(text) };
+    node.message = .{ .present = 1, .value = abi.view(message) };
     return node;
 }
 
@@ -277,14 +336,14 @@ fn horizontal(id: []const u8, children: []const ui.Node) ui.Node {
 // Build a contiguous prefix: the nested-picker route omits the standalone
 // Browse button, so Cancel must occupy the next initialized slot.
 fn fillImportToolbar(nodes: *[3]ui.Node, embedded_picker: bool, enabled: bool, importing: bool, can_cancel: bool) []const ui.Node {
-    nodes[0] = action("library.import", "导入本地素材", commands[19], enabled);
+    nodes[0] = styledAction("library.import", "导入本地素材", commands[19], enabled, "primary", 132);
     var count: usize = 1;
     if (!embedded_picker) {
-        nodes[count] = action("library.browse", "浏览文件夹", commands[21], enabled);
+        nodes[count] = styledAction("library.browse", "浏览文件夹", commands[21], enabled, "standard", 114);
         count += 1;
     }
     if (importing) {
-        nodes[count] = action("library.import-cancel", "取消导入", commands[20], can_cancel);
+        nodes[count] = styledAction("library.import-cancel", "取消导入", commands[20], can_cancel, "transparent", 98);
         count += 1;
     }
     return nodes[0..count];
@@ -499,17 +558,16 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
         "市场目录等待运行任务释放；停止桌宠后可加载"
     else
         instance.market_status;
-    content.children[2] = changingLabel(&content.dynamic_ids[0], "market.status", if (instance.market_render_rejected) "宿主拒绝市场结果布局；已保留目录，可重新进入市场或刷新" else status);
+    content.children[2] = changingCaption(&content.dynamic_ids[0], "market.status", if (instance.market_render_rejected) "宿主拒绝市场结果布局；已保留目录，可重新进入市场或刷新" else status);
     content.children[3] = searchInput("market.query", "搜索市场", "可选：按名称或来源 ID 筛选");
     content.children[3].enabled = .{ .present = 1, .value = @intFromBool(!busy) };
-    content.market_actions[0] = action("market.search", "刷新 / 搜索", commands[31], idle);
-    content.market_actions[1] = action("market.offline", "离线缓存", commands[32], idle);
-    content.market_actions[2] = action("market.cancel", "取消任务", commands[37], busy and !instance.market_cancel_requested);
+    content.market_actions[0] = styledAction("market.search", "搜索 / 刷新", commands[31], idle, "primary", 118);
+    content.market_actions[1] = styledAction("market.offline", "离线缓存", commands[32], idle, "standard", 104);
+    content.market_actions[2] = styledAction("market.cancel", "取消任务", commands[37], busy and !instance.market_cancel_requested, "transparent", 100);
     const can_clear = if (instance.panel) |panel| panel.table.set_states != null else false;
-    content.market_actions[3] = action("market.search-clear", "恢复默认浏览", commands[39], idle and can_clear);
-    content.market_actions[4] = action("market.open-gallery", "浏览器查看图库 ↗", commands[78], marketBrowserIdle(instance));
+    content.market_actions[3] = styledAction("market.search-clear", "重置筛选", commands[39], idle and can_clear, "transparent", 110);
+    content.market_actions[4] = styledAction("market.open-gallery", "打开官方图库 ↗", commands[78], marketBrowserIdle(instance), "transparent", 148);
     content.children[4] = horizontal("market.actions", &content.market_actions);
-    content.children[5] = label("market.notice", "图片无法显示时可在浏览器查看官方图库：" ++ library.market_gallery_url ++ "。来源目录未提供明确许可时不得推定授权。");
     const filters = instance.market_filters;
     content.market_filter_actions[0] = action("market.filter-mode", switch (filters.mode) {
         .curated => "范围：精选或原创",
@@ -528,9 +586,11 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
         .v1 => "版本：V1",
         .v2 => "版本：V2",
     }, commands[57], idle and filters.mode != .exact_id);
-    content.children[6] = horizontal("market.filters", &content.market_filter_actions);
+    for (&content.market_filter_actions) |*filter| filter.max_width = .{ .present = 1, .value = 168 };
+    content.children[5] = horizontal("market.filters", &content.market_filter_actions);
+    content.children[6] = captionLabel("market.notice", "官方图库 " ++ library.market_gallery_url ++ " · 素材许可请以来源页面的明确声明为准。");
     var count: usize = 7;
-    content.children[count] = action("market.image-test", if (instance.market_image_rejected) "本次已回退文字显示" else if (instance.market_image_test) "关闭 SDK 图片测试" else "SDK 图片测试（不联网）", commands[77], !busy and !instance.market_image_rejected);
+    content.children[count] = styledAction("market.image-test", if (instance.market_image_rejected) "已回退文字显示" else if (instance.market_image_test) "关闭图片测试" else "SDK 图片测试（离线）", commands[77], !busy and !instance.market_image_rejected, "transparent", 154);
     count += 1;
     if (instance.market_image_test) {
         content.children[count] = preview3Image("market.image-fixture", preview3_fixture, "SDK 测试图：蓝绿紫橙四格");
@@ -582,21 +642,31 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
     if (instance.market_snapshot.result) |*result| {
         const snapshot = &instance.market_snapshot;
         const written = @min(result.summary.written, snapshot.rows.len);
-        const info = std.fmt.bufPrint(&content.market_info, "结果 {d} 项 · 第 {d}–{d} 项 · {s}", .{ result.summary.total, if (written == 0) 0 else snapshot.query.offset + 1, snapshot.query.offset + written, if (snapshot.query.offline) "仅缓存，不能安装" else if (result.stale) "过期缓存，不能安装" else "安装时重新核对版本" }) catch unreachable;
-        content.children[count] = changingLabel(&content.dynamic_ids[1], "market.summary", info);
+        const availability = if (snapshot.query.offline) "仅缓存，不能安装" else if (result.stale) "过期缓存，不能安装" else "安装时重新核对版本";
+        const info = if (written == 0)
+            std.fmt.bufPrint(&content.market_info, "匹配 {d} 项 · {s}", .{ result.summary.total, availability }) catch unreachable
+        else
+            std.fmt.bufPrint(&content.market_info, "显示第 {d}–{d} 项 · 共 {d} 项 · {s}", .{ snapshot.query.offset + 1, snapshot.query.offset + written, result.summary.total, availability }) catch unreachable;
+        content.children[count] = changingCaption(&content.dynamic_ids[1], "market.summary", info);
         count += 1;
         for (snapshot.rows[0..written], 0..) |*row, n| {
             const selected = instance.market_selected != null and instance.market_selected.? == n;
             const body = std.fmt.bufPrint(&content.market_rows[n], "{s}{s} · {s}", .{ if (selected) "已选： " else "", row.displayName(), row.sourceId() }) catch unreachable;
             const id = std.fmt.bufPrint(&content.market_row_ids[n], "market-row-{d}-{x}", .{ n, std.hash.Wyhash.hash(0, body) }) catch unreachable;
-            content.children[count] = action(id, body, commands[40 + n], idle);
-            // Native Button does not accept the SidebarItem selected field.
+            content.market_results[n] = styledAction(id, body, commands[40 + n], idle, if (selected) "primary" else "standard", 0);
+            content.market_results[n].min_width = .{ .present = 1, .value = 220 };
+        }
+        content.children[count] = if (written != 0)
+            grid("market.results", content.market_results[0..written], 2)
+        else
+            emptyState("market.no-match", "没有匹配的素材", "调整搜索词或筛选条件后重试。");
+        count += 1;
+        if (snapshot.query.offset != 0 or result.summary.total > snapshot.rows.len) {
+            content.market_paging[0] = styledAction("market.previous", "上一页", commands[33], idle and snapshot.query.offset >= snapshot.rows.len, "standard", 92);
+            content.market_paging[1] = styledAction("market.next", "下一页", commands[34], idle and snapshot.query.offset + written < result.summary.total and written != 0, "standard", 92);
+            content.children[count] = horizontal("market.paging", &content.market_paging);
             count += 1;
         }
-        content.market_paging[0] = action("market.previous", "上一页", commands[33], idle and snapshot.query.offset >= snapshot.rows.len);
-        content.market_paging[1] = action("market.next", "下一页", commands[34], idle and snapshot.query.offset + written < result.summary.total and written != 0);
-        content.children[count] = horizontal("market.paging", &content.market_paging);
-        count += 1;
         if (written != 0) {
             const choice = instance.market_selected;
             const selected = if (choice) |n| n < written else false;
@@ -632,9 +702,6 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
                     count += 1;
                 }
             }
-        } else if (written == 0) {
-            content.children[count] = label("market.no-match", "没有匹配的素材，请调整搜索词。");
-            count += 1;
         }
     }
     return count;
@@ -644,7 +711,7 @@ fn profileText(profile: library.Profile, buffer: []u8) []const u8 {
     return std.fmt.bufPrint(buffer, "{d}% · 置顶{s} · 低动态{s}", .{ profile.scale, if (profile.topmost) "开" else "关", if (profile.reduced) "开" else "关" }) catch unreachable;
 }
 
-fn profileCheck(key: []const u8, caption: []const u8, enabled: bool) ui.Node {
+fn checkField(key: []const u8, caption: []const u8, enabled: bool) ui.Node {
     var node = ui.node(ui.NodeKind.checkbox);
     node.id = abi.view(key);
     node.state = .{ .present = 1, .value = abi.view(key) };
@@ -703,8 +770,8 @@ fn fillLibraryTable(instance: *const Instance, content: *Content, end: usize) ui
 fn fillProfileControls(content: *Content, edit_enabled: bool, launch_enabled: bool) ui.Node {
     content.profile_group[0] = label("library.profile.help", "启动设置 · 仅影响新启动的实例（缩放 50%–200%）");
     content.profile_fields[0] = policyInput("library.scale", "缩放 (%)", "50–200", edit_enabled);
-    content.profile_fields[1] = profileCheck("library.topmost", "窗口置顶", edit_enabled);
-    content.profile_fields[2] = profileCheck("library.reduced", "低动态模式", edit_enabled);
+    content.profile_fields[1] = checkField("library.topmost", "窗口置顶", edit_enabled);
+    content.profile_fields[2] = checkField("library.reduced", "低动态模式", edit_enabled);
     content.profile_group[1] = horizontal("library.profile.fields", &content.profile_fields);
     content.profile_controls[0] = action("library.profile-default", "保存默认配置", commands[70], edit_enabled);
     content.profile_controls[1] = action("library.profile-alternate", "保存备用配置", commands[71], edit_enabled);
@@ -821,42 +888,43 @@ fn policyInput(key: []const u8, caption: []const u8, prompt: []const u8, enabled
     return node;
 }
 
+fn numberField(nodes: *[2]ui.Node, comptime key: []const u8, name: []const u8, enabled: bool) ui.Node {
+    nodes.* = .{ captionLabel(key ++ ".label", name), policyInput(key, name, "", enabled) };
+    return stack(key ++ ".field", nodes, 4);
+}
+
 fn fillPolicyEditor(content: *Content, enabled: bool) ui.Node {
-    content.policy_nodes[0] = ui.node(ui.NodeKind.checkbox);
-    content.policy_nodes[0].id = abi.view(policy_keys[0]);
-    content.policy_nodes[0].state = .{ .present = 1, .value = abi.view(policy_keys[0]) };
-    content.policy_nodes[0].text = .{ .present = 1, .value = abi.view("Pulse 插件激活时自动执行已保存计划") };
-    content.policy_nodes[0].enabled = .{ .present = 1, .value = @intFromBool(enabled) };
-    content.policy_nodes[1] = label("policy.launch-help", "每批数量（1–16）与批次间隔（100–3000 ms）");
-    content.policy_numeric[0] = policyInput(policy_keys[1], "每批数量", "每批数量", enabled);
-    content.policy_numeric[1] = policyInput(policy_keys[2], "间隔 ms", "间隔 ms", enabled);
-    content.policy_nodes[2] = horizontal("policy.launch-fields", content.policy_numeric[0..2]);
-    content.policy_nodes[3] = label("policy.stop-help", "协作退出（0–5000 ms）与总超时（不超过 10000 ms，至少多 2000 ms）");
-    content.policy_numeric[2] = policyInput(policy_keys[3], "协作退出 ms", "协作退出 ms", enabled);
-    content.policy_numeric[3] = policyInput(policy_keys[4], "总超时 ms", "总超时 ms", enabled);
-    content.policy_nodes[4] = horizontal("policy.stop-fields", content.policy_numeric[2..4]);
-    content.policy_nodes[5] = label("policy.entries-help", "最多八项；每行：素材ID:数量:配置（0默认/1备用）；builtin 为内置；空行忽略。");
-    for (0..8) |n| content.policy_nodes[6 + n] = policyInput(policy_keys[5 + n], policy_keys[5 + n], "例如 builtin:2:0", enabled);
-    content.policy_nodes[14] = ui.node(ui.NodeKind.checkbox);
-    content.policy_nodes[14].id = abi.view(policy_keys[13]);
-    content.policy_nodes[14].state = .{ .present = 1, .value = abi.view(policy_keys[13]) };
-    content.policy_nodes[14].text = .{ .present = 1, .value = abi.view("Pulse 主窗口全部最小化时自动隐藏（兼容回退，默认关闭）") };
-    content.policy_nodes[14].enabled = .{ .present = 1, .value = @intFromBool(enabled) };
-    content.policy_nodes[15] = ui.node(ui.NodeKind.checkbox);
-    content.policy_nodes[15].id = abi.view(policy_keys[14]);
-    content.policy_nodes[15].state = .{ .present = 1, .value = abi.view(policy_keys[14]) };
-    content.policy_nodes[15].text = .{ .present = 1, .value = abi.view("保留脱敏会话历史（16条 / 30天，默认关闭）") };
-    content.policy_nodes[15].enabled = .{ .present = 1, .value = @intFromBool(enabled) };
-    content.policy_nodes[16] = ui.node(ui.NodeKind.checkbox);
-    content.policy_nodes[16].id = abi.view(policy_keys[15]);
-    content.policy_nodes[16].state = .{ .present = 1, .value = abi.view(policy_keys[15]) };
-    content.policy_nodes[16].text = .{ .present = 1, .value = abi.view("本地完整崩溃转储（默认关闭，最多4实例；内存可能含隐私，勿直接分享）") };
-    content.policy_nodes[16].enabled = .{ .present = 1, .value = @intFromBool(enabled) };
-    content.policy_nodes[17] = label("policy.host-boundary", "Windows 登录启动由 Pulse 自身设置管理；无法识别宿主窗口时不自动隐藏。关闭历史记录后不新增记录。");
-    var node = ui.node(ui.NodeKind.stack);
-    node.id = abi.view("settings.policy-editor");
-    ui.withChildren(&node, &content.policy_nodes);
-    return node;
+    content.policy_nodes[0] = checkField(policy_keys[0], "激活桌宠插件时执行已保存的启动计划", enabled);
+    content.policy_numeric[0] = numberField(&content.policy_pairs[0], policy_keys[1], "每批数量（1–16）", enabled);
+    content.policy_numeric[1] = numberField(&content.policy_pairs[1], policy_keys[2], "批次间隔（100–3000 ms）", enabled);
+    content.policy_nodes[1] = grid("policy.launch-fields", content.policy_numeric[0..2], 2);
+    content.policy_numeric[2] = numberField(&content.policy_pairs[2], policy_keys[3], "协作退出（0–5000 ms）", enabled);
+    content.policy_numeric[3] = numberField(&content.policy_pairs[3], policy_keys[4], "退出总超时（最多 10000 ms）", enabled);
+    content.policy_nodes[2] = grid("policy.stop-fields", content.policy_numeric[2..4], 2);
+    content.policy_nodes[3] = captionLabel("policy.stop-help", "退出总超时须比协作退出至少多 2000 ms。");
+    content.policy_nodes[4] = captionLabel("policy.entries-help", "启动计划最多八项。填写「素材ID:数量:配置」，例如 builtin:2:0。配置 0 为默认，1 为备用。");
+    inline for (0..8) |n| {
+        const entry = std.fmt.comptimePrint("计划条目 {d}", .{n + 1});
+        content.policy_entries[n] = policyInput(policy_keys[5 + n], entry, entry, enabled);
+    }
+    content.policy_nodes[5] = grid("policy.entries", &content.policy_entries, 2);
+    content.policy_nodes[6] = checkField(policy_keys[13], "Pulse 主窗口全部最小化时隐藏桌宠", enabled);
+    content.policy_nodes[7] = checkField(policy_keys[14], "保留脱敏会话历史（最多 16 条，保留 30 天）", enabled);
+    content.policy_nodes[8] = checkField(policy_keys[15], "保留本地完整崩溃转储（最多 4 个实例，可能含隐私）", enabled);
+    content.policy_nodes[9] = captionLabel("policy.host-boundary", "Windows 登录启动由 Pulse 设置管理。无法识别宿主窗口时，桌宠保持原可见状态。");
+    return stack("settings.policy-editor", &content.policy_nodes, 8);
+}
+
+fn fillSettingsSections(content: *Content) []const ui.Node {
+    content.settings_sections = .{
+        content.children[0],
+        content.children[1],
+        settingsGroup("settings.download", "下载偏好", content.children[2..5]),
+        settingsGroup("settings.runtime", "运行限制", content.children[5..8]),
+        settingsGroup("settings.policy", "启动与退出", content.children[8..11]),
+        settingsGroup("settings.diagnostics-group", "诊断", content.children[11..13]),
+    };
+    return &content.settings_sections;
 }
 
 fn syncPolicyEditor(instance: *Instance) void {
@@ -879,41 +947,53 @@ fn syncPolicyEditor(instance: *Instance) void {
 fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     for (commands, 0..) |command, n| content.declared[n] = abi.view(command);
     const selected: usize = @backingInt(instance.section);
+    const active_ids = [_][]const u8{ "nav.library.active", "nav.running.active", "nav.market.active", "nav.global.active" };
     for (names, 0..) |name, n| {
-        content.navigation[n] = action(commands[n], name, commands[n], n != selected);
+        content.navigation[n] = styledAction(if (n == selected) active_ids[n] else commands[n], name, commands[n], true, if (n == selected) "primary" else "transparent", 100);
     }
-    var navigation = ui.node(ui.NodeKind.stack);
-    navigation.id = abi.view("navigation");
-    navigation.orientation = .{ .present = 1, .value = abi.view("horizontal") };
-    navigation.gap = .{ .present = 1, .value = 6 };
-    ui.withChildren(&navigation, &content.navigation);
-    content.children[0] = navigation;
+    content.children[0] = horizontal("navigation", &content.navigation);
     content.children[1] = label(commands[selected][10..], names[selected]);
     content.children[1].role = .{ .present = 1, .value = abi.view("section") };
     var count: usize = 3;
     switch (instance.section) {
         .library => {
-            content.children[2] = changingLabel(&content.dynamic_ids[0], "library.status", instance.library_status);
+            content.children[2] = changingCaption(&content.dynamic_ids[0], "library.status", instance.library_status);
             // Standalone full-width native input, not a label beside a
             // narrow field. Host chooses theme, font and icon rendering.
             content.children[3] = searchInput("library.query", "搜索素材", "搜索素材来源 ID、编号或标签");
             const idle = instance.tasks != null and instance.task_id == 0;
-            content.toolbar[0] = action("library.reload", if (instance.search_token != 0 and instance.dispatch != null) "刷新素材库" else "搜索", commands[7], idle);
-            content.toolbar[1] = action(if (instance.favorites_only) "library.favorites.on" else "library.favorites.off", if (instance.favorites_only) "仅收藏：开" else "仅收藏：关", commands[11], idle);
+            content.toolbar[0] = styledAction("library.reload", if (instance.search_token != 0 and instance.dispatch != null) "刷新" else "搜索", commands[7], idle, "standard", 92);
+            content.toolbar[1] = styledAction(if (instance.favorites_only) "library.favorites.on" else "library.favorites.off", if (instance.favorites_only) "仅看收藏 ✓" else "仅看收藏", commands[11], idle, if (instance.favorites_only) "primary" else "standard", 114);
             const can_clear = if (instance.panel) |panel| panel.table.set_states != null else false;
-            content.toolbar[2] = action("library.search-clear", "清空搜索", commands[28], idle and can_clear);
+            content.toolbar[2] = styledAction("library.search-clear", "清空搜索", commands[28], idle and can_clear, "transparent", 98);
             const fallback = instance.task_id != 0 and instance.timer == null;
-            content.toolbar[3] = action("library.poll", "手动检查", commands[8], fallback);
+            content.toolbar[3] = styledAction("library.poll", "检查任务", commands[8], fallback, "transparent", 102);
             content.children[4] = horizontal("library.toolbar", content.toolbar[0..if (fallback) @as(usize, 4) else 3]);
             count = 5;
+            const import_available = instance.dialogs != null and config.helper_sha256.len == 64 and config.runtime_sha256.len == 64;
+            if (import_available) {
+                const enabled = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and !runtimeBusy(instance) and instance.import_dialog == 0 and instance.picker_request == 0;
+                const embedded_picker = instance.dialog_v2_table != null and instance.picker_api != null and !instance.dialog_picker_disabled;
+                const buttons = fillImportToolbar(&content.import_toolbar, embedded_picker, enabled, instance.import_request != null, instance.task_id != 0 and !instance.import_cancel_requested);
+                content.children[count] = horizontal("library.import-toolbar", buttons);
+                count += 1;
+            }
             if (instance.library_loaded) {
                 const snapshot = &instance.library_snapshot;
                 const end = @min(snapshot.count, instance.library_offset + 16);
-                const line = std.fmt.bufPrint(&content.library_count, "共 {d} 项 · 匹配 {d} 项 · 显示 {d}–{d}", .{ snapshot.total, snapshot.count, if (snapshot.count == 0) 0 else instance.library_offset + 1, end }) catch unreachable;
-                content.children[5] = changingLabel(&content.dynamic_ids[1], "library.count", line);
-                count = 6;
+                if (snapshot.total != 0) {
+                    const line = if (snapshot.count == 0)
+                        std.fmt.bufPrint(&content.library_count, "0 项匹配 · 素材库共 {d} 项", .{snapshot.total}) catch unreachable
+                    else
+                        std.fmt.bufPrint(&content.library_count, "显示第 {d}–{d} 项 · 匹配 {d} 项 · 素材库共 {d} 项", .{ instance.library_offset + 1, end, snapshot.count, snapshot.total }) catch unreachable;
+                    content.children[count] = changingCaption(&content.dynamic_ids[1], "library.count", line);
+                    count += 1;
+                }
                 if (snapshot.count == 0) {
-                    content.children[count] = if (snapshot.total == 0) label("library.empty", "暂无本地素材；打包运行时后可导入。") else label("library.no-match", "没有匹配的素材，请调整搜索条件。");
+                    content.children[count] = if (snapshot.total == 0)
+                        emptyState("library.empty", "暂无本地素材", if (import_available) "导入本地素材，或在在线市场查找桌宠。" else "可以先到在线市场浏览桌宠。")
+                    else
+                        emptyState("library.no-match", "没有匹配的素材", "调整搜索词或关闭「仅看收藏」后重试。");
                     count += 1;
                 }
                 if (snapshot.count > 16) {
@@ -933,7 +1013,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     } else {
                         content.children[count] = fillLibraryTable(instance, content, end);
                         count += 1;
-                        content.children[count] = action("library.select", "打开所选素材", commands[88], instance.task_id == 0);
+                        content.children[count] = styledAction("library.select", "打开所选素材", commands[88], instance.task_id == 0, "primary", 142);
                         count += 1;
                     }
                     if (librarySelectedIndex(instance)) |index| {
@@ -950,10 +1030,10 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                         const live = runtimeBusy(instance) and instance.task_kind == .builtin_session;
                         const launch_enabled = config.helper_sha256.len == 64 and row.paired and instance.preference_edit == null and !instance.stop_requested and instance.task_id == 0 and (!runtimeBusy(instance) or (live and instance.session.canStart()));
                         const edit_enabled = config.runtime_sha256.len == 64 and instance.task_id == 0 and !runtimeBusy(instance) and instance.tasks != null and instance.dispatch != null;
-                        content.selected_toolbar[0] = action("library.start", "启动桌宠（默认配置）", commands[15], launch_enabled);
-                        content.selected_toolbar[1] = action("library.load-alternate", "读取备用配置", commands[90], row.alternate_profile != null and edit_enabled);
+                        content.selected_toolbar[0] = styledAction("library.start", "按默认配置启动", commands[15], launch_enabled, "primary", 150);
+                        content.selected_toolbar[1] = styledAction("library.load-alternate", "读取备用配置", commands[90], row.alternate_profile != null and edit_enabled, "standard", 136);
                         const can_show_remove = config.runtime_sha256.len == 64 and config.helper_sha256.len == 64 and instance.dialogs != null;
-                        content.selected_toolbar[2] = action("library.remove", "移除素材…", commands[23], maintenanceIdle(instance) and !instance.search_pending);
+                        content.selected_toolbar[2] = styledAction("library.remove", "移除素材…", commands[23], maintenanceIdle(instance) and !instance.search_pending, "danger", 116);
                         content.children[count] = horizontal("library.selected-toolbar", content.selected_toolbar[0..if (can_show_remove) @as(usize, 3) else 2]);
                         count += 1;
                         content.preference_toolbar[0] = inputField("library.tag", "标签", "输入标签（最多 64 字节）");
@@ -976,15 +1056,8 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     }
                 }
             }
-            if (instance.dialogs != null and config.helper_sha256.len == 64 and config.runtime_sha256.len == 64) {
-                const enabled = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and !runtimeBusy(instance) and instance.import_dialog == 0 and instance.picker_request == 0;
-                const embedded_picker = instance.dialog_v2_table != null and instance.picker_api != null and !instance.dialog_picker_disabled;
-                const buttons = fillImportToolbar(&content.import_toolbar, embedded_picker, enabled, instance.import_request != null, instance.task_id != 0 and !instance.import_cancel_requested);
-                content.children[count] = horizontal("library.import-toolbar", buttons);
-                count += 1;
-            }
             if (config.runtime_sha256.len == 64) {
-                content.children[count] = action(if (instance.library_advanced) "library.advanced.open" else "library.advanced.closed", if (instance.library_advanced) "收起高级管理" else "高级管理 · 恢复与隔离", commands[89], true);
+                content.children[count] = styledAction(if (instance.library_advanced) "library.advanced.open" else "library.advanced.closed", if (instance.library_advanced) "收起高级管理" else "恢复与隔离…", commands[89], true, "transparent", 136);
                 count += 1;
             }
             if (config.runtime_sha256.len == 64 and instance.library_advanced) {
@@ -1008,17 +1081,17 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
             }
         },
         .running => {
-            content.children[2] = changingLabel(&content.dynamic_ids[0], "running.status", instance.runtime_status);
+            content.children[2] = changingCaption(&content.dynamic_ids[0], "running.status", instance.runtime_status);
             const live = runtimeBusy(instance) and instance.task_kind == .builtin_session;
             const can_start = config.runtime_sha256.len == 64 and config.helper_sha256.len == 64 and !instance.stop_requested and ((!runtimeBusy(instance) and instance.runtime_checked) or (live and instance.session.canStart()));
-            content.toolbar[0] = action("running.start", if (live) "再启动内置桌宠" else "启动内置桌宠", commands[12], can_start);
-            content.toolbar[1] = action("running.stop", "停止全部桌宠", commands[13], live and !instance.stop_requested);
-            content.children[3] = searchInput("running.query", "搜索实例", "搜索素材来源、实例编号、素材编号或 PID");
-            content.children[4] = horizontal("running.toolbar", content.toolbar[0..2]);
+            content.toolbar[0] = styledAction("running.start", if (live) "再启动内置桌宠" else "启动内置桌宠", commands[12], can_start, "primary", 152);
+            content.toolbar[1] = styledAction("running.stop", "停止全部桌宠", commands[13], live and !instance.stop_requested, "standard", 140);
+            content.children[3] = horizontal("running.toolbar", content.toolbar[0..2]);
+            content.children[4] = searchInput("running.query", "搜索实例", "按来源、实例 ID、素材 ID 或 PID 搜索");
             const readable = if (instance.panel) |panel| panel.table.get_state != null else false;
             const clearable = if (instance.panel) |panel| panel.table.set_states != null else false;
-            content.running_search_toolbar[0] = action("running.search", "搜索", commands[29], readable);
-            content.running_search_toolbar[1] = action("running.search-clear", "清空搜索", commands[30], clearable);
+            content.running_search_toolbar[0] = styledAction("running.search", "搜索", commands[29], readable, "standard", 92);
+            content.running_search_toolbar[1] = styledAction("running.search-clear", "清空搜索", commands[30], clearable, "transparent", 98);
             content.children[5] = horizontal("running.search-actions", if (instance.running_search_token != 0) content.running_search_toolbar[1..2] else &content.running_search_toolbar);
             count = 6;
             if (live) {
@@ -1040,12 +1113,15 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     .running => "首帧已确认",
                     .stopping => "正在退出",
                 }, instance.session.ready.load(.acquire), instance.session.owned.load(.acquire), instance.session.denied.load(.acquire), instance.session.working_set.load(.acquire) / 1024, instance.session.private_bytes.load(.acquire) / 1024, reason }) catch unreachable;
-                content.children[6] = changingLabel(&content.dynamic_ids[1], "running.metrics", status);
+                content.children[6] = changingCaption(&content.dynamic_ids[1], "running.metrics", status);
                 count = 7;
                 if (instance.running_rows.count != 0) {
                     content.stop_toolbar[0] = inputField("running.stop-id", "实例 ID", "输入实例 ID");
                     const can_stop = !instance.stop_requested and instance.session.pending_stop.load(.acquire) == 0 and instance.session.stopping_id.load(.acquire) == 0 and phase == .running and !instance.session.pending_start.load(.acquire);
-                    content.stop_toolbar[1] = action("running.stop-one", "停止指定实例", commands[14], can_stop);
+                    content.stop_toolbar[0].min_width = .{ .present = 1, .value = 160 };
+                    content.stop_toolbar[0].max_width = .{ .present = 1, .value = 240 };
+                    content.stop_toolbar[0].flex = .{ .present = 1, .value = 1 };
+                    content.stop_toolbar[1] = styledAction("running.stop-one", "停止指定实例", commands[14], can_stop, "standard", 142);
                     content.children[count] = horizontal("running.stop-toolbar", &content.stop_toolbar);
                     count += 1;
                     const total = runningMatchCount(instance);
@@ -1074,24 +1150,29 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                             },
                             .stopping => "正在退出",
                         };
-                        const body = if (item.metrics) |metrics| blk: {
-                            if (metrics.cpu_core_percent) |cpu| {
-                                break :blk std.fmt.bufPrint(&content.row_text[slot], "ID {d} · {s} · 素材 {d} · {s} · PID {d} · CPU {d:.1}% · 工作集 {d} KiB · 私有 {d} KiB · 句柄 {d}", .{ item.id, name, item.asset_id, state, metrics.pid, cpu, metrics.working_set / 1024, metrics.private_bytes / 1024, metrics.handles }) catch unreachable;
-                            }
-                            break :blk std.fmt.bufPrint(&content.row_text[slot], "ID {d} · {s} · 素材 {d} · {s} · PID {d} · CPU — · 工作集 {d} KiB · 私有 {d} KiB · 句柄 {d}", .{ item.id, name, item.asset_id, state, metrics.pid, metrics.working_set / 1024, metrics.private_bytes / 1024, metrics.handles }) catch unreachable;
-                        } else std.fmt.bufPrint(&content.row_text[slot], "ID {d} · {s} · 素材 {d} · {s} · 暂无资源采样", .{ item.id, name, item.asset_id, state }) catch unreachable;
+                        var asset_buffer: [48]u8 = undefined;
+                        const asset = if (item.asset_id == library.builtin_asset_id) "" else std.fmt.bufPrint(&asset_buffer, " · 素材 #{d}", .{item.asset_id}) catch unreachable;
+                        const row = &content.row_text[slot];
+                        const heading = std.fmt.bufPrint(row, "实例 #{d} · {s}{s} · {s}\n", .{ item.id, name, asset, state }) catch unreachable;
+                        const resources = if (item.metrics) |metrics| blk: {
+                            var cpu_buffer: [40]u8 = undefined;
+                            const cpu = if (metrics.cpu_core_percent) |value| std.fmt.bufPrint(&cpu_buffer, "{d:.1}%", .{value}) catch unreachable else "—";
+                            break :blk std.fmt.bufPrint(row[heading.len..], "PID {d} · CPU {s} · 工作集 {d} KiB · 私有 {d} KiB · 句柄 {d}", .{ metrics.pid, cpu, metrics.working_set / 1024, metrics.private_bytes / 1024, metrics.handles }) catch unreachable;
+                        } else std.fmt.bufPrint(row[heading.len..], "暂无资源采样", .{}) catch unreachable;
                         const profile = instance.running_rows.sources[n];
-                        const full_body = if (profile.id == item.id) blk: {
+                        var length = heading.len + resources.len;
+                        if (profile.id == item.id) {
                             const initial = profileText(profile.profile, &content.profile_line[slot]);
-                            const tail = std.fmt.bufPrint(content.row_text[slot][body.len..], " · 启动配置 {s}", .{initial}) catch unreachable;
-                            break :blk content.row_text[slot][0 .. body.len + tail.len];
-                        } else body;
+                            const tail = std.fmt.bufPrint(row[length..], " · 启动配置 {s}", .{initial}) catch unreachable;
+                            length += tail.len;
+                        }
+                        const full_body = row[0..length];
                         const id = std.fmt.bufPrint(&content.row_ids[slot], "instance-{x}-{x}", .{ item.id, std.hash.Wyhash.hash(0, full_body) }) catch unreachable;
                         content.children[count] = label(id, full_body);
                         count += 1;
                     }
                     const line = std.fmt.bufPrint(&content.running_count, "匹配 {d} / {d} 个实例 · 显示 {d}–{d}", .{ total, instance.running_rows.count, if (total == 0) 0 else offset + 1, offset + rendered }) catch unreachable;
-                    content.children[count_index] = changingLabel(&content.running_count_id, "running.count", line);
+                    content.children[count_index] = changingCaption(&content.running_count_id, "running.count", line);
                     if (total > running_page_size) {
                         content.running_paging[0] = action("running.previous", "上一页", commands[53], offset != 0);
                         content.running_paging[1] = action("running.next", "下一页", commands[54], offset + rendered < total);
@@ -1103,10 +1184,10 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                         count += 1;
                     }
                     const can_visibility = phase == .running and !instance.stop_requested and !instance.session.visibility_busy.load(.acquire) and instance.session.visibility_id.load(.acquire) == 0;
-                    content.visibility_actions[0] = action("running.hide", "隐藏指定 ID", commands[83], can_visibility and readable);
-                    content.visibility_actions[1] = action("running.show", "显示指定 ID", commands[84], can_visibility and readable);
-                    content.visibility_actions[2] = action("running.hide-all", "全部隐藏", commands[85], can_visibility);
-                    content.visibility_actions[3] = action("running.show-all", "全部显示", commands[86], can_visibility);
+                    content.visibility_actions[0] = styledAction("running.hide", "隐藏指定实例", commands[83], can_visibility and readable, "standard", 126);
+                    content.visibility_actions[1] = styledAction("running.show", "显示指定实例", commands[84], can_visibility and readable, "standard", 126);
+                    content.visibility_actions[2] = styledAction("running.hide-all", "全部隐藏", commands[85], can_visibility, "transparent", 104);
+                    content.visibility_actions[3] = styledAction("running.show-all", "全部显示", commands[86], can_visibility, "transparent", 104);
                     content.children[count] = horizontal("running.visibility", &content.visibility_actions);
                     count += 1;
                 }
@@ -1121,45 +1202,42 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
         },
         .market => count = fillMarket(instance, content),
         .global => {
-            const value = if (instance.loaded) std.fmt.bufPrint(&content.value, "已保存的下载并发偏好：{d}（1–8）", .{instance.saved}) catch unreachable else "下载并发偏好尚未确认";
+            const value = if (instance.loaded) std.fmt.bufPrint(&content.value, "当前下载并发 {d}（允许 1–8）", .{instance.saved}) catch unreachable else "下载并发偏好尚未确认";
             content.children[2] = changingLabel(&content.dynamic_ids[2], "settings.value", value);
-            content.children[3] = changingLabel(&content.dynamic_ids[3], "settings.status", instance.status);
-            content.toolbar[0] = action("settings.refresh", "重新读取", commands[4], instance.resources != null and instance.pending == 0);
-            content.toolbar[1] = action("settings.less", "减少并发", commands[5], instance.loaded and instance.pending == 0 and instance.saved > 1);
-            content.toolbar[2] = action("settings.more", "增加并发", commands[6], instance.loaded and instance.pending == 0 and instance.saved < 8);
+            content.children[3] = changingCaption(&content.dynamic_ids[3], "settings.status", instance.status);
+            content.toolbar[0] = styledAction("settings.refresh", "重新读取", commands[4], instance.resources != null and instance.pending == 0, "transparent", 100);
+            content.toolbar[1] = styledAction("settings.less", "减少并发", commands[5], instance.loaded and instance.pending == 0 and instance.saved > 1, "standard", 100);
+            content.toolbar[2] = styledAction("settings.more", "增加并发", commands[6], instance.loaded and instance.pending == 0 and instance.saved < 8, "standard", 100);
             content.children[4] = horizontal("settings.toolbar", content.toolbar[0..3]);
             const limits = instance.runtime_limits;
-            const limits_text = std.fmt.bufPrint(&content.limits_text, "实例上限 {d} · 提交内存预算 {d} MiB · 有效上限 {d}（每实例预留 {d} MiB；系统资源不足仍会拒绝）", .{ limits.instances, limits.commit_mib, instance.runtime_policy.effective(limits), if (instance.runtime_policy.capture_crashes) @as(usize, 256) else @as(usize, 128) }) catch unreachable;
-            content.children[5] = changingLabel(&content.limits_id, "settings.limits", limits_text);
+            const limits_text = std.fmt.bufPrint(&content.limits_text, "当前有效上限 {d} 个，每个实例预留 {d} MiB。系统资源不足时会拒绝启动。保存后在下次启动生效。", .{ instance.runtime_policy.effective(limits), if (instance.runtime_policy.capture_crashes) @as(usize, 256) else @as(usize, 128) }) catch unreachable;
+            content.children[5] = changingCaption(&content.limits_id, "settings.limits", limits_text);
             const editable = instance.loaded and instance.pending == 0 and !runtimeBusy(instance);
-            content.limits_inputs[0] = inputField("settings.instances", "实例上限", "实例上限（1–1024）");
-            content.limits_inputs[0].enabled = .{ .present = 1, .value = @intFromBool(editable) };
-            content.limits_inputs[1] = inputField("settings.commit-mib", "内存预算 MiB", "内存预算 MiB（128–131072）");
-            content.limits_inputs[1].enabled = .{ .present = 1, .value = @intFromBool(editable) };
-            content.children[6] = horizontal("settings.runtime-inputs", &content.limits_inputs);
-            content.children[7] = action("settings.limits-save", "保存运行限制（下次启动生效）", commands[52], editable);
+            content.limits_inputs[0] = numberField(&content.limits_pairs[0], "settings.instances", "实例上限（1–1024）", editable);
+            content.limits_inputs[1] = numberField(&content.limits_pairs[1], "settings.commit-mib", "内存预算（128–131072 MiB）", editable);
+            content.children[6] = grid("settings.runtime-inputs", &content.limits_inputs, 2);
+            content.children[7] = styledAction("settings.limits-save", "保存运行限制", commands[52], editable, "primary", 136);
             const policy_editable = editable and instance.task_id == 0 and !instance.auto_pending and !instance.policy_sync_failed;
             if (nativePolicyEditor(instance)) {
-                content.children[8] = label("settings.policy-help", "启动与退出策略（保存后下次会话生效；自动默认关闭）");
+                content.children[8] = captionLabel("settings.policy-help", "保存后在下次会话生效。");
                 content.children[9] = fillPolicyEditor(content, policy_editable);
             } else {
-                content.children[8] = label("settings.policy-help", "旧宿主兼容编辑：自动(0/1):每批数量:间隔ms:协作退出ms:总超时ms[:最小化隐藏0/1][:保留历史0/1]；追加 ;素材ID:数量:配置(0默认/1备用)。");
+                content.children[8] = captionLabel("settings.policy-help", "旧版宿主使用单行格式。填写自动(0/1):每批数量:间隔ms:协作退出ms:总超时ms[:最小化隐藏0/1][:保留历史0/1]，再以分号追加素材ID:数量:配置(0默认/1备用)。");
                 content.children[9] = policyInput("settings.runtime-policy", "启动与退出策略", "0:4:500:2000:10000;builtin:2:0", policy_editable);
             }
-            content.policy_actions[0] = action("settings.policy-save", "保存启动与退出策略", commands[80], policy_editable);
-            content.policy_actions[1] = action("settings.plan-start", "执行已保存启动计划", commands[81], policy_editable and instance.runtime_policy.count != 0);
-            content.policy_actions[2] = action("settings.plan-cancel", "取消剩余启动", commands[82], runtimeBusy(instance) and instance.session.plan_active.load(.acquire));
+            content.policy_actions[0] = styledAction("settings.policy-save", "保存策略", commands[80], policy_editable, "primary", 104);
+            content.policy_actions[1] = styledAction("settings.plan-start", "执行已保存计划", commands[81], policy_editable and instance.runtime_policy.count != 0, "standard", 152);
+            content.policy_actions[2] = styledAction("settings.plan-cancel", "取消剩余启动", commands[82], runtimeBusy(instance) and instance.session.plan_active.load(.acquire), "transparent", 138);
             content.children[10] = horizontal("settings.policy-actions", &content.policy_actions);
-            content.children[11] = action("settings.diagnostics", "导出脱敏诊断到临时目录", commands[87], instance.active and instance.task_id == 0 and instance.tasks != null and instance.dispatch != null);
+            content.children[11] = styledAction("settings.diagnostics", "导出脱敏诊断", commands[87], instance.active and instance.task_id == 0 and instance.tasks != null and instance.dispatch != null, "standard", 140);
             const diagnostic = if (instance.diagnostic_pending) "正在导出脱敏诊断" else if (instance.diagnostic_path_len != 0) instance.diagnostic_path[0..instance.diagnostic_path_len] else instance.diagnostic_status;
-            content.children[12] = changingLabel(&content.diagnostic_id, "settings.diagnostic-status", diagnostic);
+            content.children[12] = changingCaption(&content.diagnostic_id, "settings.diagnostic-status", diagnostic);
             count = 13;
         },
     }
-    content.root = ui.node(ui.NodeKind.stack);
-    content.root.id = abi.view("companion.root");
-    content.root.gap = .{ .present = 1, .value = 8 };
-    ui.withChildren(&content.root, content.children[0..count]);
+    const sections = if (instance.section == .global) fillSettingsSections(content) else content.children[0..count];
+    content.root = stack("companion.root", sections, 12);
+    content.root.max_width = .{ .present = 1, .value = 920 };
     tree.* = std.mem.zeroes(ui.Tree);
     tree.size = @sizeOf(ui.Tree);
     tree.root = &content.root;
@@ -1195,9 +1273,14 @@ fn rejectMarketImage(instance: *Instance) void {
 fn refresh(instance: *Instance) void {
     if (!instance.active) return;
     if (instance.panel) |*panel| {
-        var content: Content = undefined;
+        const content = allocator.create(Content) catch {
+            instance.library_render_ok = false;
+            diag.event("companion-render-allocation-failed");
+            return;
+        };
+        defer allocator.destroy(content);
         var tree: ui.Tree = undefined;
-        fill(instance, &content, &tree);
+        fill(instance, content, &tree);
         instance.library_render_ok = false;
         panel.update(&tree) catch |err| {
             diag.status("companion-update-failed", @intFromError(err));
@@ -1209,7 +1292,7 @@ fn refresh(instance: *Instance) void {
                 } else if (instance.market_snapshot.result != null) {
                     instance.market_render_rejected = true;
                 } else return;
-                fill(instance, &content, &tree);
+                fill(instance, content, &tree);
                 panel.update(&tree) catch |fallback_err| {
                     diag.status("companion-market-fallback-failed", @intFromError(fallback_err));
                     return;
@@ -1220,7 +1303,7 @@ fn refresh(instance: *Instance) void {
                 instance.remove_after_scan = null;
                 instance.library_selected = null;
                 instance.library_detail = null;
-                fill(instance, &content, &tree);
+                fill(instance, content, &tree);
                 panel.update(&tree) catch |fallback_err| {
                     diag.status("companion-library-fallback-failed", @intFromError(fallback_err));
                     return;
@@ -3441,7 +3524,9 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
         if (n >= 88 and instance.section != .library) return;
         switch (n) {
             0, 1, 2, 3 => {
-                instance.section = @fromBackingInt(@intCast(n));
+                const section: Section = @fromBackingInt(@intCast(n));
+                if (instance.section == section) return;
+                instance.section = section;
                 if (instance.section != .library) instance.remove_after_scan = null;
                 diag.status("companion-navigation", n);
                 if (instance.section != .market) {
@@ -3736,9 +3821,10 @@ fn open(instance: *Instance) host_mod.Error!void {
     if (instance.picker_api) |table| {
         if (table.pick_folders == null or table.cancel == null) instance.picker_api = null;
     }
-    var content: Content = undefined;
+    const content = allocator.create(Content) catch return error.Initialization;
+    defer allocator.destroy(content);
     var tree: ui.Tree = undefined;
-    fill(instance, &content, &tree);
+    fill(instance, content, &tree);
     instance.pages = try instance.host.queryOptional(raw.PulseSettingsPagesV1, raw.PULSE_SETTINGS_PAGES_INTERFACE_NAME, raw.PULSE_SETTINGS_PAGES_VERSION_1);
     errdefer close(instance) catch |err| diag.status("companion-open-cleanup", @intFromError(err));
     if (instance.pages) |pages| {
@@ -3899,9 +3985,15 @@ test "four section tree declares only real navigation and preference actions" {
         try std.testing.expectEqual(@as(u32, commands.len), tree.command_count);
         try std.testing.expectEqual(@as(u32, 4), content.children[0].children.count);
         try std.testing.expectEqualStrings(commands[n][10..], abi.slice(content.children[1].id).?);
+        try std.testing.expectEqual(@as(i64, 920), content.root.max_width.value);
+        for (content.navigation, 0..) |button, k| {
+            try std.testing.expectEqualStrings(commands[k], abi.slice(button.command.value).?);
+            try std.testing.expectEqualStrings(if (k == n) "primary" else "transparent", abi.slice(button.kind.value).?);
+            try std.testing.expectEqual(@as(u32, 1), button.enabled.value);
+        }
         const expected: u32 = switch (instance.section) {
             .library => 5,
-            .global => 13,
+            .global => 6,
             .running => 6,
             .market => 8,
         };
@@ -3918,8 +4010,8 @@ test "running view exposes bounded start and stop actions" {
     var tree: ui.Tree = undefined;
     fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 6), content.root.children.count);
-    try std.testing.expectEqual(ui.NodeKind.text_input, content.children[3].type);
-    try std.testing.expectEqual(@as(u32, 2), content.children[4].children.count);
+    try std.testing.expectEqual(ui.NodeKind.text_input, content.children[4].type);
+    try std.testing.expectEqual(@as(u32, 2), content.children[3].children.count);
     try std.testing.expectEqualStrings(commands[12], abi.slice(content.toolbar[0].command.value).?);
     try std.testing.expectEqualStrings(commands[13], abi.slice(content.toolbar[1].command.value).?);
     try std.testing.expectEqual(@as(u32, 0), content.toolbar[0].enabled.value);
@@ -3950,6 +4042,7 @@ test "library table bounds rows and selection to the visible page" {
     instance.* = .{ .host = undefined };
     instance.library_loaded = true;
     instance.library_snapshot.count = 17;
+    instance.library_snapshot.total = 17;
     for (instance.library_snapshot.rows[0..17], 0..) |*row, n| {
         row.* = .{ .id = n + 1, .source = @splat('a'), .len = 1, .paired = true };
     }
@@ -4001,9 +4094,10 @@ test "empty library hides pagination and manual poll unless needed" {
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     fill(instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 7), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 6), content.root.children.count);
     try std.testing.expectEqual(@as(u32, 3), content.children[4].children.count);
-    try std.testing.expectEqualStrings("library.empty", abi.slice(content.children[6].id).?);
+    try std.testing.expectEqual(ui.NodeKind.empty_state, content.children[5].type);
+    try std.testing.expectEqualStrings("library.empty", abi.slice(content.children[5].id).?);
     instance.library_snapshot.total = 1;
     fill(instance, &content, &tree);
     try std.testing.expectEqualStrings("library.no-match", abi.slice(content.children[6].id).?);
@@ -4129,7 +4223,7 @@ test "search fields retain natural single-line layout and accessible labels" {
     for ([_]Section{ .library, .running, .market }) |section| {
         instance.section = section;
         fill(instance, &content, &tree);
-        const search = &content.children[3];
+        const search = &content.children[if (section == .running) 4 else 3];
         try std.testing.expectEqual(ui.NodeKind.text_input, search.type);
         try expectInputLabels(search.*);
         try std.testing.expectEqual(@as(u32, 1), search.placeholder.present);
@@ -4209,14 +4303,30 @@ test "populated market rows survive navigation without forbidden button attribut
         fill(instance, &content, &tree);
         try expectInputLabels(content.root);
         if (section == .market) {
-            try std.testing.expectEqualStrings("已选： Cat · cat", abi.slice(content.children[9].text.value).?);
-            try std.testing.expectEqual(@as(u32, 0), content.children[9].selected.present);
+            const results = &content.children[9];
+            try std.testing.expectEqual(ui.NodeKind.grid, results.type);
+            try std.testing.expectEqual(@as(i64, 2), results.columns.value);
+            try std.testing.expectEqual(@as(u32, 1), results.children.count);
+            const row = results.children.data[0];
+            try std.testing.expectEqualStrings("已选： Cat · cat", abi.slice(row.text.value).?);
+            try std.testing.expectEqualStrings("primary", abi.slice(row.kind.value).?);
+            try std.testing.expectEqualStrings(commands[40], abi.slice(row.command.value).?);
+            try std.testing.expectEqual(@as(u32, 0), row.selected.present);
         }
     }
     instance.market_render_rejected = true;
     fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 8), content.root.children.count);
     try std.testing.expect(instance.market_snapshot.result != null);
+
+    instance.market_render_rejected = false;
+    instance.market_selected = null;
+    instance.market_snapshot.result.?.summary.written = 0;
+    instance.market_snapshot.result.?.summary.total = 0;
+    fill(instance, &content, &tree);
+    try std.testing.expectEqual(@as(u32, 10), content.root.children.count);
+    try std.testing.expectEqual(ui.NodeKind.empty_state, content.children[9].type);
+    try std.testing.expectEqualStrings("market.no-match", abi.slice(content.children[9].id).?);
 }
 
 test "market panel requires explicit admission and has no implicit install" {
@@ -4227,7 +4337,7 @@ test "market panel requires explicit admission and has no implicit install" {
     var tree: ui.Tree = undefined;
     fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 8), content.root.children.count);
-    try std.testing.expectEqual(@as(u32, 3), content.children[6].children.count);
+    try std.testing.expectEqual(@as(u32, 3), content.children[5].children.count);
     try std.testing.expectEqualStrings(commands[55], abi.slice(content.market_filter_actions[0].command.value).?);
     try std.testing.expectEqualStrings("market.query", abi.slice(content.children[3].id).?);
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[0].enabled.value);
@@ -4237,7 +4347,7 @@ test "market panel requires explicit admission and has no implicit install" {
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[3].enabled.value);
     try std.testing.expectEqualStrings(commands[78], abi.slice(content.market_actions[4].command.value).?);
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[4].enabled.value);
-    try std.testing.expect(std.mem.indexOf(u8, abi.slice(content.children[5].text.value).?, library.market_gallery_url) != null);
+    try std.testing.expect(std.mem.indexOf(u8, abi.slice(content.children[6].text.value).?, library.market_gallery_url) != null);
     try std.testing.expectEqual(@as(u32, 0), content.children[3].glyph.present);
     try std.testing.expectEqual(@as(u32, 0), content.children[3].flex.present);
     try std.testing.expectEqual(@as(u32, 30), tree.state_count);
@@ -4381,7 +4491,15 @@ test "native policy fields use canonical booleans and reject injected records" {
     var content: Content = undefined;
     const editor = fillPolicyEditor(&content, false);
     try expectInputLabels(editor);
-    try std.testing.expectEqual(@as(u32, 18), editor.children.count);
+    try std.testing.expectEqual(@as(u32, 10), editor.children.count);
+    const entries = content.policy_nodes[5];
+    try std.testing.expectEqual(ui.NodeKind.grid, entries.type);
+    try std.testing.expectEqual(@as(i64, 2), entries.columns.value);
+    try std.testing.expectEqual(@as(u32, 8), entries.children.count);
+    for (content.policy_entries, 0..) |entry, n| {
+        try std.testing.expectEqualStrings(policy_keys[5 + n], abi.slice(entry.state.value).?);
+        try std.testing.expectEqual(@as(u32, 0), entry.enabled.value);
+    }
     try std.testing.expectEqual(ui.NodeKind.checkbox, content.policy_nodes[0].type);
     try std.testing.expectEqual(@as(u32, 0), content.policy_nodes[0].enabled.value);
 }

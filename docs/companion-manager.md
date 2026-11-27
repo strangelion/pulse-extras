@@ -474,3 +474,32 @@ No image resource is synthesized or loaded from unverified files. Actual host
 table rendering, keyboard/selection event behavior, DPI and visual acceptance
 must be verified on Pulse; this change does not claim thumbnail support or
 real-host acceptance.
+
+### C3 native desktop-pet layout
+
+The library distinguishes an empty collection from a filter with no matches.
+The running view separates instance identity and status from resource metrics.
+The market uses a two-column result grid where there is room. The global
+settings page groups downloads, runtime limits, startup and exit, and
+diagnostics. Number fields keep visible labels when filled, and the eight
+startup plan entries use two columns on wide pages. Commands, persisted keys
+and the single-field policy editor for older hosts remain compatible.
+Verify light and dark themes, narrow widths, keyboard navigation and long
+Chinese text in the final isolated installed-host round.
+
+### Future dialogue integration
+
+Reserve a Companion-owned boundary for a desktop-pet dialogue bubble.
+Built-in lines are the initial values for each trigger. Users may edit and
+save their own lines or restore the defaults. A future assistant adapter
+takes only the selected line and the user's instruction after an explicit
+request. It returns a plain-text draft associated with that request and the
+original revision. The editor previews the draft and applies it only on
+user confirmation. Closing the editor or changing the active revision makes
+outstanding results stale. Offline and provider failures leave saved text
+editable and intact.
+
+The installed Pulse 1.0.62 native catalog exposes no public assistant
+conversation interface. A future implementation can attach a public Pulse
+adapter when available, or use a separately configured provider. Keep
+assistant replies as text and do not interpret them as actions or settings.
