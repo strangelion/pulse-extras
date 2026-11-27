@@ -357,3 +357,22 @@ paging and case-sensitive search do not start a process. A new navigation
 clears the filter and page, and stale data is explicitly read-only. Never
 construct CLI targets from these display strings. Full history, diff, refs
 and file selection are not yet implemented; exact candidate CI is pending.
+
+### P3A consolidated local workspace
+
+The serialized host Query slot admits one immutable detail request or
+summary, never both; terminal release precedes publication, cancellation
+suppresses results, and navigation/refresh/revoke clears detail data instead
+of putting it in the recent cache. An exact command grammar is shared by
+construction and ordinary local-session admission. Full commit IDs, literal
+pathspecs, JJ root-file filesets and ordinary SVN local targets are validated;
+the initial recorded JJ operation pins both summary and all subsequent
+details. Advanced requests return bounded text pages with explicit binary,
+encoding, resource-limit and unsupported states. History rows can populate
+the revision input without execution; right-click a single fresh file
+populates the matching trusted workspace's path input without executing a
+file query. A saved-policy fingerprint change requires explicit re-review
+before old saved approvals can be used with the expanded grammar. Git
+partial-clone/filters and SVN non-pristine/server history limitations are
+documented in the roadmap and runbook. No host-private interface or generic
+CLI. Actual installed rendering and exact new CI remain pending.

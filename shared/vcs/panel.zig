@@ -37,6 +37,25 @@ pub const command_file_filter = "vcs.files.search";
 pub const command_file_prev = "vcs.files.prev";
 pub const command_file_next = "vcs.files.next";
 
+pub const state_detail_path = "vcs.detail.path";
+pub const state_detail_revision = "vcs.detail.revision";
+pub const state_history_offset = "vcs.detail.offset";
+pub const detail_kinds = [_]contract.DetailKind{ .history, .file_history, .revision_info, .working_diff, .staged_diff, .revision_diff, .content, .refs, .workspaces, .operations, .local_info, .properties };
+pub const detail_actions = [_][]const u8{ "vcs.detail.history", "vcs.detail.file-history", "vcs.detail.revision-info", "vcs.detail.working-diff", "vcs.detail.staged-diff", "vcs.detail.revision-diff", "vcs.detail.content", "vcs.detail.refs", "vcs.detail.workspaces", "vcs.detail.operations", "vcs.detail.local-info", "vcs.detail.properties" };
+pub const pick_actions = [_][]const u8{ "vcs.pick.0", "vcs.pick.1", "vcs.pick.2", "vcs.pick.3", "vcs.pick.4", "vcs.pick.5", "vcs.pick.6", "vcs.pick.7" };
+pub const revision_pick_actions = [_][]const u8{ "vcs.rev.0", "vcs.rev.1", "vcs.rev.2", "vcs.rev.3", "vcs.rev.4", "vcs.rev.5", "vcs.rev.6", "vcs.rev.7" };
+pub const command_detail_prev = "vcs.detail.prev";
+pub const command_detail_next = "vcs.detail.next";
+pub const advanced_commands = detail_actions ++ pick_actions ++ revision_pick_actions ++ [_][]const u8{ command_detail_prev, command_detail_next };
+pub const full_command_count = 17 + advanced_commands.len;
+
+pub fn isDetailCommand(name: []const u8) bool {
+    for (advanced_commands) |command| {
+        if (std.mem.eql(u8, command, name)) return true;
+    }
+    return false;
+}
+
 pub fn isFileCommand(name: []const u8) bool {
     return std.mem.eql(u8, name, command_file_filter) or std.mem.eql(u8, name, command_file_prev) or std.mem.eql(u8, name, command_file_next);
 }
@@ -73,6 +92,15 @@ pub const View = struct {
     file_page: usize = 0,
     file_filter: contract.Text = .{},
     file_controls: bool = false,
+    detail_supported: bool = false,
+    detail_pending: bool = false,
+    detail_scope: ?*const contract.DetailRequest = null,
+    detail_data: ?*const contract.DetailText = null,
+    detail_error: ?contract.Error = null,
+    detail_page: usize = 0,
+    detail_path: identity.Path = .{},
+    detail_revision: contract.Text = .{},
+    history_offset: contract.Text = .{},
     workspace: ?identity.Workspace = null,
     snapshot: ?contract.Snapshot = null,
     stale: bool = false,
@@ -246,14 +274,14 @@ fn failureLabel(lang: Language, err: contract.Error) []const u8 {
 /// All visible data is copied; no references into the View or cache remain.
 /// build is read-only; buildInteractive declares the fixed owner commands.
 pub const Content = struct {
-    const capacity = 64;
+    const capacity = 96;
     const line_bytes = identity.max_path_bytes + 64;
     lines: [capacity][line_bytes]u8 = undefined,
     nodes: [capacity]ui.Node = undefined,
     len: usize = 0,
     root: ui.Node = undefined,
-    commands: [17]abi.StringView = undefined,
-    states: [2]ui.State = undefined,
+    commands: [full_command_count]abi.StringView = undefined,
+    states: [5]ui.State = undefined,
 
     fn add(self: *Content, id: []const u8, label: []const u8, value: []const u8) void {
         std.debug.assert(self.len < capacity);
@@ -325,6 +353,7 @@ pub const Content = struct {
                 self.add("vcs.freshness", "", if (view.stale) loc(lang, "Previous data — stale", "历史数据（已过期）") else availabilityLabel(lang, snapshot.availability));
                 self.add("vcs.reference", loc(lang, "Reference: ", "引用："), if (snapshot.reference.slice().len == 0) loc(lang, "Not reported", "未报告") else snapshot.reference.slice());
                 self.add("vcs.revision", loc(lang, "Revision: ", "版本："), if (snapshot.revision) |revision| revision.slice() else loc(lang, "Not reported", "未报告"));
+                if (snapshot.operation.len != 0) self.add("vcs.operation", loc(lang, "Recorded operation: ", "已记录操作："), snapshot.operation.slice());
                 self.count(lang, "vcs.staged", loc(lang, "Staged: ", "暂存："), snapshot.changes.staged, snapshot.counts.staged, snapshot.availability);
                 self.count(lang, "vcs.modified", loc(lang, "Modified: ", "修改："), snapshot.changes.modified, snapshot.counts.modified, snapshot.availability);
                 self.count(lang, "vcs.untracked", loc(lang, "Untracked: ", "未跟踪："), snapshot.changes.untracked, snapshot.counts.untracked, snapshot.availability);
@@ -336,6 +365,9 @@ pub const Content = struct {
                 self.count(lang, "vcs.behind", loc(lang, "Behind: ", "落后："), snapshot.changes.behind, snapshot.counts.behind, snapshot.availability);
                 if (snapshot.detail.slice().len != 0) self.add("vcs.detail", "", snapshot.detail.slice());
                 if (!view.approval_required and snapshot.files.available) self.addFiles(lang, view, &snapshot.files);
+                if (view.detail_supported and !view.approval_required and !view.stale and view.phase == .ready) {
+                    if (snapshot.workspace) |workspace| self.addDetails(lang, view, workspace.kind);
+                }
             }
         }
         self.root = ui.node(ui.NodeKind.stack);
@@ -376,6 +408,7 @@ pub const Content = struct {
                 std.fmt.bufPrint(&label, "{s}{s}{s}: ", .{ row.kind.label(), if (row.property_changed) " P" else "", if (row.tree_conflict) " T" else "" }) catch "";
             self.add(ids[shown], prefix, files.slice(row.path));
             if (row.original.len != 0) self.add(sources[shown], loc(lang, "From: ", "原路径："), files.slice(row.original));
+            if (view.detail_supported and !view.detail_pending and !view.stale and view.phase == .ready) self.addButton(pick_actions[shown], loc(lang, "Select this file", "选择此文件"), pick_actions[shown]);
             shown += 1;
         }
         if (shown == 0) self.add("vcs.files.empty", "", loc(lang, "No matching retained records", "没有匹配的已保留记录"));
@@ -389,6 +422,66 @@ pub const Content = struct {
             self.addButton("vcs.files.search.action", loc(lang, "Search / clear", "搜索 / 清除"), command_file_filter);
             if (page > 0) self.addButton("vcs.files.prev.action", loc(lang, "Previous files", "上一页文件"), command_file_prev);
             if (page + 1 < page_count) self.addButton("vcs.files.next.action", loc(lang, "Next files", "下一页文件"), command_file_next);
+        }
+    }
+
+    fn detailInput(self: *Content, key: []const u8, label: []const u8) void {
+        var node = ui.node(ui.NodeKind.text_input);
+        node.id = abi.view(key);
+        node.state = .{ .present = 1, .value = abi.view(key) };
+        node.text = .{ .present = 1, .value = abi.view(label) };
+        self.nodes[self.len] = node;
+        self.len += 1;
+    }
+
+    fn addDetails(self: *Content, lang: Language, view: *const View, kind: identity.Kind) void {
+        self.add("vcs.detail.heading", "", loc(lang, "Local read-only details", "本地只读详情"));
+        if (kind == .svn) self.add("vcs.detail.svn-limit", "", loc(lang, "Server history is not authorized; BASE/diff require a supported pristine-copy version.", "服务器历史未授权；本地 BASE 与差异需要支持完整 pristine 副本的版本。"));
+        if (kind == .jj) self.add("vcs.detail.jj-limit", "", loc(lang, "Recorded revisions only; unsnapshotted edits are not included.", "仅已记录版本，不包含尚未快照的编辑。"));
+        if (view.detail_pending) {
+            self.add("vcs.detail.pending", "", loc(lang, "Query in progress; check or cancel", "正在查询；可检查结果或取消"));
+            return;
+        }
+        self.detailInput(state_detail_path, loc(lang, "File (relative to repository; select above or enter)", "文件（相对仓库路径；在上方选中或填写）"));
+        if (kind != .svn) self.detailInput(state_detail_revision, loc(lang, "Full commit ID (empty uses current recorded revision)", "完整提交 ID（留空使用当前已记录版本）"));
+        if (kind == .git) self.detailInput(state_history_offset, loc(lang, "History offset (0, 32, 64 ... up to 4096)", "历史偏移（0、32、64……至 4096）")) else if (kind == .jj) self.detailInput(state_history_offset, loc(lang, "History offset (0, 32, 64 ... up to 224)", "历史偏移（0、32、64……至 224）"));
+        const en = [_][]const u8{ "History (32 revisions)", "File history", "Revision details", "Working / recorded file diff", "Staged file diff", "Revision file diff", "Revision file content / BASE", "References / bookmarks", "Workspaces", "Operation log", "Local revision metadata", "Local property names" };
+        const zh = [_][]const u8{ "提交历史（32 条）", "文件历史", "版本详情", "工作区 / 已记录文件差异", "暂存文件差异", "版本文件差异", "版本文件内容 / BASE", "引用 / 书签", "工作区", "操作日志", "本地版本元数据", "本地属性名" };
+        for (detail_kinds, 0..) |action, i| {
+            if (contract.detailSupported(kind, action)) self.addButton(detail_actions[i], loc(lang, en[i], zh[i]), detail_actions[i]);
+        }
+        if (view.detail_error) |err| self.add("vcs.detail.error", "", failureLabel(lang, err));
+        if (view.detail_scope) |scope| {
+            self.add("vcs.detail.kind", loc(lang, "Result: ", "结果："), @tagName(scope.kind));
+            if (scope.path.len != 0) self.add("vcs.detail.result-path", loc(lang, "File: ", "文件："), scope.path.slice());
+            if (scope.revision) |rev| self.add("vcs.detail.result-revision", loc(lang, "Revision: ", "版本："), rev.slice());
+        }
+        if (view.detail_data) |data| {
+            switch (data.state) {
+                .binary => self.add("vcs.detail.binary", "", loc(lang, "Binary content; not rendered as text", "二进制内容；不作为文本显示")),
+                .invalid_encoding => self.add("vcs.detail.encoding", "", loc(lang, "Not valid UTF-8; text preview unavailable", "不是有效 UTF-8；无法显示文本")),
+                .text => {
+                    const pages = data.pages();
+                    const page = @min(view.detail_page, pages - 1);
+                    var heading: [64]u8 = undefined;
+                    self.add("vcs.detail.page", loc(lang, "Output page: ", "输出页："), std.fmt.bufPrint(&heading, "{d}/{d}", .{ page + 1, pages }) catch "");
+                    const ids = [_][]const u8{ "vcs.output.0", "vcs.output.1", "vcs.output.2", "vcs.output.3", "vcs.output.4", "vcs.output.5", "vcs.output.6", "vcs.output.7" };
+                    var cursor: usize = 0;
+                    var index: usize = 0;
+                    while (data.nextChunk(&cursor)) |line| : (index += 1) {
+                        if (index < page * contract.DetailText.page_size) continue;
+                        const row = index - page * contract.DetailText.page_size;
+                        if (row >= ids.len) break;
+                        self.add(ids[row], "", if (line.len == 0) " " else line);
+                        if (view.detail_scope) |scope| {
+                            if ((scope.kind == .history or scope.kind == .file_history) and data.revisionAt(kind, index) != null) self.addButton(revision_pick_actions[row], loc(lang, "Select this revision", "选择此版本"), revision_pick_actions[row]);
+                        }
+                    }
+                    if (data.len == 0) self.add("vcs.detail.empty", "", loc(lang, "No text returned", "没有返回文本"));
+                    if (page > 0) self.addButton("vcs.detail.prev.action", loc(lang, "Previous output page", "上一页输出"), command_detail_prev);
+                    if (page + 1 < pages) self.addButton("vcs.detail.next.action", loc(lang, "Next output page", "下一页输出"), command_detail_next);
+                },
+            }
         }
     }
 
@@ -428,6 +521,7 @@ pub const Content = struct {
             self.add("vcs.review-exe", loc(lang, "Executable: ", "程序："), review.executable.slice());
             self.add("vcs.review-root", loc(lang, "Repository: ", "仓库："), review.root.slice());
             self.add("vcs.review-warning", "", loc(lang, "Trust only known installations and repositories, including dependencies and configuration. Commands run as you; NOT a sandbox. Saved trust pins identities and executable digest, not all dependencies/configuration.", "仅信任已知的工具安装和仓库（含依赖及配置）。命令以当前用户身份运行，不是沙箱。持久授权校验身份和工具摘要，不审核全部依赖及配置。"));
+            self.add("vcs.review-scope", "", loc(lang, "Scope: local status, history, revision content, diff and references where supported. Older saved approvals require fresh Trust and remember.", "范围：支持的本地状态、历史、版本内容、差异和引用。旧持久授权需重新选择信任并记住。"));
             self.addButton("vcs.action.trust-confirm", loc(lang, "Trust tool and repository for this session", "信任工具及仓库（仅本次会话）"), command_trust_confirm);
             if (view.saved_trust_configured) {
                 self.addButton("vcs.action.trust-remember", loc(lang, "Trust and remember this root/provider/tool", "信任并记住此仓库、类型及工具"), command_trust_remember);
@@ -473,20 +567,25 @@ pub const Content = struct {
     /// The owner still validates commands against current controller state.
     pub fn buildInteractive(self: *Content, lang: Language, view: *const View, tree: *ui.Tree) void {
         self.build(lang, view, tree);
-        self.commands = .{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check), abi.view(command_revoke), abi.view(command_trust_git), abi.view(command_trust_jj), abi.view(command_trust_svn), abi.view(command_trust_confirm), abi.view(command_trust_cancel), abi.view(command_trust_reset), abi.view(command_trust_remember), abi.view(command_trust_reuse), abi.view(command_trust_forget), abi.view(command_trust_forget_all), abi.view(command_file_filter), abi.view(command_file_prev), abi.view(command_file_next) };
+        const base_commands = [_]abi.StringView{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check), abi.view(command_revoke), abi.view(command_trust_git), abi.view(command_trust_jj), abi.view(command_trust_svn), abi.view(command_trust_confirm), abi.view(command_trust_cancel), abi.view(command_trust_reset), abi.view(command_trust_remember), abi.view(command_trust_reuse), abi.view(command_trust_forget), abi.view(command_trust_forget_all), abi.view(command_file_filter), abi.view(command_file_prev), abi.view(command_file_next) };
+        @memcpy(self.commands[0..base_commands.len], &base_commands);
+        for (advanced_commands, base_commands.len..) |command, i| self.commands[i] = abi.view(command);
         tree.commands = &self.commands;
-        tree.command_count = if (view.local_setup and view.saved_trust_configured) (if (view.file_controls) @as(u32, 17) else 14) else if (view.local_setup) 10 else if (view.revocation_configured) 4 else 3;
+        tree.command_count = if (view.local_setup and view.saved_trust_configured) (if (view.file_controls) @as(u32, full_command_count) else 14) else if (view.local_setup) 10 else if (view.revocation_configured) 4 else 3;
         if (view.local_setup) {
             self.states[0] = .{ .key = abi.view(state_executable), .value = abi.view("") };
             tree.states = &self.states;
             self.states[1] = .{ .key = abi.view(state_file_filter), .value = abi.view(view.file_filter.slice()) };
-            tree.state_count = if (view.file_controls) 2 else 1;
+            self.states[2] = .{ .key = abi.view(state_detail_path), .value = abi.view(view.detail_path.slice()) };
+            self.states[3] = .{ .key = abi.view(state_detail_revision), .value = abi.view(view.detail_revision.slice()) };
+            self.states[4] = .{ .key = abi.view(state_history_offset), .value = abi.view(view.history_offset.slice()) };
+            tree.state_count = if (view.file_controls) 5 else 1;
             self.addLocalSetup(lang, view);
             if (view.reset_configured and (!view.metadata_only or view.approval_required)) self.addButton("vcs.action.trust-reset", loc(lang, "Choose repository / provider again", "重新选择仓库 / 版本控制类型"), command_trust_reset);
         }
         if (view.phase != .stopped) {
             if (!view.approval_required and (view.workspace != null or view.discovery_available)) {
-                if (view.phase == .queued or view.phase == .refreshing) {
+                if (view.phase == .queued or view.phase == .refreshing or view.detail_pending) {
                     self.addButton("vcs.action.cancel", loc(lang, "Cancel", "取消"), command_cancel);
                 } else {
                     self.addButton("vcs.action.refresh", loc(lang, "Refresh", "刷新"), command_refresh);

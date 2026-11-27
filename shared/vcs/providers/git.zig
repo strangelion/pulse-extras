@@ -182,7 +182,7 @@ pub const Git = struct {
             .kind = .git,
             .display_name = "Git",
             .capabilities = declaredCapabilities(),
-            .vtable = .{ .detect = detectImpl, .summarize = summarizeImpl },
+            .vtable = .{ .detect = detectImpl, .summarize = summarizeImpl, .detail = detailImpl },
             .ctx = self,
         };
     }
@@ -267,6 +267,25 @@ pub const Git = struct {
         }
     }
 
+    fn detailImpl(ctx: *anyopaque, workspace: *const identity.Workspace, request: *const contract.DetailRequest) contract.Error!contract.DetailText {
+        const self: *Git = @ptrCast(@alignCast(ctx));
+        if (workspace.kind != .git or !contract.detailSupported(.git, request.kind)) return error.Unsupported;
+        for ([_]contract.DetailKind{ .guard, .filter_guard }) |guard_kind| {
+            if (guard_kind == .filter_guard and request.kind != .working_diff) continue;
+            var guard: contract.DetailCommand = .{};
+            const guard_args = try guard.build(.git, self.executable.slice(), workspace.root.slice(), &.{ .kind = guard_kind });
+            var checked = self.execution.execute(self.runner, .{ .argv = guard_args, .timeout_ns = 5 * std.time.ns_per_s, .stdout_limit = 4096, .stderr_limit = 4096 }) catch |err| return mapRunError(err);
+            defer checked.deinit();
+            if (checked.status != .exited or checked.exit_code != 1 or checked.stdout.len != 0 or checked.stderr.len != 0) return error.Permission;
+        }
+        var command: contract.DetailCommand = .{};
+        const argv = try command.build(.git, self.executable.slice(), workspace.root.slice(), request);
+        var outcome = self.execution.execute(self.runner, .{ .argv = argv, .timeout_ns = 10 * std.time.ns_per_s, .stdout_limit = contract.DetailText.capacity, .stderr_limit = 64 * 1024 }) catch |err| return mapRunError(err);
+        defer outcome.deinit();
+        if (!outcome.succeeded()) return mapFailure(outcome.stderr);
+        return contract.DetailText.init(outcome.stdout);
+    }
+
     fn summarizeImpl(ctx: *anyopaque, workspace: *const identity.Workspace) contract.Error!contract.Snapshot {
         const self: *Git = @ptrCast(@alignCast(ctx));
         return self.summarize(workspace);
@@ -296,6 +315,13 @@ fn declaredCapabilities() capabilities.Set {
     set.insert(.repository_detection);
     set.insert(.workspace_detection);
     set.insert(.status);
+    set.insert(.history);
+    set.insert(.file_history);
+    set.insert(.diff);
+    set.insert(.revision_content);
+    set.insert(.branches);
+    set.insert(.tags);
+    set.insert(.workspaces);
     return set;
 }
 
@@ -413,6 +439,20 @@ test "reads a real repository end to end when git is installed" {
     try std.testing.expect(std.fs.path.isAbsolute(workspace.root.slice()));
     try std.testing.expect(!workspace.shared_metadata);
     const clean = try git.summarize(&workspace);
+    const revision = clean.revision orelse return error.TestExpectedRevision;
+    const history = try git.provider().detail(&workspace, &.{ .kind = .history, .revision = revision });
+    try std.testing.expect(std.mem.indexOf(u8, history.slice(), "init") != null);
+    const content = try git.provider().detail(&workspace, &.{ .kind = .content, .revision = revision, .path = try identity.Path.init("work.txt") });
+    try std.testing.expectEqualStrings("hello\n", content.slice());
+    const path = try identity.Path.init("work.txt");
+    const file_history = try git.provider().detail(&workspace, &.{ .kind = .file_history, .revision = revision, .path = path });
+    try std.testing.expect(std.mem.indexOf(u8, file_history.slice(), revision.slice()) != null);
+    const revision_info = try git.provider().detail(&workspace, &.{ .kind = .revision_info, .revision = revision });
+    try std.testing.expect(std.mem.indexOf(u8, revision_info.slice(), "init") != null);
+    const revision_diff = try git.provider().detail(&workspace, &.{ .kind = .revision_diff, .revision = revision, .path = path });
+    try std.testing.expect(std.mem.indexOf(u8, revision_diff.slice(), "+hello") != null);
+    const refs = try git.provider().detail(&workspace, &.{ .kind = .refs });
+    try std.testing.expect(std.mem.indexOf(u8, refs.slice(), "refs/heads/") != null);
     try std.testing.expectEqual(contract.Availability.ready, clean.availability);
     try std.testing.expect(clean.revision != null);
     try std.testing.expectEqual(@as(u32, 0), clean.changes.modified);
@@ -438,6 +478,16 @@ test "reads a real repository end to end when git is installed" {
     var tree: @import("pulse_ui_model").Tree = undefined;
     content.build(.en, &dirty, &tree);
     try std.testing.expectEqualStrings("Modified: 1", content.textFor("vcs.modified").?);
+    try expectSuccess(&runner, &.{ report.path.slice(), "-C", root, "add", "work.txt" });
+    const staged = try git.provider().detail(&workspace, &.{ .kind = .staged_diff, .revision = revision, .path = path });
+    try std.testing.expect(std.mem.indexOf(u8, staged.slice(), "+changed") != null);
+    try expectSuccess(&runner, &.{ report.path.slice(), "-C", root, "reset", "--", "work.txt" });
+    // An ambient clean/process filter is never invoked by the advanced diff.
+    try expectSuccess(&runner, &.{ report.path.slice(), "-C", root, "config", "filter.pulse.clean", "never-run-this" });
+    try std.testing.expectError(error.Permission, git.provider().detail(&workspace, &.{ .kind = .working_diff, .path = path }));
+    try expectSuccess(&runner, &.{ report.path.slice(), "-C", root, "config", "--unset", "filter.pulse.clean" });
+    const workspaces = try git.provider().detail(&workspace, &.{ .kind = .workspaces });
+    try std.testing.expect(std.mem.indexOf(u8, workspaces.slice(), "worktree ") != null);
 
     try expectSuccess(&runner, &.{ report.path.slice(), "-C", root, "worktree", "add", "--detach", "linked", "HEAD" });
     var linked_buffer: [identity.max_path_bytes]u8 = undefined;

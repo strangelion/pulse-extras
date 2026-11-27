@@ -94,6 +94,7 @@ pub const Jj = struct {
     executable: identity.Path,
     probe: detect.Probe,
     execution: cli.Execution = .compatibility,
+    operation: contract.Text = .{},
 
     pub fn init(runner: *run.Runner, executable: identity.Path, probe: detect.Probe) Jj {
         return .{ .runner = runner, .executable = executable, .probe = probe };
@@ -110,7 +111,7 @@ pub const Jj = struct {
             .kind = .jj,
             .display_name = "Jujutsu",
             .capabilities = declaredCapabilities(),
-            .vtable = .{ .detect = detectImpl, .summarize = summarizeImpl },
+            .vtable = .{ .detect = detectImpl, .summarize = summarizeImpl, .detail = detailImpl },
             .ctx = self,
         };
     }
@@ -118,37 +119,34 @@ pub const Jj = struct {
     pub fn summarize(self: *Jj, workspace: *const identity.Workspace) contract.Error!contract.Snapshot {
         if (workspace.kind != .jj) return error.Unsupported;
 
+        self.operation = .{};
+        var pin_command: contract.DetailCommand = .{};
+        const pin = blk: {
+            var outcome = try self.query(try pin_command.build(.jj, self.executable.slice(), workspace.root.slice(), &.{ .kind = .jj_pin }));
+            defer outcome.deinit();
+            if (!outcome.succeeded()) return mapFailure(outcome.stderr);
+            const text = std.mem.trim(u8, outcome.stdout, " \r\n\t");
+            if (!contract.safeOperation(text)) return error.Parse;
+            break :blk contract.Text.init(text) catch return error.Parse;
+        };
         const revision = blk: {
-            var revision_out = try self.query(&.{
-                self.executable.slice(), "--ignore-working-copy", "--no-pager", "--color=never",
-                "-R",                    workspace.root.slice(),  "log",        "-r",
-                "@",                     "--no-graph",            "-T",         revision_template,
-            });
-            defer revision_out.deinit();
-            if (!revision_out.succeeded()) return mapFailure(revision_out.stderr);
-            const parsed = parseRevision(revision_out.stdout) catch return error.Parse;
+            var command: contract.DetailCommand = .{};
+            var outcome = try self.query(try command.build(.jj, self.executable.slice(), workspace.root.slice(), &.{ .kind = .jj_status_revision, .operation = pin }));
+            defer outcome.deinit();
+            if (!outcome.succeeded()) return mapFailure(outcome.stderr);
+            const parsed = parseRevision(outcome.stdout) catch return error.Parse;
             if (parsed.commit_id == null or parsed.change_id.slice().len == 0) return error.Parse;
             break :blk parsed;
         };
-
-        var diff_out = try self.query(&.{
-            self.executable.slice(),
-            "--ignore-working-copy",
-            "--no-pager",
-            "--color=never",
-            "-R",
-            workspace.root.slice(),
-            "diff",
-            "--summary",
-            "-r",
-            revision.commit_id.?.slice(),
-        });
+        var diff_command: contract.DetailCommand = .{};
+        var diff_out = try self.query(try diff_command.build(.jj, self.executable.slice(), workspace.root.slice(), &.{ .kind = .jj_status_diff, .operation = pin, .revision = revision.commit_id }));
         defer diff_out.deinit();
 
         var snapshot = contract.Snapshot{
             .availability = .ready,
             .workspace = workspace.*,
             .revision = revision.commit_id,
+            .operation = pin,
             .detail = contract.Text.init("working copy not snapshotted (read-only query)") catch .{},
         };
         snapshot.reference = if (revision.bookmarks.slice().len != 0) revision.bookmarks else revision.change_id;
@@ -164,6 +162,7 @@ pub const Jj = struct {
         if (!diff_out.succeeded()) return mapFailure(diff_out.stderr);
         countDiff(diff_out.stdout, &snapshot.changes);
         listDiff(diff_out.stdout, &snapshot.files);
+        self.operation = pin;
         return snapshot;
     }
 
@@ -184,6 +183,31 @@ pub const Jj = struct {
         }
     }
 
+    fn detailImpl(ctx: *anyopaque, workspace: *const identity.Workspace, request: *const contract.DetailRequest) contract.Error!contract.DetailText {
+        const self: *Jj = @ptrCast(@alignCast(ctx));
+        if (workspace.kind != .jj or !contract.detailSupported(.jj, request.kind)) return error.Unsupported;
+        var command: contract.DetailCommand = .{};
+        if (!contract.safeOperation(self.operation.slice())) return error.Stale;
+        var pinned = request.*;
+        pinned.operation = self.operation;
+        const argv = try command.build(.jj, self.executable.slice(), workspace.root.slice(), &pinned);
+        const history = request.kind == .history or request.kind == .file_history;
+        var outcome = self.execution.execute(self.runner, .{ .argv = argv, .timeout_ns = 10 * std.time.ns_per_s, .stdout_limit = if (history) 128 * 1024 else contract.DetailText.capacity, .stderr_limit = 64 * 1024 }) catch |err| return mapRunError(err);
+        defer outcome.deinit();
+        if (!outcome.succeeded()) return mapFailure(outcome.stderr);
+        var remaining: []const u8 = outcome.stdout;
+        if (history) {
+            for (0..request.offset) |_| {
+                const end = std.mem.indexOfScalar(u8, remaining, '\n') orelse {
+                    remaining = "";
+                    break;
+                };
+                remaining = remaining[end + 1 ..];
+            }
+        }
+        return contract.DetailText.init(remaining);
+    }
+
     fn summarizeImpl(ctx: *anyopaque, workspace: *const identity.Workspace) contract.Error!contract.Snapshot {
         const self: *Jj = @ptrCast(@alignCast(ctx));
         return self.summarize(workspace);
@@ -195,6 +219,13 @@ fn declaredCapabilities() capabilities.Set {
     set.insert(.repository_detection);
     set.insert(.workspace_detection);
     set.insert(.status);
+    set.insert(.history);
+    set.insert(.file_history);
+    set.insert(.diff);
+    set.insert(.revision_content);
+    set.insert(.bookmarks);
+    set.insert(.workspaces);
+    set.insert(.operation_history);
     return set;
 }
 
@@ -277,6 +308,14 @@ test "reads a real jj repository without creating snapshots" {
 
     const workspace = try identity.Workspace.init(.jj, root, root);
     var jj = Jj.init(&runner, report.path, .{ .ctx = undefined, .lookup = fakeLookup });
+    const tracked = try tmp.dir.createFile(io, "tracked.txt", .{});
+    try tracked.writeStreamingAll(io, "recorded\n");
+    tracked.close(io);
+    {
+        var record = try runner.run(.{ .argv = &.{ report.path.slice(), "-R", root, "describe", "-m", "recorded fixture" }, .timeout_ns = 20 * std.time.ns_per_s });
+        defer record.deinit();
+        if (!record.succeeded()) return error.TestCommandFailed;
+    }
     const op_args: []const []const u8 = &.{ report.path.slice(), "--ignore-working-copy", "--no-pager", "--color=never", "-R", root, "op", "log", "--no-graph", "-T", "id ++ \"\\n\"" };
     var before = try jj.query(op_args);
     defer before.deinit();
@@ -292,6 +331,21 @@ test "reads a real jj repository without creating snapshots" {
     if (publication == .failed) return publication.failed;
     try std.testing.expect(publication == .published);
     const snapshot = session.lookup(&workspace).fresh;
+    const revision = snapshot.revision orelse return error.TestExpectedRevision;
+    try std.testing.expect(contract.safeOperation(snapshot.operation.slice()));
+    const path = try identity.Path.init("tracked.txt");
+    const file_history = try jj.provider().detail(&workspace, &.{ .kind = .file_history, .revision = revision, .path = path });
+    try std.testing.expect(std.mem.indexOf(u8, file_history.slice(), revision.slice()) != null);
+    const content = try jj.provider().detail(&workspace, &.{ .kind = .content, .revision = revision, .path = path });
+    try std.testing.expectEqualStrings("recorded\n", content.slice());
+    const diff = try jj.provider().detail(&workspace, &.{ .kind = .revision_diff, .revision = revision, .path = path });
+    try std.testing.expect(std.mem.indexOf(u8, diff.slice(), "+recorded") != null);
+    _ = try jj.provider().detail(&workspace, &.{ .kind = .revision_info, .revision = revision });
+    const history = try jj.provider().detail(&workspace, &.{ .kind = .history, .revision = revision });
+    try std.testing.expect(std.mem.indexOf(u8, history.slice(), revision.slice()) != null);
+    _ = try jj.provider().detail(&workspace, &.{ .kind = .refs });
+    _ = try jj.provider().detail(&workspace, &.{ .kind = .workspaces });
+    _ = try jj.provider().detail(&workspace, &.{ .kind = .operations });
     var after = try jj.query(op_args);
     defer after.deinit();
     try std.testing.expect(after.succeeded());
@@ -299,7 +353,7 @@ test "reads a real jj repository without creating snapshots" {
     try std.testing.expectEqual(contract.Availability.ready, snapshot.availability);
     try std.testing.expect(snapshot.detail.eql("working copy not snapshotted (read-only query)"));
     try std.testing.expect(snapshot.files.available);
-    try std.testing.expectEqual(@as(u8, 0), snapshot.files.count);
+    try std.testing.expect(snapshot.files.count >= 1);
 }
 
 fn testSessionClock() i64 {

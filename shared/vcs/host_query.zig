@@ -28,6 +28,8 @@ pub const Query = struct {
     provider: contract.Provider = undefined,
     workspace: identity.Workspace = undefined,
     result: contract.Error!contract.Snapshot = error.Cancelled,
+    detail_request: ?contract.DetailRequest = null,
+    detail_result: contract.Error!contract.DetailText = error.Cancelled,
     published: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     discard: bool = false,
     stopped: bool = false,
@@ -45,6 +47,8 @@ pub const Query = struct {
         if (provider.kind != workspace.kind or !provider.supports(.status)) return error.Argument;
         self.provider = provider;
         self.workspace = workspace.*;
+        self.detail_request = null;
+        self.detail_result = error.Cancelled;
         self.result = error.Cancelled;
         self.published.store(false, .monotonic);
         self.discard = false;
@@ -60,12 +64,39 @@ pub const Query = struct {
         try self.task.start(&descriptor);
     }
 
+    pub fn startDetail(self: *Query, provider: contract.Provider, workspace: *const identity.Workspace, request: contract.DetailRequest) host_mod.Error!void {
+        if (self.stopped or self.task.occupied()) return error.State;
+        if (provider.kind != workspace.kind or provider.vtable.detail == null or !contract.detailSupported(provider.kind, request.kind)) return error.Unavailable;
+        self.provider = provider;
+        self.workspace = workspace.*;
+        self.detail_request = request;
+        self.detail_result = error.Cancelled;
+        self.published.store(false, .monotonic);
+        self.discard = false;
+        const descriptor: async_host.Descriptor = .{ .size = @sizeOf(async_host.Descriptor), .title = abi.view("VCS read-only detail"), .type = abi.view("vcs.detail"), .work = &work, .user = self };
+        self.admitting = true;
+        defer self.admitting = false;
+        errdefer if (!self.task.occupied()) {
+            self.detail_request = null;
+        };
+        try self.task.start(&descriptor);
+    }
+
     fn work(user: ?*anyopaque, context: [*c]const async_host.Context) callconv(.c) u32 {
         const self: *Query = @ptrCast(@alignCast(user orelse return @backingInt(async_host.TaskState.failed)));
         defer if (self.wake) |wake| wake.request();
         if (context == null) return @backingInt(async_host.TaskState.failed);
         const cancelled = context.*.cancelled orelse return @backingInt(async_host.TaskState.failed);
         if (cancelled(context.*.context) != 0) return @backingInt(async_host.TaskState.cancelled);
+        if (self.detail_request) |*request| {
+            self.detail_result = self.provider.detail(&self.workspace, request);
+            self.published.store(true, .release);
+            if (self.detail_result) |_| {
+                return @backingInt(if (cancelled(context.*.context) != 0) async_host.TaskState.cancelled else async_host.TaskState.completed);
+            } else |err| {
+                return @backingInt(if (err == error.Cancelled) async_host.TaskState.cancelled else async_host.TaskState.failed);
+            }
+        }
         self.result = self.provider.summarize(&self.workspace);
         self.published.store(true, .release);
         if (self.result) |_| {
@@ -79,6 +110,7 @@ pub const Query = struct {
     /// awaiting the worker and never reads its result before terminal state.
     /// Returns a copy of the terminal view only after successful release.
     pub fn poll(self: *Query) host_mod.Error!?panel.View {
+        if (self.detail_request != null) return error.State;
         if (!self.task.occupied()) return null;
         const state = try self.task.poll();
         if (!state.terminal()) return null;
@@ -101,6 +133,24 @@ pub const Query = struct {
         }
         try self.task.releaseTerminal();
         return view;
+    }
+
+    pub const DetailTerminal = struct { result: contract.Error!contract.DetailText };
+
+    pub fn pollDetail(self: *Query) host_mod.Error!?DetailTerminal {
+        if (!self.task.occupied() or self.detail_request == null) return null;
+        const state = try self.task.poll();
+        if (!state.terminal()) return null;
+        var result: contract.Error!contract.DetailText = error.Cancelled;
+        if (!self.discard and !self.stopped and state != .cancelled and self.published.load(.acquire)) {
+            if (self.detail_result) |data| {
+                result = if (state == .completed) data else error.Io;
+            } else |err| result = err;
+        }
+        try self.task.releaseTerminal();
+        self.detail_request = null;
+        self.detail_result = error.Cancelled;
+        return .{ .result = result };
     }
 
     /// Invalidate publication before asking host to cancel. Retain slot
@@ -289,13 +339,34 @@ pub const Controller = struct {
     selection: ?Selection = null,
     queued: ?Selection = null,
     current: panel.View = .{ .phase = .empty },
+    detail_data: ?contract.DetailText = null,
+    detail_error: ?contract.Error = null,
+    detail_scope: ?contract.DetailRequest = null,
+    detail_pending: bool = false,
     stopped: bool = false,
 
     pub fn init(table: async_host.TaskTable) host_mod.Error!Controller {
         return .{ .query = try Query.init(table) };
     }
 
+    fn dropDetail(self: *Controller) void {
+        self.detail_data = null;
+        self.detail_error = null;
+        self.detail_scope = null;
+        self.detail_pending = false;
+    }
+
+    pub fn queryDetail(self: *Controller, request: contract.DetailRequest) host_mod.Error!void {
+        if (self.stopped or self.query.task.occupied() or self.queued != null or self.current.phase != .ready or self.current.stale) return error.State;
+        const selected = self.selection orelse return error.State;
+        self.dropDetail();
+        try self.query.startDetail(selected.provider, &selected.workspace, request);
+        self.detail_scope = request;
+        self.detail_pending = true;
+    }
+
     pub fn select(self: *Controller, provider: contract.Provider, workspace: *const identity.Workspace) host_mod.Error!void {
+        self.dropDetail();
         if (self.stopped) return error.State;
         if (provider.kind != workspace.kind or !provider.supports(.status)) {
             try self.clear();
@@ -342,6 +413,7 @@ pub const Controller = struct {
 
     pub fn clear(self: *Controller) host_mod.Error!void {
         if (self.stopped) return error.State;
+        self.dropDetail();
         self.selection = null;
         self.queued = null;
         self.current = .{ .phase = .empty };
@@ -350,6 +422,13 @@ pub const Controller = struct {
 
     pub fn cancel(self: *Controller) host_mod.Error!void {
         if (self.stopped) return error.State;
+        if (self.query.detail_request != null) {
+            self.dropDetail();
+            self.detail_error = error.Cancelled;
+            try self.query.cancel();
+            return;
+        }
+        self.dropDetail();
         self.queued = null;
         self.current.phase = if (self.selection == null) .empty else .cancelled;
         self.current.stale = self.current.snapshot != null;
@@ -361,6 +440,18 @@ pub const Controller = struct {
     /// one admission per invocation. Preserve previous data as stale on error.
     pub fn pump(self: *Controller) host_mod.Error!void {
         const obsolete = self.query.discard or self.stopped;
+        if (self.query.detail_request != null) {
+            if (try self.query.pollDetail()) |terminal| {
+                self.detail_pending = false;
+                if (!obsolete and self.queued == null and self.selection != null and self.current.phase == .ready and !self.current.stale) {
+                    if (terminal.result) |data| {
+                        self.detail_data = data;
+                    } else |err| self.detail_error = err;
+                }
+            }
+            try self.startQueued();
+            return;
+        }
         if (try self.query.poll()) |terminal| {
             if (!obsolete and self.queued == null and self.selection != null) {
                 const previous_data = self.current.snapshot;
@@ -375,6 +466,7 @@ pub const Controller = struct {
     }
 
     pub fn requestStop(self: *Controller) host_mod.Error!void {
+        self.dropDetail();
         self.stopped = true;
         self.selection = null;
         self.queued = null;
@@ -399,7 +491,7 @@ pub const Controller = struct {
                 try self.refresh();
             },
             .cancel => {
-                if (self.current.phase != .queued and self.current.phase != .refreshing) return error.State;
+                if (self.current.phase != .queued and self.current.phase != .refreshing and !self.detail_pending) return error.State;
                 try self.cancel();
             },
             .check => try self.pump(),
@@ -495,6 +587,12 @@ pub const Binding = struct {
     local_review: ?panel.LocalReview = null,
     file_page: usize = 0,
     file_filter: contract.Text = .{},
+    detail_path: identity.Path = .{},
+    detail_revision: contract.Text = .{},
+    history_offset: contract.Text = .{},
+    detail_page: usize = 0,
+    pending_file: ?identity.Path = null,
+    pending_file_generation: ?u64 = null,
     setup_issue: ?panel.SetupIssue = null,
     revocation: ?Revocation = null,
     approved_root: ?identity.Path = null,
@@ -589,6 +687,15 @@ pub const Binding = struct {
         current.file_controls = self.local_ui and self.savedTrustAvailable();
         current.file_page = self.file_page;
         current.file_filter = self.file_filter;
+        current.detail_supported = current.file_controls and (if (self.controller.selection) |selected| selected.provider.vtable.detail != null else false);
+        current.detail_pending = self.controller.detail_pending;
+        current.detail_scope = if (self.controller.detail_scope) |*scope| scope else null;
+        current.detail_data = if (self.controller.detail_data) |*data| data else null;
+        current.detail_error = self.controller.detail_error;
+        current.detail_page = self.detail_page;
+        current.detail_path = self.detail_path;
+        current.detail_revision = self.detail_revision;
+        current.history_offset = self.history_offset;
         current.saved_trust_selected = self.saved_trust_selected;
         current.tool_version = self.verified_version;
         if (current.snapshot) |*snapshot| {
@@ -614,8 +721,9 @@ pub const Binding = struct {
             return error.State;
         }
         self.model = .{ .table = table, .id = id };
-        const commands = [_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check, panel.command_revoke, panel.command_trust_git, panel.command_trust_jj, panel.command_trust_svn, panel.command_trust_confirm, panel.command_trust_cancel, panel.command_trust_reset, panel.command_trust_remember, panel.command_trust_reuse, panel.command_trust_forget, panel.command_trust_forget_all, panel.command_file_filter, panel.command_file_prev, panel.command_file_next };
-        for (commands[0..if (self.local_ui and self.savedTrustAvailable()) @as(usize, 17) else if (self.local_ui) @as(usize, 10) else if (self.revocation != null) @as(usize, 4) else 3]) |name| {
+        const base_commands = [_][]const u8{ panel.command_refresh, panel.command_cancel, panel.command_check, panel.command_revoke, panel.command_trust_git, panel.command_trust_jj, panel.command_trust_svn, panel.command_trust_confirm, panel.command_trust_cancel, panel.command_trust_reset, panel.command_trust_remember, panel.command_trust_reuse, panel.command_trust_forget, panel.command_trust_forget_all, panel.command_file_filter, panel.command_file_prev, panel.command_file_next };
+        const commands = base_commands ++ panel.advanced_commands;
+        for (commands[0..if (self.local_ui and self.savedTrustAvailable()) @as(usize, panel.full_command_count) else if (self.local_ui) @as(usize, 10) else if (self.revocation != null) @as(usize, 4) else 3]) |name| {
             _ = self.model.?.subscribeCommand(name, &onCommand, self) catch |err| {
                 self.last_error = err;
                 // Close invalidates all subscriptions, including any partial
@@ -717,6 +825,12 @@ pub const Binding = struct {
         if (failure) |err| return err;
         self.file_page = 0;
         self.file_filter = .{};
+        self.detail_path = .{};
+        self.detail_revision = .{};
+        self.history_offset = .{};
+        self.detail_page = 0;
+        self.pending_file = null;
+        self.pending_file_generation = null;
         self.navigation_generation = latest.generation;
         if (!self.approval_locked and self.resolver != null and self.navigation.pending and latest.directory() != null) self.controller.current = .{ .phase = .queued };
     }
@@ -890,6 +1004,169 @@ pub const Binding = struct {
         try self.render();
     }
 
+    /// The native menu has independently re-read and copied the exact
+    /// selected file. Only prefill the owner UI, never authorize or query it.
+    pub fn prepareSelectedFile(self: *Binding, absolute: *const identity.Path) host_mod.Error!void {
+        if (!self.accepting or !self.local_ui or !self.savedTrustAvailable() or self.approval_locked) return error.Unavailable;
+        try self.navigation.refreshCurrent();
+        try self.invalidateNavigation();
+        const latest = self.navigation.latest orelse return error.State;
+        const directory = latest.directory() orelse return error.State;
+        if (!std.mem.eql(u8, std.fs.path.dirname(absolute.slice()) orelse return error.Argument, directory)) return error.State;
+        self.pending_file = absolute.*;
+        self.pending_file_generation = latest.generation;
+        try self.applySelectedFile();
+        try self.render();
+    }
+
+    fn applySelectedFile(self: *Binding) host_mod.Error!void {
+        const pending = self.pending_file orelse return;
+        if (self.pending_file_generation != self.navigation_generation) {
+            self.pending_file = null;
+            return;
+        }
+        if (self.metadata_only or self.approval_locked or self.navigation.pending or self.controller.query.task.occupied() or self.resolution.task.occupied() or self.controller.current.phase != .ready or self.controller.current.stale) return;
+        self.pending_file = null;
+        self.pending_file_generation = null;
+        const workspace = self.controller.current.workspace orelse return error.State;
+        const root = workspace.root.slice();
+        const path = pending.slice();
+        if (path.len <= root.len + 1 or !std.mem.startsWith(u8, path, root) or (path[root.len] != '\\' and path[root.len] != '/')) return error.Argument;
+        const tail = path[root.len + 1 ..];
+        var normalized: [identity.max_path_bytes]u8 = undefined;
+        for (tail, 0..) |byte, i| normalized[i] = if (byte == '\\') '/' else byte;
+        const relative = normalized[0..tail.len];
+        if (!contract.safeRelativePath(relative)) return error.Argument;
+        const selected = identity.Path.init(relative) catch return error.Argument;
+        const model = if (self.model) |*value| value else return error.State;
+        try model.setStates(&.{.{ .key = abi.view(panel.state_detail_path), .value = abi.view(selected.slice()) }});
+        self.detail_path = selected;
+        self.controller.dropDetail();
+        self.detail_page = 0;
+    }
+
+    fn readDetailState(self: *Binding, key: []const u8, bytes: []u8) host_mod.Error![]const u8 {
+        const model = self.model orelse return error.State;
+        const get = model.table.get_state orelse return error.Unavailable;
+        var needed: u32 = 0;
+        try host_mod.mapStatus(get(model.table.context, model.id, abi.view(key), bytes.ptr, @intCast(bytes.len), &needed));
+        if (needed >= bytes.len) return error.Argument;
+        return bytes[0..needed];
+    }
+
+    fn chooseFile(self: *Binding, snapshot: *const contract.Snapshot, slot: usize) host_mod.Error!void {
+        const files = &snapshot.files;
+        const pages = @max(1, (files.matchCount(self.file_filter.slice()) + contract.FileList.page_size - 1) / contract.FileList.page_size);
+        const index = @min(self.file_page, pages - 1) * contract.FileList.page_size + slot;
+        var matched: usize = 0;
+        for (files.rows[0..files.count]) |row| {
+            if (!files.matches(row, self.file_filter.slice())) continue;
+            if (matched != index) {
+                matched += 1;
+                continue;
+            }
+            const workspace = snapshot.workspace orelse return error.State;
+            var path = files.slice(row.path);
+            if (workspace.kind == .svn and std.mem.startsWith(u8, path, workspace.root.slice()) and path.len > workspace.root.len and (path[workspace.root.len] == '/' or path[workspace.root.len] == '\\')) path = path[workspace.root.len + 1 ..];
+            var normalized: [identity.max_path_bytes]u8 = undefined;
+            for (path, 0..) |byte, i| normalized[i] = if (workspace.kind == .svn and byte == '\\') '/' else byte;
+            const relative = normalized[0..path.len];
+            if (!contract.safeRelativePath(relative)) return error.Argument;
+            const candidate = identity.Path.init(relative) catch return error.Argument;
+            const model = if (self.model) |*value| value else return error.State;
+            try model.setStates(&.{.{ .key = abi.view(panel.state_detail_path), .value = abi.view(candidate.slice()) }});
+            self.detail_path = candidate;
+            self.controller.dropDetail();
+            self.detail_page = 0;
+            return;
+        }
+        return error.Argument;
+    }
+
+    fn detailCommand(self: *Binding, name: []const u8) host_mod.Error!void {
+        if (!self.local_ui or !self.savedTrustAvailable() or self.metadata_only or self.approval_locked) return error.Permission;
+        try self.navigation.refreshCurrent();
+        try self.invalidateNavigation();
+        const current = &self.controller.current;
+        if (current.phase != .ready or current.stale or self.navigation.pending or self.controller.query.task.occupied() or self.resolution.task.occupied()) return error.State;
+        const snapshot = if (current.snapshot) |*value| value else return error.State;
+        const workspace = snapshot.workspace orelse return error.State;
+        if (std.mem.eql(u8, name, panel.command_detail_prev)) {
+            self.detail_page -|= 1;
+        } else if (std.mem.eql(u8, name, panel.command_detail_next)) {
+            if (self.controller.detail_data) |*data| {
+                if (self.detail_page + 1 < data.pages()) self.detail_page += 1;
+            }
+        } else {
+            for (panel.pick_actions, 0..) |action, slot| {
+                if (std.mem.eql(u8, name, action)) {
+                    try self.chooseFile(snapshot, slot);
+                    try self.render();
+                    return;
+                }
+            }
+            for (panel.revision_pick_actions, 0..) |action, slot| {
+                if (!std.mem.eql(u8, name, action)) continue;
+                const scope = self.controller.detail_scope orelse return error.State;
+                if (scope.kind != .history and scope.kind != .file_history) return error.State;
+                const data = if (self.controller.detail_data) |*value| value else return error.State;
+                const revision = data.revisionAt(workspace.kind, @min(self.detail_page, data.pages() - 1) * contract.DetailText.page_size + slot) orelse return error.Argument;
+                const model = if (self.model) |*value| value else return error.State;
+                try model.setStates(&.{.{ .key = abi.view(panel.state_detail_revision), .value = abi.view(revision.slice()) }});
+                self.detail_revision = contract.Text.init(revision.slice()) catch return error.Argument;
+                try self.render();
+                return;
+            }
+            for (panel.detail_actions, panel.detail_kinds) |action, kind| {
+                if (!std.mem.eql(u8, name, action)) continue;
+                if (!contract.detailSupported(workspace.kind, kind)) return error.Unavailable;
+                var request: contract.DetailRequest = .{ .kind = kind };
+                const needs_path = switch (kind) {
+                    .file_history, .working_diff, .staged_diff, .revision_diff, .content, .local_info, .properties => true,
+                    else => false,
+                };
+                if (needs_path) {
+                    var bytes: [identity.max_path_bytes + 1]u8 = undefined;
+                    const path = try self.readDetailState(panel.state_detail_path, &bytes);
+                    if (path.len != 0) {
+                        if (!contract.safeRelativePath(path)) return error.Argument;
+                        request.path = identity.Path.init(path) catch return error.Argument;
+                    } else if (kind != .local_info and kind != .properties) return error.Argument;
+                    self.detail_path = request.path;
+                }
+                if (workspace.kind != .svn) {
+                    const needs_revision = switch (kind) {
+                        .history, .file_history, .revision_info, .staged_diff, .revision_diff, .content => true,
+                        .working_diff => workspace.kind == .jj,
+                        else => false,
+                    };
+                    if (needs_revision) {
+                        var bytes: [contract.Text.capacity + 1]u8 = undefined;
+                        const entered = try self.readDetailState(panel.state_detail_revision, &bytes);
+                        const revision = if (entered.len != 0) entered else if (snapshot.revision) |*value| value.slice() else return error.State;
+                        if (!contract.safeRevision(workspace.kind, revision)) return error.Argument;
+                        request.revision = identity.RevisionId.init(workspace.kind, revision) catch return error.Argument;
+                        self.detail_revision = contract.Text.init(entered) catch return error.Argument;
+                    }
+                    if (kind == .history or kind == .file_history) {
+                        var bytes: [17]u8 = undefined;
+                        const entered = try self.readDetailState(panel.state_history_offset, &bytes);
+                        const offset = if (entered.len == 0) 0 else std.fmt.parseInt(u16, entered, 10) catch return error.Argument;
+                        if (offset > @as(u16, if (workspace.kind == .git) 4096 else 224) or offset % 32 != 0) return error.Argument;
+                        request.offset = offset;
+                        self.history_offset = contract.Text.init(entered) catch return error.Argument;
+                    }
+                }
+                self.detail_page = 0;
+                try self.controller.queryDetail(request);
+                try self.render();
+                return;
+            }
+            return error.Argument;
+        }
+        try self.render();
+    }
+
     fn localCommand(self: *Binding, name: []const u8) bool {
         if (!self.local_ui) return false;
         self.setup_issue = null;
@@ -937,6 +1214,17 @@ pub const Binding = struct {
         if (model.id != id) return;
         const name = abi.slice(command) orelse return;
         self.last_error = null;
+        if (panel.isDetailCommand(name)) {
+            self.detailCommand(name) catch |err| {
+                self.last_error = err;
+                if (!self.controller.detail_pending) {
+                    self.controller.dropDetail();
+                    self.controller.detail_error = if (err == error.Argument) error.Parse else if (err == error.Permission) error.Permission else error.Unsupported;
+                }
+                self.render() catch {};
+            };
+            return;
+        }
         if (panel.isFileCommand(name)) {
             self.fileCommand(name) catch |err| {
                 self.last_error = err;
@@ -1049,6 +1337,8 @@ pub const Binding = struct {
 
     pub fn clear(self: *Binding) host_mod.Error!void {
         if (!self.accepting) return error.State;
+        self.pending_file = null;
+        self.pending_file_generation = null;
         self.verified_version = .{};
         self.cache_token = null;
         self.local_review = null;
@@ -1074,7 +1364,7 @@ pub const Binding = struct {
     /// indefinitely from a prior navigation. Retain old task ownership.
     fn retryResolution(self: *Binding) host_mod.Error!void {
         if (!self.accepting or !self.navigation.accepting or self.controller.stopped) return error.State;
-        if (self.controller.current.phase == .queued or self.controller.current.phase == .refreshing) return error.State;
+        if (self.controller.current.phase == .queued or self.controller.current.phase == .refreshing or self.controller.detail_pending) return error.State;
         const latest = self.navigation.latest orelse return error.State;
         if (latest.directory() == null) return error.State;
         self.local_review = null;
@@ -1166,8 +1456,9 @@ pub const Binding = struct {
             self.last_error = err;
             return err;
         };
-        const permission_denied = if (self.controller.current.failure) |failure| failure == error.Permission else false;
+        const permission_denied = (if (self.controller.current.failure) |failure| failure == error.Permission else false) or self.controller.detail_error == error.Permission;
         if (self.saved_trust_selected and permission_denied) {
+            self.controller.current.failure = error.Permission;
             self.controller.current.snapshot = null;
             self.controller.current.stale = false;
             self.cache_token = null;
@@ -1188,6 +1479,10 @@ pub const Binding = struct {
         };
         self.last_error = null;
         if (self.accepting) {
+            self.applySelectedFile() catch |err| {
+                self.last_error = err;
+                self.controller.detail_error = error.Parse;
+            };
             try self.render();
         } else if (self.controller.stopped) {
             try self.drainWake();
@@ -1214,6 +1509,15 @@ pub const Binding = struct {
         current.file_controls = self.local_ui and self.savedTrustAvailable();
         current.file_page = self.file_page;
         current.file_filter = self.file_filter;
+        current.detail_supported = current.file_controls and (if (self.controller.selection) |selected| selected.provider.vtable.detail != null else false);
+        current.detail_pending = self.controller.detail_pending;
+        current.detail_scope = if (self.controller.detail_scope) |*scope| scope else null;
+        current.detail_data = if (self.controller.detail_data) |*data| data else null;
+        current.detail_error = self.controller.detail_error;
+        current.detail_page = self.detail_page;
+        current.detail_path = self.detail_path;
+        current.detail_revision = self.detail_revision;
+        current.history_offset = self.history_offset;
         current.saved_trust_selected = self.saved_trust_selected;
         current.tool_version = self.verified_version;
         if (current.snapshot) |*snapshot| {
@@ -1322,6 +1626,9 @@ pub const Binding = struct {
         self.controller.query.stopped = true;
         self.controller.query.discard = true;
         self.controller.query.task.retireAtHostDestroy();
+        self.controller.dropDetail();
+        self.controller.query.detail_request = null;
+        self.controller.query.detail_result = error.Cancelled;
         self.controller.query.result = error.Cancelled;
         self.controller.query.published.store(false, .monotonic);
         self.controller.query.wake = null;
@@ -1416,6 +1723,10 @@ const Mock = struct {
         return .{ .availability = .ready, .workspace = actual, .changes = .{ .modified = 4 }, .counts = .{ .modified = .ready } };
     }
 
+    fn detail(_: *anyopaque, _: *const identity.Workspace, _: *const contract.DetailRequest) contract.Error!contract.DetailText {
+        return contract.DetailText.init("fixture detail");
+    }
+
     fn provider(self: *Mock) contract.Provider {
         var set: capabilities.Set = .empty;
         set.insert(.status);
@@ -1424,7 +1735,7 @@ const Mock = struct {
             .display_name = "fixture",
             .capabilities = set,
             .ctx = self,
-            .vtable = .{ .detect = detectImpl, .summarize = summarize },
+            .vtable = .{ .detect = detectImpl, .summarize = summarize, .detail = detail },
         };
     }
 };
@@ -1607,7 +1918,7 @@ const MockUi = struct {
         const name = abi.slice(command) orelse return abi.error_argument;
         const local = self.commands_expected >= 10 and (panel.trustKind(name) != null or std.mem.eql(u8, name, panel.command_trust_confirm) or std.mem.eql(u8, name, panel.command_trust_cancel) or std.mem.eql(u8, name, panel.command_trust_reset));
         const saved = self.commands_expected >= 14 and (std.mem.eql(u8, name, panel.command_trust_remember) or std.mem.eql(u8, name, panel.command_trust_reuse) or std.mem.eql(u8, name, panel.command_trust_forget) or std.mem.eql(u8, name, panel.command_trust_forget_all));
-        if (panel.parseCommand(name) == null and !(self.commands_expected >= 4 and std.mem.eql(u8, name, panel.command_revoke)) and !local and !saved and !(self.commands_expected == 17 and panel.isFileCommand(name))) return abi.error_argument;
+        if (panel.parseCommand(name) == null and !(self.commands_expected >= 4 and std.mem.eql(u8, name, panel.command_revoke)) and !local and !saved and !(self.commands_expected == panel.full_command_count and (panel.isFileCommand(name) or panel.isDetailCommand(name)))) return abi.error_argument;
         self.subscriptions += 1;
         if (self.subscriptions == self.fail_subscribe_at) return abi.error_permission;
         self.callback = callback;
@@ -2428,7 +2739,7 @@ test "saved record can be reviewed and revoked without a discovered executable o
     var preview: MockResolver = .{ .host_task = &mock };
     var trusted: MockResolver = .{ .host_task = &mock };
     var access: LocalAccessFixture = .{ .resolver = &trusted };
-    var model: MockUi = .{ .commands_expected = 17, .executable = "" };
+    var model: MockUi = .{ .commands_expected = panel.full_command_count, .executable = "" };
     var navigation: MockNavigation = .{};
     var binding = try Binding.init(mock.table(), .en);
     try binding.configureMetadataPreview(preview.resolver());
@@ -2458,4 +2769,29 @@ test "saved record can be reviewed and revoked without a discovered executable o
     try std.testing.expectEqual(@as(usize, 0), access.authorized);
     try binding.requestStop();
     try binding.finishLocalAccess();
+}
+
+test "detail task serializes with summary and discards cancelled result before release" {
+    var mock: Mock = .{};
+    var controller = try Controller.init(mock.table());
+    const workspace = try identity.Workspace.init(.git, "repo", "repo");
+    try controller.select(mock.provider(), &workspace);
+    mock.runWork();
+    try controller.pump();
+    try controller.queryDetail(.{ .kind = .refs });
+    try std.testing.expectError(error.State, controller.queryDetail(.{ .kind = .refs }));
+    mock.runWork();
+    mock.fail_release = true;
+    try std.testing.expectError(error.State, controller.pump());
+    try std.testing.expect(controller.detail_data == null);
+    mock.fail_release = false;
+    try controller.pump();
+    try std.testing.expectEqualStrings("fixture detail", controller.detail_data.?.slice());
+    try controller.queryDetail(.{ .kind = .refs });
+    try controller.cancel();
+    mock.runWork();
+    try controller.pump();
+    try std.testing.expect(controller.detail_data == null);
+    try controller.requestStop();
+    try controller.checkDrained();
 }

@@ -190,6 +190,7 @@ pub const Snapshot = struct {
     availability: Availability = .unknown,
     workspace: ?identity.Workspace = null,
     revision: ?identity.RevisionId = null,
+    operation: Text = .{},
     /// Branch, bookmark, stream or trunk-relative path, depending on the VCS.
     reference: Text = .{},
     changes: Changes = .{},
@@ -275,12 +276,269 @@ test "forge links reject credentials, redirects and non-repository paths" {
     }
 }
 
+/// Bounded local read-only detail. The exact same command grammar is used
+/// for construction and for authorization at the process admission boundary.
+pub const DetailKind = enum { history, file_history, revision_info, working_diff, staged_diff, revision_diff, content, refs, workspaces, operations, local_info, properties, guard, filter_guard, jj_pin, jj_status_revision, jj_status_diff };
+
+pub const DetailRequest = struct {
+    kind: DetailKind,
+    path: identity.Path = .{},
+    revision: ?identity.RevisionId = null,
+    offset: u16 = 0,
+    operation: Text = .{},
+};
+
+pub fn safeRelativePath(value: []const u8) bool {
+    if (value.len == 0 or value.len > identity.max_path_bytes or !std.unicode.utf8ValidateSlice(value)) return false;
+    for (value) |byte| {
+        if (byte < 0x20 or byte == 0x7f or std.mem.indexOfScalar(u8, "\\:\"*?<>|@{}[]", byte) != null) return false;
+    }
+    var parts = std.mem.splitScalar(u8, value, '/');
+    while (parts.next()) |part| {
+        if (part.len == 0 or part[0] == '-' or part[part.len - 1] == '.' or part[part.len - 1] == ' ') return false;
+        for ([_][]const u8{ ".git", ".jj", ".svn" }) |bad| {
+            if (std.ascii.eqlIgnoreCase(part, bad)) return false;
+        }
+        const stem = part[0..std.mem.indexOfScalar(u8, part, '.') orelse part.len];
+        for ([_][]const u8{ "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9" }) |bad| {
+            if (std.ascii.eqlIgnoreCase(stem, bad)) return false;
+        }
+    }
+    return true;
+}
+
+pub fn safeRevision(kind: identity.Kind, value: []const u8) bool {
+    if (kind != .git and kind != .jj) return false;
+    if (value.len != 40 and !(kind == .git and value.len == 64)) return false;
+    for (value) |byte| {
+        if (!std.ascii.isHex(byte)) return false;
+    }
+    return true;
+}
+
+pub fn safeOperation(value: []const u8) bool {
+    if (value.len != 128) return false;
+    for (value) |byte| {
+        if (!std.ascii.isHex(byte)) return false;
+    }
+    return true;
+}
+
+pub const DetailText = struct {
+    pub const capacity = 16384;
+    pub const page_size = 8;
+    pub const chunk_size = 512;
+    pub const State = enum { text, binary, invalid_encoding };
+    state: State = .text,
+    bytes: [capacity]u8 = undefined,
+    len: u16 = 0,
+
+    pub fn init(value: []const u8) Error!DetailText {
+        if (value.len > capacity) return error.ResourceLimit;
+        if (std.mem.indexOfScalar(u8, value, 0) != null) return .{ .state = .binary };
+        if (!std.unicode.utf8ValidateSlice(value)) return .{ .state = .invalid_encoding };
+        var result: DetailText = .{};
+        @memcpy(result.bytes[0..value.len], value);
+        result.len = @intCast(value.len);
+        return result;
+    }
+
+    pub fn slice(self: *const DetailText) []const u8 {
+        return self.bytes[0..self.len];
+    }
+
+    pub fn nextChunk(self: *const DetailText, cursor: *usize) ?[]const u8 {
+        if (cursor.* >= self.len) return null;
+        const rest = self.slice()[cursor.*..];
+        const line_len = std.mem.indexOfScalar(u8, rest, '\n') orelse rest.len;
+        var n = @min(line_len, chunk_size);
+        while (n != 0 and n < rest.len and (rest[n] & 0xc0) == 0x80) n -= 1;
+        cursor.* += n + @as(usize, @intFromBool(n == line_len and line_len < rest.len));
+        return rest[0..n];
+    }
+
+    pub fn revisionAt(self: *const DetailText, kind: identity.Kind, chunk: usize) ?identity.RevisionId {
+        if (self.state != .text) return null;
+        var cursor: usize = 0;
+        var index: usize = 0;
+        while (cursor < self.len) : (index += 1) {
+            const start = cursor;
+            const line = self.nextChunk(&cursor) orelse return null;
+            if (index != chunk) continue;
+            if (start != 0 and self.bytes[start - 1] != '\n') return null;
+            const end = std.mem.indexOfAny(u8, line, " \t") orelse return null;
+            if (!safeRevision(kind, line[0..end])) return null;
+            return identity.RevisionId.init(kind, line[0..end]) catch null;
+        }
+        return null;
+    }
+
+    pub fn pages(self: *const DetailText) usize {
+        var cursor: usize = 0;
+        var count: usize = 0;
+        while (self.nextChunk(&cursor)) |_| count += 1;
+        return @max(1, (count + page_size - 1) / page_size);
+    }
+};
+
+const Spec = struct { provider: identity.Kind, kind: DetailKind, args: []const []const u8 };
+const detail_specs = [_]Spec{
+    .{ .provider = .jj, .kind = .jj_pin, .args = &.{ "$exe", "--ignore-working-copy", "--at-op=@", "--no-pager", "--color=never", "-R", "$root", "op", "log", "--no-graph", "--limit", "1", "-T", "id" } },
+    .{ .provider = .jj, .kind = .jj_status_revision, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "log", "-r", "@", "--no-graph", "-T", "change_id.short() ++ \"\\t\" ++ commit_id ++ \"\\t\" ++ bookmarks.join(\" \") ++ \"\\t\" ++ if(conflict, \"conflict\", \"ok\")" } },
+    .{ .provider = .jj, .kind = .jj_status_diff, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "diff", "--summary", "-r", "$rev" } },
+    .{ .provider = .git, .kind = .guard, .args = &.{ "$exe", "--no-pager", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "$root", "config", "--get-regexp", "^(extensions\\.partialclone|remote\\..*\\.(promisor|partialclonefilter))$" } },
+    .{ .provider = .git, .kind = .filter_guard, .args = &.{ "$exe", "--no-pager", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "$root", "config", "--get-regexp", "^filter\\..*\\.(clean|process)$" } },
+    .{ .provider = .git, .kind = .history, .args = &.{ "$exe", "--no-pager", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "$root", "log", "--no-show-signature", "--max-count=32", "$skip", "--format=%H%x09%aI%x09%s", "$rev", "--" } },
+    .{ .provider = .git, .kind = .file_history, .args = &.{ "$exe", "--no-pager", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "$root", "log", "--no-show-signature", "--max-count=32", "$skip", "--format=%H%x09%aI%x09%s", "$rev", "--", "$path" } },
+    .{ .provider = .git, .kind = .revision_info, .args = &.{ "$exe", "--no-pager", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "$root", "show", "--no-patch", "--no-show-signature", "--format=fuller", "$rev", "--" } },
+    .{ .provider = .git, .kind = .working_diff, .args = &.{ "$exe", "--no-pager", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "$root", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--ignore-submodules=all", "--", "$path" } },
+    .{ .provider = .git, .kind = .staged_diff, .args = &.{ "$exe", "--no-pager", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "$root", "diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--ignore-submodules=all", "$rev", "--", "$path" } },
+    .{ .provider = .git, .kind = .revision_diff, .args = &.{ "$exe", "--no-pager", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "$root", "show", "--format=", "--no-show-signature", "--no-ext-diff", "--no-textconv", "--no-renames", "--ignore-submodules=all", "$rev", "--", "$path" } },
+    .{ .provider = .git, .kind = .content, .args = &.{ "$exe", "--no-pager", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "$root", "cat-file", "blob", "$blob" } },
+    .{ .provider = .git, .kind = .refs, .args = &.{ "$exe", "--no-pager", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "$root", "for-each-ref", "--count=128", "--format=%(objectname) %(refname)", "refs/heads", "refs/tags", "refs/remotes" } },
+    .{ .provider = .git, .kind = .workspaces, .args = &.{ "$exe", "--no-pager", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "$root", "worktree", "list", "--porcelain" } },
+    .{ .provider = .jj, .kind = .history, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "log", "-r", "$ancestors", "--no-graph", "$jj_limit", "-T", "commit_id ++ \" \" ++ change_id ++ \" \" ++ description.first_line() ++ \"\\n\"" } },
+    .{ .provider = .jj, .kind = .file_history, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "log", "-r", "$ancestors", "--no-graph", "$jj_limit", "-T", "commit_id ++ \" \" ++ change_id ++ \" \" ++ description.first_line() ++ \"\\n\"", "$fileset" } },
+    .{ .provider = .jj, .kind = .revision_info, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "log", "-r", "$rev", "--no-graph", "-T", "commit_id ++ \"\\n\" ++ change_id ++ \"\\n\" ++ description" } },
+    .{ .provider = .jj, .kind = .working_diff, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "diff", "--git", "-r", "$rev", "$fileset" } },
+    .{ .provider = .jj, .kind = .revision_diff, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "diff", "--git", "-r", "$rev", "$fileset" } },
+    .{ .provider = .jj, .kind = .content, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "file", "show", "-r", "$rev", "$fileset" } },
+    .{ .provider = .jj, .kind = .refs, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "bookmark", "list" } },
+    .{ .provider = .jj, .kind = .workspaces, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "workspace", "list" } },
+    .{ .provider = .jj, .kind = .operations, .args = &.{ "$exe", "--ignore-working-copy", "$op", "--no-pager", "--color=never", "-R", "$root", "op", "log", "--no-graph", "--limit", "32" } },
+    .{ .provider = .svn, .kind = .local_info, .args = &.{ "$exe", "info", "--non-interactive", "--no-auth-cache", "--xml", "--", "$target" } },
+    .{ .provider = .svn, .kind = .working_diff, .args = &.{ "$exe", "diff", "--non-interactive", "--no-auth-cache", "--internal-diff", "--", "$target" } },
+    .{ .provider = .svn, .kind = .content, .args = &.{ "$exe", "cat", "--non-interactive", "--no-auth-cache", "-r", "BASE", "--", "$target" } },
+    .{ .provider = .svn, .kind = .properties, .args = &.{ "$exe", "proplist", "--non-interactive", "--no-auth-cache", "--xml", "--", "$target" } },
+};
+
+pub fn detailSupported(provider: identity.Kind, kind: DetailKind) bool {
+    if (kind == .guard or kind == .filter_guard or kind == .jj_pin or kind == .jj_status_revision or kind == .jj_status_diff) return false;
+    for (detail_specs) |spec| {
+        if (spec.provider == provider and spec.kind == kind) return true;
+    }
+    return false;
+}
+
+fn eqArg(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
+fn validSvnTarget(root: []const u8, value: []const u8) bool {
+    if (!std.mem.endsWith(u8, value, "@")) return false;
+    const target = value[0 .. value.len - 1];
+    if (eqArg(target, root)) return true;
+    if (target.len <= root.len + 1 or !std.mem.startsWith(u8, target, root) or target[root.len] != std.fs.path.sep) return false;
+    const relative = target[root.len + 1 ..];
+    var normalized: [identity.max_path_bytes]u8 = undefined;
+    if (relative.len > normalized.len) return false;
+    for (relative, 0..) |byte, i| normalized[i] = if (byte == std.fs.path.sep) '/' else byte;
+    return safeRelativePath(normalized[0..relative.len]);
+}
+
+fn matchToken(kind: identity.Kind, root: []const u8, exe: []const u8, token: []const u8, actual: []const u8) bool {
+    if (eqArg(token, "$exe")) return eqArg(exe, actual);
+    if (eqArg(token, "$root")) return eqArg(root, actual);
+    if (eqArg(token, "$rev")) return safeRevision(kind, actual);
+    if (eqArg(token, "$path")) return safeRelativePath(actual);
+    if (eqArg(token, "$skip")) {
+        if (!std.mem.startsWith(u8, actual, "--skip=")) return false;
+        const offset = std.fmt.parseInt(u16, actual[7..], 10) catch return false;
+        return offset <= 4096 and offset % 32 == 0;
+    }
+    if (eqArg(token, "$op")) return std.mem.startsWith(u8, actual, "--at-op=") and safeOperation(actual[8..]);
+    if (eqArg(token, "$jj_limit")) {
+        if (!std.mem.startsWith(u8, actual, "--limit=")) return false;
+        const n = std.fmt.parseInt(u16, actual[8..], 10) catch return false;
+        return n >= 32 and n <= 256 and n % 32 == 0;
+    }
+    if (eqArg(token, "$ancestors")) return std.mem.startsWith(u8, actual, "::") and safeRevision(kind, actual[2..]);
+    if (eqArg(token, "$blob")) {
+        const colon = std.mem.indexOfScalar(u8, actual, ':') orelse return false;
+        return safeRevision(kind, actual[0..colon]) and safeRelativePath(actual[colon + 1 ..]);
+    }
+    if (eqArg(token, "$fileset")) {
+        const prefix = "root-file:\"";
+        return actual.len > prefix.len and std.mem.startsWith(u8, actual, prefix) and actual[actual.len - 1] == '"' and safeRelativePath(actual[prefix.len .. actual.len - 1]);
+    }
+    if (eqArg(token, "$target")) return validSvnTarget(root, actual);
+    return eqArg(token, actual);
+}
+
+pub fn detailAllowed(kind: identity.Kind, exe: []const u8, root: []const u8, argv: []const []const u8) bool {
+    outer: for (detail_specs) |spec| {
+        if (spec.provider != kind or spec.args.len != argv.len) continue;
+        for (spec.args, argv) |token, actual| {
+            if (!matchToken(kind, root, exe, token, actual)) continue :outer;
+        }
+        return true;
+    }
+    return false;
+}
+
+pub const DetailCommand = struct {
+    argv: [32][]const u8 = undefined,
+    scratch: [identity.max_path_bytes * 2 + 128]u8 = undefined,
+    skip: [16]u8 = undefined,
+    op: [136]u8 = undefined,
+
+    pub fn build(self: *DetailCommand, kind: identity.Kind, exe: []const u8, root: []const u8, request: *const DetailRequest) Error![]const []const u8 {
+        const rev = if (request.revision) |*value| value.slice() else "";
+        const path = request.path.slice();
+        if (request.revision) |value| {
+            if (value.kind != kind) return error.Parse;
+        }
+        if (path.len != 0 and !safeRelativePath(path)) return error.Permission;
+        for (detail_specs) |spec| {
+            if (spec.provider != kind or spec.kind != request.kind) continue;
+            for (spec.args, 0..) |token, i| {
+                self.argv[i] = if (eqArg(token, "$exe"))
+                    exe
+                else if (eqArg(token, "$root"))
+                    root
+                else if (eqArg(token, "$rev"))
+                    rev
+                else if (eqArg(token, "$path"))
+                    path
+                else if (eqArg(token, "$skip"))
+                    std.fmt.bufPrint(&self.skip, "--skip={d}", .{request.offset}) catch return error.ResourceLimit
+                else if (eqArg(token, "$op"))
+                    std.fmt.bufPrint(&self.op, "--at-op={s}", .{request.operation.slice()}) catch return error.ResourceLimit
+                else if (eqArg(token, "$jj_limit")) blk: {
+                    if (request.offset > 224 or request.offset % 32 != 0) return error.ResourceLimit;
+                    break :blk std.fmt.bufPrint(&self.skip, "--limit={d}", .{request.offset + 32}) catch return error.ResourceLimit;
+                } else if (eqArg(token, "$ancestors"))
+                    std.fmt.bufPrint(&self.scratch, "::{s}", .{rev}) catch return error.ResourceLimit
+                else if (eqArg(token, "$blob"))
+                    std.fmt.bufPrint(&self.scratch, "{s}:{s}", .{ rev, path }) catch return error.ResourceLimit
+                else if (eqArg(token, "$fileset"))
+                    std.fmt.bufPrint(&self.scratch, "root-file:\"{s}\"", .{path}) catch return error.ResourceLimit
+                else if (eqArg(token, "$target")) blk: {
+                    if (path.len == 0 and request.kind != .local_info and request.kind != .properties) return error.Permission;
+                    const target = if (path.len == 0)
+                        std.fmt.bufPrint(&self.scratch, "{s}@", .{root}) catch return error.ResourceLimit
+                    else
+                        std.fmt.bufPrint(&self.scratch, "{s}" ++ std.fs.path.sep_str ++ "{s}@", .{ root, path }) catch return error.ResourceLimit;
+                    for (self.scratch[root.len..target.len]) |*byte| {
+                        if (byte.* == '/') byte.* = std.fs.path.sep;
+                    }
+                    break :blk target;
+                } else token;
+                if (!matchToken(kind, root, exe, token, self.argv[i])) return error.Permission;
+            }
+            return self.argv[0..spec.args.len];
+        }
+        return error.Unsupported;
+    }
+};
+
 pub const VTable = struct {
     /// Fills `out` with the workspaces this provider recognises at or above
     /// `start_directory`. Must not run the CLI or touch the network.
     detect: *const fn (ctx: *anyopaque, start_directory: []const u8, out: *detect.Result) void,
     /// Reads one bounded summary. Called off the UI thread.
     summarize: *const fn (ctx: *anyopaque, workspace: *const identity.Workspace) Error!Snapshot,
+    detail: ?*const fn (ctx: *anyopaque, workspace: *const identity.Workspace, request: *const DetailRequest) Error!DetailText = null,
 };
 
 pub const Provider = struct {
@@ -300,6 +558,11 @@ pub const Provider = struct {
 
     pub fn summarize(self: Provider, workspace: *const identity.Workspace) Error!Snapshot {
         return self.vtable.summarize(self.ctx, workspace);
+    }
+
+    pub fn detail(self: Provider, workspace: *const identity.Workspace, request: *const DetailRequest) Error!DetailText {
+        if (workspace.kind != self.kind or !detailSupported(self.kind, request.kind)) return error.Unsupported;
+        return (self.vtable.detail orelse return error.Unsupported)(self.ctx, workspace, request);
     }
 };
 
@@ -399,4 +662,33 @@ test "file arena bounds retained rows and preserves omissions and exact names" {
     for (0..5) |_| large.add(&path, "", .{ .path = .{}, .kind = .modified });
     try std.testing.expectEqual(@as(u8, 4), large.count);
     try std.testing.expectEqual(@as(u32, 1), large.omitted);
+}
+
+test "detail grammar rejects path and revision injection and other roots" {
+    const rev = try identity.RevisionId.init(.git, "0123456789012345678901234567890123456789");
+    var command: DetailCommand = .{};
+    const request: DetailRequest = .{ .kind = .file_history, .revision = rev, .path = try identity.Path.init("src/a b.txt"), .offset = 32 };
+    const argv = try command.build(.git, "git", "repo", &request);
+    try std.testing.expect(detailAllowed(.git, "git", "repo", argv));
+    try std.testing.expect(!detailAllowed(.git, "git", "other", argv));
+    command.argv[argv.len - 1] = "../outside";
+    try std.testing.expect(!detailAllowed(.git, "git", "repo", argv));
+    for ([_][]const u8{ "../a", "a/../b", "a//b", "https://host/file", ".git/config", "AUX.txt", "-option", "a*.txt", "a\\b", "a@HEAD" }) |bad| {
+        try std.testing.expect(!safeRelativePath(bad));
+    }
+    try std.testing.expect(!safeRevision(.git, "--all"));
+    try std.testing.expect(!detailSupported(.svn, .history));
+}
+
+test "detail text distinguishes binary encoding and resource limit" {
+    try std.testing.expectEqual(DetailText.State.binary, (try DetailText.init("a\x00b")).state);
+    try std.testing.expectEqual(DetailText.State.invalid_encoding, (try DetailText.init("\xff")).state);
+    const too_long: [DetailText.capacity + 1]u8 = @splat('x');
+    try std.testing.expectError(error.ResourceLimit, DetailText.init(&too_long));
+    const detail = try DetailText.init("a\n\n中文");
+    var cursor: usize = 0;
+    try std.testing.expectEqualStrings("a", detail.nextChunk(&cursor).?);
+    try std.testing.expectEqualStrings("", detail.nextChunk(&cursor).?);
+    try std.testing.expectEqualStrings("中文", detail.nextChunk(&cursor).?);
+    try std.testing.expect(detail.nextChunk(&cursor) == null);
 }

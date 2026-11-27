@@ -646,6 +646,8 @@ const LocalSession = struct {
 
     fn fingerprint(pins: Pins, review: *const panel.LocalReview) [32]u8 {
         var hash = Sha256.init(.{});
+        // Domain-separate the advanced read policy from summary-only grants.
+        hash.update("pulse-extras-local-read-policy-v2");
         hash.update(review.root.slice());
         hash.update(&.{ 0, @backingInt(review.kind) });
         hash.update(review.executable.slice());
@@ -702,7 +704,7 @@ const LocalSession = struct {
         if (!sameId(exe_id, try evidence.observeSessionToolIdentity(review.executable.slice()))) return error.Permission;
         const system = try evidence.systemDirectory(&path);
         self.neutral = identity.Path.init(system) catch return error.Permission;
-        for ([_][]const u8{ "SystemRoot", "WINDIR", "LANG", "LC_ALL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS" }, [_][]const u8{ system, system, "C", "C", "1", "0", "0" }) |key, value| {
+        for ([_][]const u8{ "SystemRoot", "WINDIR", "LANG", "LC_ALL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_NO_LAZY_FETCH" }, [_][]const u8{ system, system, "C", "C", "1", "0", "0", "1" }) |key, value| {
             self.environment.put(key, value) catch return error.OutOfMemory;
         }
         if (self.runner == null) self.runner = process.Runner.init(allocator, io);
@@ -726,6 +728,7 @@ const LocalSession = struct {
         const exe = review.executable.slice();
         const root = review.root.slice();
         if (argvEqual(argv, &.{ exe, "--version" })) return true;
+        if (contract.detailAllowed(review.kind, exe, root, argv)) return true;
         return switch (review.kind) {
             .git => argvEqual(argv, &.{ exe, "--no-optional-locks", "-C", root, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--absolute-git-dir" }) or
                 argvEqual(argv, &.{ exe, "--no-optional-locks", "-C", root, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all" }),
@@ -756,6 +759,11 @@ const LocalSession = struct {
             !allowedCommand(review, request.argv)) return error.UnapprovedExecutable;
         self.checkPins(review) catch return error.UnapprovedExecutable;
         self.checkSaved(review) catch return error.UnapprovedExecutable;
+        if (review.kind == .svn and contract.detailAllowed(.svn, review.executable.slice(), review.root.slice(), request.argv)) {
+            const arg = request.argv[request.argv.len - 1];
+            const target = arg[0 .. arg.len - 1];
+            if (!review.root.eql(target)) evidence.observeLocalTarget(target) catch return error.UnapprovedExecutable;
+        }
         // Runner independently rehashes the executable immediately before spawn.
         if (self.revoked.load(.acquire)) return error.UnapprovedExecutable;
     }
@@ -802,6 +810,7 @@ const LocalSession = struct {
             },
             .svn => blk: {
                 self.svn = svn_mod.Svn.initApproved(runner, review.executable, probe, execution) catch return error.Permission;
+                self.svn.detail_version = report.version;
                 break :blk self.svn.provider();
             },
             else => return error.Unsupported,

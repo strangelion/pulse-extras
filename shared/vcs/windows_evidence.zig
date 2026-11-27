@@ -392,6 +392,23 @@ pub fn observeIdentity(path: []const u8, is_directory: bool) Error!FileIdentity 
     return FileIdentity.from(opened.info);
 }
 
+/// Verify a live local target without following a reparse point. Missing
+/// leaf is allowed only when its exact ordinary parent exists; this permits
+/// inspecting deleted versioned files without admitting external targets.
+pub fn observeLocalTarget(path: []const u8) Error!void {
+    if (comptime builtin.os.tag != .windows) return error.Unsupported;
+    const parent = std.fs.path.dirname(path) orelse return error.Permission;
+    _ = try observeIdentity(parent, true);
+    const wide = try Wide.init(path);
+    const attrs = GetFileAttributesW(&wide.buffer);
+    if (attrs == invalid_attributes) {
+        if (GetLastError() == 2) return;
+        return error.Permission;
+    }
+    if (attrs & reparse_attribute != 0) return error.Permission;
+    _ = try observeIdentity(path, attrs & directory_attribute != 0);
+}
+
 /// Small fixed-size local metadata preview. No config interpretation, links,
 /// remote volumes, writes or process execution. The caller treats bytes as
 /// untrusted display data; this does not establish authorization evidence.

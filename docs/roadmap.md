@@ -200,7 +200,7 @@ stable certification. Do not repeatedly publish tiny partial milestones.
 
 ## P3 — Read-only advanced functions
 
-### P3A — Complete local read-only workspace (active)
+### P3A — Complete local read-only workspace (active; consolidated candidate)
 
 **Outcome:** one consistent project/status/history/diff interface for all
 three primary providers, with native semantics and bounded content.
@@ -433,3 +433,45 @@ cover the first slice. History, revision/file content, selected-file diff,
 refs/workspaces, full provider-native detail and right-click file inspection
 remain P3A requirements, not completed by this candidate. SVN server history
 requires separate authorization. No SDK baseline changes or new release.
+
+### P3A consolidated advanced workspace candidate
+
+[5bfdaa3 / 45926890194](https://github.com/strangelion/pulse-extras/actions/runs/45926890194)
+passed the file-status slice. This candidate adds the remaining advanced
+local query path in the existing serialized worker and native panel: selected
+file or explicitly entered literal path, full revision-ID review/selection,
+file and repository history, output pagination, revision detail/content,
+working/staged/revision diff as applicable, Git refs/worktrees, JJ bookmarks,
+workspaces and operations, SVN local info/properties/BASE/working diff.
+A single selected-file context menu copies and freshly validates the exact
+selection and prefills the panel after a matching trusted workspace is ready;
+the directory route is retained. No automatic authorization or file query.
+Git history is anchored to a full commit ID and supports 32-entry offsets
+through 4096; JJ history uses a full 128-hex operation pin shared by status
+and all details, 32-entry offsets through 224, and immutable commit anchors.
+The visible history rows can supply a reviewed full ID for subsequent actions.
+Older saved local approvals cannot silently authorize the extended command
+policy: the fingerprint is domain-separated; old same-scope records can
+still be inspected/revoked and explicitly replaced.
+Git suppresses external diff/textconv, refuses promisor/partial-clone
+configuration, and refuses clean/process filter configuration before a
+working diff. SVN uses native local targets, verifies ordinary target/parent
+identity, permits only known pre-1.15 BASE/working diff (newer clients may
+hydrate absent pristine content), and never admits server history or
+arbitrary revision/network operations. JJ never snapshots or reconciles
+divergent operations in these queries. No shell or write/network command
+admission, no temporary revision files. Local trust remains not an OS
+sandbox; concurrent config/filesystem changes remain outside its guarantee.
+
+Bounded text output is 16 KiB with explicit resource, NUL/binary and encoding
+failure; large histories/ref lists are bounded (Git refs maximum 128,
+JJ history prefix maximum 256), not unbounded inventories. Compact JJ rename
+expressions are display-only; ambiguous paths require manual literal entry.
+Existing strict protected Git auditor remains summary-only, ordinary reviewed
+local sessions provide the expanded workflow. Native memory Diff is not used
+because the published SDK baseline lacks that contract. SVN server history
+and non-pristine working copies cannot be implemented under the offline
+approval gate; native installed UI, all alias/large-repo cases and full
+candidate CI remain unverified. Exact required CI and exit review still
+required; do not advance to P3B on a failed gate. No release or Companion
+change.

@@ -40,7 +40,7 @@ const Instance = struct {
             return;
         };
         if (table.raw.unregister_command == null) return;
-        var item = commands.descriptor("vcs.open-current", "VCS: Current or selected folder / 当前或选中文件夹", &invokeMenu);
+        var item = commands.descriptor("vcs.open-current", "VCS: Current or selected item / 当前或选中项目", &invokeMenu);
         item.kinds = commands.Kind.files | commands.Kind.directories;
         item.min_selection = 0;
         item.max_selection = 4096;
@@ -216,24 +216,29 @@ const FolderSelection = struct {
     parent: identity.Path,
     path: identity.Path,
     confirmed: bool = false,
+    directory: bool = true,
 
     fn read(snapshot: *const commands.SelectionSnapshot) ?FolderSelection {
+        return readKind(snapshot, true);
+    }
+
+    fn readKind(snapshot: *const commands.SelectionSnapshot, directory: bool) ?FolderSelection {
         if (!context.validSelection(snapshot) or snapshot.entry_count != 1 or snapshot.entries == null) return null;
         const row = &snapshot.entries[0];
-        if (row.size < @sizeOf(context.SelectionEntry) or row.flags & context.EntryFlag.directory == 0) return null;
+        if (row.size < @sizeOf(context.SelectionEntry) or (row.flags & context.EntryFlag.directory != 0) != directory) return null;
         const parent = abi.slice(snapshot.directory) orelse return null;
         const path = abi.slice(row.path) orelse return null;
         const name = abi.slice(row.name) orelse return null;
         if (!approval.strictPath(parent) or !approval.strictPath(path)) return null;
         if (!std.mem.eql(u8, std.fs.path.dirname(path) orelse return null, parent) or !std.mem.eql(u8, std.fs.path.basename(path), name)) return null;
-        return .{ .revision = snapshot.selection_revision, .parent = identity.Path.init(parent) catch return null, .path = identity.Path.init(path) catch return null };
+        return .{ .revision = snapshot.selection_revision, .parent = identity.Path.init(parent) catch return null, .path = identity.Path.init(path) catch return null, .directory = directory };
     }
 
     fn fresh(user: ?*anyopaque, snapshot: [*c]const commands.SelectionSnapshot) callconv(.c) void {
         const self: *FolderSelection = @ptrCast(@alignCast(user orelse return));
         self.confirmed = false;
         if (snapshot == null) return;
-        const other = read(&snapshot.*) orelse return;
+        const other = readKind(&snapshot.*, self.directory) orelse return;
         self.confirmed = self.revision == other.revision and self.parent.eql(other.parent.slice()) and self.path.eql(other.path.slice());
     }
 };
@@ -261,8 +266,18 @@ fn invokeMenu(user: ?*anyopaque, id: commands.CommandId, snapshot: [*c]const com
             }
             return;
         }
+        var selected = FolderSelection.readKind(&snapshot.*, false) orelse return;
+        const table = context.Table.init(self.host.raw()) catch return;
+        table.getSelection(&FolderSelection.fresh, &selected) catch return;
+        if (!selected.confirmed) return;
+        self.openFromMenu() catch |err| {
+            diag.status("vcs-menu-open-failed", @intFromError(err));
+            return;
+        };
+        if (self.binding) |*binding| binding.prepareSelectedFile(&selected.path) catch |err| diag.status("vcs-selected-file-prefill", @intFromError(err));
+        return;
     }
-    // Empty, file, or multi-selection retains the current-directory action.
+    // Empty or multi-selection retains the current-directory action.
     self.openFromMenu() catch |err| {
         diag.status("vcs-menu-open-failed", @intFromError(err));
         return;
@@ -286,6 +301,12 @@ test "selected folder requires exact direct child and unchanged fresh selection"
     row.name = abi.view("repo");
     row.flags = 0;
     try std.testing.expect(FolderSelection.read(&snapshot) == null);
+    var selected_file = FolderSelection.readKind(&snapshot, false).?;
+    FolderSelection.fresh(&selected_file, &snapshot);
+    try std.testing.expect(selected_file.confirmed);
+    row.flags = context.EntryFlag.directory;
+    FolderSelection.fresh(&selected_file, &snapshot);
+    try std.testing.expect(!selected_file.confirmed);
     snapshot.entry_count = 2;
     try std.testing.expect(FolderSelection.read(&snapshot) == null);
 }

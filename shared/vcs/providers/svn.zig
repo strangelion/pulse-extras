@@ -243,6 +243,7 @@ pub const Svn = struct {
     executable: identity.Path,
     probe: detect.Probe,
     execution: cli.Execution = .compatibility,
+    detail_version: ?cli.Version = null,
 
     pub fn init(runner: *run.Runner, executable: identity.Path, probe: detect.Probe) Svn {
         return .{ .runner = runner, .executable = executable, .probe = probe };
@@ -259,7 +260,7 @@ pub const Svn = struct {
             .kind = .svn,
             .display_name = "Subversion",
             .capabilities = declaredCapabilities(),
-            .vtable = .{ .detect = detectImpl, .summarize = summarizeImpl },
+            .vtable = .{ .detect = detectImpl, .summarize = summarizeImpl, .detail = detailImpl },
             .ctx = self,
         };
     }
@@ -319,6 +320,21 @@ pub const Svn = struct {
         for (all.slice()) |candidate| {
             if (candidate.kind == .svn) out.add(candidate);
         }
+    }
+
+    fn detailImpl(ctx: *anyopaque, workspace: *const identity.Workspace, request: *const contract.DetailRequest) contract.Error!contract.DetailText {
+        const self: *Svn = @ptrCast(@alignCast(ctx));
+        if (workspace.kind != .svn or !contract.detailSupported(.svn, request.kind)) return error.Unsupported;
+        if (request.kind == .working_diff or request.kind == .content) {
+            const version = self.detail_version orelse return error.Unsupported;
+            if (version.atLeast(.{ .major = 1, .minor = 15 })) return error.Unsupported;
+        }
+        var command: contract.DetailCommand = .{};
+        const argv = try command.build(.svn, self.executable.slice(), workspace.root.slice(), request);
+        var outcome = self.execution.execute(self.runner, .{ .argv = argv, .timeout_ns = 10 * std.time.ns_per_s, .stdout_limit = contract.DetailText.capacity, .stderr_limit = 64 * 1024 }) catch |err| return mapRunError(err);
+        defer outcome.deinit();
+        if (!outcome.succeeded()) return mapFailure(outcome.stderr);
+        return contract.DetailText.init(outcome.stdout);
     }
 
     fn summarizeImpl(ctx: *anyopaque, workspace: *const identity.Workspace) contract.Error!contract.Snapshot {
@@ -436,6 +452,18 @@ test "reads a real local SVN working copy prepared by integration CI" {
     if (publication == .failed) return publication.failed;
     try std.testing.expect(publication == .published);
     const snapshot = session.lookup(&workspace).fresh;
+    svn.detail_version = report.version;
+    const info = try svn.provider().detail(&workspace, &.{ .kind = .local_info });
+    try std.testing.expect(std.mem.indexOf(u8, info.slice(), "<entry") != null);
+    try std.testing.expectError(error.Unsupported, svn.provider().detail(&workspace, &.{ .kind = .history }));
+    const path = try identity.Path.init("tracked.txt");
+    _ = try svn.provider().detail(&workspace, &.{ .kind = .properties, .path = path });
+    if (!(report.version orelse return error.TestExpectedRevision).atLeast(.{ .major = 1, .minor = 15 })) {
+        const content = try svn.provider().detail(&workspace, &.{ .kind = .content, .path = path });
+        try std.testing.expect(std.mem.indexOf(u8, content.slice(), "original") != null);
+        const diff = try svn.provider().detail(&workspace, &.{ .kind = .working_diff, .path = path });
+        try std.testing.expect(std.mem.indexOf(u8, diff.slice(), "+changed") != null);
+    }
     try std.testing.expectEqual(contract.Availability.ready, snapshot.availability);
     try std.testing.expect(snapshot.revision != null);
     try std.testing.expectEqual(@as(u32, 1), snapshot.changes.modified);

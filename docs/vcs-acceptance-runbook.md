@@ -400,3 +400,24 @@ consolidated acceptance. Mocked scope fixtures are not registry or host proof.
 ### P3A file status candidate acceptance
 
 P2B code gate passed at [147449b / 45925323667](https://github.com/strangelion/pulse-extras/actions/runs/45925323667). For P3A, verify the bounded eight-row file display in Git, JJ and SVN, Git rename source/XY, JJ recorded-only label, SVN property/tree conflict and per-entry revision. Exercise >64 paths, oversized/invalid paths, search, previous/next, refresh, navigation, cancellation, revoke and stale snapshot. Counts must not be reduced to retained rows; paging/search may not execute CLI. History, file selection, diff, refs and native installed UI remain open. New source regression required.
+
+### Consolidated P3A local workspace acceptance
+
+Status code gate passed at 5bfdaa3 / 45926890194. For the advanced candidate,
+exercise all Git history/file history (offset and revision selection),
+revision info/content, staged/working/revision diff, refs/worktrees; JJ
+recorded operation pin and ancestry/file history, revision info/content/diff,
+bookmarks/workspaces/operations with unchanged operation log; SVN local info,
+properties, BASE and working diff on complete-pristine versions. On newer
+SVN and server-history requests the explicit unsupported state is expected.
+Use real fixture tracked/renamed/deleted/untracked/property-conflict data;
+reject traversal, options, glob/revset injection, external paths/reparse,
+binary/invalid encoding/large output, filter and promisor configuration.
+Verify old saved records are still inspectable and revocable but require
+fresh review to authorize the extended local read policy. Single selected-file
+right-click must only populate the path, reject changed selection, and not
+launch file history/diff before explicit user action and current consent.
+Verify rapid project switching, cancellation, failed task release, close/
+revoke and simultaneous windows. Native memory Diff not available on the
+public pin; use bounded own view. No installed acceptance or release claimed;
+exact new CI required.
