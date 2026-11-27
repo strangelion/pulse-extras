@@ -481,8 +481,13 @@ The library distinguishes an empty collection from a filter with no matches.
 The running view separates instance identity and status from resource metrics.
 All four pages centre their content within the host viewport and reflow at
 narrow widths. The library places Import on the right of the filter row on
-wide pages. The market reflows from one to four columns, with the pet name
-and source ID centred in each card. Downloads and runtime limits appear
+wide pages. Market filters use the right edge of the toolbar, with a
+separate row below the actions at narrow widths. The market reflows from one
+to four columns, with the pet name and source ID centred in each card.
+Running management keeps the instance field and Stop on one row when they
+fit, with the match count and visibility controls centred. Navigation and
+result buttons retain their IDs during selection changes so the native
+renderer can preserve focus. Downloads and runtime limits appear
 side by side on wide settings pages and stack on narrower ones. Number
 fields keep visible labels when filled, and the eight startup plan entries
 use two columns where there is room. Commands, persisted keys

@@ -174,6 +174,7 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
     for (unsigned i = 0; i < 4; ++i) {
         const PulseUiModelNode *n = nav->children.data + i;
         REQUIRE(n->size == sizeof(*n) && n->type == PULSE_UI_MODEL_BUTTON && n->command.present && same(n->command.value, commands[i]));
+        REQUIRE(same(n->id, commands[i]));
         REQUIRE(n->enabled.present && n->enabled.value && n->kind.present);
         REQUIRE(same(n->kind.value, "primary") || same(n->kind.value, "transparent"));
         primary_count += same(n->kind.value, "primary");
@@ -256,10 +257,10 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
         }
     }
     if (same(root->children.data[1].id, "market")) {
-        REQUIRE(root->children.count >= 8);
-        REQUIRE(same(root->children.data[7].command.value, commands[77]));
+        REQUIRE(root->children.count >= 7);
+        REQUIRE(same(root->children.data[6].command.value, commands[77]));
         f->image_seen = 0;
-        for (unsigned n = 8; n < root->children.count; ++n) {
+        for (unsigned n = 7; n < root->children.count; ++n) {
             const PulseUiModelNode *image = root->children.data + n;
             if (image->type != 44) continue;
             REQUIRE(same(image->id, "market.image-fixture"));
@@ -277,12 +278,16 @@ static PulseStatus inspect(Fixture *f, const PulseUiModelTree *t) {
         const PulseUiModelNode *search = root->children.data + 3;
         REQUIRE(search->type == PULSE_UI_MODEL_TEXT_INPUT && same(search->state.value, "market.query"));
         REQUIRE(!search->glyph.present && !search->flex.present);
-        const PulseUiModelNode *actions = root->children.data + 4;
-        REQUIRE(actions->children.present && actions->children.count == 5);
+        const PulseUiModelNode *toolbar = root->children.data + 4;
+        REQUIRE(same(toolbar->id, "market.toolbar") && toolbar->children.present &&
+                toolbar->children.data && toolbar->children.count == 3);
+        REQUIRE(toolbar->children.data[1].flex.present && toolbar->children.data[1].flex.value == 1);
+        const PulseUiModelNode *actions = toolbar->children.data;
+        REQUIRE(actions->children.present && actions->children.data && actions->children.count == 5);
         REQUIRE(same(actions->children.data[3].command.value, commands[39]));
         REQUIRE(same(actions->children.data[4].command.value, commands[78]));
-        const PulseUiModelNode *filters = root->children.data + 5;
-        REQUIRE(filters->children.present && filters->children.count == 3);
+        const PulseUiModelNode *filters = toolbar->children.data + 2;
+        REQUIRE(filters->children.present && filters->children.data && filters->children.count == 3);
         for (unsigned n = 0; n < 3; ++n)
             REQUIRE(same(filters->children.data[n].command.value, commands[55 + n]));
         for (unsigned n = 0; n < t->state_count; ++n)

@@ -165,6 +165,8 @@ const Content = struct {
     page_frame: [3]ui.Node = undefined,
     paging_frame: [3]ui.Node = undefined,
     library_actions: [3]ui.Node = undefined,
+    market_toolbar: [3]ui.Node = undefined,
+    visibility_frame: [3]ui.Node = undefined,
     settings_sections: [5]ui.Node = undefined,
     settings_overview: [2]ui.Node = undefined,
     // The library's fallback can render 16 individual rows alongside
@@ -362,6 +364,11 @@ fn compactToolbar(id: []const u8, actions: []const ui.Node) ui.Node {
     node.min_width = .{ .present = 1, .value = width };
     node.max_width = node.min_width;
     return node;
+}
+
+fn splitToolbar(nodes: *[3]ui.Node, comptime id: []const u8, leading: ui.Node, trailing: ui.Node) ui.Node {
+    nodes.* = .{ leading, horizontalSpacer(id ++ ".space"), trailing };
+    return horizontal(id, nodes);
 }
 
 // Build a contiguous prefix: the nested-picker route omits the standalone
@@ -599,29 +606,32 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
     const can_clear = if (instance.panel) |panel| panel.table.set_states != null else false;
     content.market_actions[3] = styledAction("market.search-clear", "重置筛选", commands[39], idle and can_clear, "transparent", 110);
     content.market_actions[4] = styledAction("market.open-gallery", "打开官方图库 ↗", commands[78], marketBrowserIdle(instance), "transparent", 148);
-    content.children[4] = horizontal("market.actions", &content.market_actions);
     const filters = instance.market_filters;
-    content.market_filter_actions[0] = action("market.filter-mode", switch (filters.mode) {
+    content.market_filter_actions[0] = styledAction("market.filter-mode", switch (filters.mode) {
         .curated => "范围：精选或原创",
         .all => "范围：全部",
         .original => "范围：原创",
         .featured => "范围：精选",
         .exact_id => "范围：精确来源 ID",
-    }, commands[55], idle);
-    content.market_filter_actions[1] = action("market.filter-category", switch (filters.category) {
+    }, commands[55], idle, "standard", 158);
+    content.market_filter_actions[1] = styledAction("market.filter-category", switch (filters.category) {
         .any => "类别：不限",
         .asian => "类别：亚洲",
         .western => "类别：欧美",
-    }, commands[56], idle and filters.mode != .exact_id);
-    content.market_filter_actions[2] = action("market.filter-version", switch (filters.version) {
+    }, commands[56], idle and filters.mode != .exact_id, "standard", 138);
+    content.market_filter_actions[2] = styledAction("market.filter-version", switch (filters.version) {
         .any => "版本：不限",
         .v1 => "版本：V1",
         .v2 => "版本：V2",
-    }, commands[57], idle and filters.mode != .exact_id);
-    for (&content.market_filter_actions) |*filter| filter.max_width = .{ .present = 1, .value = 168 };
-    content.children[5] = horizontal("market.filters", &content.market_filter_actions);
-    content.children[6] = captionLabel("market.notice", "官方图库 " ++ library.market_gallery_url ++ " · 素材许可请以来源页面的明确声明为准。");
-    var count: usize = 7;
+    }, commands[57], idle and filters.mode != .exact_id, "standard", 138);
+    content.children[4] = splitToolbar(
+        &content.market_toolbar,
+        "market.toolbar",
+        compactToolbar("market.actions", &content.market_actions),
+        compactToolbar("market.filters", &content.market_filter_actions),
+    );
+    content.children[5] = captionLabel("market.notice", "官方图库 " ++ library.market_gallery_url ++ " · 素材许可请以来源页面的明确声明为准。");
+    var count: usize = 6;
     content.children[count] = styledAction("market.image-test", if (instance.market_image_rejected) "已回退文字" else if (instance.market_image_test) "关闭图片测试" else "离线图片测试", commands[77], !busy and !instance.market_image_rejected, "transparent", 144);
     count += 1;
     if (instance.market_image_test) {
@@ -687,7 +697,7 @@ fn fillMarket(instance: *const Instance, content: *Content) usize {
             const ids = &content.market_row_ids[n];
             const source_hash = std.hash.Wyhash.hash(0, row.sourceId());
             const body = std.fmt.bufPrint(&content.market_rows[n], "{s}{s}", .{ if (selected) "已选： " else "", row.displayName() }) catch unreachable;
-            const button_id = std.fmt.bufPrint(&ids[0], "market-row-{d}-{x}", .{ n, std.hash.Wyhash.hash(source_hash, body) }) catch unreachable;
+            const button_id = std.fmt.bufPrint(&ids[0], "market-row-{d}-{x}", .{ n, source_hash }) catch unreachable;
             const source_id = std.fmt.bufPrint(&ids[1], "market-source-{d}-{x}", .{ n, source_hash }) catch unreachable;
             const card_id = std.fmt.bufPrint(&ids[2], "market-card-{d}-{x}", .{ n, source_hash }) catch unreachable;
             item[0] = styledAction(button_id, body, commands[40 + n], idle, if (selected) "primary" else "standard", 0);
@@ -991,9 +1001,9 @@ fn syncPolicyEditor(instance: *Instance) void {
 fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
     for (commands, 0..) |command, n| content.declared[n] = abi.view(command);
     const selected: usize = @backingInt(instance.section);
-    const active_ids = [_][]const u8{ "nav.library.active", "nav.running.active", "nav.market.active", "nav.global.active" };
+    // Reusing the same host control keeps focus attached to its command.
     for (names, 0..) |name, n| {
-        content.navigation[n] = styledAction(if (n == selected) active_ids[n] else commands[n], name, commands[n], true, if (n == selected) "primary" else "transparent", 0);
+        content.navigation[n] = styledAction(commands[n], name, commands[n], true, if (n == selected) "primary" else "transparent", 0);
     }
     var navigation = grid("navigation", &content.navigation, 4);
     navigation.min_width = .{ .present = 1, .value = 320 };
@@ -1025,12 +1035,12 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                 const enabled = instance.tasks != null and instance.dispatch != null and instance.task_id == 0 and !runtimeBusy(instance) and instance.import_dialog == 0 and instance.picker_request == 0;
                 const embedded_picker = instance.dialog_v2_table != null and instance.picker_api != null and !instance.dialog_picker_disabled;
                 const buttons = fillImportToolbar(&content.import_toolbar, embedded_picker, enabled, instance.import_request != null, instance.task_id != 0 and !instance.import_cancel_requested);
-                content.library_actions = .{
+                content.children[4] = splitToolbar(
+                    &content.library_actions,
+                    "library.actions",
                     filter_toolbar,
-                    horizontalSpacer("library.actions-space"),
                     compactToolbar("library.import-toolbar", buttons),
-                };
-                content.children[4] = horizontal("library.actions", &content.library_actions);
+                );
             }
             if (instance.library_loaded) {
                 const snapshot = &instance.library_snapshot;
@@ -1173,9 +1183,8 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     content.stop_toolbar[0] = inputField("running.stop-id", "实例 ID", "输入实例 ID");
                     const can_stop = !instance.stop_requested and instance.session.pending_stop.load(.acquire) == 0 and instance.session.stopping_id.load(.acquire) == 0 and phase == .running and !instance.session.pending_start.load(.acquire);
                     content.stop_toolbar[0].min_width = .{ .present = 1, .value = 160 };
-                    content.stop_toolbar[0].max_width = .{ .present = 1, .value = 240 };
                     content.stop_toolbar[0].flex = .{ .present = 1, .value = 1 };
-                    content.stop_toolbar[1] = styledAction("running.stop-one", "停止指定实例", commands[14], can_stop, "standard", 142);
+                    content.stop_toolbar[1] = styledAction("running.stop-one", "停止实例", commands[14], can_stop, "standard", 128);
                     content.children[count] = horizontal("running.stop-toolbar", &content.stop_toolbar);
                     count += 1;
                     const total = runningMatchCount(instance);
@@ -1227,6 +1236,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     }
                     const line = std.fmt.bufPrint(&content.running_count, "匹配 {d} / {d} 个实例 · 显示 {d}–{d}", .{ total, instance.running_rows.count, if (total == 0) 0 else offset + 1, offset + rendered }) catch unreachable;
                     content.children[count_index] = changingCaption(&content.running_count_id, "running.count", line);
+                    content.children[count_index].alignment = .{ .present = 1, .value = abi.view("center") };
                     if (total > running_page_size) {
                         content.running_paging[0] = styledAction("running.previous", "上一页", commands[53], offset != 0, "standard", 92);
                         content.running_paging[1] = styledAction("running.next", "下一页", commands[54], offset + rendered < total, "standard", 92);
@@ -1242,7 +1252,7 @@ fn fill(instance: *const Instance, content: *Content, tree: *ui.Tree) void {
                     content.visibility_actions[1] = styledAction("running.show", "显示指定实例", commands[84], can_visibility and readable, "standard", 126);
                     content.visibility_actions[2] = styledAction("running.hide-all", "全部隐藏", commands[85], can_visibility, "transparent", 104);
                     content.visibility_actions[3] = styledAction("running.show-all", "全部显示", commands[86], can_visibility, "transparent", 104);
-                    content.children[count] = horizontal("running.visibility", &content.visibility_actions);
+                    content.children[count] = centred(&content.visibility_frame, "running.visibility-frame", compactToolbar("running.visibility", &content.visibility_actions));
                     count += 1;
                 }
             }
@@ -4060,6 +4070,7 @@ test "four section tree declares only real navigation and preference actions" {
         try std.testing.expectEqual(@as(u32, 4), navigation.children.count);
         try std.testing.expectEqualStrings(commands[n][10..], abi.slice(content.children[1].id).?);
         for (content.navigation, 0..) |button, k| {
+            try std.testing.expectEqualStrings(commands[k], abi.slice(button.id).?);
             try std.testing.expectEqualStrings(commands[k], abi.slice(button.command.value).?);
             try std.testing.expectEqualStrings(if (k == n) "primary" else "transparent", abi.slice(button.kind.value).?);
             try std.testing.expectEqual(@as(u32, 1), button.enabled.value);
@@ -4068,7 +4079,7 @@ test "four section tree declares only real navigation and preference actions" {
             .library => 5,
             .global => 5,
             .running => 6,
-            .market => 8,
+            .market => 7,
         };
         try std.testing.expectEqual(expected, content.root.children.count);
     }
@@ -4375,15 +4386,19 @@ test "populated market rows survive navigation without forbidden button attribut
     instance.market_snapshot.rows[0] = .{ .id_len = 3, .name_len = 3, .catalog_page = 0 };
     @memcpy(instance.market_snapshot.rows[0].id[0..3], "cat");
     @memcpy(instance.market_snapshot.rows[0].name[0..3], "Cat");
-    instance.market_selected = 0;
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
+    fill(instance, &content, &tree);
+    const initial_id = abi.slice(content.market_result_text[0][0].id).?;
+    var initial_id_copy: [64]u8 = undefined;
+    @memcpy(initial_id_copy[0..initial_id.len], initial_id);
+    instance.market_selected = 0;
     for ([_]Section{ .market, .library, .market }) |section| {
         instance.section = section;
         fill(instance, &content, &tree);
         try expectInputLabels(content.root);
         if (section == .market) {
-            const results = &content.children[9];
+            const results = &content.children[8];
             try std.testing.expectEqual(ui.NodeKind.grid, results.type);
             try std.testing.expectEqual(@as(i64, 4), results.columns.value);
             try std.testing.expectEqual(@as(u32, 1), results.children.count);
@@ -4391,6 +4406,7 @@ test "populated market rows survive navigation without forbidden button attribut
             try std.testing.expectEqual(@as(i64, 248), card.min_width.value);
             try std.testing.expectEqual(@as(u32, 2), card.children.count);
             const button = card.children.data[0];
+            try std.testing.expectEqualStrings(initial_id_copy[0..initial_id.len], abi.slice(button.id).?);
             try std.testing.expectEqualStrings("已选： Cat", abi.slice(button.text.value).?);
             try std.testing.expectEqualStrings("primary", abi.slice(button.kind.value).?);
             try std.testing.expectEqualStrings(commands[40], abi.slice(button.command.value).?);
@@ -4403,7 +4419,7 @@ test "populated market rows survive navigation without forbidden button attribut
     }
     instance.market_render_rejected = true;
     fill(instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 8), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 7), content.root.children.count);
     try std.testing.expect(instance.market_snapshot.result != null);
 
     instance.market_render_rejected = false;
@@ -4411,9 +4427,9 @@ test "populated market rows survive navigation without forbidden button attribut
     instance.market_snapshot.result.?.summary.written = 0;
     instance.market_snapshot.result.?.summary.total = 0;
     fill(instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 10), content.root.children.count);
-    try std.testing.expectEqual(ui.NodeKind.empty_state, content.children[9].type);
-    try std.testing.expectEqualStrings("market.no-match", abi.slice(content.children[9].id).?);
+    try std.testing.expectEqual(@as(u32, 9), content.root.children.count);
+    try std.testing.expectEqual(ui.NodeKind.empty_state, content.children[8].type);
+    try std.testing.expectEqualStrings("market.no-match", abi.slice(content.children[8].id).?);
 }
 
 test "market panel requires explicit admission and has no implicit install" {
@@ -4423,8 +4439,10 @@ test "market panel requires explicit admission and has no implicit install" {
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     fill(instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 8), content.root.children.count);
-    try std.testing.expectEqual(@as(u32, 3), content.children[5].children.count);
+    try std.testing.expectEqual(@as(u32, 7), content.root.children.count);
+    try std.testing.expectEqualStrings("market.toolbar", abi.slice(content.children[4].id).?);
+    try std.testing.expectEqual(@as(i64, 1), content.market_toolbar[1].flex.value);
+    try std.testing.expectEqual(@as(u32, 3), content.market_toolbar[2].children.count);
     try std.testing.expectEqualStrings(commands[55], abi.slice(content.market_filter_actions[0].command.value).?);
     try std.testing.expectEqualStrings("market.query", abi.slice(content.children[3].id).?);
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[0].enabled.value);
@@ -4434,7 +4452,7 @@ test "market panel requires explicit admission and has no implicit install" {
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[3].enabled.value);
     try std.testing.expectEqualStrings(commands[78], abi.slice(content.market_actions[4].command.value).?);
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[4].enabled.value);
-    try std.testing.expect(std.mem.indexOf(u8, abi.slice(content.children[6].text.value).?, library.market_gallery_url) != null);
+    try std.testing.expect(std.mem.indexOf(u8, abi.slice(content.children[5].text.value).?, library.market_gallery_url) != null);
     try std.testing.expectEqual(@as(u32, 0), content.children[3].glyph.present);
     try std.testing.expectEqual(@as(u32, 0), content.children[3].flex.present);
     try std.testing.expectEqual(@as(u32, 30), tree.state_count);
@@ -4471,6 +4489,12 @@ test "running page bounds rendered controls at full storage capacity" {
     instance.running_rows.count = 1;
     fill(instance, &content, &tree);
     try std.testing.expectEqual(@as(u32, 11), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 0), content.stop_toolbar[0].max_width.present);
+    try std.testing.expectEqual(@as(i64, 1), content.stop_toolbar[0].flex.value);
+    try std.testing.expectEqualStrings(commands[14], abi.slice(content.stop_toolbar[1].command.value).?);
+    try std.testing.expectEqualStrings("center", abi.slice(content.children[8].alignment.value).?);
+    try std.testing.expectEqualStrings("running.visibility", abi.slice(content.visibility_frame[1].id).?);
+    try std.testing.expectEqual(@as(u32, 4), content.visibility_frame[1].children.count);
 }
 
 test "persisted runtime limits reject malformed and duplicate settings" {
@@ -4508,12 +4532,12 @@ test "preview 3 image diagnostic is opt-in and uses verified field mapping" {
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     fill(instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 8), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 7), content.root.children.count);
     instance.market_image_test = true;
     fill(instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 10), content.root.children.count);
-    try std.testing.expectEqualStrings(commands[79], abi.slice(content.children[9].command.value).?);
-    const image = &content.children[8];
+    try std.testing.expectEqual(@as(u32, 9), content.root.children.count);
+    try std.testing.expectEqualStrings(commands[79], abi.slice(content.children[8].command.value).?);
+    const image = &content.children[7];
     try std.testing.expectEqual(@as(u32, 44), image.type);
     try std.testing.expectEqual(@as(u32, @sizeOf(ui.Node)), image.size);
     try std.testing.expectEqualStrings(preview3_fixture, abi.slice(image.glyph.value).?);
@@ -4523,8 +4547,8 @@ test "preview 3 image diagnostic is opt-in and uses verified field mapping" {
     try std.testing.expectEqualStrings("SDK 测试图：蓝绿紫橙四格", abi.slice(image.text.value).?);
     rejectMarketImage(instance);
     fill(instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 8), content.root.children.count);
-    try std.testing.expectEqual(@as(u32, 0), content.children[7].enabled.value);
+    try std.testing.expectEqual(@as(u32, 7), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, 0), content.children[6].enabled.value);
     try std.testing.expectEqualStrings(commands[78], abi.slice(content.market_actions[4].command.value).?);
 }
 
@@ -4535,8 +4559,8 @@ test "market browser and batch tasks retain manual collection without a dispatch
     var content: Content = undefined;
     var tree: ui.Tree = undefined;
     fill(instance, &content, &tree);
-    try std.testing.expectEqual(@as(u32, 9), content.root.children.count);
-    try std.testing.expectEqualStrings(commands[38], abi.slice(content.children[8].command.value).?);
+    try std.testing.expectEqual(@as(u32, 8), content.root.children.count);
+    try std.testing.expectEqualStrings(commands[38], abi.slice(content.children[7].command.value).?);
     try std.testing.expectEqual(@as(u32, 0), content.market_actions[4].enabled.value);
     instance.market_image_test = true;
     onCommand(instance, instance.page, abi.view(commands[79]));
