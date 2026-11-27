@@ -411,3 +411,7 @@ replace the original explicit path validation. Session-only history remains.
 Dynamic short-code pairing: see [pairing implementation contract](pairing.md).
 The local pair-window policy and tests are present, but the network adapter
 and UI are not enabled; existing fingerprint enrollment remains in use.
+
+An isolated CPace authentication candidate is under shared/share/pake and
+shared/share/lan/internal/pairauth, with separate TLS loopback CI. It is not
+included in the normal acceptance package or available for device enrollment.

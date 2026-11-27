@@ -90,3 +90,28 @@ on either end, rate limits across rotations, no code in logs/settings/argv,
 two-device enrollment and restart, revocation, existing manual pairing and
 TLS transfer regression. CI must run exact locked dependency tests and
 Windows integration; real Pulse UI and two-PC acceptance remain required.
+
+## Experimental authentication adapter
+
+The branch now contains a separate Rust executable under shared/share/pake,
+using 1Password/cpace at 7e2e42c7d359969f4356292c2bd2cf3ff6eeeecc (MIT OR Apache-2.0).
+The lockfile is derived from the upstream dependency lock with the exact git
+revision and wrapper package recorded; Cargo --locked must validate it.
+The helper implements no network or file operations, accepts one bounded
+local stdin exchange, and returns only confirmation status, never a key.
+Go integration binds both ordered certificate pins and a TLS 1.3 exporter
+into the library's channel identifier; a separate pairing ALPN prevents
+confusion with the file-transfer protocol. CI runs actual two-process adapter
+exchanges over TLS loopback for matching code, wrong code and wrong certificate
+context. The experimental adapter is not packaged or invoked by the normal
+LAN tool or Pulse host. No trust-store write or new listener is enabled.
+
+The upstream README reports a 2022 Cure53 review of the library, but the
+report was not independently retrieved in this session and its scope cannot
+be assumed to include this exact revision or our wrapper. The library tracks
+CPace draft 06, not later draft 21 (April 2026). Do not advertise current-draft
+interoperability. CI uses runner-installed Rust for this experiment; pin the
+toolchain and audit the dependency tree before inclusion in acceptance packages.
+Still required: pair-window integration, private code display/input, explicit
+bilateral enrollment consent, verified helper packaging and resource lifecycle,
+additional replay/interruption tests, and physical two-PC acceptance.

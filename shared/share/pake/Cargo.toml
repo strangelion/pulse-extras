@@ -1,0 +1,9 @@
+[package]
+name = "pulse-share-pake"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+pake-cpace = { git = "https://github.com/1Password/cpace", rev = "7e2e42c7d359969f4356292c2bd2cf3ff6eeeecc" }
+zeroize = "=1.8.2"
