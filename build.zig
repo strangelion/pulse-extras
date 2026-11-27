@@ -504,6 +504,18 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(hello_panel);
     b.installArtifact(hello_panel);
 
+    const share_options = b.addOptions();
+    const share_lan_digest = b.option([]const u8, "share-lan-sha256", "Approved bundled Share LAN executable digest") orelse "";
+    const share_local_digest = b.option([]const u8, "share-local-sha256", "Approved bundled Share local supervisor digest") orelse "";
+    const share_worker_digest = b.option([]const u8, "share-worker-sha256", "Approved bundled Share worker digest") orelse "";
+    for ([_][]const u8{ share_lan_digest, share_local_digest, share_worker_digest }) |digest| {
+        if (digest.len != 0 and (digest.len != 64 or !isHexDigest(digest))) @panic("Share digest must be exactly 64 hex characters");
+    }
+    share_options.addOption([]const u8, "lan_sha256", share_lan_digest);
+    share_options.addOption([]const u8, "local_sha256", share_local_digest);
+    share_options.addOption([]const u8, "worker_sha256", share_worker_digest);
+    const share_config = share_options.createModule();
+
     // Share is experimental and intentionally absent from the default install.
     const share = b.addLibrary(.{
         .name = "pulse_share",
@@ -515,6 +527,7 @@ pub fn build(b: *std.Build) void {
             .imports = dll_modules.imports(),
         }),
     });
+    share.root_module.addImport("share_config", share_config);
     const share_dev = b.step("share-dev", "Build the experimental Pulse Share UI DLL");
     share_dev.dependOn(&b.addInstallArtifact(share, .{}).step);
 
@@ -818,6 +831,7 @@ pub fn build(b: *std.Build) void {
                 .imports = host_modules.imports(),
             }),
         });
+        if (std.mem.eql(u8, source, "extensions/share/main.zig")) unit_tests.root_module.addImport("share_config", share_config);
         if (std.mem.eql(u8, source, "extensions/vcs-panel/main.zig")) unit_tests.root_module.addImport("vcs_native_source", locked_source);
         const run = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run.step);

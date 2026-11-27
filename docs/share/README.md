@@ -261,3 +261,30 @@ CI adds Windows DPAPI tamper/round-trip tests, peer record unit tests, original
 network digest enforcement, and two saved-device transfers across fresh CLI
 processes followed by revocation. Prompts time out after 90 seconds. Physical
 LAN and host lifecycle acceptance remain outstanding.
+
+## P2 native managed developer panel
+
+The panel uses the V1 UI model `get_state` and host-owned tasks. It supports
+one selected regular file, explicit local IP/peer address, existing saved peer
+and store, explicit receive destination and private spool, plus discover,
+send, receive, refresh and cancel. No automatic reception. A separate console
+still shows discovery and the per-file approval prompt; the UI task tracks
+completion and cancellation. Initial identity creation and peer enrollment
+remain in the CLI. Closing a panel does not silently cancel its task; use the
+cancel button or disable the extension. On re-open, refresh the retained task.
+
+Build the three sibling executables first, then bind their exact SHA-256s
+with `-Dshare-lan-sha256=... -Dshare-local-sha256=... -Dshare-worker-sha256=...`
+when building `zig build share-dev`. Unconfigured builds remain inert.
+For isolated native package testing put these three EXEs beside pulse_share.dll
+and declare each as an official native resource file using the pinned author
+tools. Never infer trust from PATH or a user-entered executable path.
+The worker task checks all three digest-pinned regular local sibling files,
+keeps their handles open through the child lifetime, launches the LAN process
+suspended, assigns a private job (three process cap, 512 MiB total commit),
+then resumes with its own console. Only the cancellation event is inherited.
+Host cancellation signals it, allows a bounded grace period, and drains the
+job. Forced termination or cancellation during P1 commit can leave a stage or
+an already committed file; report uncertain, never promise rollback. Recovery,
+fully native peer/approval UI, and physical two-PC and host lifecycle testing
+remain outstanding. This is not a production release.

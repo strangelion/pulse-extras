@@ -329,7 +329,12 @@ func run(ctx context.Context,args []string) error {
 func main(){
 	ctx,cancel:=signal.NotifyContext(context.Background(),os.Interrupt)
 	defer cancel()
-	if err:=run(ctx,os.Args[1:]);err!=nil{
+	managed,args,closeManaged,err:=managedContext(ctx,os.Args[1:])
+	if err==nil{
+		err=run(managed,args)
+	}
+	closeManaged()
+	if err!=nil{
 		fmt.Fprintln(os.Stderr,"Pulse Share:",err)
 		os.Exit(1)
 	}
