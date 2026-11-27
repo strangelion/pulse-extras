@@ -20,7 +20,7 @@ import (
 )
 
 const batchControlALPN = "pulse-share-control/3"
-const batchQUICALPN = "pulse-share-quic-batch/3"
+const batchQUICALPN = "pulse-share-quic-batch/4"
 const batchDeadline = 2 * time.Hour
 
 type batchSource struct {
@@ -113,6 +113,8 @@ func openBatchSender(ctx context.Context,b binding,addr netip.AddrPort,id identi
 	if err!=nil{tr.Close();raw.Close();return nil,err}
 	closeAll:=onceClose(func(){c.CloseWithError(0,"batch ended");tr.Close();raw.Close()})
 	s,err:=c.OpenStreamSync(dial);if err!=nil{closeAll();return nil,err}
+	if err:=s.SetDeadline(time.Now().Add(laneHandshakeTimeout));err!=nil{closeAll();return nil,err}
+	if err:=writeAll(s,[]byte{0x43});err!=nil{closeAll();return nil,err}
 	return &batchLink{s,func(ctx context.Context)(sharecore.LaneStream,error){
 		s,err:=c.OpenStreamSync(ctx);if err!=nil{return nil,err}
 		// QUIC streams are visible to AcceptStream only after the first
@@ -156,6 +158,9 @@ func openBatchReceiver(ctx context.Context,b binding,port uint16,id identity,pin
 	if err=packets.freeze(c.RemoteAddr());err!=nil{closeAll();return nil,err}
 	if err=l.Close();err!=nil{closeAll();return nil,err}
 	s,err:=c.AcceptStream(wait);if err!=nil{closeAll();return nil,err}
+	if err:=s.SetDeadline(time.Now().Add(laneHandshakeTimeout));err!=nil{closeAll();return nil,err}
+	var marker [1]byte
+	if _,err:=io.ReadFull(s,marker[:]);err!=nil||marker[0]!=0x43{closeAll();return nil,errors.New("invalid batch control marker")}
 	return &batchLink{s,func(ctx context.Context)(sharecore.LaneStream,error){
 		s,err:=c.AcceptStream(ctx);if err!=nil{return nil,err}
 		if err:=s.SetDeadline(time.Now().Add(laneHandshakeTimeout));err!=nil{s.CancelWrite(0);s.CancelRead(0);return nil,err}
@@ -287,6 +292,7 @@ func batchSend(ctx context.Context,link *batchLink,source batchSource,kind share
 }
 
 type batchReceiveOptions struct{
+	connect netip.AddrPort
 	spool,resume string
 	channels int
 	adaptive,allowClipboard,browse bool

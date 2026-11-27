@@ -16,7 +16,7 @@ const prefs = @import("preferences.zig");
 const choices = @import("choices.zig");
 const pickers = @import("pulse_pickers");
 const allocator = std.heap.page_allocator;
-const command_names = [_][]const u8{ "share-discover", "share-send", "share-receive", "share-refresh", "share-cancel", "share-identity-init", "share-identity-show", "share-peer-add", "share-peer-list", "share-peer-revoke", "share-private-init", "share-recovery-list", "share-approve", "share-decline", "share-apply-prefs", "share-receive-advertise", "share-interfaces", "share-spool-init", "share-spool-recovery", "share-use-local", "share-use-peer", "share-use-endpoint", "share-browse-destination", "share-browse-parent", "share-save-prefs", "share-pair-host", "share-pair-join", "share-send-routed", "share-receive-routed", "share-pair-host-routed", "share-pair-join-routed", "share-pair-host-advertise", "share-use-pair-endpoint", "share-send-quic", "share-receive-quic", "share-send-quic-routed", "share-receive-quic-routed", "share-batch-send", "share-batch-receive", "share-clipboard-send", "share-clipboard-receive", "share-root-offer", "share-root-receive" };
+const command_names = [_][]const u8{ "share-discover", "share-send", "share-receive", "share-refresh", "share-cancel", "share-identity-init", "share-identity-show", "share-peer-add", "share-peer-list", "share-peer-revoke", "share-private-init", "share-recovery-list", "share-approve", "share-decline", "share-apply-prefs", "share-receive-advertise", "share-interfaces", "share-spool-init", "share-spool-recovery", "share-use-local", "share-use-peer", "share-use-endpoint", "share-browse-destination", "share-browse-parent", "share-save-prefs", "share-pair-host", "share-pair-join", "share-send-routed", "share-receive-routed", "share-pair-host-routed", "share-pair-join-routed", "share-pair-host-advertise", "share-use-pair-endpoint", "share-send-quic", "share-receive-quic", "share-send-quic-routed", "share-receive-quic-routed", "share-batch-send", "share-batch-receive", "share-clipboard-send", "share-clipboard-receive", "share-root-offer", "share-root-receive", "share-queue-add", "share-queue-list", "share-queue-run", "share-queue-discard", "share-queue-prune", "share-sync-send", "share-sync-receive", "share-directory-service", "share-directory-connect" };
 const field_names = view.fields;
 
 const Instance = struct {
@@ -166,7 +166,7 @@ const Instance = struct {
                 else => {},
             }
         }
-        if (self.request.mode == .interfaces or self.request.mode == .discover or self.request.mode == .peer_list or self.request.mode == .recovery_list or (self.request.browse and self.request.mode == .receive and self.request.remote_path.len == 0)) {
+        if (self.request.mode == .interfaces or self.request.mode == .discover or self.request.mode == .peer_list or self.request.mode == .recovery_list or std.mem.eql(u8, self.request.queue_action, "list") or (self.request.browse and self.request.mode == .receive and self.request.remote_path.len == 0)) {
             self.inventory_len = @min(message.len, self.inventory.len);
             // Child output has already been checked as UTF-8; avoid splitting a character.
             while (self.inventory_len > 0 and !std.unicode.utf8ValidateSlice(message[0..self.inventory_len])) self.inventory_len -= 1;
@@ -298,6 +298,26 @@ const Instance = struct {
         var next: managed.Request = .{ .mode = mode, .advertise = advertise, .routed = routed, .quic = quic };
         if (batch_action.len != 0) {
             next.batch = true;
+            next.queue_action = if (std.mem.eql(u8, batch_action, "share-queue-add"))
+                "enqueue"
+            else if (std.mem.eql(u8, batch_action, "share-queue-list"))
+                "list"
+            else if (std.mem.eql(u8, batch_action, "share-queue-run"))
+                "run"
+            else if (std.mem.eql(u8, batch_action, "share-queue-discard"))
+                "discard"
+            else if (std.mem.eql(u8, batch_action, "share-queue-prune"))
+                "prune"
+            else
+                "";
+            if (next.queue_action.len != 0 and !std.mem.eql(u8, next.queue_action, "enqueue")) {
+                try self.readField("queue-id", &next.queue_id);
+                if (std.mem.eql(u8, next.queue_action, "list")) try self.readField("browse-offset", &next.browse_offset);
+                if (std.mem.eql(u8, next.queue_action, "discard") and next.queue_id.len == 0) return error.Argument;
+            }
+            next.sync_clipboard = std.mem.eql(u8, batch_action, "share-sync-send") or std.mem.eql(u8, batch_action, "share-sync-receive");
+            next.root_service = std.mem.eql(u8, batch_action, "share-directory-service");
+            next.root_connect = std.mem.eql(u8, batch_action, "share-directory-connect");
             var transport: managed.Field = .{};
             try self.readField("batch-mode", &transport);
             const value = transport.slice();
@@ -305,18 +325,20 @@ const Instance = struct {
             next.routed = std.mem.eql(u8, value, "tcp-routed") or std.mem.eql(u8, value, "quic-routed");
             if (value.len != 0 and !next.quic and !next.routed and !std.mem.eql(u8, value, "tcp")) return error.Argument;
             try self.readField("channels", &next.channels);
-            if (std.mem.eql(u8, batch_action, "share-clipboard-send")) {
+            if (std.mem.eql(u8, batch_action, "share-clipboard-send") or std.mem.eql(u8, batch_action, "share-sync-send")) {
                 try self.readField("clipboard-kind", &next.clipboard);
                 if (next.clipboard.len == 0) return error.Argument;
             } else if (mode == .send) next.sources = self.selected_batch;
-            if (std.mem.eql(u8, batch_action, "share-clipboard-receive")) {
+            if (std.mem.eql(u8, batch_action, "share-clipboard-receive") or std.mem.eql(u8, batch_action, "share-sync-receive")) {
                 next.clipboard_receive = true;
                 try self.readField("clipboard-kind", &next.clipboard);
-                try self.readField("delivery", &next.delivery);
+                if (next.sync_clipboard) {
+                    next.delivery.set("clipboard") catch return error.Argument;
+                } else try self.readField("delivery", &next.delivery);
             }
-            next.browse = std.mem.eql(u8, batch_action, "share-root-offer") or std.mem.eql(u8, batch_action, "share-root-receive");
+            next.browse = std.mem.eql(u8, batch_action, "share-root-offer") or std.mem.eql(u8, batch_action, "share-root-receive") or next.root_connect;
             if (mode == .receive) {
-                try self.readField("resume", &next.resume_path);
+                if (!next.sync_clipboard) try self.readField("resume", &next.resume_path);
                 if (next.browse) {
                     try self.readField("remote-path", &next.remote_path);
                     try self.readField("browse-offset", &next.browse_offset);
@@ -336,6 +358,15 @@ const Instance = struct {
         if (mode == .send) {
             if (!next.batch) next.source = self.selected;
             try self.readField("peer", &next.peer);
+            if (next.root_service) {
+                try self.readField("port", &next.port);
+                if (next.routed) try self.readField("allowed-source", &next.allowed_source);
+            }
+            if (next.queue_action.len != 0 and !std.mem.eql(u8, next.queue_action, "enqueue")) {
+                next.batch = false;
+                next.quic = false;
+                next.routed = false;
+            }
         }
         if (mode == .pair_host) {
             try self.readField("port", &next.port);
@@ -343,7 +374,8 @@ const Instance = struct {
         }
         if (mode == .pair_join) try self.readField("peer", &next.peer);
         if (mode == .receive) {
-            if (next.routed) try self.readField("allowed-source", &next.allowed_source);
+            if (next.root_connect) try self.readField("peer", &next.peer);
+            if (next.routed and !next.root_connect) try self.readField("allowed-source", &next.allowed_source);
             try self.readField("destination", &next.destination);
             try self.readField("spool", &next.spool);
             try self.readField("port", &next.port);
@@ -683,6 +715,19 @@ const Instance = struct {
             view.button("提供只读目录", "share-root-offer", "standard", "state.idle"),
             view.button("浏览 / 下载目录", "share-root-receive", "standard", "state.idle"),
         };
+        const queue_actions = [_]ui.Node{
+            view.button("选中项加入队列", "share-queue-add", "standard", "state.idle"),
+            view.button("查看持久化队列", "share-queue-list", "standard", "state.idle"),
+            view.button("运行待发送任务", "share-queue-run", "primary", "state.idle"),
+            view.button("放弃指定任务", "share-queue-discard", "standard", "state.idle"),
+            view.button("清理终态记录", "share-queue-prune", "standard", "state.idle"),
+        };
+        const service_actions = [_]ui.Node{
+            view.button("启动自动剪贴板发送", "share-sync-send", "standard", "state.idle"),
+            view.button("启动自动剪贴板接收", "share-sync-receive", "standard", "state.idle"),
+            view.button("启动只读目录服务", "share-directory-service", "standard", "state.idle"),
+            view.button("连接目录服务", "share-directory-connect", "standard", "state.idle"),
+        };
         const transfer_content = [_]ui.Node{
             view.text("selection", selection, "caption"),
             view.text("source", if (self.selected.len != 0) self.selected.slice() else "普通发送需一个文件；批量发送可选文件和文件夹。", "body"),
@@ -706,6 +751,11 @@ const Instance = struct {
             fields[15],
             view.text("shelf-help", "暂存区需宿主公开写入接口；目前可接收到系统剪贴板，再手动导入 Pulse。", "caption"),
             view.grid("batch-actions", &batch_actions),
+            fields[16],
+            view.text("queue-help", "队列保存在私有身份目录。留空 ID 分页查看或运行全部待发任务；每页 20 条，使用列表偏移。放弃需指定 ID。结果不确定时先检查接收端。", "caption"),
+            view.grid("queue-actions", &queue_actions),
+            view.text("service-help", "长期服务仅在显式启动并批准后运行，取消即停止；自动同步仅文本或图片，目录服务需固定端口。", "caption"),
+            view.grid("service-actions", &service_actions),
             view.bound("batch-inventory", "state.inventory"),
         };
         const setup_actions = [_]ui.Node{
@@ -917,8 +967,8 @@ fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv
         }
         return;
     }
-    if (std.mem.eql(u8, name, "share-batch-send") or std.mem.eql(u8, name, "share-batch-receive") or std.mem.eql(u8, name, "share-clipboard-send") or std.mem.eql(u8, name, "share-clipboard-receive") or std.mem.eql(u8, name, "share-root-offer") or std.mem.eql(u8, name, "share-root-receive")) {
-        const sending = std.mem.eql(u8, name, "share-batch-send") or std.mem.eql(u8, name, "share-clipboard-send") or std.mem.eql(u8, name, "share-root-offer");
+    if (std.mem.startsWith(u8, name, "share-queue-") or std.mem.eql(u8, name, "share-sync-send") or std.mem.eql(u8, name, "share-sync-receive") or std.mem.eql(u8, name, "share-directory-service") or std.mem.eql(u8, name, "share-directory-connect") or std.mem.eql(u8, name, "share-batch-send") or std.mem.eql(u8, name, "share-batch-receive") or std.mem.eql(u8, name, "share-clipboard-send") or std.mem.eql(u8, name, "share-clipboard-receive") or std.mem.eql(u8, name, "share-root-offer") or std.mem.eql(u8, name, "share-root-receive")) {
+        const sending = std.mem.startsWith(u8, name, "share-queue-") or std.mem.eql(u8, name, "share-sync-send") or std.mem.eql(u8, name, "share-directory-service") or std.mem.eql(u8, name, "share-batch-send") or std.mem.eql(u8, name, "share-clipboard-send") or std.mem.eql(u8, name, "share-root-offer");
         self.start(if (sending) .send else .receive, false, false, false, 0, false, name) catch |err| self.status(@errorName(err));
         return;
     }

@@ -100,6 +100,10 @@ func clipboardDropBytes(paths []string)([]byte,error){
 	return b,nil
 }
 func writeLocalClipboard(kind sharecore.ContentKind,data []byte,paths []string,sequence uint32)error{
+	return writeClipboardNext(kind,data,paths,sequence,nil)
+}
+
+func writeClipboardNext(kind sharecore.ContentKind,data []byte,paths []string,sequence uint32,next *uint32)error{
 	var format uintptr;var b []byte;var err error
 	switch kind{
 	case sharecore.ClipboardText:format=cfUnicode;b,err=encodeClipboardText(data)
@@ -117,6 +121,8 @@ func writeLocalClipboard(kind sharecore.ContentKind,data []byte,paths []string,s
 		if current!=sequence{return errors.New("local clipboard changed during transfer; refusing overwrite")}
 		if ok,_,err:=clipEmpty.Call();ok==0{return err}
 		if ok,_,err:=clipSet.Call(format,h);ok==0{return err}
-		owned=false;return nil
+		owned=false
+		if next!=nil{var err error;*next,err=localClipboardSequence();if err!=nil{return err}}
+		return nil
 	})
 }

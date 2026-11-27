@@ -29,6 +29,11 @@ pub const Request = struct {
     routed: bool = false,
     quic: bool = false,
     batch: bool = false,
+    queue_action: []const u8 = "",
+    queue_id: Field = .{},
+    sync_clipboard: bool = false,
+    root_service: bool = false,
+    root_connect: bool = false,
     clipboard_receive: bool = false,
     browse: bool = false,
     channels: Field = .{},
@@ -68,9 +73,13 @@ pub const Request = struct {
             },
             else => {},
         }
+        if (self.queue_action.len != 0 and !std.mem.eql(u8, self.queue_action, "enqueue")) {
+            if (self.mode != .send or self.store.len == 0) return error.InvalidInput;
+            return;
+        }
         if (self.quic and (self.advertise or (self.mode != .send and self.mode != .receive))) return error.InvalidInput;
         if (self.routed and (self.advertise or (self.mode != .send and self.mode != .receive and !pairingMode(self.mode)))) return error.InvalidInput;
-        if (self.routed and (self.mode == .receive or self.mode == .pair_host) and self.allowed_source.len == 0) return error.InvalidInput;
+        if (self.routed and ((self.mode == .receive and !self.root_connect) or self.mode == .pair_host or self.root_service) and self.allowed_source.len == 0) return error.InvalidInput;
         if (self.bind.len == 0) return error.InvalidInput;
         if (self.mode == .discover) return;
         if (self.store.len == 0 or self.paired.len == 0) return error.InvalidInput;
@@ -79,10 +88,13 @@ pub const Request = struct {
             const n = std.fmt.parseInt(u8, self.channels.slice(), 10) catch return error.InvalidInput;
             if (n > 32) return error.InvalidInput;
         }
-        if (self.mode == .send and (self.peer.len == 0 or (self.source.len == 0 and self.sources.len == 0 and self.clipboard.len == 0))) return error.InvalidInput;
+        if (self.mode == .send and ((!self.root_service and self.peer.len == 0) or (self.source.len == 0 and self.sources.len == 0 and self.clipboard.len == 0))) return error.InvalidInput;
         if (self.mode == .pair_host and self.port.len == 0) return error.InvalidInput;
         if (self.mode == .pair_join and self.peer.len == 0) return error.InvalidInput;
-        if (self.mode == .receive and (self.destination.len == 0 or self.spool.len == 0 or self.port.len == 0)) return error.InvalidInput;
+        if (self.root_service and self.port.len == 0) return error.InvalidInput;
+        if (self.root_connect and self.peer.len == 0) return error.InvalidInput;
+        if (self.mode == .receive and !self.sync_clipboard and (self.destination.len == 0 or self.spool.len == 0 or (!self.root_connect and self.port.len == 0))) return error.InvalidInput;
+        if (self.mode == .receive and self.sync_clipboard and (self.port.len == 0 or self.clipboard.len == 0)) return error.InvalidInput;
     }
 };
 
@@ -404,7 +416,7 @@ const Output = struct {
             const prompt = try std.fmt.bufPrint(&msg, "PROMPT {d} {s}", .{ self.generation, line });
             self.report(ctx, prompt);
         } else if (!self.waiting and line.len != 0) {
-            if (request.mode == .discover or request.mode == .peer_list or request.mode == .recovery_list or request.mode == .interfaces or (request.browse and request.mode == .receive and request.remote_path.len == 0)) {
+            if (request.mode == .discover or request.mode == .peer_list or request.mode == .recovery_list or request.mode == .interfaces or std.mem.eql(u8, request.queue_action, "list") or (request.browse and request.mode == .receive and request.remote_path.len == 0)) {
                 if (!self.inventory_truncated and line.len + 1 + 32 <= self.inventory.len - self.inventory_len) {
                     @memcpy(self.inventory[self.inventory_len..][0..line.len], line);
                     self.inventory_len += line.len;
@@ -517,6 +529,12 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
     }
     if (request.routed) try command.arg("--routed");
     if (request.quic) try command.arg("--quic");
+    if (request.queue_action.len != 0) {
+        try command.pair("--queue-action", request.queue_action);
+        if (request.queue_id.len != 0) try command.pair("--queue-id", request.queue_id.slice());
+        if (request.browse_offset.len != 0) try command.pair("--queue-offset", request.browse_offset.slice());
+    }
+    if (request.sync_clipboard) try command.arg("--sync-clipboard");
     if (request.batch) {
         try command.arg("--batch");
         if (request.channels.len != 0) try command.pair("--channels", request.channels.slice());
@@ -543,6 +561,11 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
         },
         .send => {
             try command.pair("--peer", request.peer.slice());
+            if (request.root_service) {
+                try command.arg("--root-service");
+                try command.pair("--port", request.port.slice());
+                if (request.routed) try command.pair("--allowed-source", request.allowed_source.slice());
+            }
             if (request.batch) {
                 if (request.sources.len != 0) try command.pair("--sources", request.sources.slice());
                 if (request.clipboard.len != 0) try command.pair("--clipboard", request.clipboard.slice());
@@ -552,6 +575,10 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
             try command.pair("--paired", request.paired.slice());
         },
         .receive => {
+            if (request.root_connect) {
+                try command.arg("--root-connect");
+                try command.pair("--peer", request.peer.slice());
+            }
             if (request.batch) {
                 if (request.resume_path.len != 0) try command.pair("--resume", request.resume_path.slice());
                 if (request.clipboard_receive) {
@@ -566,8 +593,8 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
                 }
             }
             if (request.advertise) try command.arg("--advertise");
-            if (request.routed) try command.pair("--allowed-source", request.allowed_source.slice());
-            try command.pair("--port", request.port.slice());
+            if (request.routed and !request.root_connect) try command.pair("--allowed-source", request.allowed_source.slice());
+            try command.pair("--port", if (request.port.len == 0) "0" else request.port.slice());
             try command.pair("--directory", request.destination.slice());
             try command.pair("--spool", request.spool.slice());
             try command.arg("--supervisor");

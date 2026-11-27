@@ -186,3 +186,17 @@ clipboard, file references, read-only browse and selected subtree, cancellation
 and shutdown. Clipboard access uses Windows API and CI does not modify a real
 personal clipboard. Do not infer persistent background queue, automatic
 clipboard, unattended remote directory access or shelf acceptance.
+
+
+## Remaining functional candidate acceptance
+
+NOT_RUN until matching CI: strict durable queue record parsing, exclusive
+state markers, no uncertain replay, clipboard synchronization change detection
+and cancellation, rejection of automatic file sync, reversed directory
+client/server TCP and QUIC roles and selected-subtree verification, and
+unavailable Tray Shelf adapter behavior. Final Windows host acceptance must
+exercise queue persistence across restart, actual clipboard ownership and
+sequence behavior, cancellation while active, directory listener rebind across
+multiple connections, trust revocation, and native UI controls. Tests use
+synthetic clipboard data, not the user's real clipboard. Shelf is explicitly
+deferred until the SDK exposes a documented compatible interface.

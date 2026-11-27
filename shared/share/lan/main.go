@@ -144,6 +144,13 @@ func openSource(path string) (*os.File,error) {
 
 func sender(ctx context.Context,c console,args []string) error {
 	f:=flags("send")
+	queue:=f.String("queue-action","","enqueue/list/run/discard/prune local outbound jobs")
+	queueID:=f.String("queue-id","","optional exact local job ID")
+	queueOffset:=f.Int("queue-offset",0,"queue listing offset")
+	rootService:=f.Bool("root-service",false,"explicit long-lived read-only directory service")
+	syncClip:=f.Bool("sync-clipboard",false,"send new clipboard changes until cancelled")
+	port:=f.Uint("port",0,"fixed directory service port")
+	allowedSource:=f.String("allowed-source","","exact routed directory client address")
 	batch:=f.Bool("batch",false,"explicit batch transfer")
 	sources:=f.String("sources","","explicit | separated local paths")
 	clip:=f.String("clipboard","","explicit clipboard text/image/files")
@@ -157,11 +164,26 @@ func sender(ctx context.Context,c console,args []string) error {
 	store:=f.String("store","","existing user-private device store")
 	paired:=f.String("paired","","explicit saved peer label")
 	if err:=noExtra(f,args);err!=nil{return err}
+	if *queue!=""{
+		if *rootService||*syncClip||*clip!=""||*browse{return errors.New("queue accepts only ordinary file selections")}
+		selected:=*sources;if selected==""{selected=*source}else if *source!=""{return errors.New("ambiguous queue source")}
+		return queueAction(ctx,*queue,*store,*queueID,*queueOffset,queuedBatch{Bind:*local,Endpoint:*peer,Label:*paired,Sources:selected,Routed:*routed,QUIC:*useQUIC,Channels:*channels})
+	}
 	if *routed&&(*store==""||*paired==""){return errors.New("routed transfer requires an explicitly saved peer")}
 	b,err:=bindLocalMode(*local,*routed)
 	if err!=nil{return err}
+	if *rootService{
+		if !*batch||*syncClip||*browse||*clip!=""||*port>65535{return errors.New("invalid directory service options")}
+		if err=b.setAllowedSource(*allowedSource);err!=nil{return err}
+		selected:=*sources;if selected==""{selected=*source}else if *source!=""{return errors.New("ambiguous directory selection")}
+		return directoryServiceCLI(ctx,c,b,uint16(*port),*store,*paired,selected,*useQUIC,*channels)
+	}
 	addr,err:=b.peer(*peer)
 	if err!=nil{return err}
+	if *syncClip{
+		if !*batch||*source!=""||*sources!=""||*browse{return errors.New("invalid clipboard sync options")}
+		return clipboardSyncCLI(ctx,c,b,addr,0,*store,*paired,*clip,*useQUIC,false)
+	}
 	if *batch{return sendBatchCLI(ctx,c,b,addr,*store,*paired,*source,*sources,*clip,*browse,*useQUIC,*channels)}
 	if *sources!=""||*clip!=""||*browse{return errors.New("content options require --batch")}
 	file,err:=openSource(*source)
@@ -238,6 +260,9 @@ func (n nativeCommit) commit(o offer,path string) error {
 
 func receiver(ctx context.Context,c console,args []string) error {
 	f:=flags("receive")
+	rootConnect:=f.Bool("root-connect",false,"connect to explicitly offered read-only directory service")
+	peer:=f.String("peer","","numeric directory service endpoint")
+	syncClip:=f.Bool("sync-clipboard",false,"receive clipboard changes until cancelled")
 	batch:=f.Bool("batch",false,"explicit batch receive")
 	channels:=f.Int("channels",0,"0 adaptive, 1..32 fixed")
 	resume:=f.String("resume","","explicit local stage path")
@@ -270,7 +295,13 @@ func receiver(ctx context.Context,c console,args []string) error {
 	if *routed&&(*store==""||*paired==""||*advert){return errors.New("routed receive requires a saved peer and disables discovery")}
 	b,err:=bindLocalMode(*local,*routed)
 	if err!=nil{return err}
-	if err=b.setAllowedSource(*allowedSource);err!=nil{return err}
+	if *rootConnect{
+		if !*batch||!*browse||*syncClip||*allowedSource!=""||*advert{return errors.New("invalid directory service client options")}
+	}else if err=b.setAllowedSource(*allowedSource);err!=nil{return err}
+	if *syncClip{
+		if !*batch||!*allowClipboard||*browse||*rootConnect||*resume!=""||*advert||*delivery!="clipboard"{return errors.New("invalid clipboard sync receive options")}
+		return clipboardSyncCLI(ctx,c,b,netip.AddrPort{},uint16(*port),*store,*paired,*clipboardType,*useQUIC,true)
+	}
 	dest,err:=existingPath(*directory,true)
 	if err!=nil{return err}
 	sp,err:=existingPath(*spool,true)
@@ -287,7 +318,14 @@ func receiver(ctx context.Context,c console,args []string) error {
 	if err:=verifyBinary(sup,supPin);err!=nil{return err}
 	if err:=verifyBinary(work,workPin);err!=nil{return err}
 	native:=nativeCommit{sup,work,dest,supPin,workPin,ctx}
-	if *batch{return receiveBatchCLI(ctx,c,b,uint16(*port),*store,*paired,native,batchReceiveOptions{spool:sp,resume:*resume,channels:*channels,allowClipboard:*allowClipboard,clipboardType:*clipboardType,browse:*browse,remotePath:*remotePath,offset:*offset},*delivery,*useQUIC)}
+	if *batch{
+		o:=batchReceiveOptions{spool:sp,resume:*resume,channels:*channels,allowClipboard:*allowClipboard,clipboardType:*clipboardType,browse:*browse,remotePath:*remotePath,offset:*offset}
+		if *rootConnect{
+			addr,err:=b.peer(*peer);if err!=nil{return err}
+			o.connect=addr
+		}
+		return receiveBatchCLI(ctx,c,b,uint16(*port),*store,*paired,native,o,*delivery,*useQUIC)
+	}
 	if *useQUIC{
 		if err:=receiveQUICFile(ctx,c,b,uint16(*port),*store,*paired,sp,native.commit);err!=nil{return err}
 		fmt.Println("COMPLETED local file committed")

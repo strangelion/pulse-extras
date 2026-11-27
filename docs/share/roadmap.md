@@ -413,3 +413,22 @@ This candidate is not complete stage-2 acceptance: durable receipts are not a
 multi-job persistent queue; background clipboard synchronization and persistent
 remote-directory grant/service management remain open. The missing public Tray
 Shelf snapshot/write API remains an SDK dependency.
+
+
+## Stage 2 remaining functional candidates
+
+Supersedes earlier notes on the missing queue, automatic clipboard and
+long-lived directory service: the managed native panel now exposes a durable
+outgoing batch queue (bounded, serial, explicit run, uncertain state never
+automatically replayed), opt-in one-way clipboard change synchronization
+(text/image only), and a repeatable read-only directory listener (one root,
+saved peer and fixed port, no remote mutation). These active services stop
+with the owning task; no auto-start, concurrent service multiplexing or
+persistent unattended grant. The original 32-channel ownership rule remains.
+
+Reserve the Tray Shelf adapter and document the missing supported SDK
+snapshot and insertion/ownership callbacks. The unavailable adapter fails
+closed; no simulated host support or private-state access.
+
+Implementation and relevant CI must be verified before closing stage 2.
+Final-stage physical, stress, overlay and security acceptance remains pending.

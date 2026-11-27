@@ -114,7 +114,10 @@ func receiveBatchCLI(ctx context.Context,c console,b binding,port uint16,store,l
 	id,pin,err:=sessionIdentity(c,store,label);if err!=nil{return err}
 	check:=func(ctx context.Context)error{return batchGrant(ctx,store,label,id,pin)}
 	if err:=check(ctx);err!=nil{return err}
-	link,err:=openBatchReceiver(ctx,b,port,id,pin,quic,func(s string){fmt.Println("LISTEN",s)})
+	var link *batchLink
+	if o.connect.IsValid(){link,err=openBatchSender(ctx,b,o.connect,id,pin,quic)}else{
+		link,err=openBatchReceiver(ctx,b,port,id,pin,quic,func(s string){fmt.Println("LISTEN",s)})
+	}
 	if err!=nil{return err};defer link.close()
 	approve:=func(m sharecore.Manifest,kind sharecore.ContentKind)(bool,error){
 		if err:=validateBatchContent(m,kind);err!=nil{return false,err}

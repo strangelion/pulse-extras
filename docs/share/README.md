@@ -510,3 +510,44 @@ For a one-session read-only directory offer use sender --share-root --source
 or --remote-path <exact manifest path> (or . for whole root) to download after
 approval. No remote writes, arbitrary roots or unattended directory access.
 Normal receive can explicitly approve an upload to a locally selected folder.
+
+
+### Persistent outbox and opt-in services
+
+The native panel adds a persistent outgoing batch queue. Jobs live under the
+private identity directory in outbox.v1 and bind the original manifest, local
+identity, saved peer, numeric endpoint and transport. Up to 128 records;
+listing is paged in groups of 20. Use a blank job ID to run pending jobs in
+order, or specify one ID. The receiving peer must still explicitly approve
+ordinary file transfer. A failed connection before sending remains pending;
+a started job without a successful receipt is uncertain and is never replayed
+automatically. Inspect the destination before explicitly discarding it.
+Prune only completed or discarded job records. This is an outgoing serial
+queue, not an unattended receive inbox; no automatic startup.
+
+Clipboard sync is a one-way active session, initiated and approved by both
+saved peers. Select text or image; no initial clipboard snapshot is sent,
+only new changes. File references are excluded from automatic synchronization.
+Contents remain in memory, and receiving stops if clipboard replacement
+would overwrite a newer local edit. Cancel or exit Pulse to stop. No
+automatic restart, two-way echo, or persistent payload history.
+
+A read-only directory service uses one explicitly selected root, one saved
+peer and a fixed numeric port. The client connects with the matching batch
+transport and uses the existing list/subtree controls. After a session ends,
+the server reopens its listener for the next session until cancelled; at
+most one authenticated session at once. Revalidate root identity and trust
+before each session and transfer. No unattended writes or arbitrary paths.
+The service and clipboard sync occupy the managed transfer owner while active.
+The QUIC batch ALPN is now version 4; update both peers.
+
+### Reserved Tray Shelf SDK integration
+
+The unavailable shelf adapter deliberately returns ErrShelfUnavailable.
+Do not infer support from filesystem staging or scan Pulse private state.
+Required SDK: immutable snapshot/enumeration with revision and validity,
+approved insertion of verified local files with ownership/lifetime semantics,
+completion/error notifications, cancellation and release rules, and capability
+version negotiation. Text/image require explicit conversion to ordinary files
+if the host supports it. Keep UI disabled until a documented adapter is
+available; manual clipboard import remains a fallback.
