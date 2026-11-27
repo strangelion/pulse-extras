@@ -2,6 +2,7 @@
   "apiVersion": 1,
   "id": "strangelion.vcs-test",
   "name": "VCS Panel (isolated acceptance candidate)",
+  "activation": "startup",
   "resources": [
     "settings.own",
     "context.read",
