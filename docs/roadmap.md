@@ -541,3 +541,17 @@ correction, makes persisted remote provenance visible, disables conflicting
 settings actions during integration work and adds explicit cancel with
 terminal-release/stale-selection tests. No tests removed. Fresh exact CI
 required; live transport and external applications remain NOT RUN.
+
+P3B bb362dd / 45930749443 passed formatting but the Ubuntu and Windows
+settings unit target failed to compile (clientPath error-union optional
+payload coercion). The Companion desktop lane was blocked by the same VCS
+DLL build error, not a demonstrated pet lifecycle failure. The consolidated
+repair unwraps the error union before coercion, adds matching local panel
+summary capture to the project dashboard (explicit, no new CLI, unknown
+counts remain unknown), displays exact external command on review and adds
+independent Windows-header ABI size/offset/constant assertions in CI. No
+credential access or actual external launch/network test was performed.
+The published GitHub Desktop CLI docs describe github PATH but do not
+establish an exact direct Windows executable contract; keep manual fallback.
+Authenticated API remains optional and unavailable; no account authorization
+assumed. Full new code gate required, installed/live transport still deferred.

@@ -130,7 +130,7 @@ fn quoteSafe(path: []const u8) bool {
 pub fn clientPath(client: Client, value: []const u8) !?identity.Path {
     if (value.len == 0) return null;
     if (value.len > 1024 or !quoteSafe(value) or !std.ascii.eqlIgnoreCase(std.fs.path.basename(value), client.executable())) return error.InvalidClient;
-    return identity.Path.init(value);
+    return try identity.Path.init(value);
 }
 
 pub fn commandLine(client: Client, executable: []const u8, root: []const u8, kind: ?identity.Kind, buffer: []u8) ![]const u8 {
@@ -143,6 +143,10 @@ pub fn commandLine(client: Client, executable: []const u8, root: []const u8, kin
 }
 
 const Handle = std.os.windows.HANDLE;
+const winhttp_disable_feature: u32 = 63;
+const winhttp_disabled: u32 = 1 | 2 | 4;
+const winhttp_secure: u32 = 0x00800000;
+const winhttp_status_number: u32 = 0x20000000 | 19;
 const StartupInfo = extern struct {
     cb: u32,
     reserved: ?[*:0]u16,
@@ -208,6 +212,7 @@ pub fn launchClient(client: Client, exe: []const u8, root: []const u8, kind: ?id
 comptime {
     if (builtin.cpu.arch == .x86_64 and builtin.os.tag == .windows) {
         if (@sizeOf(StartupInfo) != 104 or @sizeOf(ProcessInfo) != 24) @compileError("Windows process handoff ABI mismatch");
+        if (@offsetOf(StartupInfo, "flags") != 60 or @offsetOf(StartupInfo, "stdin_handle") != 80 or @offsetOf(ProcessInfo, "pid") != 16) @compileError("Windows process handoff ABI offset mismatch");
     }
 }
 
@@ -324,19 +329,21 @@ pub fn fetchMetadata(base: []const u8, cancelled: CancelFn, context: ?*anyopaque
     if (http.timeouts(session, 4000, 4000, 4000, 4000) == 0) return .{ .status = .offline };
     const connection = http.connect(session, std.unicode.wtf8ToWtf16LeStringLiteral("api.github.com"), 443, 0) orelse return .{ .status = .offline };
     defer _ = http.close(connection);
-    const request = http.request(connection, std.unicode.wtf8ToWtf16LeStringLiteral("GET"), target.ptr, null, null, null, 0x00800000) orelse return .{ .status = .offline };
+    const request = http.request(connection, std.unicode.wtf8ToWtf16LeStringLiteral("GET"), target.ptr, null, null, null, winhttp_secure) orelse return .{ .status = .offline };
     defer _ = http.close(request);
     // WINHTTP_OPTION_DISABLE_FEATURE: cookies | redirects | authentication.
-    const disabled: u32 = 1 | 2 | 4;
-    if (http.option(request, 63, &disabled, @sizeOf(u32)) == 0) return .{ .status = .offline };
+    const disabled = winhttp_disabled;
+    if (http.option(request, winhttp_disable_feature, &disabled, @sizeOf(u32)) == 0) return .{ .status = .offline };
     if (cancelled(context) != 0) return .{ .status = .cancelled };
     const headers = std.unicode.wtf8ToWtf16LeStringLiteral("Accept: application/vnd.github+json\r\n");
     if (http.send(request, headers, @intCast(headers.len), null, 0, 0, 0) == 0) return .{ .status = .offline };
     if (cancelled(context) != 0) return .{ .status = .cancelled };
     if (http.receive(request, null) == 0) return .{ .status = .offline };
+    if (cancelled(context) != 0) return .{ .status = .cancelled };
+    if (nowMs() -| start > 20000) return .{ .status = .offline };
     var code: u32 = 0;
     var size: u32 = @sizeOf(u32);
-    if (http.headers(request, 0x20000000 | 19, null, &code, &size, null) == 0) return .{ .status = .offline };
+    if (http.headers(request, winhttp_status_number, null, &code, &size, null) == 0) return .{ .status = .offline };
     const state = httpStatus(code);
     if (state != .ready) return .{ .status = state };
     var body: [64 * 1024 + 1]u8 = undefined;
@@ -347,6 +354,8 @@ pub fn fetchMetadata(base: []const u8, cancelled: CancelFn, context: ?*anyopaque
         var read_count: u32 = 0;
         const count: u32 = @intCast(@min(4096, body.len - used));
         if (http.read(request, body[used..].ptr, count, &read_count) == 0 or read_count > count) return .{ .status = .offline };
+        if (cancelled(context) != 0) return .{ .status = .cancelled };
+        if (nowMs() -| start > 20000) return .{ .status = .offline };
         if (read_count == 0) {
             var result = parseMetadata(base, body[0..used]);
             result.fetched_ms = nowMs();
@@ -379,6 +388,8 @@ test "client command lines accept only reviewed absolute paths and fixed flags" 
     var bytes: [512]u8 = undefined;
     const line = try commandLine(.vscode, exe, root, .git, &bytes);
     try std.testing.expect(std.mem.indexOf(u8, line, " --new-window \"") != null);
+    try std.testing.expect((try clientPath(.vscode, "")) == null);
+    try std.testing.expect((try clientPath(.vscode, exe)).?.eql(exe));
     try std.testing.expectError(error.InvalidClient, commandLine(.tortoise_svn, exe, root, .git, &bytes));
     try std.testing.expectError(error.InvalidClient, commandLine(.vscode, "cmd.exe", root, .git, &bytes));
     try std.testing.expectError(error.InvalidClient, commandLine(.vscode, exe, "--user-data-dir", .git, &bytes));

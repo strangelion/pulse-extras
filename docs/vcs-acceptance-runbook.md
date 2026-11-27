@@ -445,3 +445,8 @@ The integration cancel control discards any raced response after terminal
 release; it cannot undo an already launched user-owned app/browser. Verify
 that selection changes and failed release do not publish metadata, and that
 manual/legacy versus locally detected addresses are visible in the table.
+Check the matching local summary alongside public metadata, including
+unknown/not-queried counts, different project selection, missing panel and
+settings reload. Confirm exact external invocation is shown before launch.
+CI must pass the independent Windows-header ABI assertions; live HTTP and
+actual external clients remain final installed acceptance items.

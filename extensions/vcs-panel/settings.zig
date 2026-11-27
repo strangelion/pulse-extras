@@ -26,7 +26,7 @@ const keys = [_][]const u8{ "tool.git", "tool.jj", "tool.svn" };
 const names = [_][]const u8{ "Git", "Jujutsu", "Subversion" };
 const tools = [_]cli.Tool{ .git, .jj, .svn };
 const fields = [_][]const u8{ "settings.git", "settings.jj", "settings.svn" };
-const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump", "vcs.projects.cancel-identity", "vcs.projects.inspect-grants", "vcs.projects.revoke-git", "vcs.projects.revoke-jj", "vcs.projects.revoke-svn", "vcs.forge.issues", "vcs.forge.reviews", "vcs.forge.ci", "vcs.forge.releases", "vcs.forge.discover", "vcs.forge.remote.0", "vcs.forge.remote.1", "vcs.forge.remote.2", "vcs.forge.remote.3", "vcs.forge.remote.4", "vcs.forge.remote.5", "vcs.forge.metadata", "vcs.client.save-code", "vcs.client.save-svn", "vcs.client.review-code", "vcs.client.review-svn", "vcs.client.confirm", "vcs.client.cancel", "vcs.integration.cancel" };
+const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump", "vcs.projects.cancel-identity", "vcs.projects.inspect-grants", "vcs.projects.revoke-git", "vcs.projects.revoke-jj", "vcs.projects.revoke-svn", "vcs.forge.issues", "vcs.forge.reviews", "vcs.forge.ci", "vcs.forge.releases", "vcs.forge.discover", "vcs.forge.remote.0", "vcs.forge.remote.1", "vcs.forge.remote.2", "vcs.forge.remote.3", "vcs.forge.remote.4", "vcs.forge.remote.5", "vcs.forge.metadata", "vcs.client.save-code", "vcs.client.save-svn", "vcs.client.review-code", "vcs.client.review-svn", "vcs.client.confirm", "vcs.client.cancel", "vcs.integration.cancel", "vcs.projects.local-summary", "vcs.projects.clear-summary" };
 const clients = [_]forge.Client{ .vscode, .tortoise_svn };
 const client_keys = [_][]const u8{ "client.vscode", "client.tortoise_svn" };
 const client_fields = [_][]const u8{ "settings.client.vscode", "settings.client.tortoise_svn" };
@@ -119,6 +119,8 @@ const Status = enum {
     external_changed,
     external_cancel_pending,
     external_cancelled,
+    local_summary_ready,
+    local_summary_unavailable,
 
     fn label(self: Status, lang: vcs_panel.Language) []const u8 {
         return switch (self) {
@@ -164,10 +166,21 @@ const Status = enum {
             .external_changed => tr(lang, "Project or settings changed; result discarded", "项目或设置发生变化；已丢弃结果"),
             .external_cancel_pending => tr(lang, "Cancellation requested; check result. An existing app/browser handoff cannot be undone.", "已请求取消；请检查结果。已完成的程序或浏览器启动无法撤回。"),
             .external_cancelled => tr(lang, "Integration result discarded; completed handoff may remain open", "已丢弃联动结果；已启动的应用可能仍然打开"),
+            .local_summary_ready => tr(lang, "Copied matching local panel snapshot; no command started", "已复制匹配的本地面板快照；未启动命令"),
+            .local_summary_unavailable => tr(lang, "No matching ready local panel; open project and refresh status explicitly", "没有匹配的就绪本地面板；请打开项目并显式刷新状态"),
         };
     }
 };
-pub const Current = struct { root: identity.Path, remote: contract.Text = .{}, kind: ?identity.Kind = null };
+pub const Current = struct {
+    root: identity.Path,
+    remote: contract.Text = .{},
+    kind: ?identity.Kind = null,
+    availability: contract.Availability = .not_queried,
+    reference: contract.Text = .{},
+    revision: ?identity.RevisionId = null,
+    changes: contract.Changes = .{},
+    counts: contract.CountAvailability = .{},
+};
 
 const Project = struct {
     key: [key_len]u8,
@@ -434,9 +447,15 @@ const ExternalJob = union(enum) {
 };
 const RemoteReview = struct { scope: Scope, value: forge.Remotes };
 const MetadataReview = struct { scope: Scope, value: forge.Metadata };
+const LocalSummary = struct { scope: Scope, value: Current };
+
+fn countLabel(buffer: []u8, value: u32, availability: contract.Availability) []const u8 {
+    if (availability != .ready) return "?";
+    return std.fmt.bufPrint(buffer, "{d}", .{value}) catch "?";
+}
 
 const Content = struct {
-    nodes: [112]ui.Node = undefined,
+    nodes: [128]ui.Node = undefined,
     len: usize = 0,
     root: ui.Node = undefined,
     states: [11]ui.State = undefined,
@@ -450,6 +469,9 @@ const Content = struct {
     grant_labels: [3][96]u8 = undefined,
     remote_labels: [forge.Remotes.capacity][384]u8 = undefined,
     meta_label: [256]u8 = undefined,
+    local_label: [256]u8 = undefined,
+    local_counts: [6][16]u8 = undefined,
+    client_command: [2 * identity.max_path_bytes + 128]u8 = undefined,
 
     fn add(self: *Content, node: ui.Node, id: []const u8) void {
         std.debug.assert(self.len < self.nodes.len);
@@ -538,6 +560,7 @@ const Content = struct {
             self.button(33, tr(lang, "Open Releases (GitHub / GitLab)", "打开 Releases（GitHub / GitLab）"), external_idle);
             self.button(34, tr(lang, "Inspect literal local Git remotes", "检查本地 Git 远程地址"), external_idle);
             self.button(41, tr(lang, "Fetch public GitHub metadata (api.github.com, no account)", "获取公开 GitHub 元数据（api.github.com，无账号）"), external_idle);
+            self.button(49, tr(lang, "Copy matching local panel summary (no CLI)", "复制匹配的本地面板摘要（不执行 CLI）"), idle);
             self.button(44, tr(lang, "Review opening selected folder in VS Code", "审核使用 VS Code 打开项目"), external_idle and owner.stored.client_paths[0] != null);
             self.button(45, tr(lang, "Review opening SVN status dialog", "审核打开 TortoiseSVN 状态窗口"), external_idle and owner.stored.client_paths[1] != null);
             self.add(ui.text(tr(lang, "Browser availability and private access are not verified; external apps may access files/network independently.", "未验证网页可用性与私有访问权限；外部程序可自行访问文件或网络。")), "settings.forge.warning");
@@ -553,6 +576,27 @@ const Content = struct {
             }
             if (review.value.count == 0) self.add(ui.text(tr(lang, "No supported literal remote", "没有支持的字面远程地址")), "settings.remote.empty");
             if (review.value.omitted != 0) self.add(ui.text(tr(lang, "Some remote values were rejected or exceed the retained limit; raw values hidden.", "部分远程地址无效或超出保留上限；原始值不显示。")), "settings.remote.omitted");
+        }
+        if (owner.local_summary) |*review| {
+            self.add(ui.text(tr(lang, "Local panel snapshot, not live; may be cached", "本地面板快照，非实时，可能来自缓存")), "settings.local.heading");
+            self.add(ui.text(review.scope.root.slice()), "settings.local.root");
+            const value = &review.value;
+            self.add(ui.text(if (value.kind) |kind| kind.displayName() else "?"), "settings.local.provider");
+            self.add(ui.text(if (value.reference.len == 0) "?" else value.reference.slice()), "settings.local.ref");
+            self.add(ui.text(if (value.revision) |*revision| revision.slice() else "?"), "settings.local.revision");
+            const c = value.changes;
+            const a = value.counts;
+            const values = [_][]const u8{
+                countLabel(&self.local_counts[0], c.staged, a.staged),
+                countLabel(&self.local_counts[1], c.modified, a.modified),
+                countLabel(&self.local_counts[2], c.untracked, a.untracked),
+                countLabel(&self.local_counts[3], c.conflicted, a.conflicted),
+                countLabel(&self.local_counts[4], c.ahead, a.ahead),
+                countLabel(&self.local_counts[5], c.behind, a.behind),
+            };
+            const label = std.fmt.bufPrint(&self.local_label, "Staged {s} | Modified {s} | Untracked {s} | Conflicts {s} | Ahead {s} | Behind {s}", .{ values[0], values[1], values[2], values[3], values[4], values[5] }) catch "";
+            self.add(ui.text(label), "settings.local.counts");
+            self.button(50, tr(lang, "Clear local summary", "清除本地摘要"), idle);
         }
         if (owner.metadata_review) |*review| {
             self.add(ui.text(review.scope.remote.slice()), "settings.meta.repository");
@@ -579,6 +623,8 @@ const Content = struct {
         if (owner.client_review) |*review| {
             self.add(ui.text(review.client.name()), "settings.client.review-kind");
             self.add(ui.text(review.executable.slice()), "settings.client.review-exe");
+            const command = forge.commandLine(review.client, review.executable.slice(), review.scope.root.slice(), review.scope.kind, &self.client_command) catch "";
+            if (command.len != 0) self.add(ui.text(command), "settings.client.review-command");
             self.add(ui.text(review.scope.root.slice()), "settings.client.review-root");
             self.button(46, tr(lang, "Confirm external launch (not a sandbox)", "确认启动外部程序（非沙箱）"), idle and !owner.externalBusy());
             self.button(47, tr(lang, "Cancel launch review", "取消启动审核"), idle and !owner.externalBusy());
@@ -630,6 +676,7 @@ const Content = struct {
             self.states[i] = .{ .key = abi.view(field), .value = abi.view(if (owner.stored.tools[i]) |*path| path.slice() else "") };
         }
         self.add(ui.text(tr(lang, "External client paths · save does not launch or grant VCS access", "外部客户端路径 · 保存不启动或授予 VCS 权限")), "settings.client.heading");
+        self.add(ui.text(tr(lang, "GitHub Desktop direct launch is not yet verified; use its documented github command manually. Sourcetree / GitKraken adapters unavailable.", "GitHub Desktop 直接启动尚未验证，可手动使用官方 github 命令；Sourcetree / GitKraken 适配暂不可用。")), "settings.client.unsupported");
         for (clients, client_fields, 0..) |client, field, i| {
             self.input(field, client.name(), idle);
             self.button(42 + i, tr(lang, "Save exact executable (empty clears)", "保存准确可执行文件路径（留空清除）"), idle);
@@ -683,6 +730,7 @@ pub const Settings = struct {
     external_discard: bool = false,
     remote_review: ?RemoteReview = null,
     metadata_review: ?MetadataReview = null,
+    local_summary: ?LocalSummary = null,
     client_review: ?ClientReview = null,
     remote_result: ?forge.Remotes = null,
     metadata_result: ?forge.Metadata = null,
@@ -852,6 +900,7 @@ pub const Settings = struct {
         self.grant_review = null;
         self.remote_review = null;
         self.metadata_review = null;
+        self.local_summary = null;
         self.client_review = null;
         if (!self.active) return;
         if (reply.*.status != abi.ok or reply.*.operation != operation) {
@@ -1170,6 +1219,10 @@ pub const Settings = struct {
     }
 
     fn clearSelection(self: *Settings) !void {
+        self.local_summary = null;
+        self.metadata_review = null;
+        self.remote_review = null;
+        self.client_review = null;
         self.render();
         if (!self.render_ok or self.visible().count == 0) return;
         const model = if (self.panel) |*value| value else return error.State;
@@ -1373,6 +1426,21 @@ pub const Settings = struct {
         try self.saveRecord(&project);
     }
 
+    fn copyLocalSummary(self: *Settings) !void {
+        const scope = Scope.from(try self.selected(), self.stored.version);
+        self.local_summary = null;
+        const current = self.current(self.user) orelse {
+            self.status = .local_summary_unavailable;
+            return;
+        };
+        if (!scope.root.eql(current.root.slice()) or (scope.kind != null and scope.kind != current.kind) or current.availability != .ready) {
+            self.status = .local_summary_unavailable;
+            return;
+        }
+        self.local_summary = .{ .scope = scope, .value = current };
+        self.status = .local_summary_ready;
+    }
+
     fn fetchPublic(self: *Settings) !void {
         const scope = Scope.from(try self.selected(), self.stored.version);
         var endpoint: [contract.Text.capacity + 16]u8 = undefined;
@@ -1539,6 +1607,10 @@ pub const Settings = struct {
                 47 => {
                     self.client_review = null;
                 },
+                49 => self.copyLocalSummary(),
+                50 => {
+                    self.local_summary = null;
+                },
                 else => return,
             };
             result catch |err| {
@@ -1595,6 +1667,7 @@ pub const Settings = struct {
         self.metadata_result = null;
         self.remote_review = null;
         self.metadata_review = null;
+        self.local_summary = null;
         self.client_review = null;
         if (self.project_task) |*task| {
             if (task.occupied()) {
@@ -1631,6 +1704,7 @@ pub const Settings = struct {
         self.metadata_result = null;
         self.remote_review = null;
         self.metadata_review = null;
+        self.local_summary = null;
         self.client_review = null;
         if (self.project_task) |*task| task.retireAtHostDestroy();
         self.project_task = null;
@@ -2176,4 +2250,44 @@ test "external task release and cancellation suppress stale project results" {
     fixture.input = &second.key;
     try std.testing.expectError(error.State, owner.confirmClient());
     try std.testing.expect(!owner.externalBusy());
+}
+
+test "local dashboard distinguishes absent counts and matches exact project root" {
+    const root = if (builtin.os.tag == .windows) "C:\\work\\repo" else "/work/repo";
+    const other = if (builtin.os.tag == .windows) "C:\\work\\other" else "/work/other";
+    const item = try Project.make(root, "https://github.com/a/b");
+    const second = try Project.make(other, "");
+    const Fixture = struct {
+        fn current(_: *anyopaque) ?Current {
+            return .{ .root = identity.Path.init(root) catch unreachable, .kind = .git, .availability = .ready, .changes = .{ .modified = 3 }, .counts = .{ .modified = .ready } };
+        }
+    };
+    var fixture: SettingsFixture = .{ .input = &item.key };
+    const owner = try std.testing.allocator.create(Settings);
+    defer std.testing.allocator.destroy(owner);
+    owner.* = .{
+        .host = undefined,
+        .user = &fixture,
+        .current = &Fixture.current,
+        .updated = &SettingsFixture.updated,
+        .active = true,
+        .loaded = true,
+        .render_ok = true,
+        .page = 7,
+        .panel = .{ .id = 7, .table = .{ .context = &fixture, .get_state = &SettingsFixture.getState } },
+    };
+    owner.stored.version = 1;
+    owner.stored.projects[0] = item;
+    owner.stored.projects[1] = second;
+    owner.stored.count = 2;
+    try owner.copyLocalSummary();
+    try std.testing.expectEqual(Status.local_summary_ready, owner.status);
+    try std.testing.expectEqual(@as(u32, 3), owner.local_summary.?.value.changes.modified);
+    var bytes: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("?", countLabel(&bytes, 0, .not_queried));
+    try std.testing.expectEqualStrings("0", countLabel(&bytes, 0, .ready));
+    fixture.input = &second.key;
+    try owner.copyLocalSummary();
+    try std.testing.expectEqual(Status.local_summary_unavailable, owner.status);
+    try std.testing.expect(owner.local_summary == null);
 }

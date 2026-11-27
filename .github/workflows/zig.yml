@@ -158,6 +158,14 @@ jobs:
       - name: Build production extensions
         if: needs.scope.outputs.level != 'companion'
         run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
+      - name: Verify forge Windows ABI constants and layouts
+        if: runner.os == 'Windows' && (needs.scope.outputs.level == 'vcs' || needs.scope.outputs.level == 'full')
+        shell: pwsh
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu tests/abi/forge_windows.c -o zig-out/forge-windows-abi.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./zig-out/forge-windows-abi.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Fetch pinned native SDK headers
         if: runner.os == 'Windows' && (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'companion-host')
         run: python scripts/fetch_sdk.py

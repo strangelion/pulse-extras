@@ -134,7 +134,16 @@ const Instance = struct {
         if (binding.navigation.pending or binding.controller.current.phase != .ready or binding.controller.current.stale) return null;
         const workspace = binding.controller.current.workspace orelse return null;
         const snapshot = binding.controller.current.snapshot orelse return null;
-        return .{ .root = workspace.root, .remote = snapshot.remote_web, .kind = workspace.kind };
+        return .{
+            .root = workspace.root,
+            .remote = snapshot.remote_web,
+            .kind = workspace.kind,
+            .availability = snapshot.availability,
+            .reference = snapshot.reference,
+            .revision = snapshot.revision,
+            .changes = snapshot.changes,
+            .counts = snapshot.counts,
+        };
     }
 
     fn start(self: *Instance) host_mod.Error!void {

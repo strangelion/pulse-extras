@@ -35,3 +35,8 @@ cleanup thresholds fail. Record last safe count and failure reason instead of
 fabricating a pass. See [Companion matrix](companion-manager.md#d2-real-host-functional-acceptance-matrix),
 [VCS matrix](vcs-acceptance-runbook.md#stage-specific-installed-acceptance-register-mandatory-current-status)
 and [release](release.md).
+
+P3B bb362dd / 45930749443 failed VCS settings compilation on both OSes;
+Companion desktop lane was blocked by the same production build error.
+Consolidated compile repair, local summary dashboard and Windows ABI fixture
+require exact full CI. Live client/HTTP and installed UI: NOT RUN.

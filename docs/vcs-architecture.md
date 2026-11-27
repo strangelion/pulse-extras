@@ -395,3 +395,11 @@ uses no credentials/redirects/cookies or automatic polling, and retains a
 bounded transient snapshot (five-minute display TTL). Exact CI, Windows
 transport and installed acceptance remain pending; authenticated access and
 other clients/providers are not implemented.
+
+The project dashboard additionally copies an explicitly requested matching
+ready local panel summary; no new VCS process is started and unavailable
+counts are rendered as unknown. Local and remote snapshots are separately
+labelled by scope, not presented as continuously updated data. The exact
+external command is visible at review. Paired Zig and independent Windows
+C-header assertions check startup/process layouts and WinHTTP constants;
+these checks do not prove live transport or actual application behavior.
