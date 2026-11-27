@@ -6,6 +6,7 @@
 #include "../../shared/share/local_protocol_win32.h"
 #include <shellapi.h>
 #include <stdlib.h>
+#include <wchar.h>
 
 int main(void) {
     int argc = 0;

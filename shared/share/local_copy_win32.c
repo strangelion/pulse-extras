@@ -170,6 +170,7 @@ static int run_worker(const wchar_t *image, HANDLE source, HANDLE stage,
     SIZE_T attribute_size = 0;
     BOOL initialized = FALSE, assigned = FALSE;
     int result = SHARE_CONTAINMENT;
+    const char *phase = "prepare-ipc";
     wchar_t command[CAP + 128], system_dir[MAX_PATH];
     si.StartupInfo.cb = sizeof(si);
     job = CreateJobObjectW(NULL, NULL);
@@ -181,6 +182,7 @@ static int run_worker(const wchar_t *image, HANDLE source, HANDLE stage,
         !dup_inherit(request_read, &inherited[2], 0, DUPLICATE_SAME_ACCESS) ||
         !dup_inherit(reply_write, &inherited[3], 0, DUPLICATE_SAME_ACCESS) ||
         !dup_inherit(cancel_event, &inherited[4], SYNCHRONIZE, 0)) goto done;
+    phase = "handle-list";
     InitializeProcThreadAttributeList(NULL, 1, 0, &attribute_size);
     if (!attribute_size || attribute_size > 65536) goto done;
     si.lpAttributeList = malloc(attribute_size);
@@ -196,19 +198,24 @@ static int run_worker(const wchar_t *image, HANDLE source, HANDLE stage,
         (unsigned long long)(uintptr_t)inherited[2], (unsigned long long)(uintptr_t)inherited[3],
         (unsigned long long)(uintptr_t)inherited[4]);
     if (n <= 0 || n >= (int)(CAP+128)) goto done;
+    phase = "create-worker";
     if (!CreateProcessW(image, command, NULL, NULL, TRUE,
         CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
         NULL, system_dir, &si.StartupInfo, &process)) goto done;
+    phase = "assign-job";
     if (!AssignProcessToJobObject(job, process.hProcess)) goto done;
     assigned = TRUE;
     /* Parent closes every child-side duplicate before it starts. */
     for (size_t i = 0; i < 5; ++i) close_handle(&inherited[i]);
     close_handle(&request_read);
     close_handle(&reply_write);
+    phase = "resume-worker";
     if (ResumeThread(process.hThread) == (DWORD)-1) goto done;
+    phase = "send-request";
     if (!share_write(request_write, request, sizeof(*request))) { result = SHARE_IO; goto done; }
     close_handle(&request_write);
     HANDLE waiters[] = {cancel_event, process.hProcess};
+    phase = "wait-worker";
     DWORD waited = WaitForMultipleObjects(2, waiters, FALSE, WAIT_LIMIT_MS);
     if (waited == WAIT_OBJECT_0) {
         /* Worker observes the event between chunks; never wait indefinitely. */
@@ -217,6 +224,7 @@ static int run_worker(const wchar_t *image, HANDLE source, HANDLE stage,
         goto done;
     }
     if (waited != WAIT_OBJECT_0+1) goto done;
+    phase = "validate-receipt";
     DWORD exit_code = 0;
     if (!GetExitCodeProcess(process.hProcess, &exit_code) ||
         !share_read(reply_read, reply, sizeof(*reply)) ||
@@ -232,9 +240,14 @@ static int run_worker(const wchar_t *image, HANDLE source, HANDLE stage,
     if (reply->status != SHARE_OK) { result = (int)reply->status; goto done; }
     result = !exit_code && reply->bytes == request->size ? SHARE_OK : SHARE_PROTOCOL;
 done:
+    if (result != SHARE_OK)
+        fprintf(stderr, "Share worker phase=%s result=%d\n", phase, result);
     if (process.hProcess) {
         if (assigned) {
-            if (!pulse_job_terminate_and_drain(job, 1, 5000)) result = SHARE_CONTAINMENT;
+            if (!pulse_job_terminate_and_drain(job, 1, 5000)) {
+                fputs("Share worker drain failed\n", stderr);
+                result = SHARE_CONTAINMENT;
+            }
         } else {
             if (!TerminateProcess(process.hProcess, 1) ||
                 WaitForSingleObject(process.hProcess, 5000) != WAIT_OBJECT_0) result = SHARE_CONTAINMENT;
@@ -273,14 +286,17 @@ static int copy_local(const wchar_t *worker, const wchar_t *worker_digest,
     LARGE_INTEGER size;
     int result = SHARE_DESTINATION;
     BOOL committed = FALSE;
+    const char *phase = "validate-input";
     if (!path_ok(worker) || !parse_digest(worker_digest, expected) ||
         !path_ok(source_path) || !path_ok(directory) || !leaf_ok(name)) return result;
     int n = swprintf(target, CAP, L"%ls\\%ls", directory, name);
     if (n <= 0 || n >= (int)CAP) return result;
+    phase = "verify-image";
     image = pulse_image_pin(worker);
     if (image == INVALID_HANDLE_VALUE || pulse_image_verify(image, expected) != PULSE_IMAGE_OK) {
         result = SHARE_INTEGRITY; goto done;
     }
+    phase = "open-source";
     source = CreateFileW(source_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
         FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
     if (!pulse_file_observe(source, source_path, FALSE, TRUE, &info) ||
@@ -288,24 +304,30 @@ static int copy_local(const wchar_t *worker, const wchar_t *worker_digest,
                                    FILE_ATTRIBUTE_SPARSE_FILE | FILE_ATTRIBUTE_DEVICE)) ||
         !GetFileSizeEx(source, &size) || size.QuadPart < 0 ||
         (uint64_t)size.QuadPart > SHARE_LIMIT) goto done;
+    phase = "open-destination";
     root = CreateFileW(directory, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     if (!pulse_file_observe(root, directory, TRUE, TRUE, &info)) goto done;
     share_request request = {SHARE_MAGIC, SHARE_VERSION, (uint64_t)size.QuadPart, {0}};
+    phase = "hash-source";
     if (!hash_file(source, request.size, request.sha256)) {
         result = WaitForSingleObject(cancel_event, 0) == WAIT_OBJECT_0 ? SHARE_CANCELLED : SHARE_IO;
         goto done;
     }
+    phase = "create-stage";
     stage = create_stage(directory, temp);
     if (stage == INVALID_HANDLE_VALUE) goto done;
     if (!pulse_file_observe(stage, temp, FALSE, TRUE, &info)) goto done;
     share_reply reply = {0};
+    phase = "run-worker";
     result = run_worker(worker, source, stage, &request, &reply);
     if (result != SHARE_OK) goto done;
+    phase = "verify-stage";
     if (!hash_file(stage, request.size, actual) || memcmp(actual, request.sha256, 32)) {
         result = WaitForSingleObject(cancel_event, 0) == WAIT_OBJECT_0 ? SHARE_CANCELLED : SHARE_INTEGRITY;
         goto done;
     }
+    phase = "recheck-stage";
     if (!pulse_file_observe(root, directory, TRUE, TRUE, &info) ||
         !pulse_file_observe(stage, temp, FALSE, TRUE, &info)) {
         result = SHARE_DESTINATION; goto done;
@@ -313,10 +335,13 @@ static int copy_local(const wchar_t *worker, const wchar_t *worker_digest,
     if (WaitForSingleObject(cancel_event, 0) != WAIT_TIMEOUT) {
         result = SHARE_CANCELLED; goto done;
     }
+    phase = "commit-stage";
     if (!commit_stage(stage, target)) { result = SHARE_DESTINATION; goto done; }
     committed = TRUE;
     result = SHARE_OK;
 done:
+    if (result != SHARE_OK)
+        fprintf(stderr, "Share copy phase=%s result=%d\n", phase, result);
     if (stage != INVALID_HANDLE_VALUE && !committed) {
         FILE_DISPOSITION_INFO disposition = {TRUE};
         if (!SetFileInformationByHandle(stage, FileDispositionInfo, &disposition, sizeof(disposition))) {

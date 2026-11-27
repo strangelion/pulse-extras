@@ -116,8 +116,11 @@ leave a unique .pulse-share-*.part file. Do not auto-delete by glob; persistent
 ownership receipts and restart recovery are a later gate, before enabling UI
 transfers. There is no promise of power-fail durability.
 
-CI: full regression builds the DLL and local worker on Linux and Windows;
-Windows invokes real parent/child integration for multi-chunk Unicode files,
+CI: full regression builds the DLL and local worker on Linux and Windows.
+The local worker build and Windows integration run immediately after formatting,
+before unrelated VCS dependency provisioning; failures still fail the full gate.
+The harness emits bounded, fixed phase/result diagnostics on failure (no file
+contents or peer data). Windows invokes real parent/child integration for multi-chunk Unicode files,
 empty files, existing target, bad worker digest, worker exit, false success
 with wrong bytes (including an existing destination), invalid names and
 hard-linked source. The false-success fixture is built only for tests; the
