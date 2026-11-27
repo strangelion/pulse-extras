@@ -361,3 +361,29 @@ is not proof of a reparse point. Tests cover ordinary paths and, where the
 OS permits, 8.3 aliases and directory symlinks. Saved-peer loopback now also
 uses inherited managed cancellation events and protected stores/spool in both
 child processes, without claiming actual Pulse host acceptance.
+
+## P2 native usability revision
+
+The development UI uses host tabs, grouped controls, independent field labels,
+placeholders, byte progress, state-bound actions, and a separate host settings
+page for default local bind address, identity directory, destination, spool and
+port. Settings use the owner-scoped versioned resources API with explicit save;
+no private key, peer pin or permission is stored in preferences. Edits in the
+main panel survive reopening during the same plugin session. Apply saved defaults
+explicitly. Local interface inventory is an explicit local-only operation; no
+network probing. The receive-and-advertise button is a separate opt-in action.
+Coalesced host dispatch wakes refresh task progress while the worker is active;
+manual Refresh remains required if dispatch is unavailable or a terminal wake
+precedes host task completion. No independent timer/thread is introduced.
+The UI uses Chinese in this candidate. The fourth tab shows bounded session-only
+transfer results; the last local-interface/discovery/peer/recovery inventory is
+retained independently. Separate explicit actions create identity/spool directories.
+Persistent history, localization, and selectable structured peer rows remain future work. Actual host rendering and settings lifecycle must be
+retested on Pulse 1.0.62. The published manifest schema does not support catalog
+metadata; local packages remain unsigned unless explicitly signed later.
+
+This revision does not change the authenticated transport, private directory
+admission or no-overwrite commit policy. The settings permission is limited to
+package-owned preferences; users must explicitly re-accept it in the isolated
+updated package. Do not add unsupported manifest metadata or claim that an
+unsigned local package is a verified publisher release.

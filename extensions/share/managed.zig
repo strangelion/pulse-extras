@@ -4,8 +4,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const config = @import("share_config");
 const raw = @import("pulse_raw");
+const async_host = @import("pulse_async_host");
 
-pub const Mode = enum { discover, send, receive, identity_init, identity_show, peer_add, peer_list, peer_revoke, private_init, recovery_list };
+pub const Mode = enum { discover, send, receive, identity_init, identity_show, peer_add, peer_list, peer_revoke, private_init, recovery_list, interfaces };
 pub const Field = struct {
     bytes: [2048]u8 = @splat(0),
     len: usize = 0,
@@ -24,6 +25,7 @@ pub const Field = struct {
 
 pub const Request = struct {
     mode: Mode = .discover,
+    advertise: bool = false,
     bind: Field = .{},
     peer: Field = .{},
     store: Field = .{},
@@ -36,6 +38,7 @@ pub const Request = struct {
 
     pub fn validate(self: *const Request) !void {
         switch (self.mode) {
+            .interfaces => return,
             .identity_init, .identity_show, .peer_list, .private_init, .recovery_list => {
                 if (self.store.len == 0) return error.InvalidInput;
                 return;
@@ -282,6 +285,7 @@ const Output = struct {
     inventory_truncated: bool = false,
     done_bytes: u64 = 0,
     total_bytes: u64 = 0,
+    wake: ?*async_host.Wake = null,
 
     fn report(self: *Output, ctx: *const raw.PulseTaskContext, msg: []const u8) void {
         var p = std.mem.zeroes(raw.PulseTaskProgress);
@@ -291,6 +295,7 @@ const Output = struct {
         p.total_bytes = self.total_bytes;
         p.current_item = .{ .data = msg.ptr, .length = @intCast(msg.len) };
         if (ctx.report) |send| _ = send(ctx.context, &p);
+        if (self.wake) |wake| wake.request();
     }
 
     fn writeAnswer(input: Handle, bytes: []const u8) !void {
@@ -333,7 +338,7 @@ const Output = struct {
             const prompt = try std.fmt.bufPrint(&msg, "PROMPT {d} {s}", .{ self.generation, line });
             self.report(ctx, prompt);
         } else if (!self.waiting and line.len != 0) {
-            if (request.mode == .discover or request.mode == .peer_list or request.mode == .recovery_list) {
+            if (request.mode == .discover or request.mode == .peer_list or request.mode == .recovery_list or request.mode == .interfaces) {
                 if (!self.inventory_truncated and line.len + 1 + 32 <= self.inventory.len - self.inventory_len) {
                     @memcpy(self.inventory[self.inventory_len..][0..line.len], line);
                     self.inventory_len += line.len;
@@ -371,9 +376,9 @@ const Output = struct {
     }
 };
 
-pub fn run(request: *const Request, ctx: *const raw.PulseTaskContext, decisions: *Decisions) !void {
+pub fn run(request: *const Request, ctx: *const raw.PulseTaskContext, decisions: *Decisions, wake: ?*async_host.Wake) !void {
     if (comptime builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return error.UnsupportedPlatform;
-    var output: Output = .{};
+    var output: Output = .{ .wake = wake };
     runInner(request, ctx, decisions, &output) catch |err| {
         output.report(ctx, @errorName(err));
         return err;
@@ -426,7 +431,7 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
         else => {},
     }
     switch (request.mode) {
-        .discover => {},
+        .discover, .interfaces => {},
         .identity_init, .identity_show, .peer_list, .private_init, .recovery_list => try command.pair("--store", request.store.slice()),
         .peer_add, .peer_revoke => {
             try command.pair("--store", request.store.slice());
@@ -439,6 +444,7 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
             try command.pair("--paired", request.paired.slice());
         },
         .receive => {
+            if (request.advertise) try command.arg("--advertise");
             try command.pair("--port", request.port.slice());
             try command.pair("--directory", request.destination.slice());
             try command.pair("--spool", request.spool.slice());
@@ -517,6 +523,7 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
     output_write = 0;
     const start = GetTickCount64();
     var stop_at: ?u64 = null;
+    var last_wake = start;
     while (true) {
         output.pump(output_read, input_write, request, ctx, decisions) catch |err| {
             if (!drain(job)) return error.Drain;
@@ -539,6 +546,10 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
             return error.Wait;
         }
         const now = GetTickCount64();
+        if (now -% last_wake >= 250) {
+            if (output.wake) |wake| wake.request();
+            last_wake = now;
+        }
         if (stop_at == null and (cancelled(ctx) or now -% start >= 40 * 60 * 1000)) {
             if (SetEvent(event) == 0) {
                 if (!drain(job)) return error.Drain;

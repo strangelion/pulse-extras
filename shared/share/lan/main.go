@@ -316,6 +316,10 @@ func run(ctx context.Context,args []string) error {
 		if err:=noExtra(f,args[1:]);err!=nil{return err}
 		if args[0]=="private-init"{return createPrivateDirectory(*root)}
 		return inspectRecovery(*root)
+	case "interfaces":
+		f:=flags("interfaces")
+		if err:=noExtra(f,args[1:]);err!=nil{return err}
+		return listLocalInterfaces()
 	case "send":return sender(ctx,c,args[1:])
 	case "receive":return receiver(ctx,c,args[1:])
 	case "discover":

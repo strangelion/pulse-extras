@@ -50,3 +50,13 @@ release readiness. P3 multi-file, resume, and P4 directory access are separate.
 
 Windows CI verifies managed-mode saved-peer loopback (including protected
 store/spool admission). This is still distinct from the installed host test.
+
+For the UI revision, recheck all three tabs, visible labels and placeholders,
+button availability during work, progress refresh, manual fallback, host settings
+save/reload and reopening without losing drafts. Test opt-in discovery and
+explicit receive separately. Do not treat the UI revision as accepted based on
+the earlier 9cd77d2 screenshot or CI results.
+
+Verify independent creation of identity and spool directories, retained query
+results, and bounded session history. History is not persistent across plugin
+restart. A discovery result must still be entered as an explicit reviewed address.

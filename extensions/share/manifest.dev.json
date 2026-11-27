@@ -3,6 +3,7 @@
   "id": "strangelion.share-dev",
   "name": "Pulse Share (Development)",
   "resources": [
-    "context.read"
+    "context.read",
+    "settings.own"
   ]
 }
