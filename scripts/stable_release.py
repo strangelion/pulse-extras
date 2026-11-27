@@ -28,15 +28,24 @@ def validate_run(run: dict, workflow: dict, repo: str, revision: str) -> None:
         raise ValueError("candidate must be a successful Extension release run on this exact main SHA")
 
 
-def tested_hashes(value: str) -> dict:
+def stable_request(value: str) -> tuple[str, str]:
+    match = re.fullmatch(r"run=([1-9][0-9]{0,19})\s*,\s*host=([0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)", value.strip())
+    if not match or len(match[2]) > 32:
+        raise ValueError("stable request must be run=<candidate ID>,host=<actual tested Pulse version>")
+    return match[1], match[2]
+
+
+def candidate_hashes(output: Path) -> dict:
     result = {}
-    for pair in value.split(","):
-        key, sep, digest = pair.strip().partition("=")
-        if not sep or key not in release.package.PRODUCTS or key in result or not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise ValueError("expected unique product=lowercase-SHA256 entries")
-        result[key] = digest
+    for directory in sorted(output.iterdir()):
+        if (directory.name not in release.package.PRODUCTS or not directory.is_dir()
+                or directory.is_symlink()):
+            raise ValueError("unexpected candidate product")
+        evidence = common.read_evidence(directory / "release-evidence.json")
+        item = release.plan(f"{directory.name}={evidence['version']}", "dry-run")[0]
+        result[directory.name] = common.sha256(directory / item["asset"])
     if not result:
-        raise ValueError("no accepted packages")
+        raise ValueError("no candidate packages")
     return result
 
 
@@ -72,17 +81,15 @@ def prepare(output: Path, revision: str, run_id: str, hashes: dict,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["prepare", "sign", "publish"])
+    parser.add_argument("action", choices=["prepare", "publish"])
     args = parser.parse_args()
-    # Remove the secret before git, gh or any other child process can inherit it.
-    private_encoded = os.environ.pop("PULSE_SIGNING_PRIVATE_KEY", "")
     try:
         revision = release.source_revision()
         repo = release.repository()
-        run_id = os.environ["CANDIDATE_RUN"]
+        run_id, host = stable_request(os.environ["RELEASE_REQUEST"])
         mode = os.environ["STABLE_MODE"]
-        if not re.fullmatch(r"[1-9][0-9]{0,19}", run_id) or mode not in MODES:
-            raise ValueError("invalid candidate run or stable mode")
+        if mode not in MODES:
+            raise ValueError("invalid stable mode")
         if os.environ.get("ACCEPTANCE_CONFIRMED") != "true":
             raise ValueError("explicit installed acceptance confirmation is required")
         output = ROOT / ".local/stable-candidate"
@@ -91,17 +98,17 @@ def main() -> int:
             workflow = json.loads(release.capture("gh", "api", f"repos/{repo}/actions/workflows/release.yml"))
             run = json.loads(release.capture("gh", "api", f"repos/{repo}/actions/runs/{run_id}"))
             validate_run(run, workflow, repo, revision)
-            if output.exists():
+            if output.exists() or signed.exists():
                 raise ValueError("candidate directory already exists")
             release.run("gh", "run", "download", run_id, "--repo", repo, "--name",
                         "extension-release-candidates", "--dir", str(output), timeout=300)
-        items, receipts = prepare(output, revision, run_id, tested_hashes(os.environ["TESTED_HASHES"]),
-                                  os.environ["TESTED_HOST"], os.environ["ACCEPTANCE_REFERENCE"],
-                                  os.environ["GITHUB_ACTOR"])
+            release.run("gh", "run", "download", run_id, "--repo", repo, "--name",
+                        "extension-release-signatures", "--dir", str(signed), timeout=300)
+        reference = f"Owner attestation of exact candidate SHA-256 and installed checks: https://github.com/{repo}/actions/runs/{run_id}"
+        items, receipts = prepare(output, revision, run_id, candidate_hashes(output),
+                                  host, reference, os.environ["GITHUB_ACTOR"])
         if args.action == "prepare":
             release.preflight(items)
-        elif args.action == "sign":
-            signing.sign_all(items, output, signed, revision, private_encoded)
         else:
             verified = signing.verify_all(items, output, signed, revision)
             release.publish(items, mode, output, stable_receipts=receipts,
@@ -109,11 +116,7 @@ def main() -> int:
         return 0
     except (OSError, ValueError, RuntimeError, KeyError, TypeError,
             subprocess.SubprocessError, zipfile.BadZipFile) as exc:
-        # Avoid exposing key material or command details from the protected step.
-        if args.action == "sign":
-            print("Stable signing failed; verify Environment configuration and candidate identity.", file=sys.stderr)
-        else:
-            print(f"Stable promotion failed: {exc}", file=sys.stderr)
+        print(f"Stable promotion failed: {exc}", file=sys.stderr)
         return 1
 
 

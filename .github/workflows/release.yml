@@ -3,12 +3,12 @@ name: Extension release
 on:
   workflow_dispatch:
     inputs:
-      releases:
-        description: 'Extension versions (e.g. companion=1.1.0,vcs=1.2.0)'
+      request:
+        description: 'Build: companion=1.1.0,vcs=1.2.0 | Stable: run=123456,host=1.0.61'
         required: true
         type: string
       mode:
-        description: 'Unsigned preview only; dry-run does not create releases'
+        description: 'Signed candidate, preview or stable publication'
         required: true
         default: dry-run
         type: choice
@@ -16,6 +16,13 @@ on:
           - dry-run
           - draft
           - publish-preview
+          - draft-stable
+          - publish-stable
+      acceptance_confirmed:
+        description: 'Stable only: I verified exact candidate SHA256 and completed applicable installed acceptance checks'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -25,11 +32,14 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_REQUEST: ${{ inputs.releases }}
+  RELEASE_REQUEST: ${{ inputs.request }}
   RELEASE_MODE: ${{ inputs.mode }}
+  STABLE_MODE: ${{ inputs.mode }}
+  ACCEPTANCE_CONFIRMED: ${{ inputs.acceptance_confirmed }}
 
 jobs:
   plan:
+    if: github.ref == 'refs/heads/main' && (inputs.mode == 'dry-run' || inputs.mode == 'draft' || inputs.mode == 'publish-preview')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -107,12 +117,126 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  publish:
+  sign-candidate:
     needs: [plan, package]
+    environment: release-signing
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     env:
       RELEASE_PLAN: ${{ needs.plan.outputs.plan }}
-    if: inputs.mode != 'dry-run'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Read reviewed publisher identity
+        id: publisher
+        run: python scripts/environment_signing.py
+      - uses: actions/checkout@v6
+        with:
+          repository: jimmgreen/pulse-extensions
+          ref: ${{ steps.publisher.outputs.revision }}
+          path: .local/registry-signing
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension-release-candidates
+          path: .local/release-output
+      - name: Sign and independently verify exact manifests
+        env:
+          PULSE_SIGNING_PRIVATE_KEY: ${{ secrets.PULSE_SIGNING_PRIVATE_KEY }}
+          PULSE_SIGNING_PUBLIC_KEY: ${{ vars.PULSE_SIGNING_PUBLIC_KEY }}
+          PULSE_PUBLISHER_FINGERPRINT: ${{ vars.PULSE_PUBLISHER_FINGERPRINT }}
+        run: python scripts/release_workflow.py sign
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-release-signatures
+          path: .local/release-signatures/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+
+  publish-preview:
+    needs: [plan, package, sign-candidate]
+    if: inputs.mode == 'draft' || inputs.mode == 'publish-preview'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RELEASE_PLAN: ${{ needs.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Read reviewed publisher identity
+        id: publisher
+        run: python scripts/environment_signing.py
+      - uses: actions/checkout@v6
+        with:
+          repository: jimmgreen/pulse-extensions
+          ref: ${{ steps.publisher.outputs.revision }}
+          path: .local/registry-signing
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension-release-candidates
+          path: .local/release-output
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension-release-signatures
+          path: .local/release-signatures
+      - name: Reverify signatures and publish preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/release_workflow.py publish
+
+  prepare-stable:
+    if: github.ref == 'refs/heads/main' && (inputs.mode == 'draft-stable' || inputs.mode == 'publish-stable')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Verify exact accepted candidate and collision state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/stable_release.py prepare
+      - uses: actions/upload-artifact@v4
+        with:
+          name: accepted-stable-candidate
+          path: .local/stable-candidate/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stable-signature-sidecars
+          path: .local/stable-signatures/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-stable:
+    needs: prepare-stable
+    environment: stable-release
+    runs-on: windows-latest
     timeout-minutes: 15
     permissions:
       contents: write
@@ -123,11 +247,24 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      - name: Read reviewed publisher identity
+        id: publisher
+        run: python scripts/environment_signing.py
+      - uses: actions/checkout@v6
+        with:
+          repository: jimmgreen/pulse-extensions
+          ref: ${{ steps.publisher.outputs.revision }}
+          path: .local/registry-signing
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          name: extension-release-candidates
-          path: .local/release-output/
-      - name: Revalidate candidates and create independent preview releases
+          name: accepted-stable-candidate
+          path: .local/stable-candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: stable-signature-sidecars
+          path: .local/stable-signatures
+      - name: Reverify public signatures and promote without rebuilding
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/release_workflow.py publish
+        run: python scripts/stable_release.py publish

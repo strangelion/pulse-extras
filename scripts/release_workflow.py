@@ -51,6 +51,8 @@ def plan(request: str, mode: str) -> list[dict]:
         # Preserve immutable tag and asset names.
         if "+" in version or len(version) > 64:
             raise ValueError("release versions must omit build metadata and fit 64 characters")
+        if mode in {"draft", "publish-preview"} and "-" not in version:
+            raise ValueError("preview requires a SemVer prerelease suffix, e.g. 1.1.0-rc.1")
         product = package.PRODUCTS[item]
         result.append({"product": item, "version": version,
                        "tag": f"{item}/v{version}",
@@ -228,11 +230,16 @@ def publish(items: list[dict], mode: str, output: Path, *,
     stable = mode in {"draft-stable", "publish-stable"}
     if mode not in {"draft", "publish-preview", "draft-stable", "publish-stable"}:
         raise ValueError("not a publication mode")
-    if stable != (stable_receipts is not None) or stable != (signed_assets is not None):
-        raise ValueError("stable publication requires acceptance receipts and verified signatures")
-    if stable and (not build_run_id or set(stable_receipts) != {item["product"] for item in items}
-                   or set(signed_assets) != set(stable_receipts)):
+    products = {item["product"] for item in items}
+    if not products or signed_assets is None or set(signed_assets) != products:
+        raise ValueError("all publications require verified publisher signatures")
+    if stable != (stable_receipts is not None):
+        raise ValueError("stable publication requires acceptance receipts")
+    if stable and (not build_run_id or set(stable_receipts) != products):
         raise ValueError("incomplete stable acceptance receipts")
+    for item in items:
+        if stable == ("-" in item["version"]):
+            raise ValueError("version is incompatible with publication channel")
     revision = source_revision()
     repo = repository()
     # A private source checkout is not adequate corresponding-source access.
@@ -244,13 +251,13 @@ def publish(items: list[dict], mode: str, output: Path, *,
              for item in items}
     preflight(items)
     pin = upstream_pin.load()
-    if stable:
-        # Do not modify the package, raw manifest, or original build evidence.
-        # Add a separate owner-attestation receipt and a release checksum list.
-        for item in items:
-            product = item["product"]
-            receipt_dir = ROOT / ".local/stable-receipts" / product
-            receipt_dir.mkdir(parents=True, exist_ok=False)
+    # Preserve original package, manifest and build evidence.
+    for item in items:
+        product = item["product"]
+        receipt_dir = ROOT / ".local/publication-receipts" / product
+        receipt_dir.mkdir(parents=True, exist_ok=False)
+        assets = [path for path in files[product] if path.name != "SHA256SUMS.txt"]
+        if stable:
             receipt = stable_receipts[product]
             evidence = common.read_evidence(output / product / "release-evidence.json")
             if (receipt.get("asset_sha256") != evidence["asset_sha256"]
@@ -260,25 +267,24 @@ def publish(items: list[dict], mode: str, output: Path, *,
                     or receipt.get("build_run_id") != build_run_id):
                 raise RuntimeError("acceptance receipt does not bind candidate")
             common.write_evidence(receipt_dir / "stable-acceptance.json", receipt)
-            assets = [path for path in files[product] if path.name != "SHA256SUMS.txt"]
             assets.append(receipt_dir / "stable-acceptance.json")
-            assets.extend(signed_assets[product])
-            if len({path.name for path in assets}) != len(assets):
-                raise ValueError("duplicate stable asset names")
-            sums = receipt_dir / "SHA256SUMS.txt"
-            sums.write_text("".join(f"{common.sha256(path)}  {path.name}\n"
-                                    for path in sorted(assets, key=lambda p: p.name)),
-                            encoding="ascii", newline="\n")
-            files[product] = assets + [sums]
+        assets.extend(signed_assets[product])
+        if len({path.name for path in assets}) != len(assets):
+            raise ValueError("duplicate release asset names")
+        sums = receipt_dir / "SHA256SUMS.txt"
+        sums.write_text("".join(f"{common.sha256(path)}  {path.name}\n"
+                                for path in sorted(assets, key=lambda p: p.name)),
+                        encoding="ascii", newline="\n")
+        files[product] = assets + [sums]
     for item in items:
         tag = item["tag"]
         notes = (
-            f"Unsigned preview candidate for {item['product']} {item['version']}.\n\n"
+            f"Publisher-signed preview candidate for {item['product']} {item['version']}.\n\n"
             f"Source: https://github.com/{repo}/tree/{revision}\n\n"
             f"Full regression and package build: https://github.com/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}\n\n"
             f"Official package-format verification used the pinned public Pulse {pin['pulse_source_version']} host. "
             "Real-host activation, coexistence and production acceptance are not certified. "
-            "No official registry signature or publication. Companion uses the Windows WIC backend "
+            "Manifest signature independently verified; no official registry approval or submission. Companion uses the Windows WIC backend "
             "when selected. Release evidence describes the package before publication.\n"
         )
         if stable:
@@ -319,10 +325,11 @@ def publish(items: list[dict], mode: str, output: Path, *,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["plan", "build", "publish", "candidate"])
+    parser.add_argument("action", choices=["plan", "build", "sign", "publish", "candidate"])
     parser.add_argument("--out", type=Path, default=ROOT / ".local/release-output")
     parser.add_argument("--sdk", type=Path, default=ROOT / ".local/sdk")
     args = parser.parse_args()
+    private_encoded = os.environ.pop("PULSE_SIGNING_PRIVATE_KEY", "")
     try:
         if args.action == "candidate":
             # This branch-only path never checks release tags or calls publication.
@@ -341,10 +348,30 @@ def main() -> int:
             if args.action == "build":
                 build(items, args.out.resolve(), args.sdk.resolve())
             else:
-                publish(items, os.environ["RELEASE_MODE"], args.out.resolve())
+                import environment_signing as signing
+                output = args.out.resolve()
+                signed = ROOT / ".local/release-signatures"
+                revision = source_revision()
+                if args.action == "sign":
+                    signing.sign_all(items, output, signed, revision, private_encoded)
+                    if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+                        with open(summary, "a", encoding="utf-8") as stream:
+                            stream.write("## Signed candidate packages\n\n")
+                            stream.write("Run ID: " + os.environ["GITHUB_RUN_ID"] + "\n\n")
+                            for item in items:
+                                digest = common.sha256(output / item["product"] / item["asset"])
+                                stream.write(f"- {item['asset']} — SHA-256 {digest}\n")
+                            stream.write("\nDownload extension-release-candidates and extension-release-signatures. "
+                                         "Verify exact hashes and complete installed acceptance before stable promotion.\n")
+                else:
+                    verified = signing.verify_all(items, output, signed, revision)
+                    publish(items, os.environ["RELEASE_MODE"], output, signed_assets=verified)
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError,
             zipfile.BadZipFile) as exc:
-        print(f"Release workflow failed: {exc}", file=sys.stderr)
+        if args.action == "sign":
+            print("Candidate signing failed; check publisher Environment and candidate identity.", file=sys.stderr)
+        else:
+            print(f"Release workflow failed: {exc}", file=sys.stderr)
         return 1
     return 0
 

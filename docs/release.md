@@ -1,11 +1,10 @@
 # Unified extension release / 统一增强包发布设计
 
-Status (2026-11-26): **manual unsigned preview workflow implemented and used**.
+Status (2026-11-26): **historical unsigned preview releases; current unified signed release workflow**.
 [Companion 1.0.0](https://github.com/strangelion/pulse-extras/releases/tag/companion/v1.0.0)
 and [VCS 1.0.0](https://github.com/strangelion/pulse-extras/releases/tag/vcs/v1.0.0)
 are independent unsigned prereleases targeting df5009c. Local packaging remains
-available. No signing, stable release, registry submission or complete actual-host
-acceptance is implied. Ordinary regression CI does not package or publish.
+available. Those historical releases do not imply signing, stable release, registry submission or complete actual-host acceptance. Ordinary regression CI does not package or publish.
 Use the [stage roadmap](roadmap.md) and batch a complete usable update; do not
 publish each tiny implementation change. User-authorized preview testing remains
 possible with exact limitations; no automatic publication on stage completion.
@@ -115,45 +114,32 @@ packages. Formal preview/stable publication channels remain separate.
 
 ## 3A. One manually dispatched workflow
 
-Open Actions → Extension release → Run workflow on main.
+Open Actions → Extension release → Run workflow on main. The unified
+workflow replaces the separate stable-release workflow, without merging
+the protected environments.
 
-| Input | Values / meaning |
+| Input | Meaning |
 | --- | --- |
-| releases | Comma-separated product=SemVer pairs, e.g. companion=1.1.0,vcs=1.2.0 |
-| mode | dry-run (default), draft, publish-preview |
+| request | Build/preview: product=SemVer pairs; stable: run=123456,host=1.0.61 |
+| mode | dry-run (default), draft, publish-preview, draft-stable, publish-stable |
+| acceptance_confirmed | Required only for stable; confirm exact installed candidate checks |
 
-Use `companion=1.1.0` for one product, or `companion=1.1.0,vcs=1.2.0`
-for independent versions. Explicit `all=2.0.0` selects every registered product
-at the same version; do not combine it with individual entries.
-Each selected extension receives its own tag and Release; no global version.
-SemVer build metadata is currently rejected for publication to avoid GitHub
-asset-name normalization. Unknown products, duplicate keys, empty versions and
-malformed requests are rejected. The preflight plan is passed to subsequent
-jobs and checked against the immutable checkout and request. Existing tags or releases (including drafts visible to the
-publisher) block the batch; no overwrite or automatic deletion.
-
-The workflow requires main and a clean immutable checkout, calls the existing
-full regression workflow once, then builds selected packages on Windows.
-The public author checkout is pinned to the SDK revision. The official
-Pulse 1.0.60 installer is pinned by exact size and SHA-256, installed using
-upstream /PULSETEST on an ephemeral runner. The local 1.0.61 SDK/host is not
-redistributed. Companion builds helper/runtime before embedding both hashes
-in its entry DLL; this release composition uses WIC, not bundled libwebp.
-The official native-manifest, pack and verify commands remain authoritative.
-Build and regression jobs have read-only tokens. Only the separate publication
-job receives contents:write. It revalidates artifact inventory, digests,
-manifest, source and collision state before creating per-product drafts.
-It compares the GitHub-returned asset digests before any explicit
-publish-preview operation. A partial failure leaves existing drafts/releases
-for inspection; the batch cannot be atomic. Do not delete or replace published
-versions. Use a new version or manually review exact retained drafts.
-
-Dry-run builds and verifies, retaining seven-day artifacts; no tag/release.
-Draft creates private reviewable unsigned preview drafts.
-Publish-preview explicitly publishes unsigned GitHub prereleases, never
-marks one latest and does not claim real-host acceptance. A release exposes
-native code: recipients must review its source and trust before installation.
-Stable GitHub promotion is a separate workflow; signing remains local and official registry submission is not automated.
+Examples: companion=1.1.0,vcs=1.2.0 with dry-run builds numeric stable
+candidates; companion=1.1.0-rc.1,vcs=1.2.0-beta.1 with publish-preview
+publishes independent prereleases. all=1.1.0 is explicit same-version
+selection for dry-run. Preview drafts/publications require a SemVer prerelease
+suffix; bare numeric versions are reserved for stable. Existing tags/releases
+are never overwritten. Dry-run creates no tag or Release.
+All selected packages go through full regression, official package verification
+and protected release-signing approval. The signed sidecars are in
+extension-release-signatures; exact build bytes are in
+extension-release-candidates. Download both for installation testing. The
+signing summary lists the candidate run ID and SHA-256 values. Preview
+publication independently re-verifies the signatures, attaches publisher and
+signature evidence, and publishes only after all selected drafts are checked.
+Drafts stay private; publish-preview marks prerelease and never latest.
+Failed batches retain existing drafts for review; no automatic deletion.
+Stable promotion uses the same workflow, as detailed in section 3C.
 
 ## 3B. Public Pulse dependency updates
 
@@ -233,23 +219,38 @@ suffix), download the exact candidate artifact and complete the applicable
 Pulse version, SHA-256 for every selected .pulse-ext and reproducible acceptance
 evidence. Do not promote a failed, incomplete or untested candidate.
 
-Then use **Extension stable release** on main: supply the successful candidate
-run ID, comma-separated product=SHA256 pairs covering exactly that run's
-packages, actual host version, evidence reference and explicit acceptance
-confirmation. Choose draft-stable or publish-stable. The candidate must
-be from the same current main SHA, successful Extension release workflow and
-retained artifact; if main moves or the artifact expires, rebuild and retest.
-This deliberately avoids rebuilding after acceptance. Existing tags/releases
-block promotion. The stable workflow uses the shared release concurrency
-group and retains exact original bytes. Its new stable-acceptance.json is
-owner-reported evidence, not an automated GUI test, and the original build
-evidence remains unsigned and pre-acceptance. A stable draft may be published
-manually after review; never overwrite existing tags. Multi-product releases
-remain non-latest. Configure GitHub Settings → Environments → stable-release
-to restrict main and require an appropriate reviewer where the plan permits.
-The environment name alone is not an approval control. Configure both environments before use: `release-signing` and `stable-release`, main-only, with required reviewer(s). A single maintainer must allow self-review or arrange a distinct reviewer; disable admin bypass if appropriate.
+Then dispatch **Extension release** again, with request
+run=<successful dry-run ID>,host=<actual tested Pulse version>, select
+draft-stable or publish-stable, and check acceptance_confirmed only after
+independently comparing the downloaded .pulse-ext SHA-256 values with the run
+summary and completing all applicable installed checks. The workflow derives
+and checks actual package hashes rather than requiring manual re-entry.
+The run reference is recorded in stable-acceptance.json; the attestation is
+owner-reported, not automatically observed GUI testing. Do not include private
+data in release evidence. The successful signed candidate must be from the same
+current main SHA and retained artifacts; if main moves or artifacts expire,
+rebuild and retest. A preview suffix cannot be promoted to a stable version.
+Stable preparation downloads the exact original build and signature artifacts
+from that run. The protected stable-release job verifies both again and
+publishes them without rebuilding or re-signing. No production private key is
+accessed during promotion. A stable draft may be published manually after
+review; existing tags/releases block promotion. All versions remain non-latest.
 
-The signing environment alone contains Secret `PULSE_SIGNING_PRIVATE_KEY` (Base64 CNG private blob), and Variables `PULSE_SIGNING_PUBLIC_KEY` (Base64 public blob) and `PULSE_PUBLISHER_FINGERPRINT` (lowercase SHA-256). The reviewed public identity and registry tool revision are fixed in `sdk/publisher.toml`. Key rotation requires a reviewed update, not merely changing variables. A separate read-only prepare job checks exact candidate hashes and acceptance before requesting signing approval; the signing job verifies the public fingerprint, signs the original manifest with the pinned official Windows CLI and removes the temporary private file. Only signatures, public publisher records and signature evidence are uploaded. The final protected publish job verifies the original package, acceptance and signatures again using the pinned public fingerprint and official verifier; it receives no signing secret. Missing keys, mismatched fingerprints, bad signatures or missing evidence block publication. The original build evidence is not rewritten; separate signing evidence records the verified signature.
+Configure both environments before use: release-signing and stable-release,
+main-only, required reviewer(s), self-review permitted for a sole maintainer
+or a distinct reviewer. The environment name alone is not an approval control.
+The signing environment alone contains Secret PULSE_SIGNING_PRIVATE_KEY
+(Base64 CNG private blob) and Variables PULSE_SIGNING_PUBLIC_KEY (Base64 public
+blob) and PULSE_PUBLISHER_FINGERPRINT (lowercase SHA-256).
+The reviewed public identity and official signing tool revision are fixed in
+sdk/publisher.toml. Key rotation requires a reviewed update.
+All ordinary release candidates (including dry-run) now require protected
+signing; candidate builds for upstream compatibility remain internal unsigned
+diagnostics and do not access the production key. No private key is uploaded,
+cached or passed to the publishing job. Invalid or missing signatures block
+all publication. Original pre-sign build evidence remains unchanged; separate
+signing evidence records the verified signature. This is publisher signing,
+not official registry approval.
 
 Owner-reported legacy local key location (2026-11-27):
 `.local/PulseSigning/pulse-extras/` relative to this checkout. This is a

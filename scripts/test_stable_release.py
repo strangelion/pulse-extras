@@ -20,13 +20,12 @@ class StableReleaseTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 stable.validate_run(dict(run, **{field: value}), workflow, "owner/repo", sha)
 
-    def test_hashes(self):
-        digest = "a" * 64
-        self.assertEqual(stable.tested_hashes("vcs=" + digest), {"vcs": digest})
-        for value in ("", "vcs=123", "unknown=" + digest,
-                      f"vcs={digest},vcs={digest}"):
+    def test_stable_request(self):
+        self.assertEqual(stable.stable_request("run=123,host=1.0.61"), ("123", "1.0.61"))
+        for value in ("", "run=0,host=1.0.61", "run=123", "run=123,host=latest",
+                      "run=123,host=1.0.61,run=124"):
             with self.subTest(value=value), self.assertRaises(ValueError):
-                stable.tested_hashes(value)
+                stable.stable_request(value)
 
     def test_exact_accepted_artifact(self):
         with tempfile.TemporaryDirectory() as temp:
