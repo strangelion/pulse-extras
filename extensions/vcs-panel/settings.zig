@@ -25,7 +25,7 @@ const keys = [_][]const u8{ "tool.git", "tool.jj", "tool.svn" };
 const names = [_][]const u8{ "Git", "Jujutsu", "Subversion" };
 const tools = [_]cli.Tool{ .git, .jj, .svn };
 const fields = [_][]const u8{ "settings.git", "settings.jj", "settings.svn" };
-const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump" };
+const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump", "vcs.projects.cancel-identity" };
 const root_key = "settings.project.root";
 const url_key = "settings.project.url";
 const selection_key = "settings.project.selected";
@@ -99,6 +99,7 @@ const Status = enum {
     route_cancelled,
     identity_pending,
     identity_failed,
+    identity_cancelled,
     folder_filled,
 
     fn label(self: Status, lang: vcs_panel.Language) []const u8 {
@@ -129,6 +130,7 @@ const Status = enum {
             .route_cancelled => tr(lang, "Directory request cancelled; dispatched navigation is not rolled back", "已取消目录请求；已经提交的跳转不会回滚"),
             .identity_pending => tr(lang, "Checking local folder identity; use Check pending task result", "正在检查本地目录身份；请检查待处理任务结果"),
             .identity_failed => tr(lang, "Folder identity could not be verified or already exists; no record written", "目录身份无法验证或已存在；未写入记录"),
+            .identity_cancelled => tr(lang, "Project identity check cancelled; no record written", "已取消目录身份检查；未写入记录"),
             .folder_filled => tr(lang, "Selected folder filled; review before adding. No execution approval granted.", "已填入选中文件夹；确认后添加，不授予执行权限。"),
         };
     }
@@ -423,6 +425,7 @@ const Content = struct {
             self.button(10, tr(lang, "Open remote repository in browser", "在浏览器打开远程仓库"), idle and (if (owner.browser) |*task| !task.occupied() else false));
         } else self.add(ui.text(tr(lang, "No matching projects (up to 64 records)", "没有匹配项目（最多 64 项）")), "settings.project.empty");
         if (owner.route.busy()) self.button(24, tr(lang, "Cancel directory lookup", "取消目录查找"), true);
+        if (owner.checkingProject()) self.button(25, tr(lang, "Cancel identity check", "取消目录身份检查"), !owner.project_discard);
         self.button(11, tr(lang, "Check pending task result", "检查待处理任务结果"), owner.checkingProject() or (if (owner.browser) |*task| task.occupied() else false));
         const edit_text = if (owner.edit_key) |key| std.fmt.bufPrint(&self.edit_label, "{s}: {s}", .{ tr(lang, "Editing", "编辑"), &key }) catch "" else tr(lang, "New project", "新建项目");
         self.add(ui.text(edit_text), "settings.project.edit-mode");
@@ -491,6 +494,8 @@ pub const Settings = struct {
     project_task: ?async_host.Task = null,
     checked_project: ?Project = null,
     checked_version: u64 = 0,
+    project_discard: bool = false,
+    observe_project: *const fn ([]const u8) ?evidence.FileIdentity = &observeProject,
     route: project_route.Route = .{},
     route_key: ?[key_len]u8 = null,
     route_folder: bool = false,
@@ -791,7 +796,10 @@ pub const Settings = struct {
         if (task.occupied()) return error.State;
         self.checked_project = item.*;
         self.checked_version = self.stored.version;
-        errdefer self.checked_project = null;
+        self.project_discard = false;
+        errdefer if (!task.occupied()) {
+            self.checked_project = null;
+        };
         const descriptor: async_host.Descriptor = .{
             .size = @sizeOf(async_host.Descriptor),
             .title = abi.view("Verify local project identity"),
@@ -809,16 +817,26 @@ pub const Settings = struct {
         const cancelled = work_context.*.cancelled orelse return @backingInt(async_host.TaskState.failed);
         if (cancelled(work_context.*.context) != 0) return @backingInt(async_host.TaskState.cancelled);
         const item = if (self.checked_project) |*value| value else return @backingInt(async_host.TaskState.failed);
-        const observed = evidence.observeIdentity(item.root.slice(), true) catch return @backingInt(async_host.TaskState.failed);
+        const observed = self.observe_project(item.root.slice()) orelse return @backingInt(async_host.TaskState.failed);
         // Stored and checked_project are immutable until this task releases.
         // No startup scan, no CLI, no follow-reparse exception.
         for (self.stored.projects[0..self.stored.count]) |*other| {
             if (cancelled(work_context.*.context) != 0) return @backingInt(async_host.TaskState.cancelled);
             if (std.mem.eql(u8, &item.key, &other.key)) continue;
-            const existing = evidence.observeIdentity(other.root.slice(), true) catch continue;
+            const existing = self.observe_project(other.root.slice()) orelse continue;
             if (observed.volume == existing.volume and observed.index == existing.index) return @backingInt(async_host.TaskState.failed);
         }
         return @backingInt(if (cancelled(work_context.*.context) != 0) async_host.TaskState.cancelled else async_host.TaskState.completed);
+    }
+
+    fn cancelProject(self: *Settings) !void {
+        const task = if (self.project_task) |*value| value else return error.State;
+        if (!task.occupied()) return error.State;
+        // Cancellation suppresses publication even if completion already raced
+        // the UI event. Keep the worker's immutable input until release.
+        self.project_discard = true;
+        self.status = .identity_cancelled;
+        try task.cancel();
     }
 
     fn pollProject(self: *Settings) !void {
@@ -829,11 +847,13 @@ pub const Settings = struct {
         try task.releaseTerminal();
         const item = self.checked_project;
         self.checked_project = null;
-        self.status = .identity_failed;
-        if (state == .completed and self.active and self.loaded and self.render_ok and self.pending == 0 and self.checked_version == self.stored.version) {
+        const discard = self.project_discard;
+        self.project_discard = false;
+        self.status = if (discard or state == .cancelled) .identity_cancelled else .identity_failed;
+        defer self.render();
+        if (!discard and state == .completed and self.active and self.loaded and self.render_ok and self.pending == 0 and self.checked_version == self.stored.version) {
             if (item) |project| try self.saveRecord(&project);
         }
-        self.render();
     }
 
     fn saveRecord(self: *Settings, item: *const Project) !void {
@@ -957,7 +977,7 @@ pub const Settings = struct {
         }
         self.render();
         if (accepted and folder) {
-            if (self.folder_opened) |open| open(self.user);
+            if (self.folder_opened) |notify| notify(self.user);
         }
     }
 
@@ -1050,6 +1070,11 @@ pub const Settings = struct {
                 self.pollBrowser() catch |err| diag.status("vcs-settings-browser-poll", @intFromError(err));
                 self.render();
             }
+            return;
+        }
+        if (std.mem.eql(u8, name, commands[25])) {
+            self.cancelProject() catch |err| diag.status("vcs-project-identity-cancel", @intFromError(err));
+            self.render();
             return;
         }
         if (self.checkingProject()) return;
@@ -1182,6 +1207,10 @@ pub const Settings = struct {
     }
 };
 
+fn observeProject(path: []const u8) ?evidence.FileIdentity {
+    return evidence.observeIdentity(path, true) catch null;
+}
+
 extern "kernel32" fn LoadLibraryExW([*:0]const u16, ?*anyopaque, u32) callconv(.winapi) usize;
 extern "kernel32" fn GetProcAddress(usize, [*:0]const u8) callconv(.winapi) ?*const anyopaque;
 extern "kernel32" fn FreeLibrary(usize) callconv(.winapi) c_int;
@@ -1254,6 +1283,52 @@ const SettingsFixture = struct {
     sync_key_len: usize = 0,
     fail_update: bool = false,
     input: []const u8,
+
+    task_state: async_host.TaskState = .running,
+    task_descriptor: async_host.Descriptor = undefined,
+    task_cancelled: bool = false,
+    fail_task_release: bool = false,
+
+    fn taskCreate(user: ?*anyopaque, descriptor: [*c]const async_host.Descriptor, id: [*c]u64) callconv(.c) abi.Status {
+        const self: *SettingsFixture = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        self.task_descriptor = descriptor.*;
+        self.task_state = .running;
+        self.task_cancelled = false;
+        id.* = 71;
+        return abi.ok;
+    }
+
+    fn taskGet(user: ?*anyopaque, id: u64, callback: ?*const fn (?*anyopaque, [*c]const async_host.Snapshot) callconv(.c) void, data: ?*anyopaque) callconv(.c) abi.Status {
+        const self: *SettingsFixture = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        const snapshot: async_host.Snapshot = .{ .size = @sizeOf(async_host.Snapshot), .id = id, .state = @backingInt(self.task_state) };
+        (callback orelse return abi.error_argument)(data, &snapshot);
+        return abi.ok;
+    }
+
+    fn taskCancel(user: ?*anyopaque, _: u64) callconv(.c) abi.Status {
+        const self: *SettingsFixture = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        self.task_cancelled = true;
+        return abi.ok;
+    }
+
+    fn taskRelease(user: ?*anyopaque, _: u64) callconv(.c) abi.Status {
+        const self: *SettingsFixture = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        return if (self.fail_task_release) abi.error_state else abi.ok;
+    }
+
+    fn taskCancelled(user: ?*anyopaque) callconv(.c) u32 {
+        const self: *SettingsFixture = @ptrCast(@alignCast(user orelse return 1));
+        return @intFromBool(self.task_cancelled);
+    }
+
+    fn taskTable(self: *SettingsFixture) async_host.TaskTable {
+        return .{ .size = @sizeOf(async_host.TaskTable), .version = 1, .context = self, .create = &taskCreate, .get = &taskGet, .cancel = &taskCancel, .release = &taskRelease };
+    }
+
+    fn runProject(self: *SettingsFixture) void {
+        const work_context: async_host.Context = .{ .id = 71, .context = self, .cancelled = &taskCancelled };
+        self.task_state = @fromBackingInt(@intCast(self.task_descriptor.work.?(self.task_descriptor.user, &work_context)));
+    }
 
     fn current(_: *anyopaque) ?Current {
         return null;
@@ -1454,4 +1529,69 @@ test "project view prioritizes favorites and recency and bounds page selection" 
     owner.clampPage();
     try std.testing.expectEqual(@as(usize, 0), owner.project_page);
     try std.testing.expectEqual(@as(usize, 1), owner.visible().count);
+}
+
+fn fixtureProjectIdentity(path: []const u8) ?evidence.FileIdentity {
+    const leaf = std.fs.path.basename(path);
+    if (std.mem.eql(u8, leaf, "missing")) return null;
+    return .{ .volume = 1, .index = if (std.mem.eql(u8, leaf, "other")) 2 else 1 };
+}
+
+test "project identity validation rejects aliases and cancellation never publishes a raced result" {
+    const root = if (builtin.os.tag == .windows) "C:\\work\\repo" else "/work/repo";
+    const alias = if (builtin.os.tag == .windows) "C:\\work\\alias" else "/work/alias";
+    const other = if (builtin.os.tag == .windows) "C:\\work\\other" else "/work/other";
+    const missing = if (builtin.os.tag == .windows) "C:\\work\\missing" else "/work/missing";
+    var fixture: SettingsFixture = .{ .input = "" };
+    const owner = try std.testing.allocator.create(Settings);
+    defer std.testing.allocator.destroy(owner);
+    owner.* = .{
+        .host = undefined,
+        .user = &fixture,
+        .current = &SettingsFixture.current,
+        .updated = &SettingsFixture.updated,
+        .active = true,
+        .loaded = true,
+        .render_ok = true,
+        .page = 7,
+        .resources = .{ .context = &fixture, .settings_set = &SettingsFixture.set },
+        .panel = .{ .id = 7, .table = .{ .context = &fixture, .update = &SettingsFixture.update } },
+        .project_task = try async_host.Task.init(fixture.taskTable()),
+        .observe_project = &fixtureProjectIdentity,
+    };
+    owner.stored.version = 9;
+    owner.stored.projects[0] = try Project.make(root, "");
+    owner.stored.count = 1;
+
+    try owner.checkProject(&(try Project.make(alias, "")));
+    fixture.runProject();
+    try std.testing.expectEqual(async_host.TaskState.failed, fixture.task_state);
+    try owner.pollProject();
+    try std.testing.expectEqual(@as(usize, 0), fixture.calls);
+
+    try owner.checkProject(&(try Project.make(missing, "")));
+    fixture.runProject();
+    try owner.pollProject();
+    try std.testing.expectEqual(@as(usize, 0), fixture.calls);
+
+    const item = try Project.make(other, "");
+    try owner.checkProject(&item);
+    fixture.runProject();
+    try std.testing.expectEqual(async_host.TaskState.completed, fixture.task_state);
+    try owner.cancelProject();
+    fixture.fail_task_release = true;
+    try std.testing.expectError(error.State, owner.pollProject());
+    try std.testing.expect(owner.checkingProject() and owner.checked_project != null);
+    fixture.fail_task_release = false;
+    try owner.pollProject();
+    try std.testing.expectEqual(Status.identity_cancelled, owner.status);
+    try std.testing.expectEqual(@as(usize, 0), fixture.calls);
+
+    try owner.checkProject(&item);
+    fixture.runProject();
+    try owner.pollProject();
+    try std.testing.expectEqual(@as(usize, 1), fixture.calls);
+    try std.testing.expectEqual(@as(u64, 9), fixture.last_version);
+    try std.testing.expectEqualStrings(&item.key, fixture.last_key[0..fixture.last_key_len]);
+    try std.testing.expect(!owner.checkingProject() and owner.checked_project == null);
 }

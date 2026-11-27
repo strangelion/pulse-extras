@@ -360,3 +360,5 @@ duplicate rejection, changed selection, refusal/missing target, two windows,
 cancel/deactivate during validation, unchanged missing-root metadata edit,
 no repository mutations and no execution grants. Existing unobservable roots
 are not certified unique. No HOST PASS or new release is claimed.
+
+Selected-folder follow-up run [45919918480](https://github.com/strangelion/pulse-extras/actions/runs/45919918480) failed compilation (C selection entry pointer and shadowed callback name); both errors are corrected in the next candidate. The identity worker now has explicit cancel, suppresses even raced completed results, and retains the immutable input through failed task release. Added deterministic identity fixtures for alias, missing root, cancel/release failure, and successful versioned write. These fixtures are not real filesystem alias or installed host evidence; exact new CI remains required.

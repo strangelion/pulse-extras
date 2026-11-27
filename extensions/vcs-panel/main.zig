@@ -199,8 +199,8 @@ const FolderSelection = struct {
         const row = &snapshot.entries[0];
         if (row.size < @sizeOf(context.SelectionEntry) or row.flags & context.EntryFlag.directory == 0) return null;
         const parent = abi.slice(snapshot.directory) orelse return null;
-        const path = context.entryPath(row) orelse return null;
-        const name = context.entryName(row) orelse return null;
+        const path = abi.slice(row.path) orelse return null;
+        const name = abi.slice(row.name) orelse return null;
         if (!approval.strictPath(parent) or !approval.strictPath(path)) return null;
         if (!std.mem.eql(u8, std.fs.path.dirname(path) orelse return null, parent) or !std.mem.eql(u8, std.fs.path.basename(path), name)) return null;
         return .{ .revision = snapshot.selection_revision, .parent = identity.Path.init(parent) catch return null, .path = identity.Path.init(path) catch return null };
