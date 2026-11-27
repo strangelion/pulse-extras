@@ -255,7 +255,13 @@ func batchSend(ctx context.Context,link *batchLink,source batchSource,kind share
 	wire,err:=m.Encode();if err!=nil{return err}
 	tx:=sharecore.Transaction{Peer:pin,Manifest:sha256.Sum256(wire)};copy(tx.ID[:],approved[2:])
 	budget,err:=sharecore.NewBudget(channels);if err!=nil{return err}
-	sender,err:=sharecore.NewSender(tx,m,budget,source.open);if err!=nil{return err}
+	// Revalidate the local grant at each requested block, not merely lane
+	// establishment. Already transmitted bytes cannot be recalled.
+	checkedSource:=func(ctx context.Context,i uint32)(io.ReaderAt,io.Closer,error){
+		if err:=check(ctx);err!=nil{return nil,nil,err}
+		return source.open(ctx,i)
+	}
+	sender,err:=sharecore.NewSender(tx,m,budget,checkedSource);if err!=nil{return err}
 	var wg sync.WaitGroup
 	active:=make(chan struct{},channels)
 	var workErr error
@@ -283,6 +289,7 @@ func batchSend(ctx context.Context,link *batchLink,source batchSource,kind share
 			}()
 		case 2:
 			wg.Wait()
+			if err:=check(ctx);err!=nil{return err}
 			mu.Lock();e:=workErr;mu.Unlock();if e!=nil{return e}
 			if err:=writeAll(control,[]byte{3});err!=nil{return err}
 			return link.finish(ctx)

@@ -200,3 +200,65 @@ sequence behavior, cancellation while active, directory listener rebind across
 multiple connections, trust revocation, and native UI controls. Tests use
 synthetic clipboard data, not the user's real clipboard. Shelf is explicitly
 deferred until the SDK exposes a documented compatible interface.
+
+
+## Stage 3 dedicated automated acceptance
+
+The prior a95f9fb run 46040165564 failed on both platforms in the
+reversed QUIC directory test after successful data verification: the
+test waited for the server before closing the client connection, whereas
+the server intentionally awaits client shutdown after FIN. Close the
+client before joining the server, preserving the actual completion check.
+
+The separate share-network-acceptance.yml workflow uses the actual
+batchSend/batchReceive implementation, pinned Go modules and disposable
+Linux network namespaces with no default route. It runs automatically
+when the dedicated harness/workflow changes on feature/share. For subsequent
+release candidates, run it explicitly at the exact candidate revision.
+Normal pushes do not run the heavy matrix repeatedly. The main regression
+workflow is not weakened; changing the workflow may trigger full checks.
+
+| Automated scenario | Evidence required |
+| --- | --- |
+| Routed IPv4, TCP and QUIC, 1/2/4/8/16/32 channels | Actual 128 MiB+123 byte verified transfer, lane count and per-role timing/CPU/RSS/fds |
+| Routed IPv6 | Actual verified transfer for TCP and QUIC |
+| DNAT/SNAT port mapping | Actual TCP and UDP forwarding, correct pinned source |
+| netem delay/loss/rate and MTU 1280 | Actual verified transfer, each transport |
+| Link interruption | Durable verified block receipts, restart and explicit resume, complete SHA-256 |
+| UDP blocked | Explicit QUIC failure with no transaction or TCP fallback |
+| WireGuard | Real kernel tunnel and TCP/QUIC transfer |
+| Nginx Stream | Real TCP/UDP passthrough and transfer |
+| FRP | Checksum-pinned v0.72.0 server/client, TCP and UDP transfer |
+| EasyTier | Checksum-pinned v2.6.4 private two-node tunnel, TCP and QUIC transfer |
+
+The report contains actual PASS/FAIL/ENVIRONMENT_ERROR per executed case.
+The Tailscale/Headscale private control plane, ZeroTier private controller
+and EasyTier relay/no-TUN fixtures are NOT_RUN until separately provisioned
+and verified. A passing harness with NOT_RUN scenarios is not full overlay
+acceptance. No public nodes, personal accounts, or live external network
+are used. Linux results do not certify Windows virtual adapter drivers.
+Synthetic fixture keys and payloads are deleted on exit. Retain only
+bounded test logs/metrics. Tool setup and test failures are not a pass.
+
+Timing includes source inspection, transfer, receipt verification and
+shutdown; report it as end-to-end throughput, not link capacity. Peak RSS
+is per helper and CPU seconds are user+system. File descriptor baseline
+and active lane budget are checked after closure; these are not host idle
+memory/CPU measurements. Compare on the same runner, not against an
+unmeasured absolute performance claim.
+
+## Consolidated physical acceptance (after matching automated results)
+
+Use the matching Windows share-acceptance-inputs artifact, not a package
+from a different commit. Stage and verify using the existing
+scripts/stage_share_test.py with the installed trusted Pulse author tool
+and pinned Zig version; never auto-install into the daily profile.
+Use the checklist in physical-acceptance.md. No need to install all
+overlay vendors personally. Tray Shelf is deferred, not a release gate.
+Do not promote a candidate until the agreed required cases pass.
+
+The independent concurrency-audit job runs the race detector against batch,
+queue, clipboard, directory and budget/retry regressions and records the locked
+module graph. This is targeted race testing and dependency inventory, not a
+complete vulnerability scan or independent security audit. A packet blackout
+simulates link interruption without destroying the fixture's interface addresses.

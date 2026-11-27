@@ -30,9 +30,15 @@ func scanBatch(ctx context.Context,paths []string)(batchSource,error){
 	var scans []*sharecore.Snapshot
 	var starts []int
 	m:=sharecore.Manifest{}
+	var total,blocks uint64
 	for _,path:=range paths{
 		if err:=auditBatchSource(path);err!=nil{return batchSource{},err}
 		s,err:=sharecore.ScanSelection(ctx,path);if err!=nil{return batchSource{},err}
+		if len(s.Manifest.Entries)>sharecore.MaxEntries-len(m.Entries){return batchSource{},errors.New("batch entry limit")}
+		for _,e:=range s.Manifest.Entries{
+			if e.Size>sharecore.MaxBytes-total||uint64(len(e.Blocks))>sharecore.MaxBlocks-blocks{return batchSource{},errors.New("aggregate batch byte/block limit")}
+			total+=e.Size;blocks+=uint64(len(e.Blocks))
+		}
 		starts=append(starts,len(m.Entries));scans=append(scans,s)
 		m.Entries=append(m.Entries,s.Manifest.Entries...)
 		if len(m.Entries)>sharecore.MaxEntries{return batchSource{},errors.New("batch entry limit")}

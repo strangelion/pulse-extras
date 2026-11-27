@@ -31,7 +31,7 @@ func ScanSelection(ctx context.Context,root string)(*Snapshot,error){
 	if !validLeaf(leaf){return nil,errors.New("invalid selected root name")}
 	s:=&Snapshot{root:root}
 	pending:=[]pendingEntry{{root,leaf}}
-	var total uint64
+	var total,blocks uint64
 	for len(pending)>0{
 		if err:=ctx.Err();err!=nil{return nil,err}
 		last:=len(pending)-1;item:=pending[last];pending=pending[:last]
@@ -63,6 +63,9 @@ func ScanSelection(ctx context.Context,root string)(*Snapshot,error){
 		}
 		if info.Size()<0||uint64(info.Size())>MaxBytes-total{return nil,errors.New("selection byte limit exceeded")}
 		total+=uint64(info.Size())
+		count:=blockCount(uint64(info.Size()))
+		if count>MaxBlocks-blocks{return nil,errors.New("selection block limit exceeded")}
+		blocks+=count
 		f,err:=openOrdinary(item.absolute,os.O_RDONLY);if err!=nil{return nil,err}
 		opened,err:=f.Stat()
 		if err!=nil||!os.SameFile(info,opened)||opened.Size()!=info.Size(){f.Close();return nil,errors.New("source file changed")}

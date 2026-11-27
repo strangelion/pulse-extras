@@ -551,3 +551,14 @@ completion/error notifications, cancellation and release rules, and capability
 version negotiation. Text/image require explicit conversion to ordinary files
 if the host supports it. Keep UI disabled until a documented adapter is
 available; manual clipboard import remains a fallback.
+
+
+### Final-stage acceptance
+
+See [automated acceptance](acceptance.md) and
+[consolidated Windows host acceptance](physical-acceptance.md).
+The dedicated network workflow produces real isolated transport evidence,
+not a host package or a certification of every overlay. Heavy tests run
+on dedicated harness changes and can be dispatched for a release candidate.
+Use the same revision's ordinary Windows CI artifact for the physical package.
+The fixture script is non-destructive and does not access a real clipboard.

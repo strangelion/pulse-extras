@@ -432,3 +432,18 @@ closed; no simulated host support or private-state access.
 
 Implementation and relevant CI must be verified before closing stage 2.
 Final-stage physical, stress, overlay and security acceptance remains pending.
+
+
+## Stage 3 acceptance candidate
+
+One dedicated isolated network suite covers routed IPv4/IPv6, NAT,
+adverse network, interruption/resume, blocked UDP, real WireGuard,
+Nginx Stream, FRP and EasyTier private direct-tunnel tests, plus
+1–32-channel end-to-end timing and resource metrics. Separate the
+vendor-specific unprovisioned Tailscale/Headscale, ZeroTier and EasyTier
+relay/no-TUN cases as NOT_RUN; do not equate generic routing to tested
+vendor support. Review grant checks at data-block boundaries and bound
+aggregate selection metadata before retaining additional roots.
+The physical host checklist and synthetic tree verification remain the
+final user-facing acceptance entry. Shelf remains deferred. No release
+or stage completion claim before the matching required results.

@@ -27,3 +27,11 @@ func TestScanSelectionRejectLink(t *testing.T){
 	if err:=os.Symlink(t.TempDir(),filepath.Join(root,"link"));err!=nil{t.Skip("symlink unavailable")}
 	if _,err:=ScanSelection(context.Background(),root);err==nil{t.Fatal("symlink admitted")}
 }
+
+
+// Exceed the aggregate block count using sparse logical lengths, without
+// allocating/hashing a huge fixture. The validation rule itself is exercised
+// by the existing manifest-limit tests; this confirms count rounding.
+func TestSelectionBlockRounding(t *testing.T){
+	if blockCount(0)!=0||blockCount(1)!=1||blockCount(BlockSize)!=1||blockCount(BlockSize+1)!=2{t.Fatal("invalid block count")}
+}

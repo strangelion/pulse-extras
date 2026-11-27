@@ -44,6 +44,8 @@ func TestDirectoryReversedConnectionRoles(t *testing.T){
 					})
 				})
 			if err!=nil{t.Fatal(err)}
+			// The server waits for the client connection to close after FIN.
+			link.close()
 			select{case err:=<-done:if err!=nil{t.Fatal(err)};case <-ctx.Done():t.Fatal(ctx.Err())}
 		})
 	}
