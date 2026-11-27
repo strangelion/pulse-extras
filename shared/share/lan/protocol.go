@@ -71,13 +71,18 @@ func parsePin(s string) ([32]byte, error) {
 // separate trusted channel. Discovery NEVER authorizes an identity.
 // TLS verifies possession of the pinned certificate's private key.
 func tlsConfig(id identity, peer [32]byte, server bool) *tls.Config {
+	return tlsConfigForProtocol(id,peer,server,alpn)
+}
+
+// Used only by explicitly versioned adapters; do not negotiate a fallback.
+func tlsConfigForProtocol(id identity, peer [32]byte, server bool, protocol string) *tls.Config {
 	config := &tls.Config{
 		Certificates: []tls.Certificate{id.cert},
 		MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
-		NextProtos: []string{alpn}, SessionTicketsDisabled: true,
+		NextProtos: []string{protocol}, SessionTicketsDisabled: true,
 		CurvePreferences: []tls.CurveID{tls.X25519MLKEM768},
 		VerifyConnection: func(state tls.ConnectionState) error {
-			if state.NegotiatedProtocol != alpn || state.CurveID != tls.X25519MLKEM768 || len(state.PeerCertificates) != 1 {
+			if state.NegotiatedProtocol != protocol || state.CurveID != tls.X25519MLKEM768 || len(state.PeerCertificates) != 1 {
 				return errors.New("unexpected protocol or peer certificate chain")
 			}
 			cert := state.PeerCertificates[0]

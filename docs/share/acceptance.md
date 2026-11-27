@@ -107,3 +107,9 @@ hash failures, changed source, interrupted resume, malformed paths, quota,
 read-only grants/revocation, and global 1/2/4/8/16/32-channel resource budgets
 under mixed jobs. Record measured throughput and peak/idle CPU, memory,
 handles, sockets and disk I/O; do not infer performance from loopback CI.
+
+Optional content feature settings: verify all optional switches default off;
+master disable overrides type/direction toggles, untrusted peers and absent
+per-peer grants fail, file references remain manual, and disabling auto-sync
+drains watchers/tasks without erasing local content. Native settings and real
+clipboard tests remain NOT RUN until the adapters are implemented.

@@ -9,8 +9,8 @@ planned must be implemented or explicitly deferred with a documented reason.
 
 ## 1. Connection and device management
 
-Candidate code has been submitted; CI and actual Pulse host/two-computer
-acceptance are not yet established for this revision.
+Connection candidate e0f8eca passed full CI (run 46030134070). Actual Pulse
+host/two-computer acceptance is still outstanding.
 
 - Native Zig UI, device inventory, explicit discovery and address selection.
 - Eight-digit dynamic code, 60-second rotation, 180-second window, at most
@@ -31,13 +31,29 @@ acceptance are not yet established for this revision.
   not retained in ordinary state, cancellation, peer stores and real overlay
   or TCP passthrough before calling this stage accepted.
 
-## 2. Complete file and content sharing (planned)
+## 2. Complete file and content sharing (in development)
 
 All sources feed the same authorized content/transfer service. Do not create
 separate network protocols or bypass the integrity and resource admission
 policy for clipboard, shelf or remote browsing.
 
 ### Unified sources and clipboard
+
+- Independent user-controlled switches: clipboard sharing master, text,
+  images, file/folder references, send, receive, automatic synchronization,
+  Tray Shelf, remote directory access, and future Web access. All these
+  optional switches default off; ordinary explicitly approved file sharing
+  remains available. Expose switches in native settings when the relevant
+  adapters are implemented. A master disable overrides subordinate choices.
+  Turning off a feature stops new work and must cancel/drain automatic
+  activity, without deleting previously committed files. Explicitly approved
+  in-progress transfers must have a visible cancel action and defined drain
+  behavior. Recheck current grants/flags before every new action.
+- Separate per-peer auto-sync permission for each direction and content type.
+  Clipboard file/folder references always require manual approval; do not
+  automatically send a filesystem tree simply because clipboard changes.
+  Feature switches alone never grant peer or filesystem authorization.
+
 
 - Ordinary selected files and folders, clipboard content, clipboard files
   and folders, Pulse Tray Shelf entries when the host exposes a supported
@@ -238,3 +254,21 @@ integration. Shared SDK/build/workflow changes, Share merge candidates,
 main Share pushes and manual full checks retain full regression. A green CI
 does not prove actual host, two-machine, security or performance acceptance.
 Record PASS / FAIL / NOT RUN in [acceptance.md](acceptance.md).
+
+### Stage 2 core candidate status
+
+The host-independent Go sharecore package introduces canonical bounded batch
+manifests, streaming block and whole-file SHA-256, one-engine adjustable
+channel budget, a sample-driven adaptive policy, explicit durable block
+receipts/revalidation, and a versioned lane protocol exercised over pinned
+TLS in tests. It also defines deny-by-default optional content feature
+admission. These are candidate implementation pieces, not yet a complete
+native batch transfer. No public batch listener, directory publication,
+clipboard capture, persisted UI switches, automatic synchronization, remote
+browsing, standalone service or Web endpoint is enabled by this revision.
+The adapter must enforce a single device-wide engine, actual authenticated
+control-plane consent, connection admission, source handle/identity checks,
+private spool ownership/quota, safe no-overwrite publisher and cleanup.
+Do not bypass the existing single-file supervisor or advertise batch support
+until those boundaries are integrated. CI and real-host acceptance remain
+required; current tests do not establish throughput or crash durability.
