@@ -1,6 +1,7 @@
 """Promote a successful exact-source candidate; never rebuild tested bytes."""
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import zipfile
 
 import release_workflow as release
 import package_common as common
+import environment_signing as signing
 
 ROOT = release.ROOT
 MODES = {"draft-stable", "publish-stable"}
@@ -69,6 +71,11 @@ def prepare(output: Path, revision: str, run_id: str, hashes: dict,
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=["prepare", "sign", "publish"])
+    args = parser.parse_args()
+    # Remove the secret before git, gh or any other child process can inherit it.
+    private_encoded = os.environ.pop("PULSE_SIGNING_PRIVATE_KEY", "")
     try:
         revision = release.source_revision()
         repo = release.repository()
@@ -78,22 +85,35 @@ def main() -> int:
             raise ValueError("invalid candidate run or stable mode")
         if os.environ.get("ACCEPTANCE_CONFIRMED") != "true":
             raise ValueError("explicit installed acceptance confirmation is required")
-        workflow = json.loads(release.capture("gh", "api", f"repos/{repo}/actions/workflows/release.yml"))
-        run = json.loads(release.capture("gh", "api", f"repos/{repo}/actions/runs/{run_id}"))
-        validate_run(run, workflow, repo, revision)
         output = ROOT / ".local/stable-candidate"
-        if output.exists():
-            raise ValueError("candidate directory already exists")
-        release.run("gh", "run", "download", run_id, "--repo", repo, "--name",
-                    "extension-release-candidates", "--dir", str(output), timeout=300)
+        signed = ROOT / ".local/stable-signatures"
+        if args.action == "prepare":
+            workflow = json.loads(release.capture("gh", "api", f"repos/{repo}/actions/workflows/release.yml"))
+            run = json.loads(release.capture("gh", "api", f"repos/{repo}/actions/runs/{run_id}"))
+            validate_run(run, workflow, repo, revision)
+            if output.exists():
+                raise ValueError("candidate directory already exists")
+            release.run("gh", "run", "download", run_id, "--repo", repo, "--name",
+                        "extension-release-candidates", "--dir", str(output), timeout=300)
         items, receipts = prepare(output, revision, run_id, tested_hashes(os.environ["TESTED_HASHES"]),
                                   os.environ["TESTED_HOST"], os.environ["ACCEPTANCE_REFERENCE"],
                                   os.environ["GITHUB_ACTOR"])
-        release.publish(items, mode, output, stable_receipts=receipts, build_run_id=run_id)
+        if args.action == "prepare":
+            release.preflight(items)
+        elif args.action == "sign":
+            signing.sign_all(items, output, signed, revision, private_encoded)
+        else:
+            verified = signing.verify_all(items, output, signed, revision)
+            release.publish(items, mode, output, stable_receipts=receipts,
+                            build_run_id=run_id, signed_assets=verified)
         return 0
     except (OSError, ValueError, RuntimeError, KeyError, TypeError,
             subprocess.SubprocessError, zipfile.BadZipFile) as exc:
-        print(f"Stable promotion failed: {exc}", file=sys.stderr)
+        # Avoid exposing key material or command details from the protected step.
+        if args.action == "sign":
+            print("Stable signing failed; verify Environment configuration and candidate identity.", file=sys.stderr)
+        else:
+            print(f"Stable promotion failed: {exc}", file=sys.stderr)
         return 1
 
 

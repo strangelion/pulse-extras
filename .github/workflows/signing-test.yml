@@ -5,11 +5,17 @@ on:
   push:
     paths:
       - 'scripts/sign_release.py'
+      - 'scripts/environment_signing.py'
+      - 'scripts/test_environment_signing.py'
+      - 'sdk/publisher.toml'
       - 'scripts/test_sign_release.py'
       - '.github/workflows/signing-test.yml'
   pull_request:
     paths:
       - 'scripts/sign_release.py'
+      - 'scripts/environment_signing.py'
+      - 'scripts/test_environment_signing.py'
+      - 'sdk/publisher.toml'
       - 'scripts/test_sign_release.py'
       - '.github/workflows/signing-test.yml'
 
@@ -41,4 +47,7 @@ jobs:
       - name: Verify official CNG signing with a disposable key
         env:
           PULSE_SIGNING_TEST_REGISTRY: ${{ github.workspace }}/.local/registry-signing
-        run: python -m unittest discover -s scripts -p test_sign_release.py
+        run: |
+          python -m unittest discover -s scripts -p test_sign_release.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s scripts -p test_environment_signing.py

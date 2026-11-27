@@ -25,7 +25,7 @@ on:
         default: false
         type: boolean
       mode:
-        description: 'Stable GitHub release (unsigned; no registry submission)'
+        description: 'Publisher-signed stable GitHub release (no registry submission)'
         required: true
         default: draft-stable
         type: choice
@@ -40,14 +40,21 @@ concurrency:
   group: extension-release
   cancel-in-progress: false
 
+env:
+  CANDIDATE_RUN: ${{ inputs.candidate_run }}
+  TESTED_HASHES: ${{ inputs.tested_hashes }}
+  TESTED_HOST: ${{ inputs.tested_host }}
+  ACCEPTANCE_REFERENCE: ${{ inputs.acceptance_reference }}
+  ACCEPTANCE_CONFIRMED: ${{ inputs.acceptance_confirmed }}
+  STABLE_MODE: ${{ inputs.mode }}
+
 jobs:
-  promote:
+  prepare:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: stable-release
     permissions:
-      contents: write
+      contents: read
       actions: read
     steps:
       - uses: actions/checkout@v6
@@ -56,13 +63,91 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Verify and promote exact accepted candidate (no rebuild)
+      - name: Verify exact accepted candidate and collision state
         env:
           GH_TOKEN: ${{ github.token }}
-          CANDIDATE_RUN: ${{ inputs.candidate_run }}
-          TESTED_HASHES: ${{ inputs.tested_hashes }}
-          TESTED_HOST: ${{ inputs.tested_host }}
-          ACCEPTANCE_REFERENCE: ${{ inputs.acceptance_reference }}
-          ACCEPTANCE_CONFIRMED: ${{ inputs.acceptance_confirmed }}
-          STABLE_MODE: ${{ inputs.mode }}
-        run: python scripts/stable_release.py
+        run: python scripts/stable_release.py prepare
+      - uses: actions/upload-artifact@v4
+        with:
+          name: accepted-stable-candidate
+          path: .local/stable-candidate/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: prepare
+    environment: release-signing
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Read reviewed publisher identity
+        id: publisher
+        run: python scripts/environment_signing.py
+      - uses: actions/checkout@v6
+        with:
+          repository: jimmgreen/pulse-extensions
+          ref: ${{ steps.publisher.outputs.revision }}
+          path: .local/registry-signing
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: accepted-stable-candidate
+          path: .local/stable-candidate
+      - name: Sign and independently verify exact manifests
+        env:
+          PULSE_SIGNING_PRIVATE_KEY: ${{ secrets.PULSE_SIGNING_PRIVATE_KEY }}
+          PULSE_SIGNING_PUBLIC_KEY: ${{ vars.PULSE_SIGNING_PUBLIC_KEY }}
+          PULSE_PUBLISHER_FINGERPRINT: ${{ vars.PULSE_PUBLISHER_FINGERPRINT }}
+        run: python scripts/stable_release.py sign
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stable-signature-sidecars
+          path: .local/stable-signatures/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [prepare, sign]
+    environment: stable-release
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Read reviewed publisher identity
+        id: publisher
+        run: python scripts/environment_signing.py
+      - uses: actions/checkout@v6
+        with:
+          repository: jimmgreen/pulse-extensions
+          ref: ${{ steps.publisher.outputs.revision }}
+          path: .local/registry-signing
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: accepted-stable-candidate
+          path: .local/stable-candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: stable-signature-sidecars
+          path: .local/stable-signatures
+      - name: Reverify public signatures and promote without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/stable_release.py publish

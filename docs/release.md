@@ -211,7 +211,7 @@ or auto-merge before these controls are implemented and reviewed.
 
 ## 3C. GitHub stable promotion and local signing
 
-Stable GitHub publication is independent of the official registry and signing.
+Stable GitHub publication is independent of official registry approval; this repository requires publisher signatures for stable promotion.
 Use **Extension release → dry-run** with final numeric versions (no prerelease
 suffix), download the exact candidate artifact and complete the applicable
 [installed acceptance matrix](final-host-acceptance.md). Record actual
@@ -232,7 +232,9 @@ evidence remains unsigned and pre-acceptance. A stable draft may be published
 manually after review; never overwrite existing tags. Multi-product releases
 remain non-latest. Configure GitHub Settings → Environments → stable-release
 to restrict main and require an appropriate reviewer where the plan permits.
-The environment name alone is not an approval control.
+The environment name alone is not an approval control. Configure both environments before use: `release-signing` and `stable-release`, main-only, with required reviewer(s). A single maintainer must allow self-review or arrange a distinct reviewer; disable admin bypass if appropriate.
+
+The signing environment alone contains Secret `PULSE_SIGNING_PRIVATE_KEY` (Base64 CNG private blob), and Variables `PULSE_SIGNING_PUBLIC_KEY` (Base64 public blob) and `PULSE_PUBLISHER_FINGERPRINT` (lowercase SHA-256). The reviewed public identity and registry tool revision are fixed in `sdk/publisher.toml`. Key rotation requires a reviewed update, not merely changing variables. A separate read-only prepare job checks exact candidate hashes and acceptance before requesting signing approval; the signing job verifies the public fingerprint, signs the original manifest with the pinned official Windows CLI and removes the temporary private file. Only signatures, public publisher records and signature evidence are uploaded. The final protected publish job verifies the original package, acceptance and signatures again using the pinned public fingerprint and official verifier; it receives no signing secret. Missing keys, mismatched fingerprints, bad signatures or missing evidence block publication. The original build evidence is not rewritten; separate signing evidence records the verified signature.
 
 For optional local signing, the actual official keygen/sign/verify CLI is
 in **jimmgreen/pulse-extensions**, not the public Pulse SDK checkout.
@@ -248,8 +250,7 @@ git -C $registry checkout --detach 0a325ac77d5ecddb98a45f9062fd1b0129978dbe
 python (Join-Path $registry "tools\pulse_sign.py") keygen --out-dir $keys --bits 3072
 ```
 
-Keep the private blob outside all repositories, cloud sync, logs and GitHub
-secrets; restrict access to your account, encrypt backups and never share it.
+Keep the private blob outside all repositories, cloud sync and logs; restrict access to your account, encrypt backups and never share it. For automated signing only, place its Base64 encoding in the protected release-signing Environment Secret, never a repository variable, ordinary repository secret or artifact. Base64 is not encryption.
 The public blob, fingerprint and publicKey are publishable. Do not regenerate
 the key for each package/version. The same publisher can sign multiple products.
 The official Windows CNG tool uses RSAFULLPRIVATEBLOB / RSAPUBLICBLOB, not PEM.
@@ -268,9 +269,7 @@ python scripts/sign_release.py --product companion --candidate .local/candidates
 This verifies package hashes and source identity, signs the raw manifest bytes
 with the pinned official CLI, verifies against the explicitly supplied public
 blob, and writes a detached .sig.json, public publisher.json (copy to publishers/<fingerprint>.json in the registry PR) and
-signing-evidence.json. The original candidate is not changed. Sign before
-publishing if official registry distribution is planned; upload only the
-matching verified signature via an explicitly reviewed release step. This
+signing-evidence.json. The original candidate is not changed. The protected stable workflow now signs and includes the matching verified signature automatically; local signing remains available for controlled manual use. This
 wrapper does not create a release, change trust policies or submit registry
 metadata. Never upload private blobs, and do not claim signed registry
 acceptance until the official catalog PR is reviewed.

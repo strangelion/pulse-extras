@@ -1,0 +1,5 @@
+# Public trust anchor; review changes as key rotation, never store private material.
+name = "strangelionL"
+fingerprint = "51f5888a877df0ab5c97795017f268b389249d88e77210321e6953c087cf4472"
+url = "https://github.com/strangelion/pulse-extras"
+registry_revision = "0a325ac77d5ecddb98a45f9062fd1b0129978dbe"

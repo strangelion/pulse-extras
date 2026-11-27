@@ -1,10 +1,13 @@
 """Reproducibility tests for generated binding diagnostics."""
 import unittest
 
-from generate_bindings import normalize_source_locations
+from generate_bindings import normalize_source_locations, upstream_pin
 
 
 class SourceLocationTests(unittest.TestCase):
+    def test_load_reviewed_pin(self):
+        self.assertIn("headers", upstream_pin())
+
     def test_sdk_paths_are_reproducible(self):
         expected = "// pulse/abi.h:5:9\n"
         for path in (

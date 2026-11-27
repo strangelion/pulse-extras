@@ -27,7 +27,7 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from sdk_headers import HEADERS  # noqa: E402  (script-local helper, not a package)
-import upstream_pin  # noqa: E402
+import upstream_pin as pin_config  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = ROOT / "shared/pulse/raw/pulse_all.zig"
@@ -46,7 +46,7 @@ def resolve_include(explicit: pathlib.Path | None) -> pathlib.Path:
 
 def upstream_pin() -> dict:
     path = ROOT / "sdk/upstream.toml"
-    return upstream_pin.load(path)
+    return pin_config.load(path)
 
 
 def verify_headers(include: pathlib.Path, pin: dict) -> None:

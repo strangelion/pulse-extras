@@ -223,13 +223,15 @@ def verify_candidate(item: dict, directory: Path, revision: str) -> list[Path]:
 
 
 def publish(items: list[dict], mode: str, output: Path, *,
-            stable_receipts: dict | None = None, build_run_id: str | None = None) -> None:
+            stable_receipts: dict | None = None, build_run_id: str | None = None,
+            signed_assets: dict | None = None) -> None:
     stable = mode in {"draft-stable", "publish-stable"}
     if mode not in {"draft", "publish-preview", "draft-stable", "publish-stable"}:
         raise ValueError("not a publication mode")
-    if stable != (stable_receipts is not None):
-        raise ValueError("stable publication requires exact-artifact acceptance receipts")
-    if stable and (not build_run_id or set(stable_receipts) != {item["product"] for item in items}):
+    if stable != (stable_receipts is not None) or stable != (signed_assets is not None):
+        raise ValueError("stable publication requires acceptance receipts and verified signatures")
+    if stable and (not build_run_id or set(stable_receipts) != {item["product"] for item in items}
+                   or set(signed_assets) != set(stable_receipts)):
         raise ValueError("incomplete stable acceptance receipts")
     revision = source_revision()
     repo = repository()
@@ -260,6 +262,9 @@ def publish(items: list[dict], mode: str, output: Path, *,
             common.write_evidence(receipt_dir / "stable-acceptance.json", receipt)
             assets = [path for path in files[product] if path.name != "SHA256SUMS.txt"]
             assets.append(receipt_dir / "stable-acceptance.json")
+            assets.extend(signed_assets[product])
+            if len({path.name for path in assets}) != len(assets):
+                raise ValueError("duplicate stable asset names")
             sums = receipt_dir / "SHA256SUMS.txt"
             sums.write_text("".join(f"{common.sha256(path)}  {path.name}\n"
                                     for path in sorted(assets, key=lambda p: p.name)),
@@ -279,7 +284,7 @@ def publish(items: list[dict], mode: str, output: Path, *,
         if stable:
             receipt = stable_receipts[item["product"]]
             notes = (
-                f"GitHub stable release: {item['product']} {item['version']} (unsigned).\n\n"
+                f"GitHub stable release: {item['product']} {item['version']} (publisher signed).\n\n"
                 f"Source: https://github.com/{repo}/tree/{revision}\n\n"
                 f"Exact candidate build: https://github.com/{repo}/actions/runs/{build_run_id}\n\n"
                 f"Official package verification: Pulse {pin['pulse_source_version']}. "
@@ -287,7 +292,8 @@ def publish(items: list[dict], mode: str, output: Path, *,
                 "see stable-acceptance.json for scope and evidence reference. "
                 "The receipt is a human attestation, not an automated GUI test. "
                 "Build evidence remains the pre-acceptance snapshot. "
-                "This release is not signed or submitted to the official registry.\n"
+                "Manifest signature verified against the reviewed publisher key; see signing-evidence.json. "
+                "Not submitted to or approved by the official registry.\n"
             )
         run("gh", "release", "create", tag, *(str(path) for path in files[item["product"]]),
             "--repo", repo, "--target", revision, "--draft",

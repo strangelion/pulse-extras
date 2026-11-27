@@ -12,10 +12,11 @@ import subprocess
 import sys
 import zipfile
 
+import environment_signing as environment
 import package_common as common
 import release_workflow as release
 
-REGISTRY_REVISION = "0a325ac77d5ecddb98a45f9062fd1b0129978dbe"
+REGISTRY_REVISION = environment.publisher()["registry_revision"]
 REGISTRY_URL = "https://github.com/jimmgreen/pulse-extensions"
 
 
@@ -34,7 +35,7 @@ def main() -> int:
     parser.add_argument("--registry", required=True, type=Path)
     parser.add_argument("--private-key", required=True, type=Path)
     parser.add_argument("--public-key", required=True, type=Path)
-    parser.add_argument("--publisher-name", default="Pulse Extras", help="public publisher display name")
+    parser.add_argument("--publisher-name", default=environment.publisher()["name"], help="public publisher display name")
     parser.add_argument("--out", required=True, type=Path, help="new local signature output directory")
     args = parser.parse_args()
     try:
