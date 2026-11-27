@@ -26,25 +26,30 @@ INSTALLER_URL = "https://github.com/jimmgreen/pulse/releases/download/v1.0.60/Pu
 INSTALLER_SHA256 = "827aebcb14a9e4f4ec8281cf89e339cc887ec6f541ff6e80518ac463732c5234"
 INSTALLER_SIZE = 12240072
 MODES = {"dry-run", "draft", "publish-preview"}
-INPUT_VERSIONS = {"companion": "COMPANION_VERSION", "vcs": "VCS_VERSION"}
-
-
-def plan(selection: str, versions: dict[str, str], mode: str) -> list[dict]:
+def plan(request: str, mode: str) -> list[dict]:
     if mode not in MODES:
         raise ValueError("unknown release mode")
-    selected = list(package.PRODUCTS) if selection == "all" else selection.split(",")
-    selected = [item.strip() for item in selected]
-    if not selected or len(set(selected)) != len(selected) or any(item not in package.PRODUCTS for item in selected):
-        raise ValueError("select companion, vcs, companion,vcs or all")
-    if set(versions) != set(package.PRODUCTS):
-        raise ValueError("version input set differs from declared products")
-    if any(versions[item] for item in versions if item not in selected):
-        raise ValueError("leave versions of unselected products empty")
+    if not isinstance(request, str) or not request or len(request) > 65535:
+        raise ValueError("empty or oversized release request")
+    versions = {}
+    for pair in request.split(","):
+        key, sep, version = pair.strip().partition("=")
+        key, version = key.strip(), version.strip()
+        if not sep or not key or not version or key in versions:
+            raise ValueError("expected unique product=SemVer entries")
+        if key != "all" and key not in package.PRODUCTS:
+            raise ValueError("unknown release product: " + key)
+        versions[key] = version
+    if "all" in versions:
+        if len(versions) != 1:
+            raise ValueError("all cannot be combined with individual products")
+        versions = dict.fromkeys(package.PRODUCTS, versions["all"])
+    if not versions:
+        raise ValueError("no releasable products")
     result = []
-    for item in selected:
-        version = package.parse_version(versions[item])
-        # GitHub normalizes some asset-name characters. Do not silently
-        # alter the version or filename, and keep names within local bounds.
+    for item, value in versions.items():
+        version = package.parse_version(value)
+        # Preserve immutable tag and asset names.
         if "+" in version or len(version) > 64:
             raise ValueError("release versions must omit build metadata and fit 64 characters")
         product = package.PRODUCTS[item]
@@ -52,6 +57,15 @@ def plan(selection: str, versions: dict[str, str], mode: str) -> list[dict]:
                        "tag": f"{item}/v{version}",
                        "asset": package.asset_name(product["id"], version)})
     return result
+
+
+def plan_json(items: list[dict]) -> str:
+    return json.dumps(items, separators=(",", ":"), ensure_ascii=True)
+
+
+def check_plan(items: list[dict], expected: str) -> None:
+    if plan_json(items) != expected:
+        raise RuntimeError("release plan differs from preflight output")
 
 
 def run(*args: str, timeout: int = 600, cwd: Path = ROOT) -> None:
@@ -134,7 +148,7 @@ def build(items: list[dict], output: Path, sdk: Path) -> None:
     prefix = work / "build"
     flags = ["-Doptimize=ReleaseSafe", "--prefix", str(prefix), "--summary", "all"]
     entry_flags = []
-    if any(item["product"] == "companion" for item in items):
+    if any(package.PRODUCTS[item["product"]]["build_profile"] == "companion" for item in items):
         run("zig", "build", "pet-demo", *flags)
         run("zig", "build", "companion-runtime-bridge", *flags)
         helper = common.sha256(prefix / "bin/pulse-pet-demo.exe", common.FILE_MAX)
@@ -197,6 +211,7 @@ def verify_candidate(item: dict, directory: Path, revision: str) -> list[Path]:
             or common.sha256(directory / "Apache-2.0.txt") != common.sha256(ROOT / "LICENSES/Apache-2.0.txt")
             or evidence["sdk_pin_sha256"] != common.sha256(ROOT / "sdk/upstream.toml")
             or evidence["template_sha256"] != common.sha256(ROOT / product["template"])
+            or evidence["descriptor_sha256"] != common.sha256(ROOT / product["descriptor"])
             or evidence["zig_version"] != (ROOT / ".zig-version").read_text().strip()):
         raise RuntimeError("source metadata mismatch")
     sums = "".join(f"{common.sha256(directory / name)}  {name}\n"
@@ -258,17 +273,20 @@ def main() -> int:
     parser.add_argument("--sdk", type=Path, default=ROOT / ".local/sdk")
     args = parser.parse_args()
     try:
-        items = plan(os.environ["RELEASE_SELECTION"],
-                     {product: os.environ.get(var, "") for product, var in INPUT_VERSIONS.items()},
-                     os.environ["RELEASE_MODE"])
+        items = plan(os.environ["RELEASE_REQUEST"], os.environ["RELEASE_MODE"])
         source_revision()
         print(json.dumps(items, indent=2), flush=True)
         if args.action == "plan":
             preflight(items)
-        elif args.action == "build":
-            build(items, args.out.resolve(), args.sdk.resolve())
+            if output := os.environ.get("GITHUB_OUTPUT"):
+                with open(output, "a", encoding="utf-8") as stream:
+                    stream.write("plan=" + plan_json(items) + "\n")
         else:
-            publish(items, os.environ["RELEASE_MODE"], args.out.resolve())
+            check_plan(items, os.environ["RELEASE_PLAN"])
+            if args.action == "build":
+                build(items, args.out.resolve(), args.sdk.resolve())
+            else:
+                publish(items, os.environ["RELEASE_MODE"], args.out.resolve())
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError,
             zipfile.BadZipFile) as exc:
         print(f"Release workflow failed: {exc}", file=sys.stderr)

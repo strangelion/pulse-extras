@@ -19,31 +19,12 @@ import sys
 from pathlib import Path
 
 import package_common
+import release_registry
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Declared release composition. Sources are the fixed install paths produced
-# by the build commands below; no globbing and no implicit extras.
-PRODUCTS = {
-    "companion": {
-        "id": "strangelion.companion",
-        "template": "extensions/companion/manifest.release.json",
-        "library": "pulse_companion.dll",
-        "members": ("pulse_companion_runtime.dll", "pulse-pet-demo.exe"),
-        "build": (
-            "zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe",
-            "zig build companion-runtime-bridge -Doptimize=ReleaseSafe",
-            "zig build pet-demo -Doptimize=ReleaseSafe",
-        ),
-    },
-    "vcs": {
-        "id": "strangelion.vcs",
-        "template": "extensions/vcs-panel/manifest.release.json",
-        "library": "pulse_vcs_panel.dll",
-        "members": (),
-        "build": ("zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe",),
-    },
-}
+# Discover only explicitly declared release products, never test packages.
+PRODUCTS = release_registry.discover(ROOT)
 
 _VERSION = re.compile(
     r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
@@ -79,7 +60,7 @@ def plan(extension: str, artifacts: Path):
         raise ValueError(
             "missing build output(s): " + ", ".join(missing)
             + "; build with: " + "; ".join(product["build"]))
-    for member, _ in members:
+    for member, _ in members if product["build_profile"] == "companion" else ():
         digest = hashlib.sha256(member.read_bytes()).hexdigest()
         if digest.encode("ascii") not in library.read_bytes():
             option = ("-Dcompanion-helper-sha256=" if member.suffix == ".exe"
@@ -138,6 +119,8 @@ def package(args) -> Path:
         "host_sha256": evidence["host_sha256"],
         "author_sha256": evidence["author_sha256"],
         "template_sha256": evidence["template_sha256"],
+        "descriptor_sha256": package_common.sha256(ROOT / PRODUCTS[args.extension]["descriptor"],
+                                                   package_common.EVIDENCE_MAX),
         "library": evidence["library"],
         "members": evidence["members"],
         "official_verified": evidence["verified"],

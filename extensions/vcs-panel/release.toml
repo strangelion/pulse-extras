@@ -1,0 +1,6 @@
+key = "vcs"
+id = "strangelion.vcs"
+manifest = "manifest.release.json"
+library = "pulse_vcs_panel.dll"
+build_profile = "native"
+members = []

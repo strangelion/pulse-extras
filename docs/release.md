@@ -65,9 +65,24 @@ separate manual step in section 1; real-host acceptance remains the gate in
 [Companion stage D](companion-manager.md#stage-d-official-testformal-packaging-and-real-host-acceptance).
 
 Composition is declared per product in `extensions/<name>/manifest.release.json`
-(official schema, native-free) and in the `PRODUCTS` table of
-scripts/package_release.py (library DLL, bundled files, install paths). Add a new
-product there rather than copying the script.
+(official schema, native-free) and its sibling `release.toml` (repository-only
+metadata). The release registry discovers explicit descriptors, checks unique keys
+and IDs, validates flat artifact names and manifest identity, and selects a
+reviewed build profile. No arbitrary commands are accepted from descriptors.
+For a new ordinary extension, add its Zig build target/output, formal manifest
+and descriptor; no workflow or generic Python changes are needed. Example:
+```toml
+key = "convert"
+id = "strangelion.convert"
+manifest = "manifest.release.json"
+library = "pulse_convert.dll"
+build_profile = "native"
+members = []
+```
+The native profile uses the existing Windows x64 MSVC Zig build; the companion
+profile preserves its two digest-bound auxiliary builds. A genuinely new build
+profile requires reviewed code. Test/example extensions without descriptors are
+not release products. Descriptor digests are bound into release evidence.
 
 ## 3. Independent package versions
 
@@ -77,7 +92,7 @@ and conditional candidates strangelion.companion and strangelion.forge.
 The ABI Probe and Hello Panel remain test/example packages and are not released as products
 by default. No placeholder or incomplete extension is publishable.
 
-The current authoritative product composition is the PRODUCTS table in scripts/package_release.py. Each manual preview dispatch supplies its own SemVer for each selected product. A committed release descriptor/changelog remains a future stable-channel improvement; do not duplicate version truth. The pinned official manifest schema rejects a product version field, so product SemVer belongs in release tag, asset name and evidence, not native.version (which is the ABI format version). Tag example:
+The authoritative product composition is the discovered per-extension release.toml registry. Each manual preview dispatch supplies its own SemVer for each selected product. A committed release descriptor/changelog remains a future stable-channel improvement; do not duplicate version truth. The pinned official manifest schema rejects a product version field, so product SemVer belongs in release tag, asset name and evidence, not native.version (which is the ABI format version). Tag example:
 `vcs/v0.1.0`; asset: `strangelion.vcs-0.1.0.pulse-ext`. Treat published versions/tags as immutable.
 Shared library changes may require new versions of affected packages, never a forced version bump
 for unaffected ones. Each build records its bundled [Shared Runtime](shared-runtime.md) source/API
@@ -104,16 +119,17 @@ Open Actions → Extension release → Run workflow on main.
 
 | Input | Values / meaning |
 | --- | --- |
-| extensions | Dropdown: companion, vcs, all |
-| companion_version | Independent SemVer; blank when Companion not selected |
-| vcs_version | Independent SemVer; blank when VCS not selected |
+| releases | Comma-separated product=SemVer pairs, e.g. companion=1.1.0,vcs=1.2.0 |
 | mode | dry-run (default), draft, publish-preview |
 
-Examples: companion / 0.1.0 / blank, or all / 0.1.0 / 0.2.0.
+Use `companion=1.1.0` for one product, or `companion=1.1.0,vcs=1.2.0`
+for independent versions. Explicit `all=2.0.0` selects every registered product
+at the same version; do not combine it with individual entries.
 Each selected extension receives its own tag and Release; no global version.
 SemVer build metadata is currently rejected for publication to avoid GitHub
-asset-name normalization. Unknown, duplicate and unselected version inputs
-are rejected. Existing tags or releases (including drafts visible to the
+asset-name normalization. Unknown products, duplicate keys, empty versions and
+malformed requests are rejected. The preflight plan is passed to subsequent
+jobs and checked against the immutable checkout and request. Existing tags or releases (including drafts visible to the
 publisher) block the batch; no overwrite or automatic deletion.
 
 The workflow requires main and a clean immutable checkout, calls the existing

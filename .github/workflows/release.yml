@@ -3,22 +3,9 @@ name: Extension release
 on:
   workflow_dispatch:
     inputs:
-      extensions:
-        description: 'Select which extension(s) to release'
+      releases:
+        description: 'Extension versions (e.g. companion=1.1.0,vcs=1.2.0)'
         required: true
-        default: companion
-        type: choice
-        options:
-          - companion
-          - vcs
-          - all
-      companion_version:
-        description: 'Companion SemVer (empty if not selected)'
-        required: false
-        type: string
-      vcs_version:
-        description: 'VCS SemVer (empty if not selected)'
-        required: false
         type: string
       mode:
         description: 'Unsigned preview only; dry-run does not create releases'
@@ -38,15 +25,15 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_SELECTION: ${{ inputs.extensions }}
-  COMPANION_VERSION: ${{ inputs.companion_version }}
-  VCS_VERSION: ${{ inputs.vcs_version }}
+  RELEASE_REQUEST: ${{ inputs.releases }}
   RELEASE_MODE: ${{ inputs.mode }}
 
 jobs:
   plan:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -55,6 +42,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Validate selection and remote collision state
+        id: plan
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/release_workflow.py plan
@@ -66,7 +54,9 @@ jobs:
       contents: read
 
   package:
-    needs: regression
+    needs: [plan, regression]
+    env:
+      RELEASE_PLAN: ${{ needs.plan.outputs.plan }}
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -102,7 +92,9 @@ jobs:
           retention-days: 7
 
   publish:
-    needs: package
+    needs: [plan, package]
+    env:
+      RELEASE_PLAN: ${{ needs.plan.outputs.plan }}
     if: inputs.mode != 'dry-run'
     runs-on: ubuntu-latest
     timeout-minutes: 15
