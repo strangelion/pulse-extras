@@ -446,7 +446,11 @@ pub const Content = struct {
 
     fn addDetails(self: *Content, lang: Language, view: *const View, kind: identity.Kind) void {
         self.add("vcs.detail.heading", "", loc(lang, "Local read-only details", "本地只读详情"));
-        self.add("vcs.detail.write-limit", "", loc(lang, "Stage, commit, update and push are not enabled. Use a reviewed external client for mutations.", "暂存、提交、更新和推送尚未开放；如需修改，请使用已确认的外部客户端。"));
+        if (kind == .git and @import("builtin").os.tag == .windows) {
+            self.add("vcs.detail.write-limit", "", loc(lang, "Use the project library to review one-file stage or unstage. Commit, update and push remain disabled.", "在项目库审核单文件暂存或取消暂存。提交、更新和推送尚未开放。"));
+        } else {
+            self.add("vcs.detail.write-limit", "", loc(lang, "Use a reviewed external client for repository mutations.", "如需修改仓库，请使用已确认的外部客户端。"));
+        }
         if (kind == .git) self.add("vcs.detail.git-limit", "", loc(lang, "Working diff compares index to worktree; staged diff compares selected revision to index. Untracked files may have no diff.", "工作区差异比较索引和工作树；暂存差异比较所选版本和索引。未跟踪文件可能没有差异。"));
         if (kind == .hg) self.add("vcs.detail.hg-limit", "", loc(lang, "Local Mercurial only; shared/subrepositories and upstream distance unsupported. History uses first parent as default anchor.", "仅本地 Mercurial；不支持共享/子仓库及远端距离。历史默认以第一父版本为锚点。"));
         if (kind == .svn) self.add("vcs.detail.svn-limit", "", loc(lang, "Server history is not authorized; BASE/diff require a supported pristine-copy version.", "服务器历史未授权；本地 BASE 与差异需要支持完整 pristine 副本的版本。"));

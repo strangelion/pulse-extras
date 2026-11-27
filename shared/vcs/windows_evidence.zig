@@ -455,6 +455,33 @@ pub fn readPreviewFile(path: []const u8, buffer: []u8) Error![]const u8 {
     return buffer[0..size];
 }
 
+pub const ContentStamp = struct {
+    identity: FileIdentity,
+    digest: [32]u8,
+};
+
+/// Hash with the same canonical, no-follow handle that established the
+/// identity. The handle denies concurrent writes and deletes while reading.
+pub fn observeFileContents(path: []const u8, limit: u32) Error!ContentStamp {
+    const opened = try openChecked(path, false, true);
+    defer opened.close();
+    if (opened.info.size_high != 0 or opened.info.size_low > limit) return error.ResourceLimit;
+    var hash = Sha256.init(.{});
+    var buffer: [16 * 1024]u8 = undefined;
+    var remaining = opened.info.size_low;
+    while (remaining != 0) {
+        const count: u32 = @min(remaining, buffer.len);
+        var read: u32 = 0;
+        if (ReadFile(opened.handle, &buffer, count, &read, null) == 0 or read != count) return error.Permission;
+        hash.update(buffer[0..read]);
+        remaining -= read;
+    }
+    var extra: [1]u8 = undefined;
+    var read: u32 = 0;
+    if (ReadFile(opened.handle, &extra, 1, &read, null) == 0 or read != 0) return error.Permission;
+    return .{ .identity = FileIdentity.from(opened.info), .digest = hash.finalResult() };
+}
+
 fn join(base: []const u8, suffix: []const u8, buffer: []u8) Error![]const u8 {
     return std.fmt.bufPrint(buffer, "{s}\\{s}", .{ base, suffix }) catch return error.ResourceLimit;
 }

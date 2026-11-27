@@ -18,6 +18,7 @@ const vcs_panel = @import("vcs_panel");
 const project_route = @import("project_route.zig");
 const evidence = @import("vcs_windows_evidence");
 const forge = @import("forge.zig");
+const git_index = @import("vcs_git_index_transaction");
 
 const max_projects = 64;
 const page_size = 12;
@@ -26,7 +27,7 @@ const keys = [_][]const u8{ "tool.git", "tool.jj", "tool.svn", "tool.hg" };
 const names = [_][]const u8{ "Git", "Jujutsu", "Subversion", "Mercurial" };
 const tools = [_]cli.Tool{ .git, .jj, .svn, .hg };
 const fields = [_][]const u8{ "settings.git", "settings.jj", "settings.svn", "settings.hg" };
-const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump", "vcs.projects.cancel-identity", "vcs.projects.inspect-grants", "vcs.projects.revoke-git", "vcs.projects.revoke-jj", "vcs.projects.revoke-svn", "vcs.forge.issues", "vcs.forge.reviews", "vcs.forge.ci", "vcs.forge.releases", "vcs.forge.discover", "vcs.forge.remote.0", "vcs.forge.remote.1", "vcs.forge.remote.2", "vcs.forge.remote.3", "vcs.forge.remote.4", "vcs.forge.remote.5", "vcs.forge.metadata", "vcs.client.save-code", "vcs.client.save-svn", "vcs.client.review-code", "vcs.client.review-svn", "vcs.client.confirm", "vcs.client.cancel", "vcs.integration.cancel", "vcs.projects.local-summary", "vcs.projects.clear-summary", "vcs.settings.save-hg", "vcs.settings.browse-hg", "vcs.projects.revoke-hg" };
+const commands = [_][]const u8{ "vcs.settings.reload", "vcs.settings.save-git", "vcs.settings.save-jj", "vcs.settings.save-svn", "vcs.settings.browse-git", "vcs.settings.browse-jj", "vcs.settings.browse-svn", "vcs.projects.current", "vcs.projects.save", "vcs.projects.remove", "vcs.projects.website", "vcs.projects.check", "vcs.settings.locale-auto", "vcs.settings.locale-en", "vcs.settings.locale-zh", "vcs.projects.new", "vcs.projects.edit", "vcs.projects.update", "vcs.projects.favorite", "vcs.projects.search", "vcs.projects.prev", "vcs.projects.next", "vcs.projects.jump", "vcs.projects.browse", "vcs.projects.cancel-jump", "vcs.projects.cancel-identity", "vcs.projects.inspect-grants", "vcs.projects.revoke-git", "vcs.projects.revoke-jj", "vcs.projects.revoke-svn", "vcs.forge.issues", "vcs.forge.reviews", "vcs.forge.ci", "vcs.forge.releases", "vcs.forge.discover", "vcs.forge.remote.0", "vcs.forge.remote.1", "vcs.forge.remote.2", "vcs.forge.remote.3", "vcs.forge.remote.4", "vcs.forge.remote.5", "vcs.forge.metadata", "vcs.client.save-code", "vcs.client.save-svn", "vcs.client.review-code", "vcs.client.review-svn", "vcs.client.confirm", "vcs.client.cancel", "vcs.integration.cancel", "vcs.projects.local-summary", "vcs.projects.clear-summary", "vcs.settings.save-hg", "vcs.settings.browse-hg", "vcs.projects.revoke-hg", "vcs.git-index.review-stage", "vcs.git-index.review-unstage", "vcs.git-index.confirm", "vcs.git-index.cancel" };
 const clients = [_]forge.Client{ .vscode, .tortoise_svn };
 const client_keys = [_][]const u8{ "client.vscode", "client.tortoise_svn" };
 const client_fields = [_][]const u8{ "settings.client.vscode", "settings.client.tortoise_svn" };
@@ -36,6 +37,7 @@ const selection_key = "settings.project.selected";
 const name_key = "settings.project.name";
 const tags_key = "settings.project.tags";
 const search_key = "settings.project.search";
+const index_path_key = "settings.git-index.path";
 const project_prefix = "project.";
 const key_len = project_prefix.len + 32;
 
@@ -121,6 +123,13 @@ const Status = enum {
     external_cancelled,
     local_summary_ready,
     local_summary_unavailable,
+    index_preparing,
+    index_review_ready,
+    index_applying,
+    index_applied,
+    index_cleanup_failed,
+    index_not_applied,
+    index_cancelled,
 
     fn label(self: Status, lang: vcs_panel.Language) []const u8 {
         return switch (self) {
@@ -137,6 +146,13 @@ const Status = enum {
             .picker_candidate => tr(lang, "Candidate filled in; review and save (not verified)", "已填入候选路径；请确认文件名并保存（尚未验证）"),
             .picking => tr(lang, "Selecting tool folder", "正在选择工具目录"),
             .browser_pending => tr(lang, "Browser task submitted; check result", "已提交浏览器任务；可检查结果"),
+            .index_preparing => tr(lang, "Reading the local Git index and selected file", "正在检查本地 Git 索引与指定文件"),
+            .index_review_ready => tr(lang, "Review the repository, file, Git executable and HEAD before confirming", "确认前请核对仓库、文件、Git 程序及 HEAD"),
+            .index_applying => tr(lang, "Updating the reviewed Git index; check the result", "正在更新已审核的 Git 索引；请检查结果"),
+            .index_applied => tr(lang, "Git index updated. Refresh the VCS panel for the latest status.", "Git 索引已更新。刷新 VCS 面板可查看最新状态。"),
+            .index_cleanup_failed => tr(lang, "Git index updated. Temporary-file cleanup needs attention.", "Git 索引已更新，临时文件清理需要检查"),
+            .index_not_applied => tr(lang, "Git index update could not complete. Review the current status before retrying.", "Git 索引操作未完成。请先核对当前状态再重试。"),
+            .index_cancelled => tr(lang, "Cancelled before publishing the index", "已取消，正式索引未更新"),
             .browser_opened => tr(lang, "Handed off to the browser; page load not verified", "已交给默认浏览器；不代表网页加载成功"),
             .browser_failed => tr(lang, "Browser task did not complete", "浏览器任务未完成"),
             .command_failed => tr(lang, "Operation failed; check path, selection and pending tasks", "操作未完成：请检查路径、选择及当前任务状态"),
@@ -434,11 +450,15 @@ const Scope = struct {
     }
 };
 const ClientReview = struct { scope: Scope, client: forge.Client, executable: identity.Path };
+const IndexReview = struct { scope: Scope, plan: git_index.Plan };
+const IndexResult = enum { applied, cleanup_failed, not_applied, cancelled };
 const ExternalJob = union(enum) {
     website: struct { scope: Scope, page: forge.Page },
     discover: Scope,
     metadata: Scope,
     client: ClientReview,
+    index_review: struct { scope: Scope, request: git_index.Plan.Scope },
+    index_apply: IndexReview,
 
     fn scope(self: *const ExternalJob) *const Scope {
         return switch (self.*) {
@@ -446,6 +466,8 @@ const ExternalJob = union(enum) {
             .discover => |*job| job,
             .metadata => |*job| job,
             .client => |*job| &job.scope,
+            .index_review => |*job| &job.scope,
+            .index_apply => |*job| &job.scope,
         };
     }
 };
@@ -462,7 +484,7 @@ const Content = struct {
     nodes: [128]ui.Node = undefined,
     len: usize = 0,
     root: ui.Node = undefined,
-    states: [12]ui.State = undefined,
+    states: [13]ui.State = undefined,
     vocabulary: [commands.len]abi.StringView = undefined,
     rows: [page_size]raw.PulseUiModelRow = undefined,
     cells: [page_size][8]abi.StringView = undefined,
@@ -518,6 +540,7 @@ const Content = struct {
         self.states[6] = .{ .key = abi.view(name_key), .value = abi.view("") };
         self.states[7] = .{ .key = abi.view(tags_key), .value = abi.view("") };
         self.states[8] = .{ .key = abi.view(search_key), .value = abi.view(owner.search.slice()) };
+        self.states[12] = .{ .key = abi.view(index_path_key), .value = abi.view("") };
         const headers = [_][]const u8{ tr(lang, "Favorite", "收藏"), tr(lang, "Project", "项目"), tr(lang, "Provider hint", "类型提示"), tr(lang, "Local directory", "本地目录"), tr(lang, "Tags", "标签"), tr(lang, "Remote", "远程仓库"), tr(lang, "Address source", "地址来源"), tr(lang, "Open order", "打开顺序") };
         const ids = [_][]const u8{ "favorite", "name", "provider", "path", "tags", "remote", "remote_source", "opened" };
         for (headers, ids, 0..) |heading, id, i| {
@@ -565,6 +588,13 @@ const Content = struct {
             self.button(34, tr(lang, "Inspect literal local Git remotes", "检查本地 Git 远程地址"), external_idle);
             self.button(41, tr(lang, "Fetch public GitHub metadata (api.github.com, no account)", "获取公开 GitHub 元数据（api.github.com，无账号）"), external_idle);
             self.button(49, tr(lang, "Copy matching local panel summary (no CLI)", "复制匹配的本地面板摘要（不执行 CLI）"), idle);
+            if (comptime builtin.os.tag == .windows) {
+                if (owner.stored.tools[0] != null) {
+                    self.input(index_path_key, tr(lang, "Git file path relative to selected project", "相对于选中 Git 项目的文件路径"), external_idle);
+                    self.button(54, tr(lang, "Review staging file", "审核暂存文件"), external_idle);
+                    self.button(55, tr(lang, "Review unstaging file", "审核取消暂存"), external_idle);
+                }
+            }
             self.button(44, tr(lang, "Review opening selected folder in VS Code", "审核使用 VS Code 打开项目"), external_idle and owner.stored.client_paths[0] != null);
             self.button(45, tr(lang, "Review opening SVN status dialog", "审核打开 TortoiseSVN 状态窗口"), external_idle and owner.stored.client_paths[1] != null);
             self.add(ui.text(tr(lang, "Browser availability and private access are not verified; external apps may access files/network independently.", "未验证网页可用性与私有访问权限；外部程序可自行访问文件或网络。")), "settings.forge.warning");
@@ -632,6 +662,16 @@ const Content = struct {
             self.add(ui.text(review.scope.root.slice()), "settings.client.review-root");
             self.button(46, tr(lang, "Confirm external launch (not a sandbox)", "确认启动外部程序（非沙箱）"), idle and !owner.externalBusy());
             self.button(47, tr(lang, "Cancel launch review", "取消启动审核"), idle and !owner.externalBusy());
+        }
+        if (owner.index_review) |*review| {
+            const plan = &review.plan;
+            self.add(ui.text(if (plan.scope.action == .stage) tr(lang, "Stage one file to the local Git index", "暂存单个文件到本地 Git 索引") else tr(lang, "Restore one staged file to the reviewed HEAD entry", "将单个暂存项恢复到已审核的 HEAD 条目")), "settings.git-index.action");
+            self.add(ui.text(plan.scope.root.slice()), "settings.git-index.root");
+            self.add(ui.text(plan.scope.path.slice()), "settings.git-index.target");
+            self.add(ui.text(plan.scope.tool.slice()), "settings.git-index.tool");
+            self.add(ui.text(&plan.evidence.head), "settings.git-index.head");
+            self.button(56, tr(lang, "Confirm this Git index update", "确认这一次 Git 索引写入"), idle);
+            self.button(57, tr(lang, "Cancel index review", "取消索引审核"), idle);
         }
         if (owner.route.busy()) self.button(24, tr(lang, "Cancel directory lookup", "取消目录查找"), true);
         if (owner.grant_review) |*review| {
@@ -736,6 +776,9 @@ pub const Settings = struct {
     metadata_review: ?MetadataReview = null,
     local_summary: ?LocalSummary = null,
     client_review: ?ClientReview = null,
+    index_review: ?IndexReview = null,
+    index_review_result: ?git_index.Plan = null,
+    index_result: ?IndexResult = null,
     remote_result: ?forge.Remotes = null,
     metadata_result: ?forge.Metadata = null,
     project_task: ?async_host.Task = null,
@@ -923,6 +966,7 @@ pub const Settings = struct {
         self.metadata_review = null;
         self.local_summary = null;
         self.client_review = null;
+        self.index_review = null;
         if (!self.active) return;
         if (reply.*.status != abi.ok or reply.*.operation != operation) {
             self.status = .conflict;
@@ -1244,6 +1288,7 @@ pub const Settings = struct {
         self.metadata_review = null;
         self.remote_review = null;
         self.client_review = null;
+        self.index_review = null;
         self.render();
         if (!self.render_ok or self.visible().count == 0) return;
         const model = if (self.panel) |*value| value else return error.State;
@@ -1400,6 +1445,31 @@ pub const Settings = struct {
             .discover => |scope| self.remote_result = forge.inspectRemotes(scope.root.slice()) catch return @backingInt(async_host.TaskState.failed),
             .metadata => |scope| self.metadata_result = forge.fetchMetadata(scope.remote.slice(), cancelled, context.*.context),
             .client => |review| forge.launchClient(review.client, review.executable.slice(), review.scope.root.slice(), review.scope.kind) catch return @backingInt(async_host.TaskState.failed),
+            .index_review => |request| {
+                const allocator = std.heap.page_allocator;
+                var io = std.Io.Threaded.init(allocator, .{});
+                defer io.deinit();
+                self.index_review_result = git_index.observePlan(io.io(), request.request) catch |err| {
+                    diag.status("vcs-git-index-review", @intFromError(err));
+                    return @backingInt(async_host.TaskState.failed);
+                };
+            },
+            .index_apply => |request| {
+                const allocator = std.heap.page_allocator;
+                var io = std.Io.Threaded.init(allocator, .{});
+                defer io.deinit();
+                git_index.applyPlan(allocator, io.io(), &request.plan, .{ .check = cancelled, .context = context.*.context }) catch |err| {
+                    self.index_result = switch (err) {
+                        error.IndexAppliedCleanupFailed => .cleanup_failed,
+                        error.Cancelled => .cancelled,
+                        else => .not_applied,
+                    };
+                    diag.status("vcs-git-index-apply", @intFromError(err));
+                    return @backingInt(if (err == error.Cancelled) async_host.TaskState.cancelled else async_host.TaskState.failed);
+                };
+                self.index_result = .applied;
+                diag.event("vcs-git-index-applied");
+            },
         }
         return @backingInt(async_host.TaskState.completed);
     }
@@ -1411,6 +1481,8 @@ pub const Settings = struct {
         self.external_discard = false;
         self.remote_result = null;
         self.metadata_result = null;
+        self.index_review_result = null;
+        self.index_result = null;
         const descriptor: async_host.Descriptor = .{
             .size = @sizeOf(async_host.Descriptor),
             .title = abi.view("Explicit project integration"),
@@ -1490,6 +1562,41 @@ pub const Settings = struct {
         try self.startExternal(.{ .client = review });
     }
 
+    fn indexScope(self: *Settings, project: *const Project, action: git_index.Action) !git_index.Plan.Scope {
+        if (comptime builtin.os.tag != .windows) return error.Unavailable;
+        if (project.kind) |kind| if (kind != .git) return error.Argument;
+        var buffer: [identity.max_path_bytes + 1]u8 = undefined;
+        const path = try self.read(index_path_key, &buffer);
+        if (!contract.safeRelativePath(path)) return error.Argument;
+        return .{
+            .root = project.root,
+            .tool = self.stored.tools[0] orelse return error.Argument,
+            .path = try identity.Path.init(path),
+            .action = action,
+            .generation = self.stored.version,
+        };
+    }
+
+    fn reviewIndex(self: *Settings, action: git_index.Action) !void {
+        self.index_review = null;
+        const project = try self.selected();
+        const scope = Scope.from(project, self.stored.version);
+        try self.startExternal(.{ .index_review = .{ .scope = scope, .request = try self.indexScope(project, action) } });
+        self.status = .index_preparing;
+    }
+
+    fn confirmIndex(self: *Settings) !void {
+        const review = self.index_review orelse return error.State;
+        self.index_review = null;
+        const project = try self.selected();
+        if (!review.scope.matches(project, self.stored.version)) return error.State;
+        const current = try self.indexScope(project, review.plan.scope.action);
+        var pending: ?git_index.Plan = review.plan;
+        const approved = try git_index.Plan.consume(&pending, &current);
+        try self.startExternal(.{ .index_apply = .{ .scope = review.scope, .plan = approved } });
+        self.status = .index_applying;
+    }
+
     fn cancelExternal(self: *Settings) !void {
         const task = if (self.browser) |*value| value else return error.Unavailable;
         if (!task.occupied() or self.external_discard) return error.State;
@@ -1510,6 +1617,17 @@ pub const Settings = struct {
             self.external_discard = false;
             self.remote_result = null;
             self.metadata_result = null;
+            self.index_review_result = null;
+            self.index_result = null;
+        }
+        if (job == .index_apply) {
+            self.status = switch (self.index_result orelse if (state == .cancelled) IndexResult.cancelled else .not_applied) {
+                .applied => .index_applied,
+                .cleanup_failed => .index_cleanup_failed,
+                .not_applied => .index_not_applied,
+                .cancelled => .index_cancelled,
+            };
+            return;
         }
         if (self.external_discard or state == .cancelled) {
             self.status = .external_cancelled;
@@ -1546,6 +1664,17 @@ pub const Settings = struct {
                 }
                 self.status = .browser_failed;
             },
+            .index_review => {
+                if (state == .completed) {
+                    if (self.index_review_result) |result| {
+                        self.index_review = .{ .scope = job.index_review.scope, .plan = result };
+                        self.status = .index_review_ready;
+                        return;
+                    }
+                }
+                self.status = .index_not_applied;
+            },
+            .index_apply => unreachable,
         }
     }
 
@@ -1635,6 +1764,13 @@ pub const Settings = struct {
                 51 => self.saveTool(3),
                 52 => self.browse(3),
                 53 => self.revokeGrant(.hg),
+                54 => self.reviewIndex(.stage),
+                55 => self.reviewIndex(.unstage),
+                56 => self.confirmIndex(),
+                57 => {
+                    self.index_review = null;
+                    self.status = .index_cancelled;
+                },
                 else => return,
             };
             result catch |err| {
@@ -1693,6 +1829,7 @@ pub const Settings = struct {
         self.metadata_review = null;
         self.local_summary = null;
         self.client_review = null;
+        self.index_review = null;
         if (self.project_task) |*task| {
             if (task.occupied()) {
                 const state = try task.poll();
@@ -1730,6 +1867,7 @@ pub const Settings = struct {
         self.metadata_review = null;
         self.local_summary = null;
         self.client_review = null;
+        self.index_review = null;
         if (self.project_task) |*task| task.retireAtHostDestroy();
         self.project_task = null;
         self.checked_project = null;
@@ -1818,6 +1956,7 @@ const SettingsFixture = struct {
     sync_key_len: usize = 0,
     fail_update: bool = false,
     input: []const u8,
+    index_input: []const u8 = "",
 
     task_state: async_host.TaskState = .running,
     task_descriptor: async_host.Descriptor = undefined,
@@ -1921,11 +2060,12 @@ const SettingsFixture = struct {
         return abi.ok;
     }
 
-    fn getState(user: ?*anyopaque, _: u64, _: abi.StringView, bytes: [*c]u8, capacity: u32, needed: [*c]u32) callconv(.c) abi.Status {
+    fn getState(user: ?*anyopaque, _: u64, key: abi.StringView, bytes: [*c]u8, capacity: u32, needed: [*c]u32) callconv(.c) abi.Status {
         const self: *SettingsFixture = @ptrCast(@alignCast(user orelse return abi.error_argument));
-        if (self.input.len >= capacity) return abi.error_argument;
-        @memcpy(bytes[0..self.input.len], self.input);
-        needed.* = @intCast(self.input.len);
+        const input = if (std.mem.eql(u8, abi.slice(key) orelse "", index_path_key)) self.index_input else self.input;
+        if (input.len >= capacity) return abi.error_argument;
+        @memcpy(bytes[0..input.len], input);
+        needed.* = @intCast(input.len);
         return abi.ok;
     }
 
@@ -2273,6 +2413,53 @@ test "external task release and cancellation suppress stale project results" {
     try owner.reviewClient(0);
     fixture.input = &second.key;
     try std.testing.expectError(error.State, owner.confirmClient());
+    try std.testing.expect(!owner.externalBusy());
+}
+
+test "Git index review is consumed on target drift and keeps a published result after cancellation" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const project = try Project.make("C:\\work\\repo", "");
+    var fixture: SettingsFixture = .{ .input = &project.key, .index_input = "selected.txt" };
+    const owner = try std.testing.allocator.create(Settings);
+    defer std.testing.allocator.destroy(owner);
+    owner.* = .{
+        .host = undefined,
+        .user = &fixture,
+        .current = &SettingsFixture.current,
+        .updated = &SettingsFixture.updated,
+        .active = true,
+        .loaded = true,
+        .render_ok = true,
+        .page = 7,
+        .panel = .{ .id = 7, .table = .{ .context = &fixture, .update = &SettingsFixture.update, .get_state = &SettingsFixture.getState } },
+        .browser = try async_host.Task.init(fixture.taskTable()),
+    };
+    owner.stored.projects[0] = project;
+    owner.stored.count = 1;
+    owner.stored.version = 4;
+    owner.stored.tools[0] = try identity.Path.init("C:\\tools\\git.exe");
+    const evidence_fixture = std.mem.zeroes(git_index.Plan.Evidence);
+    try owner.reviewIndex(.stage);
+    owner.index_review_result = .{ .scope = owner.external_job.?.index_review.request, .evidence = evidence_fixture };
+    fixture.task_state = .completed;
+    try owner.pollBrowser();
+    try std.testing.expectEqual(Status.index_review_ready, owner.status);
+    fixture.index_input = "different.txt";
+    try std.testing.expectError(error.IndexReviewChanged, owner.confirmIndex());
+    try std.testing.expect(!owner.externalBusy() and owner.index_review == null);
+
+    fixture.index_input = "selected.txt";
+    try owner.reviewIndex(.unstage);
+    owner.index_review_result = .{ .scope = owner.external_job.?.index_review.request, .evidence = evidence_fixture };
+    fixture.task_state = .completed;
+    try owner.pollBrowser();
+    try owner.confirmIndex();
+    try std.testing.expect(owner.external_job.? == .index_apply and owner.index_review == null);
+    try owner.cancelExternal();
+    owner.index_result = .applied;
+    fixture.task_state = .cancelled;
+    try owner.pollBrowser();
+    try std.testing.expectEqual(Status.index_applied, owner.status);
     try std.testing.expect(!owner.externalBusy());
 }
 
