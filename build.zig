@@ -22,7 +22,7 @@ const Modules = struct {
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
     vcs_hg: *std.Build.Module,
-    all: [42]std.Build.Module.Import = undefined,
+    all: [43]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module, companion_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
