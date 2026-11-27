@@ -153,11 +153,12 @@ def svn_fixture():
     repo, wc = root / "repository", root / "working-copy"
     subprocess.run(["svnadmin", "create", str(repo)], check=True, timeout=30)
     subprocess.run(["svn", "checkout", "--non-interactive", repo.as_uri(), str(wc)], check=True, timeout=30)
-    (wc / "tracked.txt").write_text("original\n", encoding="utf-8")
+    # Preserve the LF bytes that the native SVN content test expects.
+    (wc / "tracked.txt").write_bytes(b"original\n")
     subprocess.run(["svn", "add", "tracked.txt"], cwd=wc, check=True, timeout=30)
     subprocess.run(["svn", "commit", "--non-interactive", "-m", "fixture"], cwd=wc, check=True, timeout=30)
-    (wc / "tracked.txt").write_text("changed\n", encoding="utf-8")
-    (wc / "untracked.txt").write_text("new\n", encoding="utf-8")
+    (wc / "tracked.txt").write_bytes(b"changed\n")
+    (wc / "untracked.txt").write_bytes(b"new\n")
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as out:
         out.write(f"PULSE_TEST_SVN_WC={wc}\nPULSE_REQUIRE_SVN=1\n")
 
