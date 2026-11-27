@@ -504,6 +504,20 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(hello_panel);
     b.installArtifact(hello_panel);
 
+    // Share is experimental and intentionally absent from the default install.
+    const share = b.addLibrary(.{
+        .name = "pulse_share",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("extensions/share/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = dll_modules.imports(),
+        }),
+    });
+    const share_dev = b.step("share-dev", "Build the experimental Pulse Share UI DLL");
+    share_dev.dependOn(&b.addInstallArtifact(share, .{}).step);
+
     // Optional trusted provisioning implementation compiled into the DLL.
     // The default is always locked. Never load an arbitrary runtime source.
     const source_path = b.option([]const u8, "vcs-approval-source", "Trusted reviewed approval provisioning Zig source (relative to repository)") orelse "extensions/vcs-panel/default_source.zig";
@@ -683,6 +697,8 @@ pub fn build(b: *std.Build) void {
     const test_sources = [_][]const u8{
         "extensions/abi-probe/main.zig",
         "extensions/hello-panel/main.zig",
+        "extensions/share/main.zig",
+        "shared/share/transfer.zig",
         "extensions/vcs-panel/main.zig",
         "extensions/vcs-panel/default_source.zig",
         "extensions/companion/main.zig",
@@ -757,6 +773,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run native ABI, wrapper and lifecycle regression tests");
     const companion_tests = b.step("test-companion", "Run companion unit and shared runtime tests");
     const vcs_tests = b.step("test-vcs", "Run VCS unit and shared runtime tests");
+    const share_tests = b.step("test-share", "Run Share transfer and native UI foundation tests");
     for (test_sources) |source| {
         const unit_tests = b.addTest(.{
             .root_module = b.createModule(.{
@@ -769,6 +786,8 @@ pub fn build(b: *std.Build) void {
         if (std.mem.eql(u8, source, "extensions/vcs-panel/main.zig")) unit_tests.root_module.addImport("vcs_native_source", locked_source);
         const run = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run.step);
+        if (std.mem.startsWith(u8, source, "shared/share/") or std.mem.startsWith(u8, source, "extensions/share/"))
+            share_tests.dependOn(&run.step);
         const runtime = std.mem.startsWith(u8, source, "shared/runtime/") or std.mem.startsWith(u8, source, "shared/process/");
         if (runtime or std.mem.startsWith(u8, source, "shared/companion/") or std.mem.eql(u8, source, "extensions/companion/main.zig") or std.mem.eql(u8, source, "shared/companion_extension.zig"))
             companion_tests.dependOn(&run.step);

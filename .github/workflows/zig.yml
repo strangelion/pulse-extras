@@ -164,6 +164,9 @@ jobs:
       - name: Build production extensions
         if: needs.scope.outputs.level != 'companion'
         run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
+      - name: Build experimental Share UI
+        if: needs.scope.outputs.level == 'full'
+        run: zig build share-dev -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
       - name: Verify forge Windows ABI constants and layouts
         if: runner.os == 'Windows' && (needs.scope.outputs.level == 'vcs' || needs.scope.outputs.level == 'full')
         shell: pwsh
