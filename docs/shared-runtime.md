@@ -631,3 +631,7 @@ clear only their live prefix and copy only published rows under the existing
 lock. The 1024 instance cap is unchanged. Share's request and render workspace
 use bounded per-operation allocation; the native tree is synchronously copied
 before arena release. Allocation failures must use existing error paths.
+
+### Measured large-frame follow-up
+
+The v1.0.62 candidate audit resolved `dirRenameWindowsInner` and `dirSymLinkWindows` to Zig stdlib, not project code. The same audit attributed 400184 bytes to Share desktop `render` and 336696/337832 bytes to Companion `readPinned` (normal/bundled). Split Share tree construction into non-inlined sections with arena-owned fields, choice buffers and individually initialized node slices. Move Companion read-only inventory staging and serialized buffers to bounded worker-owned heap allocations; only publish after validation and handle cleanup. The existing stack audit prints all resolved project frames above its reporting threshold. Actual post-change sizes require CI evidence; baseline limits remain unchanged.

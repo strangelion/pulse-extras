@@ -311,6 +311,11 @@ def audit(directory: Path, baseline: dict, profile: str, symbolizer: str | None 
                   f"{len(info['frames'])} >16 KiB; {len(info['over_limit'])} >128 KiB")
             coverage = info["symbolization"]
             print(f"  Symbols: {coverage['status']} {coverage['resolved']}/{coverage['total']}")
+            project_frames = [row for row in info["frames"] if row.get("symbol", {}).get("origin") == "project"]
+            for row in project_frames:
+                symbol = row["symbol"]
+                location = f"{symbol['function']} {symbol['source']}:{symbol['line']}".encode("ascii", errors="backslashreplace").decode("ascii")
+                print(f"  PROJECT {row['rva']} {row['bytes']} bytes {location}")
             for row in info["frames"]:
                 if row["bytes"] > LARGE:
                     symbol = row.get("symbol", {})

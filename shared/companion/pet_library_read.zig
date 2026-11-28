@@ -180,16 +180,22 @@ pub fn readFilteredAt(root: [:0]const u16, out: *Snapshot, options: Options) !vo
     if (dir == invalid) {
         const code = GetLastError();
         if (code == 2 or code == 3) {
-            out.* = .{ .missing = true };
+            out.clear();
+            out.missing = true;
             return;
         }
         return error.OpenRootFailed;
     }
-    var result: Snapshot = .{};
-    const read = readPinned(dir, root, &result, options);
+    const result = std.heap.page_allocator.create(Snapshot) catch |err| {
+        if (CloseHandle(dir) == 0) return error.CleanupFailed;
+        return err;
+    };
+    defer std.heap.page_allocator.destroy(result);
+    result.clear();
+    const read = readPinned(dir, root, result, options);
     if (CloseHandle(dir) == 0) return error.CleanupFailed;
     try read;
-    out.* = result;
+    out.copyFrom(result);
 }
 
 fn readPinned(dir: usize, root: [:0]const u16, out: *Snapshot, options: Options) !void {
@@ -197,15 +203,17 @@ fn readPinned(dir: usize, root: [:0]const u16, out: *Snapshot, options: Options)
     if (GetFileInformationByHandle(dir, &info) == 0 or (info.attributes & 0x410) != 0x10 or !canonical(dir, root)) return error.InvalidRoot;
     var name: [1024]u16 = undefined;
     const path = try appendPath(&name, root, std.unicode.wtf8ToWtf16LeStringLiteral("\\inventory.pci"));
-    var bytes: [inventory.max_bytes]u8 = undefined;
-    const size = (try readRecord(path, &bytes)) orelse {
-        out.* = .{ .missing = true };
+    const bytes = try std.heap.page_allocator.alloc(u8, inventory.max_bytes);
+    defer std.heap.page_allocator.free(bytes);
+    const size = (try readRecord(path, bytes)) orelse {
+        out.clear();
+        out.missing = true;
         return;
     };
     try decode(bytes[0..size], out);
     out.total = out.count;
     var matched: usize = 0;
-    for (out.rows[0..out.count]) |*row| {
+    for (out.rows[0..out.count], 0..) |*row, row_index| {
         try options.check();
         var entry = try catalog.Entry.init(row.id, row.sourceId(), row.sourceId(), .v1);
         var leaf_buf: [64]u8 = undefined;
@@ -229,7 +237,7 @@ fn readPinned(dir: usize, root: [:0]const u16, out: *Snapshot, options: Options)
             @memcpy(row.first_tag[0..tag.len], tag);
             row.first_tag_len = tag.len;
         }
-        out.rows[matched] = row.*;
+        if (matched != row_index) out.rows[matched] = row.*;
         matched += 1;
     }
     out.count = matched;
@@ -270,9 +278,16 @@ pub fn readManagedIndex(root: [:0]const u16, out: *inventory.Inventory) !void {
     if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
     var name: [1024]u16 = undefined;
     const path = try appendPath(&name, root, std.unicode.wtf8ToWtf16LeStringLiteral("\\inventory.pci"));
-    var bytes: [inventory.max_bytes]u8 = undefined;
-    const size = (try readRecord(path, &bytes)) orelse return error.UnknownAsset;
-    try inventory.decode(out, bytes[0..size]);
+    const bytes = try std.heap.page_allocator.alloc(u8, inventory.max_bytes);
+    defer std.heap.page_allocator.free(bytes);
+    const size = (try readRecord(path, bytes)) orelse return error.UnknownAsset;
+    const scratch = try std.heap.page_allocator.create(inventory.Inventory);
+    defer std.heap.page_allocator.destroy(scratch);
+    try inventory.decodeScratch(scratch, bytes[0..size]);
+    @memcpy(out.entries[0..scratch.count], scratch.entries[0..scratch.count]);
+    out.next_id = scratch.next_id;
+    out.pending_id = null;
+    out.count = scratch.count;
 }
 
 fn readRecord(path: [:0]const u16, bytes: []u8) !?usize {
@@ -299,13 +314,15 @@ fn readFile(file: usize, path: []const u16, bytes: []u8) !usize {
 }
 
 pub fn decode(bytes: []const u8, out: *Snapshot) !void {
-    var index: inventory.Inventory = .{};
-    try inventory.decode(&index, bytes);
-    var result: Snapshot = .{ .count = index.count, .total = index.count };
-    for (index.entries[0..index.count], 0..) |record, n| {
-        result.rows[n] = .{ .id = record.id, .source = record.source, .len = record.len, .paired = record.digest != null and record.secondary != null, .digest = record.digest, .secondary = record.secondary };
+    const index = try std.heap.page_allocator.create(inventory.Inventory);
+    defer std.heap.page_allocator.destroy(index);
+    try inventory.decodeScratch(index, bytes);
+    for (index.entries[0..index.count], 0..) |*record, n| {
+        out.rows[n] = .{ .id = record.id, .source = record.source, .len = record.len, .paired = record.digest != null and record.secondary != null, .digest = record.digest, .secondary = record.secondary };
     }
-    out.* = result;
+    out.count = index.count;
+    out.total = index.count;
+    out.missing = false;
 }
 
 test "known folder resolution loads only system APIs on Windows" {
@@ -368,4 +385,16 @@ test "snapshot copy publishes only live rows and clear resets metadata" {
     try std.testing.expectEqual(@as(usize, 0), target.count);
     try std.testing.expectEqual(@as(usize, 0), target.total);
     try std.testing.expect(!target.missing);
+}
+
+test "malformed inventory does not publish partial snapshot" {
+    const snapshot = try std.testing.allocator.create(Snapshot);
+    defer std.testing.allocator.destroy(snapshot);
+    snapshot.clear();
+    snapshot.rows[0] = .{ .id = 42, .source = @splat('a'), .len = 1, .paired = false };
+    snapshot.count = 1;
+    snapshot.total = 1;
+    try std.testing.expectError(error.InvalidRecord, decode("PCI3", snapshot));
+    try std.testing.expectEqual(@as(usize, 1), snapshot.count);
+    try std.testing.expectEqual(@as(u64, 42), snapshot.rows[0].id);
 }

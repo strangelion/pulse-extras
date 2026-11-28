@@ -186,11 +186,24 @@ pub fn encode(value: *const Inventory, out: []u8) Error![]const u8 {
 
 // Decode into a staged value, commit only on exact, valid end of record.
 pub fn decode(value: *Inventory, input: []const u8) Error!void {
+    var candidate: Inventory = undefined;
+    try decodeScratch(&candidate, input);
+    @memcpy(value.entries[0..candidate.count], candidate.entries[0..candidate.count]);
+    value.next_id = candidate.next_id;
+    value.pending_id = null;
+    value.count = candidate.count;
+}
+
+/// Worker-owned, unpublished scratch only. On error its contents may be
+/// partial; never call this directly on the authoritative inventory.
+pub fn decodeScratch(candidate: *Inventory, input: []const u8) Error!void {
     if (input.len < 16 or input.len > max_bytes) return error.InvalidRecord;
     const legacy = std.mem.eql(u8, input[0..4], "PCI1");
     const dual = std.mem.eql(u8, input[0..4], "PCI3");
     if (!legacy and !dual and !std.mem.eql(u8, input[0..4], "PCI2")) return error.InvalidRecord;
-    var candidate: Inventory = .{ .next_id = get64(input[4..12]) };
+    candidate.next_id = get64(input[4..12]);
+    candidate.count = 0;
+    candidate.pending_id = null;
     if (candidate.next_id == 0) return error.InvalidRecord;
     var count: u32 = 0;
     for (0..4) |i| count |= @as(u32, input[12 + i]) << @as(u5, @intCast(i * 8));
@@ -228,7 +241,6 @@ pub fn decode(value: *Inventory, input: []const u8) Error!void {
         last = id;
     }
     if (pos != input.len) return error.InvalidRecord;
-    value.* = candidate;
 }
 
 test "stable IDs survive gaps removal and inventory round trip" {
