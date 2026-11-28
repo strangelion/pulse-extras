@@ -274,3 +274,7 @@ The optional local SDK bundle is stored under
 header lookup map, archive digest, and Agent instructions are documented in
 [Local SDK reference layout](local-reference.md). This bundle is not the
 reproducible build pin and does not by itself prove real-host UI acceptance.
+
+### Task snapshot prefix after the 1.0.62 SDK update
+
+The nested task progress structure grows from 72 to 192 bytes, so the enclosing snapshot grows from 96 to 216 bytes. VCS and Companion only read the frozen size/id/state prefix and must accept 96-byte snapshots from 1.0.60. The shared adapter rejects undersized snapshots, mismatched IDs and unknown states without reading the extension. The Zig task lifecycle and independent C Companion fixture cover real 96-byte callback storage and current-layout callbacks. This is compatibility regression coverage, not a new real-host acceptance record.

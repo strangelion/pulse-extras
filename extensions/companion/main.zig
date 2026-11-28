@@ -4,6 +4,7 @@ const std = @import("std");
 const raw = @import("pulse_raw");
 const abi = @import("pulse_abi");
 const host_mod = @import("pulse_host");
+const async_host = @import("pulse_async_host");
 const ui = @import("pulse_ui_model");
 const mount = @import("pulse_ui_mount");
 const diag = @import("pulse_diagnostics");
@@ -1922,14 +1923,14 @@ fn collectSession(instance: *Instance, stopping: bool) void {
 
 fn observe(user: ?*anyopaque, snapshot: [*c]const raw.PulseTaskSnapshot) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
-    if (snapshot == null or snapshot[0].size < @sizeOf(raw.PulseTaskSnapshot) or snapshot[0].id != instance.task_id) return;
-    instance.task_state = snapshot[0].state;
+    const state = async_host.snapshotState(snapshot, instance.task_id) orelse return;
+    instance.task_state = @backingInt(state);
 }
 
 fn observeRuntime(user: ?*anyopaque, snapshot: [*c]const raw.PulseTaskSnapshot) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
-    if (snapshot == null or snapshot[0].size < @sizeOf(raw.PulseTaskSnapshot) or snapshot[0].id != instance.runtime_task_id) return;
-    instance.runtime_task_state = snapshot[0].state;
+    const state = async_host.snapshotState(snapshot, instance.runtime_task_id) orelse return;
+    instance.runtime_task_state = @backingInt(state);
 }
 
 fn dispatchPoll(user: ?*anyopaque) callconv(.c) void {

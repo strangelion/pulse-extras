@@ -13,6 +13,11 @@ pub const Descriptor = raw.PulseTaskDescriptor;
 pub const descriptor_v1_size: u32 = 64;
 pub const Context = raw.PulseTaskContext;
 pub const Snapshot = raw.PulseTaskSnapshot;
+pub const snapshot_v1_size: u32 = 96;
+
+comptime {
+    if (@offsetOf(Snapshot, "size") != 0 or @offsetOf(Snapshot, "id") != 8 or @offsetOf(Snapshot, "state") != 16 or @offsetOf(Snapshot, "progress") != 24 or @sizeOf(Snapshot) < snapshot_v1_size) @compileError("task snapshot V1 prefix changed");
+}
 pub const TaskState = enum(u32) {
     running = 0,
     cancelling = 1,
@@ -25,6 +30,21 @@ pub const TaskState = enum(u32) {
         return self != .running and self != .cancelling;
     }
 };
+
+/// The nested progress grew in 1.0.61+. Read only the original snapshot
+/// prefix, never copy the current raw struct from an older host.
+pub fn snapshotState(snapshot: [*c]const Snapshot, id: u64) ?TaskState {
+    if (snapshot == null or snapshot[0].size < snapshot_v1_size or snapshot[0].id != id) return null;
+    return switch (snapshot[0].state) {
+        0 => .running,
+        1 => .cancelling,
+        2 => .completed,
+        3 => .partial,
+        4 => .failed,
+        5 => .cancelled,
+        else => null,
+    };
+}
 
 pub fn taskTable(host: host_mod.Host) host_mod.Error!TaskTable {
     const table = try host.query(TaskTable, raw.PULSE_TASKS_INTERFACE_NAME, raw.PULSE_TASKS_VERSION_1);
@@ -44,19 +64,11 @@ const Capture = struct {
 
     fn receive(user: ?*anyopaque, snapshot: [*c]const Snapshot) callconv(.c) void {
         const self: *Capture = @ptrCast(@alignCast(user orelse return));
-        if (snapshot == null or snapshot.*.size < @sizeOf(Snapshot) or snapshot.*.id != self.id or self.state != null) {
+        if (self.state != null) {
             self.invalid = true;
             return;
         }
-        self.state = switch (snapshot.*.state) {
-            0 => .running,
-            1 => .cancelling,
-            2 => .completed,
-            3 => .partial,
-            4 => .failed,
-            5 => .cancelled,
-            else => null,
-        };
+        self.state = snapshotState(snapshot, self.id);
         if (self.state == null) self.invalid = true;
     }
 };
@@ -300,6 +312,8 @@ const Mock = struct {
     invalid_id: bool = false,
     fail_release: bool = false,
     wrong_snapshot: bool = false,
+    legacy_snapshot: bool = false,
+    short_snapshot: bool = false,
 
     fn create(user: ?*anyopaque, _: [*c]const Descriptor, out: [*c]u64) callconv(.c) abi.Status {
         const self: *Mock = @ptrCast(@alignCast(user orelse return abi.error_argument));
@@ -316,6 +330,25 @@ const Mock = struct {
 
     fn get(user: ?*anyopaque, id: u64, callback: raw.PulseTaskSnapshotFn, data: ?*anyopaque) callconv(.c) abi.Status {
         const self: *Mock = @ptrCast(@alignCast(user orelse return abi.error_argument));
+        if (self.legacy_snapshot) {
+            const Legacy = extern struct {
+                size: u32,
+                id: u64,
+                state: raw.PulseTaskState,
+                progress: [9]u64,
+            };
+            comptime {
+                if (@sizeOf(Legacy) != snapshot_v1_size or @offsetOf(Legacy, "progress") != 24) @compileError("legacy fixture layout");
+            }
+            const snapshot: Legacy = .{
+                .size = if (self.short_snapshot) snapshot_v1_size - 1 else snapshot_v1_size,
+                .id = if (self.wrong_snapshot) id + 1 else id,
+                .state = @backingInt(self.state),
+                .progress = @splat(0),
+            };
+            (callback orelse return abi.error_argument)(data, @ptrCast(&snapshot));
+            return abi.ok;
+        }
         var snapshot: Snapshot = std.mem.zeroes(Snapshot);
         snapshot.size = @sizeOf(Snapshot);
         snapshot.id = if (self.wrong_snapshot) id + 1 else id;
@@ -407,6 +440,24 @@ test "invalid successful id and inconsistent snapshots fail closed" {
     mock.state = .completed;
     _ = try second.poll();
     try second.releaseTerminal();
+}
+
+test "legacy 96-byte task snapshots poll and release without reading the extended tail" {
+    var mock: Mock = .{ .legacy_snapshot = true };
+    var task = try Task.init(mock.table());
+    const descriptor = Mock.descriptor();
+    try task.start(&descriptor);
+    try std.testing.expectEqual(TaskState.running, try task.poll());
+    mock.short_snapshot = true;
+    mock.state = .completed;
+    try std.testing.expectError(error.Abi, task.poll());
+    try std.testing.expectError(error.State, task.releaseTerminal());
+    mock.short_snapshot = false;
+    try std.testing.expectEqual(TaskState.completed, try task.poll());
+    try task.releaseTerminal();
+    try std.testing.expectEqual(@as(usize, 1), mock.release_calls);
+    try std.testing.expect(!task.occupied());
+    try std.testing.expect(snapshotState(null, 42) == null);
 }
 
 test "dispatch permits callback before post returns and does not swallow STATE" {

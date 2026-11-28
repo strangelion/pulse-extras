@@ -595,6 +595,34 @@ static PulseStatus PULSE_CALL cancel_task(void *ctx, PulseTaskId id) {
     ++f->task_canceled;
     return PULSE_OK;
 }
+/* Independent v1.0.60 snapshot layout. Do not allocate a modern snapshot
+ * and merely change its size: the older host really owns only 96 bytes. */
+typedef struct {
+    uint32_t size, percent;
+    uint64_t completed_items, total_items, completed_bytes, total_bytes;
+    PulseStringView error, current_item;
+} LegacyTaskProgress;
+typedef struct {
+    uint32_t size;
+    PulseTaskId id;
+    PulseTaskState state;
+    LegacyTaskProgress progress;
+} LegacyTaskSnapshot;
+_Static_assert(sizeof(LegacyTaskProgress) == 72, "legacy task progress size");
+_Static_assert(sizeof(LegacyTaskSnapshot) == 96 && offsetof(LegacyTaskSnapshot, progress) == 24, "legacy task snapshot size");
+_Static_assert(offsetof(PulseTaskSnapshot, id) == offsetof(LegacyTaskSnapshot, id) &&
+    offsetof(PulseTaskSnapshot, state) == offsetof(LegacyTaskSnapshot, state), "task snapshot prefix");
+
+static void deliver_task_snapshot(PulseTaskSnapshotFn callback, void *user, PulseTaskId id, PulseTaskState state) {
+    if (state == PULSE_TASK_RUNNING || state == PULSE_TASK_CANCELLING) {
+        PulseTaskSnapshot snapshot = {.size=sizeof(snapshot), .id=id, .state=state};
+        callback(user, &snapshot);
+    } else {
+        LegacyTaskSnapshot snapshot = {.size=sizeof(snapshot), .id=id, .state=state};
+        callback(user, (const PulseTaskSnapshot *)(const void *)&snapshot);
+    }
+}
+
 static PulseStatus PULSE_CALL get_task(void *ctx, PulseTaskId id, PulseTaskSnapshotFn callback, void *user) {
     Fixture *f = ctx;
     if (id && id == f->aux_task) {
@@ -602,14 +630,12 @@ static PulseStatus PULSE_CALL get_task(void *ctx, PulseTaskId id, PulseTaskSnaps
         PulseTaskContext task = {.id=id, .context=f, .cancelled=cancelled};
         PulseTaskState state = f->aux_work(f->aux_user, &task);
         REQUIRE(state == PULSE_TASK_CANCELLED);
-        PulseTaskSnapshot snapshot = {.size=sizeof(snapshot), .id=id, .state=state};
-        callback(user, &snapshot);
+        deliver_task_snapshot(callback, user, id, state);
         return PULSE_OK;
     }
     REQUIRE(id && id == f->task && callback);
     observe_worker(f);
-    PulseTaskSnapshot snapshot = {.size=sizeof(snapshot), .id=id, .state=f->task_state};
-    callback(user, &snapshot);
+    deliver_task_snapshot(callback, user, id, f->task_state);
     return PULSE_OK;
 }
 static PulseStatus PULSE_CALL release_task(void *ctx, PulseTaskId id) {
