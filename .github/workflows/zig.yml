@@ -1,7 +1,7 @@
 name: Zig regression
 
-# Scoped correctness, manual full, and no packaging: releases are assembled
-# locally with scripts/package_release.py (see docs/release.md).
+# Scoped correctness and manual full regression. Check Share release inputs
+# without assembling or publishing packages (see docs/release.md).
 
 on:
   push:
@@ -173,6 +173,9 @@ jobs:
         shell: bash
         run: |
           python -c 'import hashlib, os, pathlib, subprocess; p=pathlib.Path("zig-out/bin"); names=("lan","local","worker","pake") if os.name=="nt" else ("lan","local","worker"); subprocess.run(["zig","build","share-dev","-Dtarget=x86_64-windows-msvc","-Doptimize=ReleaseSafe",*["-Dshare-"+n+"-sha256="+hashlib.sha256((p/("pulse-share-"+n+".exe")).read_bytes()).hexdigest() for n in names]],check=True)'
+      - name: Verify Share release input digest chain
+        if: runner.os == 'Windows' && (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        run: python -c "import sys; from pathlib import Path; sys.path.insert(0, 'scripts'); import package_release; package_release.plan('share', Path('zig-out/bin'))"
       - name: Real Windows encrypted Share LAN loopback
         if: runner.os == 'Windows' && (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
         timeout-minutes: 5
@@ -285,9 +288,6 @@ jobs:
       - name: Build production extensions
         if: needs.scope.outputs.level != 'companion' && needs.scope.outputs.level != 'share'
         run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
-      - name: Build experimental Share UI
-        if: needs.scope.outputs.level == 'full'
-        run: zig build share-dev -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
       - name: Verify forge Windows ABI constants and layouts
         if: runner.os == 'Windows' && (needs.scope.outputs.level == 'vcs' || needs.scope.outputs.level == 'full')
         shell: pwsh

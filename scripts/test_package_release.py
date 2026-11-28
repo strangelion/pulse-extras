@@ -63,7 +63,7 @@ class DeclarationTests(unittest.TestCase):
         self.assertIn("was not built against", str(raised.exception))
         self.assertIn("-Dcompanion-runtime-sha256=", str(raised.exception))
 
-    def test_share_exact_members_and_all_four_digests(self):
+    def test_share_exact_members_and_digest_chain(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             from release_registry import SHARE_HELPERS, SHARE_MEMBERS
@@ -72,23 +72,65 @@ class DeclarationTests(unittest.TestCase):
                 path = root / f"pulse-share-{key}.exe"
                 path.write_bytes(key.encode("ascii"))
                 digests.append(hashlib.sha256(path.read_bytes()).hexdigest())
+            desktop = root / "pulse-share-desktop.exe"
+            # Non-UTF-8 bytes model a binary, not a dependency notice.
+            desktop.write_bytes(b"\xff\x00" + "--".join(digests).encode("ascii"))
             library = root / "pulse_share.dll"
-            library.write_bytes("--".join(digests).encode("ascii"))
-            for name in SHARE_MEMBERS[len(SHARE_HELPERS):]:
-                (root / name).write_text("fixture notice", encoding="utf-8")
+
+            def bind_desktop():
+                library.write_bytes(hashlib.sha256(desktop.read_bytes()).hexdigest().encode("ascii"))
+
+            bind_desktop()
+            original_dll = library.read_bytes()
+            original_desktop = desktop.read_bytes()
+            for name in SHARE_MEMBERS:
+                if name.endswith("-notices.txt"):
+                    (root / name).write_text("fixture notice", encoding="utf-8")
             plan = package_release.plan("share", root)
             self.assertEqual(plan["id"], "strangelion.share")
             self.assertEqual([name for _, name in plan["members"]], list(SHARE_MEMBERS))
             for key in SHARE_HELPERS:
-                path = root / f"pulse-share-{key}.exe"
-                original = path.read_bytes()
-                path.write_bytes(b"changed")
-                with self.assertRaisesRegex(ValueError, f"-Dshare-{key}-sha256"):
-                    package_release.plan("share", root)
-                path.write_bytes(original)
-            (root / SHARE_MEMBERS[-1]).unlink()
-            with self.assertRaisesRegex(ValueError, "missing build output"):
+                with self.subTest(helper=key):
+                    path = root / f"pulse-share-{key}.exe"
+                    original = path.read_bytes()
+                    path.write_bytes(b"changed")
+                    with self.assertRaisesRegex(ValueError, f"-Dshare-{key}-sha256"):
+                        package_release.plan("share", root)
+                    path.write_bytes(original)
+
+                    # Even a correctly bound desktop must pin every helper.
+                    desktop.write_bytes(original_desktop.replace(digests[SHARE_HELPERS.index(key)].encode("ascii"), b"x" * 64))
+                    bind_desktop()
+                    with self.assertRaisesRegex(ValueError, f"-Dshare-{key}-sha256"):
+                        package_release.plan("share", root)
+                    desktop.write_bytes(original_desktop)
+                    library.write_bytes(original_dll)
+
+            desktop.write_bytes(original_desktop + b"changed")
+            with self.assertRaisesRegex(ValueError, "pulse-share-desktop.exe"):
                 package_release.plan("share", root)
+            desktop.write_bytes(original_desktop)
+            # Old DLL-only helper binding cannot substitute for the new chain.
+            library.write_bytes("--".join(digests).encode("ascii"))
+            with self.assertRaisesRegex(ValueError, "pulse-share-desktop.exe"):
+                package_release.plan("share", root)
+            library.write_bytes(original_dll)
+            for name in SHARE_MEMBERS:
+                with self.subTest(missing=name):
+                    path = root / name
+                    original = path.read_bytes()
+                    path.unlink()
+                    with self.assertRaisesRegex(ValueError, "missing build output"):
+                        package_release.plan("share", root)
+                    path.write_bytes(original)
+            for name in SHARE_MEMBERS:
+                if name.endswith("-notices.txt"):
+                    path = root / name
+                    path.write_text("  ", encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "empty Share dependency notices"):
+                        package_release.plan("share", root)
+                    path.write_text("fixture notice", encoding="utf-8")
+            package_release.plan("share", root)
 
     def test_vcs_has_no_extra_members(self):
         with tempfile.TemporaryDirectory() as tmp:

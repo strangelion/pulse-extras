@@ -72,14 +72,25 @@ def plan(extension: str, artifacts: Path):
     if product["build_profile"] == "share":
         package_common.regular_file(library, package_common.FILE_MAX)
         dll = library.read_bytes()
+        # The Pulse adapter authenticates the desktop executable, which in
+        # turn authenticates the four helpers it actually launches.
+        desktop = artifacts / "pulse-share-desktop.exe"
+        desktop_digest = package_common.sha256(desktop, package_common.FILE_MAX)
+        if desktop_digest.encode("ascii") not in dll:
+            raise ValueError(
+                f"{library.name} was not built against {desktop.name}; "
+                "rebuild both with zig build share-dev")
+        desktop_bytes = desktop.read_bytes()
         for key in release_registry.SHARE_HELPERS:
             helper = artifacts / f"pulse-share-{key}.exe"
             digest = package_common.sha256(helper, package_common.FILE_MAX)
-            if digest.encode("ascii") not in dll:
+            if digest.encode("ascii") not in desktop_bytes:
                 raise ValueError(
-                    f"{library.name} was not built against {helper.name}; "
+                    f"{desktop.name} was not built against {helper.name}; "
                     f"rebuild with -Dshare-{key}-sha256={digest}")
-        for name in release_registry.SHARE_MEMBERS[len(release_registry.SHARE_HELPERS):]:
+        for name in release_registry.SHARE_MEMBERS:
+            if not name.endswith("-notices.txt"):
+                continue
             notice = artifacts / name
             package_common.regular_file(notice, 4 * 1024 * 1024)
             if not notice.read_text(encoding="utf-8").strip():
