@@ -141,6 +141,7 @@ pub const Runner = struct {
     tree_policy: TreePolicy = .direct_child,
     approval: ?trust.OwnedApproval = null,
     git_isolation: bool = false,
+    git_index_isolation: bool = false,
     log: event_log.Log = .{},
     max_timeout_ns: u64 = default_max_timeout_ns,
     completed: usize = 0,
@@ -166,6 +167,7 @@ pub const Runner = struct {
         if (max_timeout_ns == 0 or policy == .approved_local) return error.InvalidRequest;
         self.approval = null;
         self.git_isolation = false;
+        self.git_index_isolation = false;
         self.policy = policy;
         self.max_timeout_ns = max_timeout_ns;
     }
@@ -185,6 +187,13 @@ pub const Runner = struct {
         if (self.pending != null or self.live_outcomes != 0) return error.Busy;
         if (self.policy != .approved_local or self.approval == null) return error.UnapprovedExecutable;
         self.git_isolation = true;
+        self.git_index_isolation = false;
+    }
+
+    /// Allow only the alternate index in the caller's private neutral cwd.
+    pub fn configureGitIndexIsolation(self: *Runner) Error!void {
+        try self.configureGitIsolation();
+        self.git_index_isolation = true;
     }
 
     pub fn configureTree(self: *Runner, policy: TreePolicy) Error!void {
@@ -271,7 +280,9 @@ pub const Runner = struct {
         if (self.policy == .approved_local) {
             const approval = self.approval orelse return error.UnapprovedExecutable;
             if (!std.mem.eql(u8, approval.slice(), request.argv[0])) return error.UnapprovedExecutable;
-            if (self.git_isolation) {
+            if (self.git_index_isolation) {
+                try trust.validateGitIndexEnvironment(request.environ_map.?, request.cwd.?);
+            } else if (self.git_isolation) {
                 try trust.validateGitEnvironment(request.environ_map.?, request.cwd.?);
             } else {
                 try trust.validateEnvironment(request.environ_map.?);
@@ -490,6 +501,7 @@ fn validateEnvironment(environment: *const std.process.Environ.Map) error{Invali
 
 pub const git_global_config_name = trust.git_global_config_name;
 pub const gitGlobalConfigPath = trust.gitGlobalConfigPath;
+pub const gitIndexPath = trust.gitIndexPath;
 pub const validateGitEnvironment = trust.validateGitEnvironment;
 
 const testing = std.testing;

@@ -76,7 +76,7 @@ pub fn digestFile(io: std.Io, file: std.Io.File) ![32]u8 {
 /// credential variables, shell startup, or tool configuration injection.
 /// Product-specific policies require separate review, not a blacklist.
 pub fn validateEnvironment(map: *const std.process.Environ.Map) error{UnapprovedEnvironment}!void {
-    return validateEnvironmentInternal(map, null);
+    return validateEnvironmentInternal(map, null, null);
 }
 
 /// Only the dedicated isolated Git profile may select a global config file.
@@ -94,9 +94,35 @@ pub fn gitGlobalConfigPath(cwd: []const u8, buffer: []u8) error{UnapprovedEnviro
 }
 
 pub fn validateGitEnvironment(map: *const std.process.Environ.Map, cwd: []const u8) error{UnapprovedEnvironment}!void {
+    return validateGitProfile(map, cwd, null);
+}
+
+/// The index is always in the same private directory as the isolated Git
+/// config. The ordinary Git profile still refuses all index overrides.
+pub fn gitIndexPath(cwd: []const u8, buffer: []u8) error{UnapprovedEnvironment}![]const u8 {
+    if (!localAbsolute(cwd) or cwd.len >= max_git_config_path_bytes or std.mem.indexOfScalar(u8, cwd, 0) != null) return error.UnapprovedEnvironment;
+    if (cwd[cwd.len - 1] == '/' or (builtin.os.tag == .windows and cwd[cwd.len - 1] == '\\')) return error.UnapprovedEnvironment;
+    return std.fmt.bufPrint(buffer, "{s}" ++ std.fs.path.sep_str ++ "index", .{cwd}) catch return error.UnapprovedEnvironment;
+}
+
+pub fn validateGitIndexEnvironment(map: *const std.process.Environ.Map, cwd: []const u8) error{UnapprovedEnvironment}!void {
+    var index_buffer: [max_git_config_path_bytes]u8 = undefined;
+    const expected = try gitIndexPath(cwd, &index_buffer);
+    try validateGitProfile(map, cwd, expected);
+    for ([_][]const u8{ "GIT_INDEX_FILE", "GIT_ATTR_NOSYSTEM", "GIT_NO_LAZY_FETCH", "HOME", "XDG_CONFIG_HOME" }, [_][]const u8{ expected, "1", "1", cwd, cwd }) |key, value| {
+        if (!std.mem.eql(u8, map.get(key) orelse return error.UnapprovedEnvironment, value)) return error.UnapprovedEnvironment;
+    }
+    for ([_][]const u8{ "TEMP", "TMP" }) |key| {
+        if (map.get(key)) |value| {
+            if (!std.mem.eql(u8, value, cwd)) return error.UnapprovedEnvironment;
+        }
+    }
+}
+
+fn validateGitProfile(map: *const std.process.Environ.Map, cwd: []const u8, git_index: ?[]const u8) error{UnapprovedEnvironment}!void {
     var buffer: [max_git_config_path_bytes]u8 = undefined;
     const expected = try gitGlobalConfigPath(cwd, &buffer);
-    try validateEnvironmentInternal(map, expected);
+    try validateEnvironmentInternal(map, expected, git_index);
     for ([_][]const u8{ "HOME", "XDG_CONFIG_HOME" }) |key| {
         if (map.get(key)) |value| {
             if (!std.mem.eql(u8, value, cwd)) return error.UnapprovedEnvironment;
@@ -116,7 +142,7 @@ pub fn verifyEmptyGitConfig(io: std.Io, cwd: []const u8) !void {
     if (stat.kind != .file or stat.size != 0) return error.UnapprovedEnvironment;
 }
 
-fn validateEnvironmentInternal(map: *const std.process.Environ.Map, git_global: ?[]const u8) error{UnapprovedEnvironment}!void {
+fn validateEnvironmentInternal(map: *const std.process.Environ.Map, git_global: ?[]const u8, git_index: ?[]const u8) error{UnapprovedEnvironment}!void {
     var iterator = map.iterator();
     while (iterator.next()) |entry| {
         const key = entry.key_ptr.*;
@@ -137,6 +163,7 @@ fn validateEnvironmentInternal(map: *const std.process.Environ.Map, git_global: 
             (std.mem.eql(u8, key, "HGENCODING") and std.mem.eql(u8, value, "UTF-8")) or
             (std.mem.eql(u8, key, "PYTHONNOUSERSITE") and std.mem.eql(u8, value, "1")) or
             (std.mem.eql(u8, key, "GIT_CONFIG_GLOBAL") and git_global != null and std.mem.eql(u8, value, git_global.?)) or
+            (std.mem.eql(u8, key, "GIT_INDEX_FILE") and git_index != null and std.mem.eql(u8, value, git_index.?)) or
             (git_global != null and (std.mem.eql(u8, key, "HOME") or std.mem.eql(u8, key, "XDG_CONFIG_HOME"))) or
             (git_global != null and std.mem.eql(u8, key, "GIT_ATTR_NOSYSTEM") and std.mem.eql(u8, value, "1"));
         if (!allowed) return error.UnapprovedEnvironment;
@@ -144,6 +171,25 @@ fn validateEnvironmentInternal(map: *const std.process.Environ.Map, git_global: 
             if (!localAbsolute(value)) return error.UnapprovedEnvironment;
         }
     }
+}
+
+test "alternate Git index is exact and only available in a private write profile" {
+    var map = std.process.Environ.Map.init(std.testing.allocator);
+    defer map.deinit();
+    const cwd = if (builtin.os.tag == .windows) "C:\\pulse-fixture" else "/pulse-fixture";
+    var config_buffer: [max_git_config_path_bytes]u8 = undefined;
+    var index_buffer: [max_git_config_path_bytes]u8 = undefined;
+    const config = try gitGlobalConfigPath(cwd, &config_buffer);
+    const index = try gitIndexPath(cwd, &index_buffer);
+    for ([_][]const u8{ "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_CONFIG_GLOBAL", "GIT_INDEX_FILE", "GIT_ATTR_NOSYSTEM", "GIT_NO_LAZY_FETCH", "HOME", "XDG_CONFIG_HOME" }, [_][]const u8{ "1", "0", "0", config, index, "1", "1", cwd, cwd }) |key, value| try map.put(key, value);
+    try validateGitIndexEnvironment(&map, cwd);
+    try std.testing.expectError(error.UnapprovedEnvironment, validateGitEnvironment(&map, cwd));
+    try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
+    try map.put("GIT_INDEX_FILE", config);
+    try std.testing.expectError(error.UnapprovedEnvironment, validateGitIndexEnvironment(&map, cwd));
+    try map.put("GIT_INDEX_FILE", index);
+    _ = map.swapRemove("GIT_NO_LAZY_FETCH");
+    try std.testing.expectError(error.UnapprovedEnvironment, validateGitIndexEnvironment(&map, cwd));
 }
 
 test "digest verification reads a bounded file and detects changed contents" {

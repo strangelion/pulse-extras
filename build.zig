@@ -22,7 +22,7 @@ const Modules = struct {
     vcs_jj: *std.Build.Module,
     vcs_svn: *std.Build.Module,
     vcs_hg: *std.Build.Module,
-    all: [43]std.Build.Module.Import = undefined,
+    all: [44]std.Build.Module.Import = undefined,
 
     fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, vcs_test_config: *std.Build.Module, companion_config: *std.Build.Module) Modules {
         const raw = b.createModule(.{
@@ -378,6 +378,20 @@ const Modules = struct {
                 .{ .name = "vcs_provider", .module = vcs_provider },
             },
         });
+        const vcs_git_index_transaction = b.createModule(.{
+            .root_source_file = b.path("shared/vcs/git_index_transaction.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pulse_process", .module = process_mod },
+                .{ .name = "vcs_provider", .module = vcs_provider },
+                .{ .name = "vcs_approval", .module = vcs_approval },
+                .{ .name = "vcs_identity", .module = vcs_identity },
+                .{ .name = "vcs_windows_evidence", .module = vcs_windows_evidence },
+                .{ .name = "process_trust", .module = process_trust },
+                .{ .name = "vcs_cli", .module = vcs_cli },
+            },
+        });
         const companion_library = b.createModule(.{
             .root_source_file = b.path("shared/companion_extension.zig"),
             .target = target,
@@ -432,6 +446,7 @@ const Modules = struct {
             .{ .name = "vcs_git", .module = vcs_git },
             .{ .name = "vcs_approval", .module = vcs_approval },
             .{ .name = "vcs_windows_evidence", .module = vcs_windows_evidence },
+            .{ .name = "vcs_git_index_transaction", .module = vcs_git_index_transaction },
             .{ .name = "vcs_jj", .module = vcs_jj },
             .{ .name = "vcs_svn", .module = vcs_svn },
             .{ .name = "vcs_hg", .module = vcs_hg },
@@ -777,6 +792,7 @@ pub fn build(b: *std.Build) void {
         "shared/pulse/ui_mount.zig",
         "shared/vcs/capabilities.zig",
         "shared/vcs/identity.zig",
+        "shared/vcs/git_index_transaction.zig",
         "shared/vcs/risk.zig",
         "shared/vcs/detect.zig",
         "shared/vcs/provider.zig",

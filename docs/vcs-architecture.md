@@ -422,3 +422,29 @@ reparse point or nested repository. Historical reads remain fixed-grammar
 revision queries. JJ admission is operation-pinned only. Existing grants
 are read-only; no implicit mutation or network consent. Installed behavior,
 concurrent external changes and real client/HTTP acceptance remain separate.
+
+### P4A Git index transaction candidate
+
+A single-file stage or unstage starts with a review of the exact local tool,
+repository, HEAD, index and working file. The review is owned by the panel and
+consumed once on confirmation. The worker must revalidate these inputs and
+reject a changed selection or an unsupported repository layout.
+
+The candidate holds Git's exclusive `index.lock` while Git edits an isolated
+index image. A second ordinary Git writer is rejected while the lock is held.
+Before publication, check the selected blob and mode, verify all unrelated
+index entries, and revalidate the working file, HEAD, live index and the
+proposed image. Publish by syncing the owned lock file and atomically renaming
+it over the original index. Each command must receive an explicit,
+bounded environment with hooks and network fallback disabled.
+
+The Windows Git fixture verifies both directions, a competing writer,
+preservation of HEAD, working-file bytes and unrelated staged content, and
+rejection of a changed live index or proposed image. It exercises the
+transaction component headlessly. On Windows, open the project library, select
+the checkout and enter one relative file path to review and confirm the
+operation. Use the configured Git executable. The initial profile supports an
+ordinary standalone checkout with the restricted core config and a complete
+index. It refuses conflicts, worktrees, nested checkouts, attributes and
+unsupported layouts. Actual Pulse acceptance remains deferred. An abandoned
+lock requires separate recovery and is retained by subsequent operations.

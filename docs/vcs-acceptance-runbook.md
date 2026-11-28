@@ -504,3 +504,24 @@ rejection, activation rollback, close retry and host-first unload. The
 fixture uses public Preview 3 headers and a mock host. Repeat the same
 settings and menu paths after manually installing the next verified
 preview into an isolated Pulse profile.
+
+### P4A single-file Git index writes
+
+Use a disposable ordinary Windows Git checkout with a configured Git
+executable. Modify a tracked target file and stage a different file. Record
+HEAD, the working files and the staged entries before each operation.
+
+1. In the project library, select the checkout and enter one relative file
+   path. Review stage and confirm once. Verify the staged entry matches the
+   chosen working file and the unrelated staged entry is intact.
+2. Review unstage and confirm. Verify only the chosen index entry is restored
+   to HEAD. Compare HEAD and both working files with the recorded bytes.
+3. After review, change the selected file or switch projects before confirming.
+   The plan should be rejected. Attempt the operation while another writer
+   holds the index lock and verify that lock and index remain intact.
+4. Cancel a pending plan, then re-open settings and verify the old plan cannot
+   be applied. If cancellation arrives after publication, check that the UI
+   reports the applied result. Refresh the VCS panel to see the new status.
+
+The Windows fixtures cover the transaction and owner-side command handling.
+Installed UI execution is pending the consolidated host acceptance round.
