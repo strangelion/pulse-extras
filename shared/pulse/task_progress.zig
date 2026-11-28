@@ -63,8 +63,9 @@ pub fn steppedDescriptor(base: raw.PulseTaskDescriptor, steps: []const abi.Strin
 
 /// Only valid during host work callback; no UI access or product logging.
 /// Step zero always advertises the original prefix, even on newer SDKs.
-pub fn report(context: *const raw.PulseTaskContext, message: []const u8, step: u32, percent: u32) abi.Status {
-    const send = context.report orelse return abi.error_unavailable;
+pub fn report(context: [*c]const raw.PulseTaskContext, message: []const u8, step: u32, percent: u32) abi.Status {
+    if (context == null) return abi.error_argument;
+    const send = context[0].report orelse return abi.error_unavailable;
     if (percent != indeterminate and percent > 100) return abi.error_argument;
     var progress = std.mem.zeroes(TaskProgress61);
     const prefix: *raw.PulseTaskProgress = @ptrCast(&progress);
@@ -72,7 +73,7 @@ pub fn report(context: *const raw.PulseTaskContext, message: []const u8, step: u
     prefix.percent = percent;
     prefix.current_item = abi.view(message);
     progress.step = step;
-    return send(context.context, prefix);
+    return send(context[0].context, prefix);
 }
 
 test "step descriptor preserves prefix and advertises additive size" {
@@ -103,6 +104,7 @@ test "report advertises exactly the basic or stepped size" {
     var context = std.mem.zeroes(raw.PulseTaskContext);
     context.context = &expected;
     context.report = Fixture.receive;
+    try std.testing.expectEqual(abi.error_argument, report(null, "basic", 0, indeterminate));
     try std.testing.expectEqual(abi.ok, report(&context, "basic", 0, indeterminate));
     expected = 192;
     try std.testing.expectEqual(abi.ok, report(&context, "step", 2, indeterminate));

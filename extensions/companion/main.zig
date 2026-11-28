@@ -1612,11 +1612,11 @@ const market_steps = [_]abi.StringView{ abi.view("读取目录索引"), abi.view
 
 // Host-owned worker. Writes only the private result buffer; no UI call.
 fn reportTask(context: [*c]const raw.PulseTaskContext, message: []const u8, step: u32) void {
-    if (context[0].report == null) {
+    if (context == null or context[0].report == null) {
         diag.event("companion-task-report-unavailable");
         return;
     }
-    const status = task_progress.report(&context[0], message, step, task_progress.indeterminate);
+    const status = task_progress.report(context, message, step, task_progress.indeterminate);
     diag.status("companion-task-report-id", context[0].id);
     diag.status("companion-task-report-percent", task_progress.indeterminate);
     diag.status("companion-task-report-step", step);
