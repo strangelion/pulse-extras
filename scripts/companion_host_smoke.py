@@ -20,7 +20,7 @@ import zipfile
 
 REPO = Path(__file__).resolve().parent.parent
 PACKAGE = "strangelion.companion-dev"
-HELPER_NAME = "pulse-pet-demo.exe"
+HELPER_NAME = "pulse-pet.exe"
 HELPER_MAX_BYTES = 256 * 1024 * 1024
 RUNTIME_NAME = "pulse_companion_runtime.dll"
 PACKAGE_FILE_MAX = 64 * 1024 * 1024
@@ -332,7 +332,7 @@ def main() -> int:
     if args.prepare_helper:
         helper_build = out / "helper-build"
         helper_build.mkdir(exist_ok=False)
-        helper_args = ["zig", "build", "pet-demo", "-Doptimize=ReleaseSafe",
+        helper_args = ["zig", "build", "pet", "-Doptimize=ReleaseSafe",
                        "--prefix", str(helper_build), "--summary", "all"]
         if args.prepare_helper == "libwebp":
             helper_args.append("-Dpet-libwebp=true")

@@ -37,7 +37,7 @@ uint32_t pet_import_fixture_path(unsigned kind, uint8_t *out, uint32_t capacity)
     wchar_t path[1024];
     DWORD len;
     switch (kind) {
-        case 0: len = GetFullPathNameW(L"zig-out\\bin\\pulse-pet-demo.exe", 1024, path, NULL); break;
+        case 0: len = GetFullPathNameW(L"zig-out\\bin\\pulse-pet.exe", 1024, path, NULL); break;
         case 1: len = GetFullPathNameW(L"zig-out\\import-fixtures\\fixture-v1", 1024, path, NULL); break;
         case 2: len = GetWindowsDirectoryW(path, 1024); break;
         case 3: len = GetFullPathNameW(L"zig-out\\import-fixtures\\fixture-v1.zip", 1024, path, NULL); break;

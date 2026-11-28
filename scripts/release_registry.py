@@ -7,7 +7,7 @@ import re
 import tomllib
 
 _NATIVE_BUILD = ("zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe",)
-_COMPANION_MEMBERS = ("pulse_companion_runtime.dll", "pulse-pet-demo.exe")
+_COMPANION_MEMBERS = ("pulse_companion_runtime.dll", "pulse-pet.exe")
 SHARE_HELPERS = ("lan", "local", "worker", "pake")
 SHARE_MEMBERS = tuple(f"pulse-share-{key}.exe" for key in SHARE_HELPERS) + (
     "pulse-share-desktop.exe", "pulse-share-pake-notices.txt", "pulse-share-go-notices.txt",
@@ -22,7 +22,7 @@ _PROFILES = {
     ),
     "companion": _NATIVE_BUILD + (
         "zig build companion-runtime-bridge -Doptimize=ReleaseSafe",
-        "zig build pet-demo -Doptimize=ReleaseSafe",
+        "zig build pet -Doptimize=ReleaseSafe",
     ),
 }
 _FIELDS = {"key", "id", "manifest", "library", "members", "build_profile"}

@@ -64,8 +64,10 @@ pub fn openMarketGallery() !void {
     defer _ = FreeLibrary(ole);
     const initialize: ComInit = @ptrCast(GetProcAddress(ole, "CoInitializeEx") orelse return error.BrowserUnavailable);
     const uninitialize: ComUninit = @ptrCast(GetProcAddress(ole, "CoUninitialize") orelse return error.BrowserUnavailable);
-    if (initialize(null, 2) < 0) return error.BrowserUnavailable;
-    defer uninitialize();
+    const com_hr = initialize(null, 2);
+    const rpc_changed: i32 = @bitCast(@as(u32, 0x80010106));
+    if (com_hr < 0 and com_hr != rpc_changed) return error.BrowserUnavailable;
+    defer if (com_hr >= 0) uninitialize();
     const shell = LoadLibraryExW(std.unicode.wtf8ToWtf16LeStringLiteral("shell32.dll"), null, system32);
     if (shell == 0) return error.BrowserUnavailable;
     defer _ = FreeLibrary(shell);
@@ -257,7 +259,7 @@ pub fn marketDefault(runtime_hex: []const u8, helper_hex: []const u8, request: *
     const helper_digest = try parseDigest(helper_hex);
     var path: [1024]u16 = undefined;
     const root = try packageRoot(&path);
-    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\pulse-pet-demo.exe");
+    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\pulse-pet.exe");
     var exe: [1024]u16 = undefined;
     if (root.len + suffix.len >= exe.len) return error.ModulePathUnavailable;
     @memcpy(exe[0..root.len], root);
@@ -299,16 +301,28 @@ pub const ImportRequest = struct {
 };
 
 pub const validSourceId = inventory.validSource;
+pub const deriveSourceId = @import("companion/pet_formats.zig").deriveSourceId;
 pub const ImportReport = local_import.Report;
 
 pub fn isArchivePath(path: []const u8) bool {
     return path.len >= 4 and std.ascii.eqlIgnoreCase(path[path.len - 4 ..], ".zip");
 }
 
+pub fn isSupportedFilePath(path: []const u8) bool {
+    if (path.len < 4) return false;
+    const ext = path[path.len - 4 ..];
+    return std.ascii.eqlIgnoreCase(ext, ".zip") or std.ascii.eqlIgnoreCase(ext, ".gif") or std.ascii.eqlIgnoreCase(ext, ".png");
+}
+
 test "local archive suffix is case insensitive and does not match directory names without suffix" {
     try std.testing.expect(isArchivePath("C:\\Pets\\cat.ZIP"));
     try std.testing.expect(!isArchivePath("C:\\Pets\\cat.zip.exe"));
     try std.testing.expect(!isArchivePath("C:\\Pets\\cat"));
+    try std.testing.expect(isSupportedFilePath("C:\\Pets\\cat.ZIP"));
+    try std.testing.expect(isSupportedFilePath("C:\\Pets\\cat.gif"));
+    try std.testing.expect(isSupportedFilePath("C:\\Pets\\cat.PNG"));
+    try std.testing.expect(!isSupportedFilePath("C:\\Pets\\cat.exe"));
+    try std.testing.expect(!isSupportedFilePath("C:\\Pets\\cat"));
 }
 
 pub const PickedFolder = struct {
@@ -316,10 +330,9 @@ pub const PickedFolder = struct {
     len: usize = 0,
 };
 
-// The picker is a separate, job-contained approved helper, not a COM call
-// inside the Pulse DLL. Its only successful output is one bounded path or
-// an explicit cancellation. The timeout also bounds shutdown of old hosts.
-pub fn pickFolderDefault(helper_hex: []const u8) !?PickedFolder {
+const PickerMode = enum { folder, file };
+
+fn pickPathDefault(helper_hex: []const u8, mode: PickerMode) !?PickedFolder {
     if (comptime builtin.os.tag != .windows) return error.UnsupportedPlatform;
     const digest = try parseDigest(helper_hex);
     var wide: [1024]u16 = undefined;
@@ -327,7 +340,7 @@ pub fn pickFolderDefault(helper_hex: []const u8) !?PickedFolder {
     var root_bytes: [4096]u8 = undefined;
     const root_len = try std.unicode.utf16LeToUtf8(&root_bytes, root);
     var exe_bytes: [4096]u8 = undefined;
-    const exe = try std.fmt.bufPrint(&exe_bytes, "{s}\\pulse-pet-demo.exe", .{root_bytes[0..root_len]});
+    const exe = try std.fmt.bufPrint(&exe_bytes, "{s}\\pulse-pet.exe", .{root_bytes[0..root_len]});
     var system_wide: [1024]u16 = undefined;
     const n = GetWindowsDirectoryW(&system_wide, system_wide.len);
     if (n == 0 or n >= system_wide.len) return error.InvalidSystemDirectory;
@@ -341,9 +354,13 @@ pub fn pickFolderDefault(helper_hex: []const u8) !?PickedFolder {
     var runner = process.Runner.init(std.heap.page_allocator, threaded.io());
     try runner.configureApproved(.{ .path = exe, .digest = digest }, 60 * std.time.ns_per_s);
     try runner.configureTree(.windows_job);
+    const flag: []const u8 = switch (mode) {
+        .folder => "--pick-folder",
+        .file => "--pick-file",
+    };
     const outcome = blk: {
         var result = runner.run(.{
-            .argv = &.{ exe, "--pick-folder" },
+            .argv = &.{ exe, flag },
             .cwd = root_bytes[0..root_len],
             .environ_map = &environ,
             .timeout_ns = 60 * std.time.ns_per_s,
@@ -352,15 +369,28 @@ pub fn pickFolderDefault(helper_hex: []const u8) !?PickedFolder {
         }) catch |err| break :blk @as(anyerror!?PickedFolder, err);
         defer result.deinit();
         if (!result.succeeded()) break :blk @as(anyerror!?PickedFolder, error.PickerFailed);
-        break :blk parsePickedFolder(result.stdout);
+        break :blk switch (mode) {
+            .folder => parsePickedFolder(result.stdout),
+            .file => parsePickedFile(result.stdout),
+        };
     };
     try runner.checkDrained();
     return outcome;
 }
 
-fn parsePickedFolder(bytes: []const u8) !?PickedFolder {
-    if (std.mem.eql(u8, bytes, "PULSE_FOLDER_CANCELLED")) return null;
-    const prefix = "PULSE_FOLDER_V1 ";
+// The picker is a separate, job-contained approved helper, not a COM call
+// inside the Pulse DLL. Its only successful output is one bounded path or
+// an explicit cancellation. The timeout also bounds shutdown of old hosts.
+pub fn pickFolderDefault(helper_hex: []const u8) !?PickedFolder {
+    return pickPathDefault(helper_hex, .folder);
+}
+
+pub fn pickFileDefault(helper_hex: []const u8) !?PickedFolder {
+    return pickPathDefault(helper_hex, .file);
+}
+
+fn parsePickedOutput(bytes: []const u8, cancelled: []const u8, prefix: []const u8) !?PickedFolder {
+    if (std.mem.eql(u8, bytes, cancelled)) return null;
     if (!std.mem.startsWith(u8, bytes, prefix)) return error.InvalidPickerOutput;
     const path = bytes[prefix.len..];
     if (path.len < 4 or path.len > 4096 or !std.ascii.isAlphabetic(path[0]) or path[1] != ':' or path[2] != '\\' or !std.unicode.utf8ValidateSlice(path) or std.mem.indexOfAny(u8, path, "\x00\r\n") != null) return error.InvalidPickerOutput;
@@ -369,12 +399,24 @@ fn parsePickedFolder(bytes: []const u8) !?PickedFolder {
     return result;
 }
 
+fn parsePickedFolder(bytes: []const u8) !?PickedFolder {
+    return parsePickedOutput(bytes, "PULSE_FOLDER_CANCELLED", "PULSE_FOLDER_V1 ");
+}
+
+fn parsePickedFile(bytes: []const u8) !?PickedFolder {
+    return parsePickedOutput(bytes, "PULSE_FILE_CANCELLED", "PULSE_FILE_V1 ");
+}
+
 test "picker output is bounded and distinguishes cancellation" {
     try std.testing.expect((try parsePickedFolder("PULSE_FOLDER_CANCELLED")) == null);
     const chosen = (try parsePickedFolder("PULSE_FOLDER_V1 C:\\素材\\cat")).?;
     try std.testing.expectEqualStrings("C:\\素材\\cat", chosen.path[0..chosen.len]);
     try std.testing.expectError(error.InvalidPickerOutput, parsePickedFolder("PULSE_FOLDER_V1 relative"));
     try std.testing.expectError(error.InvalidPickerOutput, parsePickedFolder("PULSE_FOLDER_V1 C:\\cat\nextra"));
+    try std.testing.expect((try parsePickedFile("PULSE_FILE_CANCELLED")) == null);
+    const chosen_file = (try parsePickedFile("PULSE_FILE_V1 C:\\素材\\shimeji.zip")).?;
+    try std.testing.expectEqualStrings("C:\\素材\\shimeji.zip", chosen_file.path[0..chosen_file.len]);
+    try std.testing.expectError(error.InvalidPickerOutput, parsePickedFile("PULSE_FOLDER_V1 C:\\素材\\cat"));
 }
 
 pub fn importDefault(runtime_hex: []const u8, helper_hex: []const u8, request: *const ImportRequest, cancel: ImportCancel) !ImportResult {
@@ -389,7 +431,7 @@ pub fn importDefaultReported(runtime_hex: []const u8, helper_hex: []const u8, re
     const helper_digest = try parseDigest(helper_hex);
     var path: [1024]u16 = undefined;
     const root = try packageRoot(&path);
-    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\pulse-pet-demo.exe");
+    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\pulse-pet.exe");
     var exe: [1024]u16 = undefined;
     if (root.len + suffix.len >= exe.len) return error.ModulePathUnavailable;
     @memcpy(exe[0..root.len], root);
@@ -405,10 +447,10 @@ pub fn importDefaultReported(runtime_hex: []const u8, helper_hex: []const u8, re
         const private = openPrivateDefault(owner) catch |err| break :blk @as(anyerror!ImportResult, err);
         const source = request.source[0..request.source_len];
         const source_id = request.source_id[0..request.id_len];
-        break :blk if (isArchivePath(source))
+        break :blk if (isSupportedFilePath(source))
             local_import.runArchive(threaded.io(), owner, private, exe[0..len :0], helper_digest, source, source_id, cancel, report)
         else
-            local_import.runReported(threaded.io(), owner, private, exe[0..len :0], helper_digest, source, source_id, cancel, report);
+            local_import.runDirectoryAuto(threaded.io(), owner, private, exe[0..len :0], helper_digest, source, source_id, cancel, report);
     };
     owner.close() catch return error.CleanupFailed;
     std.heap.page_allocator.destroy(owner);
@@ -424,7 +466,7 @@ pub fn describeDefault(runtime_hex: []const u8, helper_hex: []const u8, request:
     const helper_digest = try parseDigest(helper_hex);
     var path: [1024]u16 = undefined;
     const root = try packageRoot(&path);
-    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\pulse-pet-demo.exe");
+    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\pulse-pet.exe");
     var exe: [1024]u16 = undefined;
     if (root.len + suffix.len >= exe.len) return error.ModulePathUnavailable;
     @memcpy(exe[0..root.len], root);
@@ -680,7 +722,7 @@ const WindowProbe = struct {
         var name: [128]u16 = undefined;
         const len = observation.probe.class_name(window, &name, name.len);
         const main = std.unicode.wtf8ToWtf16LeStringLiteral("PulseMainWindow");
-        if (len <= 0 or len >= name.len - 1) return 0;
+        if (len <= 0 or len >= name.len - 1) return 1;
         if (@as(usize, @intCast(len)) != main.len or !std.mem.eql(u16, name[0..@intCast(len)], main)) return 1;
         if (observation.probe.visible(window) == 0) return 1;
         observation.windows += 1;
@@ -920,7 +962,7 @@ pub fn runBuiltin(session: *Session, runtime_hex: []const u8, helper_hex: []cons
     const helper_digest = try parseDigest(helper_hex);
     var path: [1024]u16 = undefined;
     const root = try packageRoot(&path);
-    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\pulse-pet-demo.exe");
+    const suffix = std.unicode.wtf8ToWtf16LeStringLiteral("\\pulse-pet.exe");
     if (root.len + suffix.len >= path.len) return error.ModulePathUnavailable;
     // Use separate storage because owner.open still needs the root terminator.
     var helper: [1024]u16 = undefined;
@@ -1113,7 +1155,8 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
             }
         }
         if (session.plan_cancel.load(.acquire)) session.plan_active.store(false, .release);
-        if (session.plan_active.load(.acquire) and all_ready and session.pending_stop.load(.acquire) == 0 and session.stopping_id.load(.acquire) == 0 and !session.visibility_busy.load(.acquire) and session.visibility_id.load(.acquire) == 0 and (plan_index % session.policy.batch_size != 0 or GetTickCount64() >= next_batch)) {
+        const at_batch_boundary = plan_index % session.policy.batch_size == 0;
+        if (session.plan_active.load(.acquire) and (!at_batch_boundary or (all_ready and GetTickCount64() >= next_batch)) and session.pending_stop.load(.acquire) == 0 and session.stopping_id.load(.acquire) == 0 and !session.visibility_busy.load(.acquire) and session.visibility_id.load(.acquire) == 0) {
             if (session.policy.at(plan_index)) |entry| {
                 session.plan_attempted.store(plan_index + 1, .release);
                 if (launchAsset(owner, helper, helper_digest, entry.asset_id, entry.profile, sources)) |next| {
@@ -1129,8 +1172,15 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
                     if (plan_index >= session.policy.total()) session.plan_active.store(false, .release);
                 } else |err| {
                     session.reject(rejectionFor(err));
-                    session.plan_active.store(false, .release);
-                    if (err == error.CleanupFailed) failure = err;
+                    if (err == error.CleanupFailed) {
+                        session.plan_active.store(false, .release);
+                        failure = err;
+                    } else {
+                        // Skip a single missing/rejected entry and continue remaining valid entries.
+                        plan_index += 1;
+                        if (plan_index % session.policy.batch_size == 0) next_batch = GetTickCount64() + session.policy.interval_ms;
+                        if (plan_index >= session.policy.total()) session.plan_active.store(false, .release);
+                    }
                 }
             } else session.plan_active.store(false, .release);
         }
@@ -1228,7 +1278,6 @@ fn runOwned(owner: *runtime.Owner, session: *Session, root: [:0]const u16, diges
                     source.visibility = if (source.visibility == .pending_show) .visible else .hidden;
                 } else if (GetTickCount64() - source.visibility_since >= 3000) {
                     source.visibility = .unknown;
-                    source.visibility_failed = true;
                     session.reject(.unknown_instance);
                 } else {
                     visibility_pending = true;

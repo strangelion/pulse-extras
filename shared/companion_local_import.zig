@@ -9,6 +9,7 @@ const helper_mod = @import("companion/pet_import_helper.zig");
 const inventory = @import("companion/pet_inventory.zig");
 const process = @import("pulse_process");
 const zip = @import("companion/pet_zip.zig");
+const formats = @import("companion/pet_formats.zig");
 
 pub const Report = struct {
     fault: ?importing.Fault = null,
@@ -83,16 +84,26 @@ pub fn runReported(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, ex
     return outcome;
 }
 
-// A user-selected ZIP is borrowed read-only. All extracted files are
-// created exclusively in a private staging directory, never beside the ZIP.
-// Reuse the same bounded ZIP parser and durable import as the market.
+fn isDirectImagePath(path: []const u8) bool {
+    return std.ascii.endsWithIgnoreCase(path, ".gif") or std.ascii.endsWithIgnoreCase(path, ".png");
+}
+
+fn leafName(path: []const u8) []const u8 {
+    return if (std.mem.lastIndexOfAny(u8, path, "\\/")) |sep| path[sep + 1 ..] else path;
+}
+
+// A user-selected ZIP, GIF, or PNG is borrowed read-only. All extracted or
+// converted files are created exclusively in a private staging directory,
+// never beside the source file.
 pub fn runArchive(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, source: []const u8, source_id: []const u8, cancel: Cancel, report: *Report) !Result {
     report.* = .{};
     try cancel.check();
+    const direct_image = isDirectImagePath(source);
     const archive = try std.Io.Dir.openFileAbsolute(io, source, .{ .follow_symlinks = false });
     defer archive.close(io);
     const stat = try archive.stat(io);
-    if (stat.kind != .file or stat.size == 0 or stat.size > zip.max_archive_bytes) return error.InvalidArchive;
+    const max_bytes: u64 = if (direct_image) formats.max_image_bytes else @max(zip.max_archive_bytes, formats.max_source_bytes);
+    if (stat.kind != .file or stat.size == 0 or stat.size > max_bytes) return error.InvalidArchive;
     const work = try owner.createLocalImportWork();
     var path_buf: [4096]u8 = undefined;
     const len = try std.unicode.utf16LeToUtf8(&path_buf, work);
@@ -105,15 +116,86 @@ pub fn runArchive(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe
     const outcome: anyerror!Result = blk: {
         const scratch = std.Io.Dir.cwd().openDir(io, path, .{ .follow_symlinks = false }) catch |err| break :blk err;
         defer scratch.close(io);
+        var used_converted = false;
         const result: anyerror!Result = inner: {
-            stage.extract(io, archive, scratch) catch |err| break :inner err;
+            if (direct_image) {
+                used_converted = true;
+                _ = formats.convertSingleFileToClassic(io, std.heap.page_allocator, archive, leafName(source), scratch, source_id) catch |err| break :inner err;
+            } else if (stage.extract(io, archive, scratch)) |_| {
+                used_converted = false;
+            } else |_| {
+                stage.cleanup(io, scratch) catch |clean_err| {
+                    report.cleanup = clean_err;
+                    break :inner error.CleanupFailed;
+                };
+                used_converted = true;
+                _ = formats.convertZipToClassic(io, std.heap.page_allocator, archive, scratch, source_id) catch |err| break :inner err;
+            }
             cancel.check() catch |err| break :inner err;
             break :inner runReported(io, owner, private, exe, digest, extracted, source_id, cancel, report);
         };
         if (result) |_| {} else |err| {
             if (report.cause == null) report.cause = err;
         }
-        stage.cleanup(io, scratch) catch |err| {
+        const cleanup_outcome = if (used_converted)
+            formats.cleanupConvertedStage(io, scratch)
+        else
+            stage.cleanup(io, scratch);
+        cleanup_outcome catch |err| {
+            report.cleanup = err;
+            break :blk error.CleanupFailed;
+        };
+        break :blk result;
+    };
+    if (report.cleanup == null) {
+        owner.finishMarketWork() catch |err| {
+            report.cleanup = err;
+            return error.CleanupFailed;
+        };
+    }
+    return outcome;
+}
+
+fn hasNativeOpenPetsFiles(io: std.Io, dir: std.Io.Dir) bool {
+    const meta = dir.openFile(io, "pet.json", .{ .follow_symlinks = false }) catch return false;
+    meta.close(io);
+    const sheet = dir.openFile(io, "spritesheet.webp", .{ .follow_symlinks = false }) catch return false;
+    sheet.close(io);
+    return true;
+}
+
+// Import a local directory: native OpenPets directories run directly through
+// runReported (preserving v1/v2 outfits and activities); Shimeji, GIF, or PNG
+// folders are converted into a private Classic v1 staging directory first.
+pub fn runDirectoryAuto(io: std.Io, owner: *runtime.Owner, private: [:0]const u16, exe: [:0]const u16, digest: [32]u8, source: []const u8, source_id: []const u8, cancel: Cancel, report: *Report) !Result {
+    report.* = .{};
+    try cancel.check();
+    const source_dir = std.Io.Dir.openDirAbsolute(io, source, .{ .follow_symlinks = false }) catch {
+        return runReported(io, owner, private, exe, digest, source, source_id, cancel, report);
+    };
+    if (hasNativeOpenPetsFiles(io, source_dir)) {
+        source_dir.close(io);
+        return runReported(io, owner, private, exe, digest, source, source_id, cancel, report);
+    }
+    defer source_dir.close(io);
+    const work = try owner.createLocalImportWork();
+    var path_buf: [4096]u8 = undefined;
+    const len = try std.unicode.utf16LeToUtf8(&path_buf, work);
+    const path = path_buf[0..len];
+    var extracted_buf: [4096]u8 = undefined;
+    const extracted = try std.fmt.bufPrint(&extracted_buf, "{s}\\unpacked", .{path});
+    const outcome: anyerror!Result = blk: {
+        const scratch = std.Io.Dir.cwd().openDir(io, path, .{ .follow_symlinks = false }) catch |err| break :blk err;
+        defer scratch.close(io);
+        const result: anyerror!Result = inner: {
+            _ = formats.convertDirectoryToClassic(io, std.heap.page_allocator, source_dir, scratch, source_id) catch |err| break :inner err;
+            cancel.check() catch |err| break :inner err;
+            break :inner runReported(io, owner, private, exe, digest, extracted, source_id, cancel, report);
+        };
+        if (result) |_| {} else |err| {
+            if (report.cause == null) report.cause = err;
+        }
+        formats.cleanupConvertedStage(io, scratch) catch |err| {
             report.cleanup = err;
             break :blk error.CleanupFailed;
         };

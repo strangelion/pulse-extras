@@ -46,7 +46,7 @@ jobs:
           PET_PROFILE: ${{ inputs.profile }}
         shell: pwsh
         run: |
-          $buildArgs = @('build', 'pet-demo', '-Doptimize=ReleaseSafe', '--summary', 'all')
+          $buildArgs = @('build', 'pet', '-Doptimize=ReleaseSafe', '--summary', 'all')
           if ($env:PET_PROFILE -eq 'mixed-hidden') {
             $buildArgs += '-Dpet-libwebp=true'
           } elseif ($env:PET_PROFILE -ne 'synthetic-hidden') {

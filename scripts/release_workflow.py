@@ -241,9 +241,9 @@ def build(items: list[dict], output: Path, sdk: Path, *, candidate: bool = False
     flags = ["-Doptimize=ReleaseSafe", "--prefix", str(prefix), "--summary", "all"]
     entry_flags = []
     if any(package.PRODUCTS[item["product"]]["build_profile"] == "companion" for item in items):
-        run("zig", "build", "pet-demo", *flags)
+        run("zig", "build", "pet", *flags)
         run("zig", "build", "companion-runtime-bridge", *flags)
-        helper = common.sha256(prefix / "bin/pulse-pet-demo.exe", common.FILE_MAX)
+        helper = common.sha256(prefix / "bin/pulse-pet.exe", common.FILE_MAX)
         runtime = common.sha256(prefix / "bin/pulse_companion_runtime.dll", common.FILE_MAX)
         entry_flags.extend(["-Dcompanion-helper-sha256=" + helper,
                             "-Dcompanion-runtime-sha256=" + runtime])

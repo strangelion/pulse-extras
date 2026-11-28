@@ -328,7 +328,7 @@ def run(a):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--exe", type=Path, default=Path("zig-out/bin/pulse-pet-demo.exe"))
+    parser.add_argument("--exe", type=Path, default=Path("zig-out/bin/pulse-pet.exe"))
     parser.add_argument("--count", type=int, choices=range(1,101), default=100)
     parser.add_argument("--seconds", type=int, choices=range(5,181), default=30)
     parser.add_argument("--scale", type=int, choices=range(50,201), default=100)

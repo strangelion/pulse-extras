@@ -27,10 +27,10 @@ static BOOL sibling(wchar_t path[MAX_PATH]) {
     DWORD n = GetModuleFileNameW(NULL, path, MAX_PATH);
     if (!n || n >= MAX_PATH) return FALSE;
     wchar_t *name = wcsrchr(path, L'\\');
-    static const wchar_t demo[] = L"pulse-pet-demo.exe";
-    if (!name || (size_t)(name + 1 - path) + sizeof(demo) / sizeof(demo[0]) > MAX_PATH)
+    static const wchar_t pet[] = L"pulse-pet.exe";
+    if (!name || (size_t)(name + 1 - path) + sizeof(pet) / sizeof(pet[0]) > MAX_PATH)
         return FALSE;
-    memcpy(name + 1, demo, sizeof(demo));
+    memcpy(name + 1, pet, sizeof(pet));
     return TRUE;
 }
 

@@ -672,7 +672,7 @@ pub fn build(b: *std.Build) void {
     for ([_][]const u8{ "user32", "gdi32", "shell32", "ole32", "windowscodecs", "uuid", "advapi32" }) |lib|
         pet_root.linkSystemLibrary(lib, .{});
     // Explicit experimental backend. The default WIC build is unchanged.
-    const pet_libwebp = b.option(bool, "pet-libwebp", "Use the pinned static WebP decoder for pet-demo") orelse false;
+    const pet_libwebp = b.option(bool, "pet-libwebp", "Use the pinned static WebP decoder for pulse-pet") orelse false;
     if (pet_libwebp) {
         const source = b.path(".local/deps/libwebp-1.6.0");
         pet_root.addIncludePath(source);
@@ -699,7 +699,7 @@ pub fn build(b: *std.Build) void {
         });
         pet_root.addCSourceFile(.{ .file = b.path("shared/companion/pet_webp_utils.c"), .flags = &.{"-DWEBP_DSP_OMIT_C_CODE=0"} });
     }
-    const pet = b.addExecutable(.{ .name = "pulse-pet-demo", .root_module = pet_root });
+    const pet = b.addExecutable(.{ .name = "pulse-pet", .root_module = pet_root });
     if (pet_libwebp) {
         // Verify before the compiler attempts to open any third-party source.
         // Never download implicitly during a build.
@@ -708,8 +708,11 @@ pub fn build(b: *std.Build) void {
         verify_webp.addArg("--check");
         pet.step.dependOn(&verify_webp.step);
     }
-    const pet_step = b.step("pet-demo", "Build and install the experimental standalone Windows companion");
-    pet_step.dependOn(&b.addInstallArtifact(pet, .{}).step);
+    const install_pet = b.addInstallArtifact(pet, .{});
+    const pet_step = b.step("pet", "Build and install the standalone Windows companion");
+    pet_step.dependOn(&install_pet.step);
+    const pet_demo_alias = b.step("pet-demo", "Alias for the standalone Windows companion step");
+    pet_demo_alias.dependOn(&install_pet.step);
 
     // Separate, explicitly invoked crash collector; never installed with the default DLLs.
     const dump_root = b.createModule(.{
@@ -857,6 +860,7 @@ pub fn build(b: *std.Build) void {
         "shared/companion/pet_market_download.zig",
         "shared/companion/pet_market_tasks.zig",
         "shared/companion/pet_zip.zig",
+        "shared/companion/pet_formats.zig",
         "shared/companion/pet_resources.zig",
         "shared/companion/pet_decode_task.zig",
         "shared/companion/pet_async_bridge.zig",

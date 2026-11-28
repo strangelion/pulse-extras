@@ -111,7 +111,7 @@ def fetch_hoodie_cat() -> None:
     exact_file(dest / "pet.json", metadata.encode("utf-8"))
     print(f"Verified Hoodie Cat wardrobe test package: {dest}")
     print(f"MIT license: {root / 'hoodie-cat.LICENSE'}")
-    print(f'Run: zig-out\\bin\\pulse-pet-demo.exe --package "{dest}" hoodie-cat')
+    print(f'Run: zig-out\\bin\\pulse-pet.exe --package "{dest}" hoodie-cat')
 
 
 def main() -> None:

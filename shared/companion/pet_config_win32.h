@@ -2,7 +2,7 @@
 #define PULSE_PET_CONFIG_WIN32_H
 #include "pet_demo_win32.h"
 
-#define PET_CONFIG_KEY L"Software\\PulseExtras\\CompanionDemo"
+#define PET_CONFIG_KEY L"Software\\PulseExtras\\Companion"
 #define PET_CONFIG_VALUE L"SettingsV1"
 #define PET_GAZE_VALUE L"GazeV1"
 #define PET_CONFIG_TOPMOST 1u

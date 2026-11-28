@@ -115,6 +115,10 @@ export fn pet_pick_folder() callconv(.c) c_int {
     return @import("pet_folder_picker.zig").run();
 }
 
+export fn pet_pick_file() callconv(.c) c_int {
+    return @import("pet_folder_picker.zig").runFile();
+}
+
 pub fn main(init: std.process.Init) !void {
     var group = Group.init(std.heap.page_allocator, memory.limit, 1, 1);
     var resource_owner: resources.Owner = .{};
@@ -144,5 +148,5 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Companion tasks: queued={d} running={d} peaks={d}/{d} rejected={d}\n", .{ group_stats.queued, group_stats.running, group_stats.queue_peak, group_stats.running_peak, group_stats.rejected });
     try group.checkDrained();
     try resource_owner.checkDrained();
-    if (result != 0) return error.CompanionDemoFailed;
+    if (result != 0) return error.CompanionFailed;
 }

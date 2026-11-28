@@ -123,7 +123,7 @@ fn exerciseManaged(owner: *loader.Owner, private: [:0]const u16) !void {
     try store.saveInventory(owner, index);
     if (!try store.loadInventory(owner, index) or index.next_id != high_water) return error.InventoryNotPersisted;
     var helper: [1024]u16 = undefined;
-    const len = GetFullPathNameW(std.unicode.wtf8ToWtf16LeStringLiteral("zig-out\\bin\\pulse-pet-demo.exe"), helper.len, &helper, null);
+    const len = GetFullPathNameW(std.unicode.wtf8ToWtf16LeStringLiteral("zig-out\\bin\\pulse-pet.exe"), helper.len, &helper, null);
     if (len == 0 or len >= helper.len) return error.BadFixturePath;
     const path = helper[0..len :0];
     const digest = try readDigest(std.unicode.wtf8ToWtf16LeStringLiteral("PULSE_BRIDGE_FIXTURE_HELPER_SHA256"));
@@ -196,7 +196,7 @@ fn exerciseImport(io: std.Io, owner: *loader.Owner, parent: [:0]const u16, priva
     var source: [4096]u8 = undefined;
     const fresh = try std.fmt.bufPrint(&source, "{s}\\source\\fresh", .{path[0..n]});
     var helper: [1024]u16 = undefined;
-    const len = GetFullPathNameW(std.unicode.wtf8ToWtf16LeStringLiteral("zig-out\\bin\\pulse-pet-demo.exe"), helper.len, &helper, null);
+    const len = GetFullPathNameW(std.unicode.wtf8ToWtf16LeStringLiteral("zig-out\\bin\\pulse-pet.exe"), helper.len, &helper, null);
     if (len == 0 or len >= helper.len) return error.BadFixturePath;
     const digest = try readDigest(std.unicode.wtf8ToWtf16LeStringLiteral("PULSE_BRIDGE_FIXTURE_HELPER_SHA256"));
     const CancelProbe = struct {

@@ -7,7 +7,7 @@ _Static_assert(sizeof(pet_child_options) == 20, "options ABI");
 
 uint32_t pet_host_fixture_path(uint8_t *out, uint32_t capacity) {
     wchar_t path[1024];
-    DWORD n = GetFullPathNameW(L"zig-out\\bin\\pulse-pet-demo.exe", 1024, path, NULL);
+    DWORD n = GetFullPathNameW(L"zig-out\\bin\\pulse-pet.exe", 1024, path, NULL);
     if (!n || n >= 1024 || !out || capacity > INT_MAX) return 0;
     int bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, path, (int)n,
         (char *)out, (int)capacity, NULL, NULL);

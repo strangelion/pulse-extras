@@ -3,4 +3,4 @@ id = "strangelion.companion"
 manifest = "manifest.release.json"
 library = "pulse_companion.dll"
 build_profile = "companion"
-members = ["pulse_companion_runtime.dll", "pulse-pet-demo.exe"]
+members = ["pulse_companion_runtime.dll", "pulse-pet.exe"]

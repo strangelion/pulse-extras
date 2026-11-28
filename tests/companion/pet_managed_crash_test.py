@@ -16,7 +16,7 @@ def main():
         # long path returned by GetFinalPathNameByHandleW. Resolve the
         # created fixture, rather than weakening production admission.
         root = Path(tmp).resolve(strict=True)
-        child = root / "pulse-pet-demo.exe"
+        child = root / "pulse-pet.exe"
         shutil.copyfile(fixture, child)
         child = child.resolve(strict=True)
         assert child.parent == root

@@ -28,24 +28,64 @@ fn output(bytes: []const u8) !void {
     if (WriteFile(handle, bytes.ptr, @intCast(bytes.len), &written, null) == 0 or written != bytes.len) return error.OutputFailed;
 }
 
-fn pick() !void {
+const FilterSpec = extern struct {
+    name: [*:0]const u16,
+    spec: [*:0]const u16,
+};
+
+const Mode = enum { folder, file };
+
+fn pick(mode: Mode) !void {
     // COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE.
-    if (CoInitializeEx(null, 6) < 0) return error.ComInitialization;
-    defer CoUninitialize();
+    // RPC_E_CHANGED_MODE (0x80010106) means COM is already initialized on this thread.
+    const com_hr = CoInitializeEx(null, 6);
+    const rpc_changed: i32 = @bitCast(@as(u32, 0x80010106));
+    if (com_hr < 0 and com_hr != rpc_changed) return error.ComInitialization;
+    defer if (com_hr >= 0) CoUninitialize();
+
     var instance: ?*Object = null;
     if (CoCreateInstance(&clsid, null, 1, &iid, &instance) < 0) return error.DialogUnavailable;
     const dialog = instance orelse return error.DialogUnavailable;
     defer release(dialog);
+
     var flags: u32 = 0;
     if (method(*const fn (*Object, *u32) callconv(.winapi) i32, dialog, 10)(dialog, &flags) < 0) return error.DialogFailed;
-    // FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST |
-    // FOS_NOCHANGEDIR. Do not add selected paths to the recent list.
-    if (method(*const fn (*Object, u32) callconv(.winapi) i32, dialog, 9)(dialog, flags | 0x20 | 0x40 | 0x800 | 0x8 | 0x02000000) < 0) return error.DialogFailed;
+    // FOS_FORCEFILESYSTEM (0x40) | FOS_PATHMUSTEXIST (0x800) |
+    // FOS_NOCHANGEDIR (0x8) | FOS_DONTADDTORECENT (0x02000000).
+    // Folder mode sets FOS_PICKFOLDERS (0x20); file mode clears it and adds FOS_FILEMUSTEXIST (0x1000).
+    const next_flags: u32 = switch (mode) {
+        .folder => flags | 0x20 | 0x40 | 0x800 | 0x8 | 0x02000000,
+        .file => (flags & ~@as(u32, 0x20)) | 0x40 | 0x800 | 0x1000 | 0x8 | 0x02000000,
+    };
+    if (method(*const fn (*Object, u32) callconv(.winapi) i32, dialog, 9)(dialog, next_flags) < 0) return error.DialogFailed;
+
+    if (mode == .file) {
+        const filters = [_]FilterSpec{
+            .{
+                .name = std.unicode.wtf8ToWtf16LeStringLiteral("桌宠压缩包与图像 (*.zip;*.gif;*.png)"),
+                .spec = std.unicode.wtf8ToWtf16LeStringLiteral("*.zip;*.gif;*.png"),
+            },
+            .{
+                .name = std.unicode.wtf8ToWtf16LeStringLiteral("所有文件 (*.*)"),
+                .spec = std.unicode.wtf8ToWtf16LeStringLiteral("*.*"),
+            },
+        };
+        const set_types = method(*const fn (*Object, u32, [*]const FilterSpec) callconv(.winapi) i32, dialog, 4);
+        if (set_types(dialog, filters.len, &filters) < 0) return error.DialogFailed;
+    }
+
     const set_title = method(*const fn (*Object, [*:0]const u16) callconv(.winapi) i32, dialog, 17);
-    if (set_title(dialog, std.unicode.wtf8ToWtf16LeStringLiteral("选择桌宠素材文件夹")) < 0) return error.DialogFailed;
+    const title = switch (mode) {
+        .folder => std.unicode.wtf8ToWtf16LeStringLiteral("选择桌宠素材文件夹"),
+        .file => std.unicode.wtf8ToWtf16LeStringLiteral("选择桌宠 ZIP、GIF 或 PNG 文件"),
+    };
+    if (set_title(dialog, title) < 0) return error.DialogFailed;
+
     // This is a separate process, not a modal child of the Pulse HWND.
     const status = method(*const fn (*Object, ?*anyopaque) callconv(.winapi) i32, dialog, 3)(dialog, null);
-    if (@as(u32, @bitCast(status)) == 0x800704c7) return output("PULSE_FOLDER_CANCELLED");
+    if (@as(u32, @bitCast(status)) == 0x800704c7) {
+        return output(if (mode == .folder) "PULSE_FOLDER_CANCELLED" else "PULSE_FILE_CANCELLED");
+    }
     if (status < 0) return error.DialogFailed;
     var selected: ?*Object = null;
     if (method(*const fn (*Object, *?*Object) callconv(.winapi) i32, dialog, 20)(dialog, &selected) < 0) return error.DialogFailed;
@@ -60,11 +100,16 @@ fn pick() !void {
     if (len == 0 or len == 4096) return error.InvalidPath;
     var bytes: [4096]u8 = undefined;
     const size = try std.unicode.utf16LeToUtf8(&bytes, path[0..len]);
-    try output("PULSE_FOLDER_V1 ");
+    try output(if (mode == .folder) "PULSE_FOLDER_V1 " else "PULSE_FILE_V1 ");
     try output(bytes[0..size]);
 }
 
 pub fn run() c_int {
-    pick() catch return 1;
+    pick(.folder) catch return 1;
+    return 0;
+}
+
+pub fn runFile() c_int {
+    pick(.file) catch return 1;
     return 0;
 }

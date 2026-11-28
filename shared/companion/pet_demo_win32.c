@@ -328,7 +328,7 @@ static uint32_t activity_random(uint32_t *state) {
 }
 
 static void usage(void) {
-    fputs("pulse-pet-demo [--reduced-motion] [--gaze|--no-gaze] [--language system|zh-CN|zh-TW|en-US] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE] [--stress-seconds 10..300 [--stress-hidden] [--stress-slot 1..100]] [--activity FILE FRAMES FPS] [--package DIR ID | --check-package DIR ID | --check-package-task DIR ID]\n"
+    fputs("pulse-pet [--reduced-motion] [--gaze|--no-gaze] [--language system|zh-CN|zh-TW|en-US] [--scale 50..200] [--topmost|--no-topmost] [--remember] [--reset-position] [--webp-v1 FILE | --webp-v2 FILE] [--stress-seconds 10..300 [--stress-hidden] [--stress-slot 1..100]] [--activity FILE FRAMES FPS] [--package DIR ID | --check-package DIR ID | --check-package-task DIR ID]\n"
         "Left click: interact. Left drag: move. Right click: menu. --smoke: hidden synthetic test.\n", stderr);
 }
 
@@ -447,6 +447,11 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     if (argc == 2 && wcscmp(argv[1], L"--pick-folder") == 0) {
         extern int pet_pick_folder(void);
         rc = pet_pick_folder();
+        goto cleanup;
+    }
+    if (argc == 2 && wcscmp(argv[1], L"--pick-file") == 0) {
+        extern int pet_pick_file(void);
+        rc = pet_pick_file();
         goto cleanup;
     }
     for (int i = 1; i < argc; ++i) {
@@ -731,6 +736,11 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) goto cleanup;
     LONG x = clamp_long((int64_t)work.right - surface.width - 24);
     LONG y = clamp_long((int64_t)work.bottom - surface.height - 24);
+    if (!remember && !reset_position && state_slot && !stress_slot) {
+        DWORD pid = GetCurrentProcessId();
+        x = clamp_long((int64_t)x - (int64_t)(pid % 5u) * 48);
+        y = clamp_long((int64_t)y - (int64_t)((pid / 5u) % 3u) * 32);
+    }
     if (pet_clamp_position(&work, surface.width, surface.height, &x, &y) != PET_SURFACE_OK)
         goto cleanup;
     if (remember && !reset_position && (saved.flags & PET_CONFIG_POSITION)) {
@@ -796,7 +806,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                         last_row = base.row; last_column = base.column;
                     }
                     unsigned command = pet_menu(memory->resource_bridge, &surface, stop, cursor, scale, topmost,
-                        reduced, state_slot != NULL, language, &package, &idle, outfit, auto_outfit, gaze_supported, gaze_enabled, 1, NULL);
+                        reduced, 0, language, &package, &idle, outfit, auto_outfit, gaze_supported, gaze_enabled, 1, NULL);
                     /* A modal menu may span a civil-time boundary. */
                     schedule_due = 0;
                     pet_gaze_suspend(&gaze, GetTickCount64());
@@ -825,22 +835,26 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                     } else if (command >= MENU_OUTFIT_FIRST &&
                         command - MENU_OUTFIT_FIRST <= package.meta.outfit_count && package.meta.outfit_count) {
                         unsigned next = command - MENU_OUTFIT_FIRST;
-                        auto_outfit = 0;
-                        if (next == outfit) prefs_dirty |= PET_PREF_OUTFIT_CHANGED;
-                        if (next != outfit && !request_decode(memory->resource_bridge, async, PET_DECODE_OUTFIT, next, 0))
+                        if (next == outfit) {
+                            auto_outfit = 0;
+                            prefs_dirty |= PET_PREF_OUTFIT_CHANGED;
+                        } else if (request_decode(memory->resource_bridge, async, PET_DECODE_OUTFIT, next, 0)) {
+                            auto_outfit = 0;
+                        } else {
                             fputs("Outfit decode admission failed; previous appearance retained.\n", stderr);
+                        }
                     } else if (command >= MENU_AUTO_FIRST &&
-                        command - MENU_AUTO_FIRST < package.meta.count && !state_slot) {
+                        command - MENU_AUTO_FIRST < package.meta.count) {
                         unsigned index = command - MENU_AUTO_FIRST;
                         pet_idle_toggle(&idle, index);
                         prefs_dirty |= PET_PREF_ACTIVITIES_CHANGED;
                     } else if (command >= MENU_ACTIVITY_FIRST &&
-                        command - MENU_ACTIVITY_FIRST < package.meta.count && !state_slot && !reduced &&
+                        command - MENU_ACTIVITY_FIRST < package.meta.count && !reduced &&
                         !((idle.failed | idle.unavailable) & pet_idle_bit(command - MENU_ACTIVITY_FIRST))) {
                         unsigned index = command - MENU_ACTIVITY_FIRST;
                         if (!request_decode(memory->resource_bridge, async, PET_DECODE_ACTIVITY, outfit, index))
                             fputs("Activity decode admission failed.\n", stderr);
-                    } else if (command == MENU_INTERACT && !state_slot && !reduced) {
+                    } else if (command == MENU_INTERACT && !reduced) {
                         if (activity_path) {
                             activity = pet_demo_load_activity(memory, activity_path, activity_frames,
                                 validate_activity, &activity_bytes);
@@ -909,7 +923,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                     if (GetCapture() == surface.window) {
                         ReleaseCapture();
                         if (!dragged) {
-                            if (!state_slot && !reduced) {
+                            if (!reduced) {
                                 reaction = (++interaction & 1u) ? PET_STATE_WAVING : PET_STATE_SUCCESS;
                                 started = GetTickCount64();
                             }
@@ -947,8 +961,10 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                 if (command == PET_STATE_HIDE || command == PET_STATE_SHOW) {
                     if (!ready_sent || !ready_event || smoke || stress_hidden || !shown) goto cleanup;
                     BOOL visible = command == PET_STATE_SHOW;
-                    if (pet_surface_show(&surface, visible) != PET_SURFACE_OK ||
-                        !!IsWindowVisible(surface.window) != !!visible) goto cleanup;
+                    if (!!IsWindowVisible(surface.window) != !!visible) {
+                        if (pet_surface_show(&surface, visible) != PET_SURFACE_OK ||
+                            !!IsWindowVisible(surface.window) != !!visible) goto cleanup;
+                    }
                     policy_hidden = !visible;
                     if (GetCapture() == surface.window) ReleaseCapture();
                     pressed = dragged = 0;
@@ -1045,7 +1061,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
         pet_demo_sample point = {0};
         /* Admission follows the actual Classic presentation, not a stale
          * finite reaction code. No new opportunity during capture, reduced
-         * motion, managed mode or an outstanding optional animation. */
+         * motion or an outstanding optional animation. */
         pet_demo_sample base_point = {0};
         if (sample(version, reaction, now - started, reduced, &base_point)) goto cleanup;
         int switch_due = pet_wardrobe_switch_due(auto_outfit, outfit, schedule_target, rejected_outfits);
@@ -1058,7 +1074,7 @@ int pet_demo_run(const pet_memory *memory, const pet_async *async, pet_demo_samp
                 fputs("Scheduled outfit decode admission failed; previous appearance retained.\n", stderr);
             }
         }
-        int available = !switch_due && shown && !state_slot && !smoke && !reduced && !pressed &&
+        int available = !switch_due && shown && !smoke && !reduced && !pressed &&
             !activity && (!async_bound || !async->busy(async->owner)) && base_point.row == 0;
         uint32_t delay_random = activity_random(&rng);
         uint32_t choice_random = activity_random(&rng);

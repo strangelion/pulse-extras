@@ -403,15 +403,15 @@ jobs:
         if: matrix.lane == 'desktop'
         shell: pwsh
         run: |
-          zig build pet-demo -Doptimize=ReleaseSafe --summary all
+          zig build pet -Doptimize=ReleaseSafe --summary all
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./zig-out/bin/pulse-pet-demo.exe --smoke
+          & ./zig-out/bin/pulse-pet.exe --smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./zig-out/bin/pulse-pet-demo.exe --smoke --scale 150
+          & ./zig-out/bin/pulse-pet.exe --smoke --scale 150
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/companion/pet_stop_smoke.py zig-out/bin/pulse-pet-demo.exe
+          python tests/companion/pet_stop_smoke.py zig-out/bin/pulse-pet.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/companion/pet_package_smoke.py zig-out/bin/pulse-pet-demo.exe
+          python tests/companion/pet_package_smoke.py zig-out/bin/pulse-pet.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify opt-in full crash capture against synthetic child
         if: matrix.lane == 'desktop'
@@ -425,7 +425,7 @@ jobs:
           if (Test-Path zig-out/normal-pet.dmp) { throw "Normal pet exit wrote a dump" }
           New-Item -ItemType Directory -Force zig-out/crash-fixture | Out-Null
           Copy-Item zig-out/bin/pulse-pet-crash-capture.exe zig-out/crash-fixture/
-          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu tests/companion/pet_crash_fixture_win32.c -o zig-out/crash-fixture/pulse-pet-demo.exe
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu tests/companion/pet_crash_fixture_win32.c -o zig-out/crash-fixture/pulse-pet.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/companion/pet_crash_capture_test.py zig-out/crash-fixture/pulse-pet-crash-capture.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -446,7 +446,7 @@ jobs:
         run: |
           zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu shared/companion/pet_supervisor_win32.c shared/process/image_win32.c shared/process/job_win32.c shared/process/metrics_win32.c tests/companion/pet_supervisor_win32_test.c -lshell32 -lpsapi -o zig-out/pet-supervisor-test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $demo = (Resolve-Path ./zig-out/bin/pulse-pet-demo.exe).Path
+          $demo = (Resolve-Path ./zig-out/bin/pulse-pet.exe).Path
           & ./zig-out/pet-supervisor-test.exe $demo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exercise approved Zig companion host with actual child
@@ -470,7 +470,7 @@ jobs:
         run: |
           python scripts/install_pet_webp.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          zig build pet-demo -Doptimize=ReleaseSafe -Dpet-libwebp=true --summary all
+          zig build pet -Doptimize=ReleaseSafe -Dpet-libwebp=true --summary all
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify WebP allocator, mixed codec and real package admission
         if: matrix.lane == 'desktop'
@@ -481,13 +481,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./zig-out/pet-webp-budget-test.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/companion/pet_package_smoke.py zig-out/bin/pulse-pet-demo.exe
+          python tests/companion/pet_package_smoke.py zig-out/bin/pulse-pet.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/companion/pet_stress_fixtures.py zig-out/import-fixtures
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/companion/pet_stress.py --count 2 --seconds 5 --output zig-out/pet-codec-probe --package zig-out/import-fixtures/fixture-v1 fixture-v1 --webp 2 zig-out/import-fixtures/fixture-v2.webp
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $demo = (Resolve-Path ./zig-out/bin/pulse-pet-demo.exe).Path
+          $demo = (Resolve-Path ./zig-out/bin/pulse-pet.exe).Path
           $package = (Resolve-Path ./zig-out/import-fixtures/fixture-v1).Path
           & ./zig-out/pet-supervisor-test.exe $demo $package
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -507,9 +507,9 @@ jobs:
           try {
             & ./zig-out/bin/companion-bridge-probe.exe
             if ($LASTEXITCODE -ne 0) { throw "Companion bridge probe failed: $LASTEXITCODE" }
-            python tests/companion/pet_managed_bridge_fixture.py $leaseFixture zig-out/bin/pulse-pet-demo.exe
+            python tests/companion/pet_managed_bridge_fixture.py $leaseFixture zig-out/bin/pulse-pet.exe
             if ($LASTEXITCODE -ne 0) { throw "Managed fixture generation failed: $LASTEXITCODE" }
-            $env:PULSE_BRIDGE_FIXTURE_HELPER_SHA256 = (Get-FileHash -Algorithm SHA256 ./zig-out/bin/pulse-pet-demo.exe).Hash
+            $env:PULSE_BRIDGE_FIXTURE_HELPER_SHA256 = (Get-FileHash -Algorithm SHA256 ./zig-out/bin/pulse-pet.exe).Hash
             $env:PULSE_BRIDGE_FIXTURE_MANAGED = "1"
             & ./zig-out/bin/companion-bridge-probe.exe
             if ($LASTEXITCODE -ne 0) { throw "Managed bridge probe failed: $LASTEXITCODE" }
@@ -526,13 +526,13 @@ jobs:
           python scripts/fetch_sdk.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $runtime = (Get-FileHash -Algorithm SHA256 zig-out/bin/pulse_companion_runtime.dll).Hash.ToLowerInvariant()
-          $helper = (Get-FileHash -Algorithm SHA256 zig-out/bin/pulse-pet-demo.exe).Hash.ToLowerInvariant()
+          $helper = (Get-FileHash -Algorithm SHA256 zig-out/bin/pulse-pet.exe).Hash.ToLowerInvariant()
           zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe "-Dcompanion-runtime-sha256=$runtime" "-Dcompanion-helper-sha256=$helper" --prefix zig-out/bundled --summary all
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $dll = @(Get-ChildItem zig-out/bundled -Recurse -Filter pulse_companion.dll)
           if ($dll.Count -ne 1) { throw "Expected one bundled Companion DLL" }
           Copy-Item zig-out/bin/pulse_companion_runtime.dll $dll[0].DirectoryName
-          Copy-Item zig-out/bin/pulse-pet-demo.exe $dll[0].DirectoryName
+          Copy-Item zig-out/bin/pulse-pet.exe $dll[0].DirectoryName
           zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu -I.sdk-cache/include tests/abi/companion_loader.c -o zig-out/companion-bundled-loader.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./zig-out/companion-bundled-loader.exe $dll[0].FullName --bundled
@@ -560,7 +560,7 @@ jobs:
         run: |
           zig build test-companion-import --summary all
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./zig-out/bin/pulse-pet-demo.exe --check-package "$PWD/zig-out/import-fixtures/hoodie-cat" hoodie-cat
+          & ./zig-out/bin/pulse-pet.exe --check-package "$PWD/zig-out/import-fixtures/hoodie-cat" hoodie-cat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Preserve failed mixed-codec fixture diagnostics

@@ -2,6 +2,7 @@
   "apiVersion": 1,
   "id": "strangelion.companion",
   "name": "Pulse Companion",
+  "activation": "startup",
   "resources": [
     "settings.own",
     "context.read"
