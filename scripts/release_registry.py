@@ -10,7 +10,7 @@ _NATIVE_BUILD = ("zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe"
 _COMPANION_MEMBERS = ("pulse_companion_runtime.dll", "pulse-pet-demo.exe")
 SHARE_HELPERS = ("lan", "local", "worker", "pake")
 SHARE_MEMBERS = tuple(f"pulse-share-{key}.exe" for key in SHARE_HELPERS) + (
-    "pulse-share-pake-notices.txt", "pulse-share-go-notices.txt",
+    "pulse-share-desktop.exe", "pulse-share-pake-notices.txt", "pulse-share-go-notices.txt",
 )
 _PROFILES = {
     "native": _NATIVE_BUILD,
@@ -18,7 +18,7 @@ _PROFILES = {
         "zig build share-local -Doptimize=ReleaseSafe",
         "go build (locked Share LAN module, Windows amd64)",
         "cargo build --locked --release (pinned Share CPace toolchain)",
-        "zig build share-dev with all four helper digests",
+        "zig build share-dev for the desktop executable and digest-bound Pulse adapter",
     ),
     "companion": _NATIVE_BUILD + (
         "zig build companion-runtime-bridge -Doptimize=ReleaseSafe",

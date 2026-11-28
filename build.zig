@@ -533,6 +533,31 @@ pub fn build(b: *std.Build) void {
     share_options.addOption([]const u8, "pake_sha256", share_pake_digest);
     const share_config = share_options.createModule();
 
+    const desktop_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu });
+    const desktop_modules = Modules.add(b, desktop_target, optimize, vcs_test_config, companion_config);
+    const desktop_root = b.createModule(.{
+        .root_source_file = b.path("extensions/share/desktop.zig"),
+        .target = desktop_target,
+        .optimize = optimize,
+        .imports = desktop_modules.imports(),
+        .link_libc = true,
+    });
+    desktop_root.addImport("share_config", share_config);
+    desktop_root.addCSourceFile(.{ .file = b.path("extensions/share/desktop_win32.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
+    desktop_root.addWin32ResourceFile(.{ .file = b.path("extensions/share/desktop.rc"), .include_paths = &.{b.path("extensions/share")} });
+    for ([_][]const u8{ "user32", "gdi32", "comctl32", "shell32", "ole32", "uuid" }) |lib|
+        desktop_root.linkSystemLibrary(lib, .{});
+    const desktop = b.addExecutable(.{
+        .name = "pulse-share-desktop",
+        .root_module = desktop_root,
+        .win32_manifest = b.path("extensions/share/desktop.manifest"),
+    });
+    desktop.subsystem = .windows;
+    const desktop_digest = b.addSystemCommand(&.{"python"});
+    desktop_digest.addFileArg(b.path("extensions/share/desktop_digest.py"));
+    desktop_digest.addFileArg(desktop.getEmittedBin());
+    const desktop_digest_source = desktop_digest.addOutputFileArg("desktop-digest.zig");
+
     // Share is experimental and intentionally absent from the default install.
     const share = b.addLibrary(.{
         .name = "pulse_share",
@@ -545,7 +570,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     share.root_module.addImport("share_config", share_config);
-    const share_dev = b.step("share-dev", "Build the experimental Pulse Share UI DLL");
+    share.root_module.addAnonymousImport("share_desktop_digest", .{ .root_source_file = desktop_digest_source });
+    const share_dev = b.step("share-dev", "Build the Share desktop application and Pulse adapter");
+    share_dev.dependOn(&b.addInstallArtifact(desktop, .{}).step);
     share_dev.dependOn(&b.addInstallArtifact(share, .{}).step);
 
     // Optional trusted provisioning implementation compiled into the DLL.
@@ -839,6 +866,8 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run native ABI, wrapper and lifecycle regression tests");
     const companion_tests = b.step("test-companion", "Run companion unit and shared runtime tests");
     const vcs_tests = b.step("test-vcs", "Run VCS unit and shared runtime tests");
+    const test_desktop_digest = b.addOptions();
+    test_desktop_digest.addOption([]const u8, "sha256", "");
     const share_tests = b.step("test-share", "Run Share transfer and native UI foundation tests");
     for (test_sources) |source| {
         const unit_tests = b.addTest(.{
@@ -849,7 +878,10 @@ pub fn build(b: *std.Build) void {
                 .imports = host_modules.imports(),
             }),
         });
-        if (std.mem.eql(u8, source, "extensions/share/main.zig")) unit_tests.root_module.addImport("share_config", share_config);
+        if (std.mem.eql(u8, source, "extensions/share/main.zig")) {
+            unit_tests.root_module.addImport("share_config", share_config);
+            unit_tests.root_module.addOptions("share_desktop_digest", test_desktop_digest);
+        }
         if (std.mem.eql(u8, source, "extensions/vcs-panel/main.zig")) unit_tests.root_module.addImport("vcs_native_source", locked_source);
         const run = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run.step);

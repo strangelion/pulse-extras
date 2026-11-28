@@ -3,17 +3,13 @@ const std = @import("std");
 const abi = @import("pulse_abi");
 const raw = @import("pulse_raw");
 const host_mod = @import("pulse_host");
-const ui = @import("pulse_ui_model");
 const managed = @import("managed.zig");
-const view = @import("presentation.zig");
-const diag = @import("pulse_diagnostics");
 
 pub const indices = [_]usize{ 0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13 };
 const legacy_indices = [_]usize{ 0, 2, 4, 5, 6 };
 const v2_indices = [_]usize{ 0, 1, 2, 4, 5, 6, 8 };
 const key = "share.preferences.v1";
-const limit = 1024;
-const commands = [_][]const u8{ "share-prefs-load", "share-prefs-save" };
+pub const limit = 1024;
 
 pub const Values = struct {
     fields: [indices.len]managed.Field = @splat(.{}),
@@ -27,7 +23,7 @@ pub const Values = struct {
         return "";
     }
 
-    fn encode(self: *const Values, buffer: []u8) ![]const u8 {
+    pub fn encode(self: *const Values, buffer: []u8) ![]const u8 {
         return std.fmt.bufPrint(buffer, "v3\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}\n{s}", .{
             self.value(0),
             self.value(1),
@@ -43,7 +39,7 @@ pub const Values = struct {
         });
     }
 
-    fn decode(data: []const u8) !Values {
+    pub fn decode(data: []const u8) !Values {
         if (data.len > limit) return error.InvalidSettings;
         var result: Values = .{};
         var lines = std.mem.splitScalar(u8, data, '\n');
@@ -76,193 +72,63 @@ pub const Values = struct {
     }
 };
 
-pub const Settings = struct {
+// Read previous Pulse settings once to seed a new desktop profile. The
+// desktop's own file wins on subsequent starts; this adapter never writes.
+pub const Legacy = struct {
     host: host_mod.Host,
-    pages: ?raw.PulseSettingsPagesV1 = null,
     resources: ?raw.PulseResourcesV1 = null,
-    panel: ?ui.Panel = null,
-    page: u64 = 0,
     pending: u64 = 0,
-    operation: u32 = 0,
-    version: u64 = 0,
     loaded: bool = false,
     active: bool = false,
     poisoned: bool = false,
     saved: Values = .{},
 
-    fn status(self: *Settings, message: []const u8) void {
-        if (self.panel) |*p| {
-            const states = [_]ui.State{
-                .{ .key = abi.view("pref-status"), .value = abi.view(message) },
-                .{ .key = abi.view("pref-ready"), .value = abi.view(if (self.loaded and self.pending == 0 and !self.poisoned) "true" else "false") },
-            };
-            p.setStates(&states) catch |err| diag.status("share-preferences", @intFromError(err));
-        }
-    }
-
-    pub fn open(self: *Settings) host_mod.Error!void {
+    pub fn open(self: *Legacy) host_mod.Error!void {
         if (self.active) return;
-        if (self.page != 0 or self.pending != 0 or self.poisoned) return error.State;
-        const pages = try self.host.query(raw.PulseSettingsPagesV1, raw.PULSE_SETTINGS_PAGES_INTERFACE_NAME, raw.PULSE_SETTINGS_PAGES_VERSION_1);
+        if (self.pending != 0 or self.poisoned) return error.State;
         const resources = try self.host.query(raw.PulseResourcesV1, raw.PULSE_RESOURCES_INTERFACE_NAME, raw.PULSE_RESOURCES_VERSION_1);
-        const create = pages.create orelse return error.Unavailable;
-        const query = pages.query orelse return error.Unavailable;
-        if (pages.remove == null or resources.settings_get == null or resources.settings_set == null or resources.cancel_request == null) return error.Unavailable;
-        self.pages = pages;
+        const read = resources.settings_get orelse return error.Unavailable;
+        if (resources.cancel_request == null) return error.Unavailable;
         self.resources = resources;
-        var storage: [indices.len]view.FieldNodes = @splat(.{});
-        var fields: [indices.len]ui.Node = undefined;
-        var states: [indices.len + 2]ui.State = undefined;
-        for (indices, 0..) |index, i| {
-            fields[i] = storage[i].build(index);
-            states[i] = .{ .key = abi.view(view.fields[index]), .value = abi.view(self.saved.value(index)) };
-        }
-        states[indices.len] = .{ .key = abi.view("pref-status"), .value = abi.view("正在读取设置") };
-        states[indices.len + 1] = .{ .key = abi.view("pref-ready"), .value = abi.view("false") };
-        const actions = [_]ui.Node{
-            view.button("重新读取", commands[0], "standard", null),
-            view.button("保存常用设置", commands[1], "primary", "state.pref-ready"),
-        };
-        const children = [_]ui.Node{
-            view.text("pref-intro", "设备与传输默认值", "section"),
-            view.text("pref-help", "保存后在共享面板打开或点击“应用已保存设置”生效。目录仍需实际存在并通过检查；不会自动启动监听。", "body"),
-            view.group("pref-fields", "常用设置", &fields),
-            view.grid("pref-actions", &actions),
-            view.bound("pref-result", "state.pref-status"),
-        };
-        const root = view.container(ui.NodeKind.stack, "pref-root", &children);
-        var declared: [commands.len]abi.StringView = undefined;
-        for (commands, 0..) |cmd, i| declared[i] = abi.view(cmd);
-        var tree = std.mem.zeroes(ui.Tree);
-        tree.size = @sizeOf(ui.Tree);
-        tree.root = &root;
-        tree.states = &states;
-        tree.state_count = states.len;
-        tree.commands = &declared;
-        tree.command_count = declared.len;
-        var page: u64 = 0;
-        try host_mod.mapStatus(create(pages.context, abi.view("Share / 文件共享"), &tree, &page));
-        if (page == 0) {
+        self.active = true;
+        var id: u64 = 0;
+        try host_mod.mapStatus(read(resources.context, &completed, self, &id));
+        if (id == 0) {
             self.poisoned = true;
             return error.State;
         }
-        self.page = page;
-        errdefer self.close() catch |err| diag.status("share-preferences-close", @intFromError(err));
-        var model = std.mem.zeroes(ui.TableV1);
-        try host_mod.mapStatus(query(pages.context, page, abi.view(ui.interface_name), ui.version_1, &model, @sizeOf(ui.TableV1)));
-        if (model.size < @sizeOf(ui.TableV1) or model.version < ui.version_1 or model.get_state == null or model.set_states == null or model.subscribe_command == null) return error.Unavailable;
-        self.panel = .{ .id = page, .table = model };
-        for (commands) |cmd| _ = try self.panel.?.subscribeCommand(cmd, &onCommand, self);
-        self.active = true;
-        self.reload();
+        self.pending = id;
     }
 
-    pub fn close(self: *Settings) host_mod.Error!void {
+    pub fn close(self: *Legacy) host_mod.Error!void {
         self.active = false;
         self.loaded = false;
+        if (self.poisoned) return error.State;
         if (self.pending != 0) {
             const resources = self.resources orelse return error.State;
-            const cancel = resources.cancel_request orelse return error.Unavailable;
-            try host_mod.mapStatus(cancel(resources.context, self.pending));
+            try host_mod.mapStatus(resources.cancel_request.?(resources.context, self.pending));
             self.pending = 0;
         }
-        if (self.page != 0) {
-            const pages = self.pages orelse return error.State;
-            const remove = pages.remove orelse return error.Unavailable;
-            host_mod.mapStatus(remove(pages.context, self.page)) catch |err| switch (err) {
-                error.State => {},
-                else => return err,
-            };
-            self.page = 0;
-            self.panel = null;
-        }
-    }
-
-    fn admitted(self: *Settings, result: abi.Status, id: u64, operation: u32) void {
-        if (result == abi.ok and id != 0) {
-            self.pending = id;
-            self.operation = operation;
-            self.status("等待宿主确认");
-        } else {
-            self.loaded = false;
-            if (result == abi.ok) self.poisoned = true;
-            self.status("设置请求未被接受，请重新读取");
-        }
-    }
-
-    fn reload(self: *Settings) void {
-        if (!self.active or self.pending != 0 or self.poisoned) return;
-        const resources = self.resources orelse return;
-        var id: u64 = 0;
-        const result = resources.settings_get.?(resources.context, &completed, self, &id);
-        self.admitted(result, id, raw.PULSE_RESOURCES_SETTINGS_GET);
-    }
-
-    fn save(self: *Settings) void {
-        if (!self.active or !self.loaded or self.pending != 0 or self.poisoned) return;
-        const panel = self.panel orelse return;
-        var values: Values = .{};
-        for (indices, 0..) |index, i| {
-            var bytes: [1025]u8 = undefined;
-            var needed: u32 = 0;
-            host_mod.mapStatus(panel.table.get_state.?(panel.table.context, panel.id, abi.view(view.fields[index]), &bytes, bytes.len, &needed)) catch return self.status("读取输入失败");
-            if (needed >= bytes.len) return self.status("输入过长");
-            values.fields[i].set(bytes[0..needed]) catch return self.status("输入格式无效");
-        }
-        self.saveValues(&values) catch return self.status("保存请求失败；检查长度、端口或重新读取设置");
-    }
-
-    // The calling panel may supply a reviewed draft. The same versioned
-    // resource operation owns the write; no independent settings file.
-    pub fn saveValues(self: *Settings, values: *const Values) !void {
-        if (!self.active or !self.loaded or self.pending != 0 or self.poisoned) return error.State;
-        var data: [limit]u8 = undefined;
-        const encoded = try values.encode(&data);
-        _ = try Values.decode(encoded);
-        const resources = self.resources orelse return error.Unavailable;
-        var id: u64 = 0;
-        const result = resources.settings_set.?(resources.context, abi.view(key), abi.view(encoded), 0, self.version, &completed, self, &id);
-        self.admitted(result, id, raw.PULSE_RESOURCES_SETTINGS_SET);
-        if (result != abi.ok or id == 0) return error.State;
     }
 
     fn completed(user: ?*anyopaque, reply: [*c]const raw.PulseResourcesReply) callconv(.c) void {
-        const self: *Settings = @ptrCast(@alignCast(user orelse return));
+        const self: *Legacy = @ptrCast(@alignCast(user orelse return));
         if (reply == null or reply.*.size < @sizeOf(raw.PulseResourcesReply) or self.pending == 0 or reply.*.request_id != self.pending) return;
         self.pending = 0;
-        self.loaded = false;
-        if (!self.active) return;
-        if (reply.*.status != abi.ok or reply.*.operation != self.operation) return self.status("读取或保存失败；请重新读取，不强制覆盖");
+        if (!self.active or reply.*.status != abi.ok or reply.*.operation != raw.PULSE_RESOURCES_SETTINGS_GET) return;
         const snapshot = reply.*.settings;
-        if (snapshot.count > 1024 or (snapshot.count != 0 and snapshot.values == null)) return self.status("设置响应无效");
+        if (snapshot.count > 1024 or (snapshot.count != 0 and snapshot.values == null)) return;
         var values: Values = .{};
         var found = false;
         for (0..snapshot.count) |i| {
             const item = snapshot.values[i];
-            if (!std.mem.eql(u8, abi.slice(item.key) orelse return self.status("设置键无效"), key)) continue;
-            if (found) return self.status("重复设置记录");
+            if (!std.mem.eql(u8, abi.slice(item.key) orelse return, key)) continue;
+            if (found) return;
             found = true;
-            values = Values.decode(abi.slice(item.value) orelse return self.status("设置值无效")) catch return self.status("设置格式无效，未覆盖");
+            values = Values.decode(abi.slice(item.value) orelse return) catch return;
         }
         self.saved = values;
-        self.version = snapshot.version;
-        self.loaded = true;
-        if (self.panel) |*panel| {
-            var states: [indices.len]ui.State = undefined;
-            for (indices, 0..) |index, i| states[i] = .{ .key = abi.view(view.fields[index]), .value = abi.view(self.saved.value(index)) };
-            panel.setStates(&states) catch {
-                self.loaded = false;
-                return self.status("设置同步失败");
-            };
-        }
-        self.status(if (self.operation == raw.PULSE_RESOURCES_SETTINGS_SET) "宿主已确认保存" else "已读取常用设置");
-    }
-
-    fn onCommand(user: ?*anyopaque, panel_id: u64, command: abi.StringView) callconv(.c) void {
-        const self: *Settings = @ptrCast(@alignCast(user orelse return));
-        if (!self.active or self.page != panel_id) return;
-        const cmd = abi.slice(command) orelse return;
-        if (std.mem.eql(u8, cmd, commands[0])) self.reload() else if (std.mem.eql(u8, cmd, commands[1])) self.save();
+        self.loaded = found;
     }
 };
 

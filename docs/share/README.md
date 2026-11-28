@@ -72,12 +72,12 @@ From repository root:
     zig build test-share --summary all
     zig build share-dev -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe
 
-The explicit dev target produces pulse_share.dll. It is not installed by
-the default build and the development manifest is not a release descriptor.
-Use the pinned official author tools to package it for isolated host testing.
-Open "Pulse Share / 文件共享" from the command menu. The panel explicitly says
-network functionality is unavailable. No sockets, discovery, file writes,
-or production key are used by this stage.
+The explicit target builds `pulse-share-desktop.exe` and `pulse_share.dll`.
+Run the desktop executable from its bundle, or choose **Pulse Share / 文件共享**
+in Pulse to open the same window with the current supported selection. The
+adapter starts the exact bundled desktop image and passes the selection via a
+private pipe. Without matching helper digests, the window opens with network
+actions disabled. The default repository build does not install this bundle.
 
 ## P1 local worker contract
 
@@ -269,58 +269,41 @@ network digest enforcement, and two saved-device transfers across fresh CLI
 processes followed by revocation. Prompts time out after 90 seconds. Physical
 LAN and host lifecycle acceptance remain outstanding.
 
-## P2 native managed developer panel
+## Desktop workflow
 
-The panel uses the V1 UI model `get_state` and host-owned tasks. It supports
-one selected regular file, explicit local IP/peer address, existing saved peer
-and store, explicit receive destination and private spool, plus discover,
-send, receive, refresh and cancel. No automatic reception. The UI task reports discovery and per-file approval
-through inherited pipes and includes identity creation and peer management. Closing a panel does not silently cancel its task; use the
-cancel button or disable the extension. On re-open, refresh the retained task.
+- **发送** accepts files and folders by picker, drag and drop, or Pulse
+  selection. Review the endpoint and choose a saved peer before starting.
+  **接收** offers single-file receipt, optional single-file discovery, and a
+  separate folder/multiple-file receiver. The task strip exposes the listening
+  address, progress and approval actions whenever they are relevant.
+- **设备** lists local addresses and shows a count and selectable addresses
+  after discovery. Use the interface on the same LAN as the other device.
+  The nearby pairing and receiving lists are separate. Selecting an address
+  only fills a field. The active code stays in the task strip, and the other
+  device enters it in a masked field. Compare the displayed fingerprints and
+  approve the pairing on both devices.
+- **设置** holds common defaults and identity/spool initialization. The first
+  desktop launch from Pulse can read older Pulse defaults. The app saves its
+  current defaults under the Windows user's LocalAppData PulseShare directory,
+  so an isolated Pulse store alone does not isolate desktop preferences.
+  Use a dedicated Windows user or VM for installed acceptance. A standalone
+  launch with `--session-only` skips disk preference reads and writes.
+- **高级** exposes manual fingerprint management, routed and QUIC transport,
+  recovery, content options, queues and service actions. **记录** lists
+  recent outcomes for the current window.
 
-Build the three sibling executables first, then bind their exact SHA-256s
-with `-Dshare-lan-sha256=... -Dshare-local-sha256=... -Dshare-worker-sha256=...`
-when building `zig build share-dev`. Unconfigured builds remain inert.
-For isolated native package testing put these three EXEs beside pulse_share.dll
-and declare each as an official native resource file using the pinned author
-tools. Never infer trust from PATH or a user-entered executable path.
-The worker task checks all three digest-pinned regular local sibling files,
-keeps their handles open through the child lifetime, launches the LAN process
-suspended, assigns a private job (three process cap, 512 MiB total commit),
-then resumes without a console. Only the cancellation event and local standard
-input/output pipe ends are inherited.
-Host cancellation signals it, allows a bounded grace period, and drains the
-job. Forced termination or cancellation during P1 commit can leave a stage or
-an already committed file; report uncertain, never promise rollback. Read-only recovery inspection is available; durable restart recovery,
-physical two-PC and host lifecycle testing remain outstanding. This is not a production release.
+One task runs at a time in each window. Windows-owned controls stay on the
+UI thread; the worker publishes a bounded snapshot. A window close cancels
+and drains the current job. Pulse deactivation cancels an in-flight launch;
+a desktop window already started can be used or closed independently.
+The worker launches only the verified, bundled helper set, with a private
+Job Object and inherited cancellation event and pipes. Forced interruption
+during commit can leave uncertain file state. Inspect recovery before retrying.
 
-### P2 managed panel follow-up
-
-The development panel now uses bounded inherited input/output pipes rather than
-a separate console. Refresh displays the current task message; approve or decline
-only after reviewing the current generation of the prompt. Device identity,
-peer listing/enrollment/revocation, explicit private-directory creation and
-read-only recovery inspection are task commands. No silent acceptance. The
-same `Store` field selects the explicit directory for private-init/recovery-list.
-Full host and two-device acceptance are still required.
-
-Byte progress is emitted at most four times per second plus start/end; the
-host task reports completed/total bytes. The private-directory command creates
-only a new current-user-only protected DACL directory, never modifies an
-existing directory. Recovery inspection is intentionally read-only: names are
-unverified hints and do not authorize deletion. Automatic restart cleanup of
-P1 or network stages needs a separate durable ownership journal and remains
-unimplemented. UI/host acceptance is still required.
-
-The LAN process now sends P1 a private inherited cancellation event and allows
-an eight-second graceful commit cleanup before forced termination. The outer
-host job still drains the process tree; a lost receipt or forced interruption
-remains an uncertain outcome. New CI tests cover exclusive private-directory
-creation, non-destructive recovery inspection, progress and prompt generation.
-
-The Windows CLI integration also starts a receive session with an inherited
-cancellation event and verifies cancellation while awaiting pairing leaves
-no destination or spool files. This is not an actual Pulse host UI test.
+`python tests/share/test_desktop_win32.py` uses a private Windows desktop,
+a digest-bound scripted worker, and a session-only app profile. It checks
+handoff, discovery, prompt/terminal transitions, and closing an active task.
+Physical network and installed Pulse acceptance are separate.
 
 ### Durable network phase records
 
@@ -342,26 +325,18 @@ sessions outside Pulse retain the documented operator-managed private-directory
 prerequisite. This is not a defense against hostile same-user or administrator
 changes or a race-free ancestor containment guarantee.
 
-## Isolated P2 acceptance package (historical three-helper instructions)
+## Isolated acceptance package
 
-For the current four-helper candidate, use the latest matching Windows artifact
-including `pulse-share-pake.exe` and `pulse-share-pake-notices.txt`; the current
-staging script requires these. Do not reuse a historical three-helper artifact.
-
-After the full branch regression succeeds, download `share-acceptance-inputs`
-from the same Windows run, or build all three helpers locally with the pinned
-toolchains. The artifact is not a signed release. With the matching branch
-checked out and its pinned Zig installed, use the stage helper:
+Download the matching `share-acceptance-inputs` artifact from the Windows
+regression, or build the four helpers with the pinned toolchains. With the
+matching revision and Zig installed, stage a private candidate:
 
     python scripts/stage_share_test.py --pulse <Pulse.exe> --tool <official-pulse_ext.py> --binaries <helper-directory> --out .local/share-stage-1
 
-It copies all three helper executables to a fresh workspace, binds their exact
-SHA-256 values into a fresh DLL build, then uses the shared official staging
-and archive verification path. `candidate.pulse-ext` and `build-evidence.json`
-are outputs; `real_host_accepted` remains false. No install, signing or release
-registration is performed. Use matching trusted helper inputs from a passed
-run. The developer only chooses an existing trusted parent for the fresh output.
-See [acceptance runbook](acceptance.md) for isolated profile and two-device tests.
+Staging binds the four helpers to a fresh desktop executable, binds the
+desktop executable to the Pulse adapter, and uses the official package
+verification path. The package is unsigned. See [the acceptance runbook](acceptance.md)
+and [the two-device checklist](physical-acceptance.md).
 
 Windows path admission checks each existing directory component for reparse
 attributes, normalizes ordinary DOS aliases, verifies unchanged directory
@@ -444,11 +419,11 @@ until a later Share-only push has measured timings.
 
 ## Consolidated connection candidate
 
-Dynamic pairing is now wired to the host-drawn password/display modal and
+Dynamic pairing is now wired to the standalone Windows window and
 managed LAN worker. A fourth pinned sibling, `pulse-share-pake.exe`, is
 required for dynamic pairing; its locked dependency notices accompany the
 Windows artifact and staged package. No code is persisted or sent through
-ordinary task progress: only private pipe records and the dedicated modal
+ordinary task progress: only private pipe records and the inline pairing controls
 carry the short code. The old manual fingerprint enrollment remains.
 Explicit routed send/receive requires saved certificate pins and an exact
 numeric TCP source for receiving. Private overlay pairing is opt-in and
@@ -460,7 +435,7 @@ All Share TLS connections require X25519MLKEM768; the certificate and CPace
 identity mechanisms are still classical, so do not call the whole system
 post-quantum authenticated. Go 1.25+ is required; CI stays pinned to 1.27.4.
 Legacy saved defaults migrate from v1 to v2, with optional endpoint/source
-suggestions, not automatic authorization. Real Pulse 1.0.62 modal behavior,
+suggestions, not automatic authorization. Pulse 1.0.62 selection handoff,
 secret non-retention and two-PC overlay/proxy use still require acceptance.
 
 The [remaining roadmap](roadmap.md) is the source of truth for new work, including
@@ -567,7 +542,7 @@ The fixture script is non-destructive and does not access a real clipboard.
 ### Action-built acceptance package
 
 Reuse the existing **Extension test package** workflow
-(upstream-candidate.yml), select feature/share and enter
+(upstream-candidate.yml), select main and enter
 share=0.1.0-rc.1. Its upstream-candidate-packages artifact contains
 the official verified, unsigned Share package, manifest, release evidence
 and SHA256SUMS. The version is a candidate label, not a published release.
@@ -577,7 +552,7 @@ remain pinned to Pulse 1.0.60; separately record actual host 1.0.62
 compatibility. Do not enable the development and formal packages together.
 
 The existing Extension release workflow supports the share product after
-merge to main. Share builds all four hash-bound helpers and both notices
+merge to main. Share builds the desktop program, all four hash-bound helpers and both notices
 only when selected. Existing signing/publication/stable acceptance gates
 remain unchanged. No additional packaging workflow is introduced.
 

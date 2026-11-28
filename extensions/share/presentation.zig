@@ -69,18 +69,28 @@ pub fn select(id: []const u8, state: []const u8, label: []const u8, options: []c
     return n;
 }
 
+pub fn input(key: []const u8, secret: bool) ui.Node {
+    var value = ui.node(ui.NodeKind.text_input);
+    value.id = abi.view(key);
+    value.state = .{ .present = 1, .value = abi.view(key) };
+    if (secret) value.kind = .{ .present = 1, .value = abi.view("password") };
+    return value;
+}
+
 pub const FieldNodes = struct {
     children: [2]ui.Node = undefined,
 
+    pub fn buildCustom(self: *FieldNodes, group_id: []const u8, label_id: []const u8, field: []const u8, label: []const u8) ui.Node {
+        self.children[0] = text(label_id, label, "caption");
+        self.children[1] = input(field, false);
+        return container(ui.NodeKind.stack, group_id, &self.children);
+    }
+
     pub fn build(self: *FieldNodes, i: usize) ui.Node {
-        self.children[0] = text(label_ids[i], labels[i], "caption");
-        var input = ui.node(ui.NodeKind.text_input);
-        input.id = abi.view(fields[i]);
-        input.text = .{ .present = 1, .value = abi.view(labels[i]) };
-        input.placeholder = .{ .present = 1, .value = abi.view(hints[i]) };
-        input.state = .{ .present = 1, .value = abi.view(fields[i]) };
-        self.children[1] = input;
-        return container(ui.NodeKind.stack, group_ids[i], &self.children);
+        const field = self.buildCustom(group_ids[i], label_ids[i], fields[i], labels[i]);
+        self.children[1].text = .{ .present = 1, .value = abi.view(labels[i]) };
+        self.children[1].placeholder = .{ .present = 1, .value = abi.view(hints[i]) };
+        return field;
     }
 };
 

@@ -8,6 +8,7 @@ members = [
     "pulse-share-local.exe",
     "pulse-share-worker.exe",
     "pulse-share-pake.exe",
+    "pulse-share-desktop.exe",
     "pulse-share-pake-notices.txt",
     "pulse-share-go-notices.txt",
 ]

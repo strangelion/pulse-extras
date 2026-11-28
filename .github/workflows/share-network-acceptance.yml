@@ -3,7 +3,7 @@ name: Share isolated network acceptance
 on:
   workflow_dispatch:
   push:
-    branches: [feature/share]
+    branches: [main]
     paths:
       - '.github/workflows/share-network-acceptance.yml'
       - 'tests/share/network_acceptance.py'

@@ -1,9 +1,8 @@
 # Dynamic pairing code — implementation contract
 
-Status: local policy, CPace adapter and isolated enrollment controller implemented.
-No network pairing command or Pulse UI code display is enabled in the normal package.
-Manual certificate fingerprint pairing remains the only available enrollment.
-Do not release a short-code flow until the integration gates below pass.
+Status: dynamic enrollment is wired to the Share desktop candidate. Manual
+fingerprint enrollment is available in Advanced. Installed-host and
+two-device acceptance remain open.
 
 ## Identity and lifetime
 
@@ -21,7 +20,7 @@ Do not release a short-code flow until the integration gates below pass.
 - Reserve an attempt before invoking PAKE, serialize attempts, count all
   failures across code rotations, cap at five. No previous-step fallback.
   Expire an in-flight attempt at its code boundary. Success, exhaustion,
-  cancellation, panel close and deactivation close the window. The seed
+  cancellation and desktop window close end the enrollment. The seed
   is cleared on explicit close/expiry observation; do not claim Go string
   memory zeroization. The future adapter must enforce timer-driven close.
 - Prefer an ephemeral seed over a persistent DPAPI seed: restarting pairing

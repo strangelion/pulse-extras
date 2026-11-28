@@ -29,15 +29,18 @@ class ShareStage(unittest.TestCase):
                 prefix = Path(args[args.index("--prefix") + 1])
                 (prefix / "bin").mkdir(parents=True)
                 (prefix / "bin" / "pulse_share.dll").write_bytes(b"fixture")
+                (prefix / "bin" / stage.DESKTOP).write_bytes(b"desktop")
 
             def fake_stage(pulse, tool, template, output, extension, library, members):
                 self.assertEqual(output, out)
                 self.assertEqual(extension, "strangelion.share-dev")
                 self.assertEqual(library.read_bytes(), b"fixture")
-                self.assertEqual(len(members), len(stage.HELPERS) + 2)
-                for (path, name), key in zip(members[:-2], stage.HELPERS, strict=True):
+                self.assertEqual(len(members), len(stage.HELPERS) + 3)
+                for (path, name), key in zip(members[:-3], stage.HELPERS, strict=True):
                     self.assertEqual(path.read_bytes(), key.encode())
                     self.assertEqual(name, f"pulse-share-{key}.exe")
+                self.assertEqual(members[-3][1], stage.DESKTOP)
+                self.assertEqual(members[-3][0].read_bytes(), b"desktop")
                 self.assertEqual(members[-2][1], stage.NOTICE)
                 self.assertEqual(members[-2][0].read_text(encoding="utf-8"), "fixture notices")
                 self.assertEqual(members[-1][1], stage.GO_NOTICE)

@@ -1,7 +1,7 @@
 # Share consolidated Windows host acceptance
 
 **Status: NOT_RUN.** Use two Windows test profiles/devices and a trusted
-LAN. Keep normal Pulse data untouched. The same revision and artifact
+LAN. Use separate Windows user profiles or disposable VMs to isolate desktop preferences and keep normal Pulse data untouched. The same revision and artifact
 must be used on both devices. No automatic firewall/UPnP changes, no
 public listener and no third-party overlay installations required for
 this baseline. Use generated disposable files only.
@@ -30,8 +30,8 @@ tree using the same script (no overwriting, deletion or clipboard access):
 
 | ID | Scenario | Expected |
 | --- | --- | --- |
-| H01 | Open panel, no selection; close/reopen | No listener until explicit action; layout usable |
-| H02 | Private store/spool, dynamic pairing and trust | Masked code, both approvals, restart preserves trust |
+| H01 | Open Share directly and from Pulse with and without a selection | Same desktop UI, selection copied, no listener until explicit action |
+| H02 | Discover, select address, pair and verify trust | Results or empty state shown, host code stays visible, join input masked, both approvals required |
 | H03 | TCP and QUIC single file, both directions | Confirm offer, SHA-256 matches; no overwrite |
 | H04 | TCP and QUIC folder/multi-selection | Empty directories and Unicode filenames preserved |
 | H05 | Fixed 1/8/32 and adaptive channels | Correct bytes, bounded memory; no hang |
@@ -42,7 +42,7 @@ tree using the same script (no overwriting, deletion or clipboard access):
 | H10 | Automatic text and image sessions | New changes only; local edit stops overwrite; cancel stops sync |
 | H11 | Directory service: repeated listing, subtree download | Only selected root; read-only; stop releases listening port |
 | H12 | Preference save/reload; panel resize; task progress and prompts | Values retained, no stale selection, responsive UI |
-| H13 | Cancel active services, disable plugin, exit/restart host | Helper processes, handles and sockets released |
+| H13 | Close Share with an active service, then restart | Helper processes, handles and sockets released; no automatic listener |
 | H14 | Repeated transfers (20), idle and active CPU/RSS | Record actual peak/idle values and sustained growth trend |
 | H15 | Optional available IPv6/overlay route | Record actual environment; not mandatory to install vendor tools |
 | H16 | Tray Shelf | DEFERRED: public SDK adapter unavailable |
@@ -60,7 +60,7 @@ tests required by observed defects should need another run.
 
 ## Preferred Action-built package
 
-Use the existing Extension test package Action on feature/share
+Use the existing Extension test package Action on main
 with request share=0.1.0-rc.1. Download upstream-candidate-packages/share,
 verify SHA256SUMS and use the official author tool with isolated stores.
 This replaces local compilation/staging for the ordinary test path.

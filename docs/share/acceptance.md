@@ -213,7 +213,7 @@ client before joining the server, preserving the actual completion check.
 The separate share-network-acceptance.yml workflow uses the actual
 batchSend/batchReceive implementation, pinned Go modules and disposable
 Linux network namespaces with no default route. It runs automatically
-when the dedicated harness/workflow changes on feature/share. For subsequent
+when the dedicated harness/workflow changes on main. For subsequent
 release candidates, run it explicitly at the exact candidate revision.
 Normal pushes do not run the heavy matrix repeatedly. The main regression
 workflow is not weakened; changing the workflow may trigger full checks.

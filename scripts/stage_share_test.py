@@ -18,6 +18,7 @@ import package_common as pkg
 ROOT = Path(__file__).resolve().parents[1]
 EXTENSION_ID = "strangelion.share-dev"
 HELPERS = ("lan", "local", "worker", "pake")
+DESKTOP = "pulse-share-desktop.exe"
 NOTICE = "pulse-share-pake-notices.txt"
 GO_NOTICE = "pulse-share-go-notices.txt"
 
@@ -56,6 +57,7 @@ def prepare(pulse: Path, tool: Path, binaries: Path, out: Path) -> dict:
         for (path, _), flag in zip(members, flags, strict=True):
             if pkg.sha256(path, pkg.FILE_MAX) != flag.split("=", 1)[1]:
                 raise RuntimeError("Helper changed during DLL compilation")
+        members.append((prefix / "bin" / DESKTOP, DESKTOP))
         notice_source = binaries / NOTICE
         notice = work / NOTICE
         pkg.copy_checked(notice_source, notice, pkg.sha256(notice_source, pkg.FILE_MAX))

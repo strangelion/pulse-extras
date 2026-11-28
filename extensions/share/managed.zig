@@ -1,10 +1,9 @@
 //! One explicitly requested, digest-pinned CLI child in a private job.
-//! Runs only inside a host-owned task, never in a UI callback.
+//! Launch and network work run off the UI thread.
 const std = @import("std");
 const builtin = @import("builtin");
 const config = @import("share_config");
 const raw = @import("pulse_raw");
-const async_host = @import("pulse_async_host");
 
 pub const Mode = enum { discover, send, receive, identity_init, identity_show, peer_add, peer_list, peer_revoke, private_init, recovery_list, interfaces, pair_host, pair_join };
 pub const Field = struct {
@@ -186,6 +185,7 @@ const Accounting = extern struct {
 
 extern "kernel32" fn GetModuleHandleExW(u32, *const anyopaque, *Handle) callconv(.winapi) i32;
 extern "kernel32" fn GetModuleFileNameW(Handle, [*]u16, u32) callconv(.winapi) u32;
+extern "kernel32" fn GetLongPathNameW([*:0]const u16, [*]u16, u32) callconv(.winapi) u32;
 extern "kernel32" fn GetSystemDirectoryW([*]u16, u32) callconv(.winapi) u32;
 extern "kernel32" fn GetDriveTypeW([*:0]const u16) callconv(.winapi) u32;
 extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, Handle) callconv(.winapi) Handle;
@@ -235,15 +235,16 @@ fn pin(path: *const Path, hex: []const u8) !Handle {
     if (file == invalid or file == 0) return error.ImageOpen;
     errdefer _ = CloseHandle(file);
     var info: Info = undefined;
-    if (GetFileType(file) != 1 or GetFileInformationByHandle(file, &info) == 0 or
-        info.attributes & 0x410 != 0 or info.links != 1 or info.high != 0 or
-        info.low == 0 or info.low > 256 * 1024 * 1024) return error.ImageIdentity;
+    if (GetFileType(file) != 1 or GetFileInformationByHandle(file, &info) == 0) return error.ImageIdentity;
+    if (info.attributes & 0x410 != 0 or info.links != 1) return error.ImageNotOrdinary;
+    if (info.high != 0 or info.low == 0 or info.low > 256 * 1024 * 1024) return error.ImageSize;
     const expected_path = std.mem.sliceTo(path, 0);
     var actual: [1032]u16 = undefined;
     const n = GetFinalPathNameByHandleW(file, &actual, actual.len, 0);
-    if (n != expected_path.len + 4 or n >= actual.len or
+    if (n == 0 or n >= actual.len) return error.ImagePathRead;
+    if (n != expected_path.len + 4 or
         !std.mem.eql(u16, actual[0..4], std.unicode.wtf8ToWtf16LeStringLiteral("\\\\?\\")) or
-        CompareStringOrdinal(actual[4..n].ptr, @intCast(expected_path.len), expected_path.ptr, @intCast(expected_path.len), 1) != 2) return error.ImageIdentity;
+        CompareStringOrdinal(actual[4..n].ptr, @intCast(expected_path.len), expected_path.ptr, @intCast(expected_path.len), 1) != 2) return error.ImagePathMismatch;
     var hash = std.crypto.hash.sha2.Sha256.init(.{});
     var buffer: [16384]u8 = undefined;
     var remaining = info.low;
@@ -297,6 +298,79 @@ const Command = struct {
     }
 };
 
+fn moduleRoot(anchor: *const anyopaque, out: *Path) ![]const u16 {
+    var module: Handle = 0;
+    if (GetModuleHandleExW(6, anchor, &module) == 0) return error.ModulePath;
+    var module_path: Path = @splat(0);
+    const length = GetModuleFileNameW(module, &module_path, module_path.len);
+    if (length < 4 or length >= module_path.len) return error.ModulePath;
+    // Expand DOS 8.3 aliases, but retain directory junctions in the expected
+    // path so the later open-handle final-path check still detects redirects.
+    const n = GetLongPathNameW(&module_path, out, out.len);
+    if (n < 4 or n >= out.len or out[1] != ':' or out[2] != '\\') return error.ModulePath;
+    const drive = [_:0]u16{ out[0], ':', '\\' };
+    if (GetDriveTypeW(&drive) != 3) return error.ModulePath;
+    const split = std.mem.lastIndexOfScalar(u16, out[0..n], '\\') orelse return error.ModulePath;
+    return out[0 .. split + 1];
+}
+
+pub fn launchDesktop(digest: []const u8, source: []const u8, ctx: *const raw.PulseTaskContext) !void {
+    if (comptime builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return error.UnsupportedPlatform;
+    if (source.len == 0 or source.len > 4096 or cancelled(ctx)) return error.Cancelled;
+    var module_path: Path = undefined;
+    const root = try moduleRoot(@ptrCast(&launchDesktop), &module_path);
+    const image = try sibling(root, "pulse-share-desktop.exe");
+    const image_pin = try pin(&image, digest);
+    defer _ = CloseHandle(image_pin);
+    const security: Security = .{};
+    var reader: Handle = 0;
+    var writer: Handle = 0;
+    if (CreatePipe(&reader, &writer, &security, 8192) == 0) return error.Pipe;
+    defer _ = CloseHandle(reader);
+    defer _ = CloseHandle(writer);
+    if (SetHandleInformation(writer, 1, 0) == 0) return error.Pipe;
+    // Fill the entire bounded frame before starting the reader. No stdout,
+    // file paths, settings or secrets are inherited outside this one pipe.
+    var written: u32 = 0;
+    if (WriteFile(writer, source.ptr, @intCast(source.len), &written, null) == 0 or written != source.len) return error.Pipe;
+
+    var size: usize = 0;
+    _ = InitializeProcThreadAttributeList(null, 1, 0, &size);
+    if (size == 0 or size > 65536) return error.Attributes;
+    const storage = try std.heap.page_allocator.alignedAlloc(u8, .of(usize), size);
+    defer std.heap.page_allocator.free(storage);
+    const attrs: *anyopaque = @ptrCast(storage.ptr);
+    if (InitializeProcThreadAttributeList(attrs, 1, 0, &size) == 0) return error.Attributes;
+    defer DeleteProcThreadAttributeList(attrs);
+    if (UpdateProcThreadAttribute(attrs, 0, 0x00020002, &reader, @sizeOf(Handle), null, null) == 0) return error.Attributes;
+
+    var command: Command = .{};
+    try command.wide(std.mem.sliceTo(&image, 0));
+    var pipe_text: [32]u8 = undefined;
+    try command.pair("--handoff", try std.fmt.bufPrint(&pipe_text, "{x}", .{reader}));
+    var cwd: Path = @splat(0);
+    const cwd_len = GetSystemDirectoryW(&cwd, cwd.len);
+    if (cwd_len == 0 or cwd_len >= cwd.len) return error.SystemDirectory;
+    if (cancelled(ctx)) return error.Cancelled;
+    var startup: StartupEx = .{ .attributes = attrs };
+    var child: Process = .{};
+    if (CreateProcessW(&image, &command.data, null, null, 1, 0x00080000, null, &cwd, &startup, &child) == 0) return error.Spawn;
+    // The visible desktop product owns its tasks even if Pulse exits.
+    _ = CloseHandle(child.thread);
+    _ = CloseHandle(child.process);
+}
+
+pub fn readHandoff(handle_text: []const u8, out: []u8) ![]const u8 {
+    const handle = try std.fmt.parseInt(Handle, handle_text, 16);
+    if (handle == 0 or handle == invalid or GetFileType(handle) != 3) return error.Pipe;
+    defer _ = CloseHandle(handle);
+    var available: u32 = 0;
+    if (PeekNamedPipe(handle, null, 0, null, &available, null) == 0 or available == 0 or available > out.len) return error.Pipe;
+    var count: u32 = 0;
+    if (ReadFile(handle, out.ptr, available, &count, null) == 0 or count != available) return error.Pipe;
+    return out[0..count];
+}
+
 fn cancelled(ctx: *const raw.PulseTaskContext) bool {
     return if (ctx.cancelled) |check| check(ctx.context) != 0 else true;
 }
@@ -336,9 +410,9 @@ const Output = struct {
     inventory_len: usize = 0,
     inventory_truncated: bool = false,
     had_report: bool = false,
+    child_cancelled: bool = false,
     done_bytes: u64 = 0,
     total_bytes: u64 = 0,
-    wake: ?*async_host.Wake = null,
 
     fn report(self: *Output, ctx: *const raw.PulseTaskContext, msg: []const u8) void {
         self.had_report = true;
@@ -349,7 +423,6 @@ const Output = struct {
         p.total_bytes = self.total_bytes;
         p.current_item = .{ .data = msg.ptr, .length = @intCast(msg.len) };
         if (ctx.report) |send| _ = send(ctx.context, &p);
-        if (self.wake) |wake| wake.request();
     }
 
     fn writeAnswer(input: Handle, bytes: []const u8) !void {
@@ -368,6 +441,7 @@ const Output = struct {
         const line = self.line[0..self.len];
         defer self.len = 0;
         if (!std.unicode.utf8ValidateSlice(line)) return error.OutputEncoding;
+        self.child_cancelled = std.mem.eql(u8, line, "Pulse Share: context canceled");
         if (std.mem.startsWith(u8, line, "PAIRCODE ")) {
             defer @memset(self.line[0..self.len], 0);
             if (request.mode != .pair_host) return error.OutputProtocol;
@@ -380,7 +454,6 @@ const Output = struct {
                 if (parts.next() != null or seconds == 0 or seconds > 60) return error.OutputProtocol;
                 decisions.display_code.store((@as(u64, seconds) << 32) | code, .release);
             }
-            if (self.wake) |wake| wake.request();
             return;
         }
         if (std.mem.eql(u8, line, "PAIRINPUT")) {
@@ -455,14 +528,13 @@ const Output = struct {
     }
 };
 
-pub fn run(request: *const Request, ctx: *const raw.PulseTaskContext, decisions: *Decisions, wake: ?*async_host.Wake) !void {
+pub fn run(request: *const Request, ctx: *const raw.PulseTaskContext, decisions: *Decisions) !void {
     if (comptime builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return error.UnsupportedPlatform;
-    var output: Output = .{ .wake = wake };
+    var output: Output = .{};
     defer {
         decisions.join_code.store(0, .release);
         decisions.display_code.store(0, .release);
         @memset(&output.line, 0);
-        if (wake) |value| value.request();
     }
     runInner(request, ctx, decisions, &output) catch |err| {
         if (err != error.ChildFailed or !output.had_report) output.report(ctx, @errorName(err));
@@ -475,15 +547,8 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
     try request.validate();
     if (!configured()) return error.Unconfigured;
     if (cancelled(ctx)) return error.Cancelled;
-    var module: Handle = 0;
-    if (GetModuleHandleExW(6, @ptrCast(&run), &module) == 0) return error.ModulePath;
-    var module_path: Path = @splat(0);
-    const n = GetModuleFileNameW(module, &module_path, module_path.len);
-    if (n < 4 or n >= module_path.len or module_path[1] != ':' or module_path[2] != '\\') return error.ModulePath;
-    const drive = [_:0]u16{ module_path[0], ':', '\\' };
-    if (GetDriveTypeW(&drive) != 3) return error.ModulePath;
-    const split = std.mem.lastIndexOfScalar(u16, module_path[0..n], '\\') orelse return error.ModulePath;
-    const root = module_path[0 .. split + 1];
+    var module_path: Path = undefined;
+    const root = try moduleRoot(@ptrCast(&run), &module_path);
     const lan = try sibling(root, "pulse-share-lan.exe");
     const local = try sibling(root, "pulse-share-local.exe");
     const worker = try sibling(root, "pulse-share-worker.exe");
@@ -672,7 +737,6 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
     output_write = 0;
     const start = GetTickCount64();
     var stop_at: ?u64 = null;
-    var last_wake = start;
     while (true) {
         output.pump(output_read, input_write, request, ctx, decisions) catch |err| {
             if (!drain(job)) return error.Drain;
@@ -695,10 +759,6 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
             return error.Wait;
         }
         const now = GetTickCount64();
-        if (now -% last_wake >= 250) {
-            if (output.wake) |wake| wake.request();
-            last_wake = now;
-        }
         if (stop_at == null and (cancelled(ctx) or now -% start >= 40 * 60 * 1000)) {
             if (SetEvent(event) == 0) {
                 if (!drain(job)) return error.Drain;
@@ -716,7 +776,10 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
     if (!drain(job)) return error.Drain;
     if (!got_exit) return error.Wait;
     if (exit == 0) return;
-    if (stop_at != null or cancelled(ctx)) return error.CancelUncertain;
+    if (stop_at != null or cancelled(ctx)) {
+        if (output.child_cancelled and (pairingMode(request.mode) or request.mode == .discover)) return error.Cancelled;
+        return error.CancelUncertain;
+    }
     return error.ChildFailed;
 }
 
