@@ -789,6 +789,25 @@ static BOOL draw_control(const DRAWITEMSTRUCT *item) {
         GetWindowTextW(item->hwndItem, text, ARRAYSIZE(text));
     } else return FALSE;
     surface(dc, area, fill, line, 12);
+    if (item->hwndItem == notice_close) {
+        int x = (area.left + area.right) / 2, y = (area.top + area.bottom) / 2;
+        int arm = scale(5);
+        HPEN pen = CreatePen(PS_SOLID, max(1, scale(1)), fg);
+        if (pen) {
+            HGDIOBJ previous = SelectObject(dc, pen);
+            MoveToEx(dc, x - arm, y - arm, NULL);
+            LineTo(dc, x + arm + 1, y + arm + 1);
+            MoveToEx(dc, x - arm, y + arm, NULL);
+            LineTo(dc, x + arm + 1, y - arm - 1);
+            SelectObject(dc, previous);
+            DeleteObject(pen);
+        }
+        if ((item->itemState & ODS_FOCUS) && !(item->itemState & ODS_NOFOCUSRECT)) {
+            InflateRect(&area, -scale(4), -scale(3));
+            DrawFocusRect(dc, &area);
+        }
+        return TRUE;
+    }
     HGDIOBJ old_font = SelectObject(dc, item->CtlType == ODT_TAB ? caption : font);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, fg);
@@ -877,7 +896,7 @@ static void place_notice(void) {
     GetClientRect(window, &client);
     int w = min(scale(440), client.right - scale(32));
     if (w <= scale(180) || client.bottom <= scale(150)) return;
-    int action = scale(56), pad = scale(14);
+    int action = scale(36), pad = scale(14);
     int text_width = w - action - 3 * pad;
     int h = max(scale(54), min(scale(104), text_height(notice_text, text_width) + 2 * pad));
     int drift = MulDiv(FULL - notice_motion.value, scale(9), FULL);
