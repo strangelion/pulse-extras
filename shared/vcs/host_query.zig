@@ -970,7 +970,13 @@ pub const Binding = struct {
         if (current.phase != .ready or current.stale or self.navigation.pending or self.controller.query.task.occupied() or self.resolution.task.occupied()) return error.State;
         const snapshot = if (current.snapshot) |*value| value else return error.State;
         if (!snapshot.files.available) return error.Unavailable;
-        if (std.mem.eql(u8, name, panel.command_file_filter)) {
+        if (std.mem.eql(u8, name, panel.command_file_clear)) {
+            self.file_filter = .{};
+            self.file_page = 0;
+            if (self.model) |*model| {
+                model.setStates(&.{.{ .key = abi.view(panel.state_file_filter), .value = abi.view("") }}) catch {};
+            }
+        } else if (std.mem.eql(u8, name, panel.command_file_filter)) {
             const model = self.model orelse return error.State;
             const get = model.table.get_state orelse return error.Unavailable;
             var bytes: [contract.Text.capacity + 1]u8 = undefined;
@@ -1078,6 +1084,25 @@ pub const Binding = struct {
             if (self.controller.detail_data) |*data| {
                 if (self.detail_page + 1 < data.pages()) self.detail_page += 1;
             }
+        } else if (std.mem.eql(u8, name, panel.command_history_prev) or std.mem.eql(u8, name, panel.command_history_next)) {
+            if (workspace.kind == .svn) return error.Unavailable;
+            const max_offset: u16 = if (workspace.kind == .git or workspace.kind == .hg) 4096 else 224;
+            var bytes: [17]u8 = undefined;
+            const entered = self.readDetailState(panel.state_history_offset, &bytes) catch self.history_offset.slice();
+            const current_offset = if (entered.len == 0) 0 else std.fmt.parseInt(u16, entered, 10) catch 0;
+            const aligned = (current_offset / 32) * 32;
+            const next_offset: u16 = if (std.mem.eql(u8, name, panel.command_history_prev))
+                aligned -| 32
+            else
+                @min(max_offset, aligned +| 32);
+            var formatted: [16]u8 = undefined;
+            const offset_str = std.fmt.bufPrint(&formatted, "{d}", .{next_offset}) catch return error.Argument;
+            if (self.model) |*model| {
+                model.setStates(&.{.{ .key = abi.view(panel.state_history_offset), .value = abi.view(offset_str) }}) catch {};
+            }
+            self.history_offset = contract.Text.init(offset_str) catch return error.Argument;
+            const history_cmd = if (self.controller.detail_scope) |scope| (if (scope.kind == .file_history) panel.detail_actions[1] else panel.detail_actions[0]) else panel.detail_actions[0];
+            return self.detailCommand(history_cmd);
         } else {
             for (panel.pick_actions, 0..) |action, slot| {
                 if (std.mem.eql(u8, name, action)) {
@@ -1108,7 +1133,11 @@ pub const Binding = struct {
                 };
                 if (needs_path) {
                     var bytes: [identity.max_path_bytes + 1]u8 = undefined;
-                    const path = try self.readDetailState(panel.state_detail_path, &bytes);
+                    const raw_path = try self.readDetailState(panel.state_detail_path, &bytes);
+                    var normalized: [identity.max_path_bytes]u8 = undefined;
+                    if (raw_path.len > normalized.len) return error.Argument;
+                    for (raw_path, 0..) |byte, i| normalized[i] = if (byte == '\\') '/' else byte;
+                    const path = normalized[0..raw_path.len];
                     if (path.len != 0) {
                         if (!contract.safeRelativePath(path)) return error.Argument;
                         request.path = identity.Path.init(path) catch return error.Argument;
@@ -1408,17 +1437,54 @@ pub const Binding = struct {
         }
         if (!self.accepting or self.approval_locked or self.controller.stopped or self.resolution.task.occupied() or self.controller.query.task.occupied() or !self.navigation.pending) return;
         const ticket = self.navigation.latest orelse return;
-        if (ticket.directory() == null) {
+        const dir = ticket.directory() orelse {
             _ = self.navigation.take();
             return;
+        };
+        var active_resolver = resolver;
+        if (!self.metadata_only and self.local_ui and !self.persistent_revocation) {
+            if (self.approved_root) |*approved| {
+                if (!pathWithinRoot(dir, approved.slice())) {
+                    if (self.local_access) |access| {
+                        if (access.reset) |reset| {
+                            if (self.preview_resolver) |preview| {
+                                self.verified_version = .{};
+                                self.cache_token = null;
+                                self.local_review = null;
+                                access.revoke(access.ctx) catch {};
+                                if (reset(access.ctx)) |_| {
+                                    self.revocation = null;
+                                    self.saved_trust_selected = false;
+                                    self.local_approved_kind = null;
+                                    self.revocation_failed = false;
+                                    self.approved_root = null;
+                                    self.resolver = preview;
+                                    self.metadata_only = true;
+                                    active_resolver = preview;
+                                } else |_| {}
+                            }
+                        }
+                    }
+                }
+            }
         }
         self.controller.current = .{ .phase = .queued };
-        self.resolution.start(resolver, &ticket) catch |err| {
+        self.resolution.start(active_resolver, &ticket) catch |err| {
             self.controller.current = .{ .phase = .failed, .failure = if (err == error.Permission) error.Permission else error.Io };
             return err;
         };
         _ = self.navigation.take();
         self.controller.current = .{ .phase = .refreshing };
+    }
+
+    fn pathWithinRoot(path: []const u8, root: []const u8) bool {
+        if (path.len < root.len) return false;
+        const same = if (@import("builtin").os.tag == .windows)
+            std.ascii.eqlIgnoreCase(path[0..root.len], root)
+        else
+            std.mem.eql(u8, path[0..root.len], root);
+        if (!same) return false;
+        return path.len == root.len or path[root.len] == '\\' or path[root.len] == '/';
     }
 
     /// An explicit owner event can advance a task and repaint. No wait or
@@ -2791,4 +2857,14 @@ test "detail task serializes with summary and discards cancelled result before r
     try std.testing.expect(controller.detail_data == null);
     try controller.requestStop();
     try controller.checkDrained();
+}
+
+test "pathWithinRoot enforces directory boundaries without false prefix matches" {
+    try std.testing.expect(Binding.pathWithinRoot("C:\\work\\repo", "C:\\work\\repo"));
+    try std.testing.expect(Binding.pathWithinRoot("C:\\work\\repo\\sub\\dir", "C:\\work\\repo"));
+    try std.testing.expect(Binding.pathWithinRoot("C:\\work\\repo\\", "C:\\work\\repo"));
+    try std.testing.expect(!Binding.pathWithinRoot("C:\\work\\repo2", "C:\\work\\repo"));
+    try std.testing.expect(!Binding.pathWithinRoot("C:\\work\\other", "C:\\work\\repo"));
+    try std.testing.expect(Binding.pathWithinRoot("/work/repo/sub", "/work/repo"));
+    try std.testing.expect(!Binding.pathWithinRoot("/work/repo-other", "/work/repo"));
 }

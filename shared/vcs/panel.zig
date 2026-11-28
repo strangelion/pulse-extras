@@ -35,6 +35,7 @@ pub const command_trust_forget_all = "vcs.trust.forget-all";
 pub const state_executable = "vcs.executable";
 pub const state_file_filter = "vcs.files.filter";
 pub const command_file_filter = "vcs.files.search";
+pub const command_file_clear = "vcs.files.clear";
 pub const command_file_prev = "vcs.files.prev";
 pub const command_file_next = "vcs.files.next";
 
@@ -47,10 +48,13 @@ pub const pick_actions = [_][]const u8{ "vcs.pick.0", "vcs.pick.1", "vcs.pick.2"
 pub const revision_pick_actions = [_][]const u8{ "vcs.rev.0", "vcs.rev.1", "vcs.rev.2", "vcs.rev.3", "vcs.rev.4", "vcs.rev.5", "vcs.rev.6", "vcs.rev.7" };
 pub const command_detail_prev = "vcs.detail.prev";
 pub const command_detail_next = "vcs.detail.next";
-pub const advanced_commands = detail_actions ++ pick_actions ++ revision_pick_actions ++ [_][]const u8{ command_detail_prev, command_detail_next };
+pub const command_history_prev = "vcs.detail.history-prev";
+pub const command_history_next = "vcs.detail.history-next";
+pub const advanced_commands = detail_actions ++ pick_actions ++ revision_pick_actions ++ [_][]const u8{ command_detail_prev, command_detail_next, command_file_clear, command_history_prev, command_history_next };
 pub const full_command_count = 18 + advanced_commands.len;
 
 pub fn isDetailCommand(name: []const u8) bool {
+    if (std.mem.eql(u8, name, command_file_clear)) return false;
     for (advanced_commands) |command| {
         if (std.mem.eql(u8, command, name)) return true;
     }
@@ -58,7 +62,7 @@ pub fn isDetailCommand(name: []const u8) bool {
 }
 
 pub fn isFileCommand(name: []const u8) bool {
-    return std.mem.eql(u8, name, command_file_filter) or std.mem.eql(u8, name, command_file_prev) or std.mem.eql(u8, name, command_file_next);
+    return std.mem.eql(u8, name, command_file_filter) or std.mem.eql(u8, name, command_file_clear) or std.mem.eql(u8, name, command_file_prev) or std.mem.eql(u8, name, command_file_next);
 }
 
 pub const TrustMode = enum { session, remember, reuse };
@@ -254,6 +258,45 @@ fn availabilityLabel(lang: Language, state: contract.Availability) []const u8 {
     };
 }
 
+fn fileKindLabel(lang: Language, kind: contract.FileList.Kind) []const u8 {
+    if (lang != .zh) return kind.label();
+    return switch (kind) {
+        .modified => "修改",
+        .added => "新增",
+        .deleted => "删除",
+        .renamed => "重命名",
+        .copied => "复制",
+        .replaced => "替换",
+        .untracked => "未跟踪",
+        .ignored => "忽略",
+        .missing => "缺失",
+        .conflict => "冲突",
+        .external => "外部",
+        .obstructed => "受阻",
+        .incomplete => "不完整",
+        .property => "属性",
+        .unknown => "未知",
+    };
+}
+
+fn detailKindLabel(lang: Language, kind: contract.DetailKind) []const u8 {
+    return switch (kind) {
+        .history => loc(lang, "History", "提交历史"),
+        .file_history => loc(lang, "File history", "文件历史"),
+        .revision_info => loc(lang, "Revision details", "版本详情"),
+        .working_diff => loc(lang, "Working file diff", "工作区差异"),
+        .staged_diff => loc(lang, "Staged file diff", "暂存差异"),
+        .revision_diff => loc(lang, "Revision file diff", "版本差异"),
+        .content => loc(lang, "File content / BASE", "文件内容 / BASE"),
+        .refs => loc(lang, "References / bookmarks", "引用 / 书签"),
+        .workspaces => loc(lang, "Workspaces", "工作区"),
+        .operations => loc(lang, "Operation log", "操作日志"),
+        .local_info => loc(lang, "Local revision metadata", "本地版本元数据"),
+        .properties => loc(lang, "Local property names", "本地属性名"),
+        else => @tagName(kind),
+    };
+}
+
 fn failureLabel(lang: Language, err: contract.Error) []const u8 {
     return switch (err) {
         error.CliMissing => loc(lang, "CLI unavailable", "工具不可用"),
@@ -261,7 +304,7 @@ fn failureLabel(lang: Language, err: contract.Error) []const u8 {
         error.NotConnected => loc(lang, "Repository unavailable", "仓库不可用"),
         error.Unsupported => loc(lang, "Unsupported operation", "不支持的操作"),
         error.Stale => loc(lang, "Repository changed", "仓库已变化"),
-        error.Parse => loc(lang, "Invalid tool output", "工具输出无效"),
+        error.Parse => loc(lang, "Invalid path or tool output", "路径无效或工具输出异常"),
         error.Timeout => loc(lang, "Timed out", "执行超时"),
         error.Cancelled => loc(lang, "Cancelled", "已取消"),
         error.Permission => loc(lang, "Permission or approval required", "需要权限或审批"),
@@ -276,121 +319,260 @@ fn failureLabel(lang: Language, err: contract.Error) []const u8 {
 /// All visible data is copied; no references into the View or cache remain.
 /// build is read-only; buildInteractive declares the fixed owner commands.
 pub const Content = struct {
-    const capacity = 96;
+    pub const capacity = 256;
+    const text_capacity = 144;
     const line_bytes = identity.max_path_bytes + 64;
-    lines: [capacity][line_bytes]u8 = undefined,
+    lines: [text_capacity][line_bytes]u8 = undefined,
+    text_len: usize = 0,
     nodes: [capacity]ui.Node = undefined,
     len: usize = 0,
+    top_sections: [16]ui.Node = undefined,
+    top_len: usize = 0,
     root: ui.Node = undefined,
     commands: [full_command_count]abi.StringView = undefined,
     states: [5]ui.State = undefined,
 
-    fn add(self: *Content, id: []const u8, label: []const u8, value: []const u8) void {
-        std.debug.assert(self.len < capacity);
-        const buffer = &self.lines[self.len];
-        const line = std.fmt.bufPrint(buffer, "{s}{s}", .{ label, value }) catch unreachable;
+    fn allocNodes(self: *Content, slice: []const ui.Node) []const ui.Node {
+        if (slice.len == 0 or self.len + slice.len > capacity) return &.{};
+        const start = self.len;
+        @memcpy(self.nodes[start .. start + slice.len], slice);
+        self.len += slice.len;
+        return self.nodes[start .. start + slice.len];
+    }
+
+    fn makeText(self: *Content, id: []const u8, label: []const u8, value: []const u8, role: ?[]const u8) ui.Node {
+        if (self.text_len >= text_capacity) {
+            var fallback = ui.text("");
+            fallback.id = abi.view(id);
+            return fallback;
+        }
+        const buffer = &self.lines[self.text_len];
+        const line = std.fmt.bufPrint(buffer, "{s}{s}", .{ label, value }) catch buffer[0..0];
         // Prevent display controls from forging additional lines. Preserve
         // UTF-8, but replace ASCII control characters in display text only.
         for (buffer[0..line.len]) |*byte| {
             if (byte.* < 0x20 or byte.* == 0x7f) byte.* = ' ';
         }
+        self.text_len += 1;
         var node = ui.text(buffer[0..line.len]);
         node.id = abi.view(id);
-        self.nodes[self.len] = node;
-        self.len += 1;
+        if (role) |r| node.role = .{ .present = 1, .value = abi.view(r) };
+        return node;
     }
 
-    fn count(self: *Content, lang: Language, id: []const u8, label: []const u8, number: u32, availability: contract.Availability, snapshot_availability: contract.Availability) void {
-        if (snapshot_availability != .ready) {
-            self.add(id, label, availabilityLabel(lang, snapshot_availability));
-            return;
+    fn makeButton(id: []const u8, label: []const u8, command: []const u8, role: ?[]const u8) ui.Node {
+        var node = ui.button(label, command);
+        node.id = abi.view(id);
+        if (role) |r| node.role = .{ .present = 1, .value = abi.view(r) };
+        return node;
+    }
+
+    fn makeInput(key: []const u8, label: []const u8, placeholder: ?[]const u8) ui.Node {
+        var node = ui.node(ui.NodeKind.text_input);
+        node.id = abi.view(key);
+        node.state = .{ .present = 1, .value = abi.view(key) };
+        node.text = .{ .present = 1, .value = abi.view(label) };
+        if (placeholder) |p| node.placeholder = .{ .present = 1, .value = abi.view(p) };
+        return node;
+    }
+
+    fn makeStack(self: *Content, id: []const u8, horizontal: bool, gap: i32, children: []const ui.Node) ui.Node {
+        var node = ui.node(ui.NodeKind.stack);
+        node.id = abi.view(id);
+        if (horizontal) node.orientation = .{ .present = 1, .value = abi.view("horizontal") };
+        node.gap = .{ .present = 1, .value = gap };
+        ui.withChildren(&node, self.allocNodes(children));
+        return node;
+    }
+
+    fn makeGrid(self: *Content, id: []const u8, cols: i32, gap: i32, children: []const ui.Node) ui.Node {
+        var node = ui.node(ui.NodeKind.grid);
+        node.id = abi.view(id);
+        node.columns = .{ .present = 1, .value = cols };
+        node.gap = .{ .present = 1, .value = gap };
+        ui.withChildren(&node, self.allocNodes(children));
+        return node;
+    }
+
+    fn makeGroup(self: *Content, id: []const u8, title: []const u8, children: []const ui.Node) ui.Node {
+        var node = ui.node(ui.NodeKind.group);
+        node.id = abi.view(id);
+        node.text = .{ .present = 1, .value = abi.view(title) };
+        node.bordered = .{ .present = 1, .value = 1 };
+        node.gap = .{ .present = 1, .value = 6 };
+        ui.withChildren(&node, self.allocNodes(children));
+        return node;
+    }
+
+    fn pushSection(self: *Content, node: ui.Node) void {
+        if (self.top_len < self.top_sections.len) {
+            self.top_sections[self.top_len] = node;
+            self.top_len += 1;
         }
-        if (availability != .ready) {
-            self.add(id, label, availabilityLabel(lang, availability));
-            return;
-        }
+    }
+
+    fn makeCount(self: *Content, lang: Language, id: []const u8, label: []const u8, number: u32, availability: contract.Availability, snapshot_availability: contract.Availability) ui.Node {
+        if (snapshot_availability != .ready) return self.makeText(id, label, availabilityLabel(lang, snapshot_availability), null);
+        if (availability != .ready) return self.makeText(id, label, availabilityLabel(lang, availability), null);
         var buffer: [16]u8 = undefined;
-        self.add(id, label, std.fmt.bufPrint(&buffer, "{d}", .{number}) catch unreachable);
+        return self.makeText(id, label, std.fmt.bufPrint(&buffer, "{d}", .{number}) catch "", null);
     }
 
     pub fn build(self: *Content, lang: Language, view: *const View, tree: *ui.Tree) void {
         self.len = 0;
+        self.text_len = 0;
+        self.top_len = 0;
+
+        // Section 1: Status, Trust & Workspace summary card.
+        var summary: [24]ui.Node = undefined;
+        var s_len: usize = 0;
         const status = if (view.discovery_available and view.workspace == null) switch (view.phase) {
             .queued => loc(lang, "Waiting to discover repository", "等待识别仓库"),
             .refreshing => loc(lang, "Discovering repository", "正在识别仓库"),
             else => phaseLabel(lang, view.phase),
         } else phaseLabel(lang, view.phase);
-        self.add("vcs.phase", "", status);
+        summary[s_len] = self.makeText("vcs.phase", "", status, null);
+        s_len += 1;
         if (view.approval_required) {
-            self.add("vcs.approval", "", if (view.revocation_configured)
+            summary[s_len] = self.makeText("vcs.approval", "", if (view.revocation_configured)
                 loc(lang, "Session approval revoked", "本次授权已撤销")
             else
-                loc(lang, "Execution locked: production approval unavailable", "执行已锁定：尚未提供生产授权"));
+                loc(lang, "Execution locked: production approval unavailable", "执行已锁定：尚未提供生产授权"), "caption");
+            s_len += 1;
         }
         if (view.metadata_only) {
-            self.add("vcs.preview", "", loc(lang, "Repository preview (no external commands)", "仓库预览（不执行外部命令）"));
-            self.add("vcs.preview-help", "", if (view.local_setup)
+            summary[s_len] = self.makeText("vcs.preview", "", loc(lang, "Repository preview (no external commands)", "仓库预览（不执行外部命令）"), "caption");
+            s_len += 1;
+            summary[s_len] = self.makeText("vcs.preview-help", "", if (view.local_setup)
                 loc(lang, "To query changes, select an installed tool and explicitly trust this repository.", "如需查询变更，请指定已安装的工具，并明确确认信任当前仓库。")
             else
-                loc(lang, "External command access requires explicit approval.", "外部命令访问需要明确授权。"));
+                loc(lang, "External command access requires explicit approval.", "外部命令访问需要明确授权。"), "caption");
+            s_len += 1;
         } else if (view.local_setup and !view.approval_required) {
-            self.add("vcs.local-trust", "", if (view.reset_configured) loc(lang, "Trusted local session (not a sandbox). Change repository or provider only through a fresh review.", "本次会话已信任（非沙箱）。更换仓库或类型需重新确认。") else loc(lang, "Trusted local session (not a sandbox). Close and reopen to change repository or provider.", "本次会话已信任（非沙箱）。更换仓库或类型需关闭后重新打开。"));
+            summary[s_len] = self.makeText("vcs.local-trust", "", if (view.reset_configured) loc(lang, "Trusted local session (not a sandbox). Switching repositories returns to preview.", "本次会话已信任（非沙箱）。切换其他仓库时将自动回到预览状态。") else loc(lang, "Trusted local session (not a sandbox). Close and reopen to change repository or provider.", "本次会话已信任（非沙箱）。更换仓库或类型需关闭后重新打开。"), "caption");
+            s_len += 1;
         }
-        if (view.saved_trust_selected and !view.approval_required) self.add("vcs.saved-trust", "", loc(lang, "Saved local approval selected; identity and tool digest must match before use.", "已选择持久化本地授权；使用前必须匹配仓库身份与工具摘要。"));
-        if (view.approved_root) |root| self.add("vcs.approved-root", loc(lang, "Approved root: ", "授权根目录："), root.slice());
-        if (!view.metadata_only and !view.approval_required and view.tool_version.slice().len != 0) self.add("vcs.tool-version", loc(lang, "Verified tool version: ", "已验证工具版本："), view.tool_version.slice());
-        if (view.revocation_failed) self.add("vcs.revocation-error", "", loc(lang, "Session locked; permanent revocation failed. Use approval tool to revoke.", "会话已锁定；永久撤销失败，请使用授权工具撤销。"));
-        if (view.failure) |err| self.add("vcs.error", "", failureLabel(lang, err));
+        if (view.saved_trust_selected and !view.approval_required) {
+            summary[s_len] = self.makeText("vcs.saved-trust", "", loc(lang, "Saved local approval selected; identity and tool digest must match before use.", "已选择持久化本地授权；使用前必须匹配仓库身份与工具摘要。"), "caption");
+            s_len += 1;
+        }
+        if (view.approved_root) |root| {
+            summary[s_len] = self.makeText("vcs.approved-root", loc(lang, "Approved root: ", "授权根目录："), root.slice(), "caption");
+            s_len += 1;
+        }
+        if (!view.metadata_only and !view.approval_required and view.tool_version.slice().len != 0) {
+            summary[s_len] = self.makeText("vcs.tool-version", loc(lang, "Verified tool version: ", "已验证工具版本："), view.tool_version.slice(), "caption");
+            s_len += 1;
+        }
+        if (view.revocation_failed) {
+            summary[s_len] = self.makeText("vcs.revocation-error", "", loc(lang, "Session locked; permanent revocation failed. Use approval tool to revoke.", "会话已锁定；永久撤销失败，请使用授权工具撤销。"), null);
+            s_len += 1;
+        }
+        if (view.failure) |err| {
+            summary[s_len] = self.makeText("vcs.error", "", failureLabel(lang, err), null);
+            s_len += 1;
+        }
         if (view.workspace) |workspace| {
-            self.add("vcs.provider", loc(lang, "Provider: ", "类型："), workspace.kind.displayName());
-            self.add("vcs.root", loc(lang, "Workspace: ", "工作区："), workspace.root.slice());
+            summary[s_len] = self.makeText("vcs.provider", loc(lang, "Provider: ", "类型："), workspace.kind.displayName(), null);
+            s_len += 1;
+            summary[s_len] = self.makeText("vcs.root", loc(lang, "Workspace: ", "工作区："), workspace.root.slice(), "caption");
+            s_len += 1;
         }
         if (view.snapshot) |snapshot| {
             if (view.metadata_only) {
-                if (snapshot.reference.slice().len != 0) self.add("vcs.reference", loc(lang, "HEAD branch: ", "HEAD 分支："), snapshot.reference.slice());
-                if (snapshot.revision) |revision| self.add("vcs.revision", loc(lang, "Detached HEAD: ", "分离 HEAD："), revision.slice());
-                self.add("vcs.detail", "", snapshot.detail.slice());
-                self.add("vcs.status-unavailable", "", loc(lang, "Changes, staging and history: not queried", "变更、暂存及历史：未查询"));
-            } else {
-                self.add("vcs.freshness", "", if (view.stale) loc(lang, "Previous data — stale", "历史数据（已过期）") else availabilityLabel(lang, snapshot.availability));
-                self.add("vcs.reference", loc(lang, "Reference: ", "引用："), if (snapshot.reference.slice().len == 0) loc(lang, "Not reported", "未报告") else snapshot.reference.slice());
-                self.add("vcs.revision", loc(lang, "Revision: ", "版本："), if (snapshot.revision) |revision| revision.slice() else loc(lang, "Not reported", "未报告"));
-                if (snapshot.operation.len != 0) self.add("vcs.operation", loc(lang, "Recorded operation: ", "已记录操作："), snapshot.operation.slice());
-                self.count(lang, "vcs.staged", loc(lang, "Staged: ", "暂存："), snapshot.changes.staged, snapshot.counts.staged, snapshot.availability);
-                self.count(lang, "vcs.modified", loc(lang, "Modified: ", "修改："), snapshot.changes.modified, snapshot.counts.modified, snapshot.availability);
-                self.count(lang, "vcs.untracked", loc(lang, "Untracked: ", "未跟踪："), snapshot.changes.untracked, snapshot.counts.untracked, snapshot.availability);
-                self.count(lang, "vcs.conflicted", loc(lang, "Conflict count: ", "冲突数量："), snapshot.changes.conflicted, snapshot.counts.conflicted, snapshot.availability);
-                if (snapshot.availability == .ready) {
-                    if (snapshot.has_conflict) |conflict| self.add("vcs.conflict_presence", loc(lang, "Conflicts present: ", "存在冲突："), if (conflict) loc(lang, "Yes", "是") else loc(lang, "No", "否"));
+                if (snapshot.reference.slice().len != 0) {
+                    summary[s_len] = self.makeText("vcs.reference", loc(lang, "HEAD branch: ", "HEAD 分支："), snapshot.reference.slice(), null);
+                    s_len += 1;
                 }
-                self.count(lang, "vcs.ahead", loc(lang, "Ahead: ", "领先："), snapshot.changes.ahead, snapshot.counts.ahead, snapshot.availability);
-                self.count(lang, "vcs.behind", loc(lang, "Behind: ", "落后："), snapshot.changes.behind, snapshot.counts.behind, snapshot.availability);
-                if (snapshot.detail.slice().len != 0) self.add("vcs.detail", "", snapshot.detail.slice());
-                if (!view.approval_required and snapshot.files.available) self.addFiles(lang, view, &snapshot.files);
-                if (view.detail_supported and !view.approval_required and !view.stale and view.phase == .ready) {
-                    if (snapshot.workspace) |workspace| self.addDetails(lang, view, workspace.kind);
+                if (snapshot.revision) |revision| {
+                    summary[s_len] = self.makeText("vcs.revision", loc(lang, "Detached HEAD: ", "分离 HEAD："), revision.slice(), "caption");
+                    s_len += 1;
+                }
+                summary[s_len] = self.makeText("vcs.detail", "", snapshot.detail.slice(), "caption");
+                s_len += 1;
+                summary[s_len] = self.makeText("vcs.status-unavailable", "", loc(lang, "Changes, staging and history: not queried", "变更、暂存及历史：未查询"), "caption");
+                s_len += 1;
+            } else {
+                summary[s_len] = self.makeText("vcs.freshness", "", if (view.stale) loc(lang, "Previous data — stale", "历史数据（已过期）") else availabilityLabel(lang, snapshot.availability), "caption");
+                s_len += 1;
+                summary[s_len] = self.makeText("vcs.reference", loc(lang, "Reference: ", "引用："), if (snapshot.reference.slice().len == 0) loc(lang, "Not reported", "未报告") else snapshot.reference.slice(), null);
+                s_len += 1;
+                summary[s_len] = self.makeText("vcs.revision", loc(lang, "Revision: ", "版本："), if (snapshot.revision) |revision| revision.slice() else loc(lang, "Not reported", "未报告"), "caption");
+                s_len += 1;
+                if (snapshot.operation.len != 0) {
+                    summary[s_len] = self.makeText("vcs.operation", loc(lang, "Recorded operation: ", "已记录操作："), snapshot.operation.slice(), "caption");
+                    s_len += 1;
+                }
+                // Compact 2-column count grid instead of 6 tall vertical rows.
+                const counts_grid = [_]ui.Node{
+                    self.makeCount(lang, "vcs.staged", loc(lang, "Staged: ", "暂存："), snapshot.changes.staged, snapshot.counts.staged, snapshot.availability),
+                    self.makeCount(lang, "vcs.modified", loc(lang, "Modified: ", "修改："), snapshot.changes.modified, snapshot.counts.modified, snapshot.availability),
+                    self.makeCount(lang, "vcs.untracked", loc(lang, "Untracked: ", "未跟踪："), snapshot.changes.untracked, snapshot.counts.untracked, snapshot.availability),
+                    self.makeCount(lang, "vcs.conflicted", loc(lang, "Conflict count: ", "冲突数量："), snapshot.changes.conflicted, snapshot.counts.conflicted, snapshot.availability),
+                    self.makeCount(lang, "vcs.ahead", loc(lang, "Ahead: ", "领先："), snapshot.changes.ahead, snapshot.counts.ahead, snapshot.availability),
+                    self.makeCount(lang, "vcs.behind", loc(lang, "Behind: ", "落后："), snapshot.changes.behind, snapshot.counts.behind, snapshot.availability),
+                };
+                summary[s_len] = self.makeGrid("vcs.counts.grid", 2, 4, &counts_grid);
+                s_len += 1;
+                if (snapshot.availability == .ready) {
+                    if (snapshot.has_conflict) |conflict| {
+                        summary[s_len] = self.makeText("vcs.conflict_presence", loc(lang, "Conflicts present: ", "存在冲突："), if (conflict) loc(lang, "Yes", "是") else loc(lang, "No", "否"), null);
+                        s_len += 1;
+                    }
+                }
+                if (snapshot.detail.slice().len != 0) {
+                    summary[s_len] = self.makeText("vcs.detail", "", snapshot.detail.slice(), "caption");
+                    s_len += 1;
                 }
             }
         }
+        self.pushSection(self.makeGroup("vcs.summary.card", loc(lang, "Workspace Status", "仓库状态"), summary[0..s_len]));
+
+        if (view.snapshot) |snapshot| {
+            if (!view.metadata_only) {
+                if (!view.approval_required and snapshot.files.available) self.addFilesSection(lang, view, &snapshot.files);
+                if (view.detail_supported and !view.approval_required and !view.stale and view.phase == .ready) {
+                    if (snapshot.workspace) |workspace| self.addDetailsSection(lang, view, workspace.kind);
+                }
+            }
+        }
+        self.finalizeTree(tree);
+    }
+
+    fn finalizeTree(self: *Content, tree: *ui.Tree) void {
         self.root = ui.node(ui.NodeKind.stack);
         self.root.id = abi.view("vcs.root.stack");
-        self.root.gap = .{ .present = 1, .value = 6 };
-        ui.withChildren(&self.root, self.nodes[0..self.len]);
+        self.root.gap = .{ .present = 1, .value = 8 };
+        ui.withChildren(&self.root, self.allocNodes(self.top_sections[0..self.top_len]));
         tree.* = std.mem.zeroes(ui.Tree);
         tree.size = @sizeOf(ui.Tree);
         tree.root = &self.root;
     }
 
-    fn addFiles(self: *Content, lang: Language, view: *const View, files: *const contract.FileList) void {
+    fn addFilesSection(self: *Content, lang: Language, view: *const View, files: *const contract.FileList) void {
+        var items: [16]ui.Node = undefined;
+        var count: usize = 0;
         const filter = view.file_filter.slice();
         const total = files.matchCount(filter);
         const page_count = @max(1, (total + contract.FileList.page_size - 1) / contract.FileList.page_size);
         const page = @min(view.file_page, page_count - 1);
         var heading: [96]u8 = undefined;
-        self.add("vcs.files.heading", loc(lang, "File status: ", "文件状态："), std.fmt.bufPrint(&heading, "{d}/{d} · {d}/{d}", .{ page + 1, page_count, total, files.count }) catch "");
+        items[count] = self.makeText("vcs.files.heading", loc(lang, "File status: ", "文件状态："), std.fmt.bufPrint(&heading, "{d}/{d} · {d}/{d}", .{ page + 1, page_count, total, files.count }) catch "", "caption");
+        count += 1;
         if (files.omitted != 0) {
             var count_text: [16]u8 = undefined;
-            self.add("vcs.files.omitted", loc(lang, "Not retained (limit/invalid path/unknown record): ", "未保留（上限、无效路径或未知记录）："), std.fmt.bufPrint(&count_text, "{d}", .{files.omitted}) catch "");
+            items[count] = self.makeText("vcs.files.omitted", loc(lang, "Not retained (limit/invalid path/unknown record): ", "未保留（上限、无效路径或未知记录）："), std.fmt.bufPrint(&count_text, "{d}", .{files.omitted}) catch "", "caption");
+            count += 1;
+        }
+        if (view.file_controls and !view.stale and view.phase == .ready) {
+            items[count] = makeInput(state_file_filter, loc(lang, "Search retained path/status (case-sensitive)", "搜索已保留路径或状态（区分大小写）"), null);
+            count += 1;
+            const search_bar = [_]ui.Node{
+                makeButton("vcs.files.search.action", loc(lang, "Search", "搜索"), command_file_filter, "standard"),
+                makeButton("vcs.files.clear.action", loc(lang, "Clear", "清除"), command_file_clear, "transparent"),
+            };
+            items[count] = self.makeStack("vcs.files.search-bar", true, 6, &search_bar);
+            count += 1;
         }
         const ids = [_][]const u8{ "vcs.file.0", "vcs.file.1", "vcs.file.2", "vcs.file.3", "vcs.file.4", "vcs.file.5", "vcs.file.6", "vcs.file.7" };
         const sources = [_][]const u8{ "vcs.file.source.0", "vcs.file.source.1", "vcs.file.source.2", "vcs.file.source.3", "vcs.file.source.4", "vcs.file.source.5", "vcs.file.source.6", "vcs.file.source.7" };
@@ -404,84 +586,151 @@ pub const Content = struct {
             if (matched <= page * contract.FileList.page_size) continue;
             if (shown == ids.len) break;
             var label: [64]u8 = undefined;
+            const kind_name = fileKindLabel(lang, row.kind);
             const prefix = if (row.xy[0] != 0)
-                std.fmt.bufPrint(&label, "[{c}{c}] {s}: ", .{ row.xy[0], row.xy[1], row.kind.label() }) catch ""
+                std.fmt.bufPrint(&label, "[{c}{c}] {s}: ", .{ row.xy[0], row.xy[1], kind_name }) catch ""
             else if (row.revision) |rev|
-                std.fmt.bufPrint(&label, "{s} r{d}{s}{s}: ", .{ row.kind.label(), rev, if (row.property_changed) " P" else "", if (row.tree_conflict) " T" else "" }) catch ""
+                std.fmt.bufPrint(&label, "{s} r{d}{s}{s}: ", .{ kind_name, rev, if (row.property_changed) " P" else "", if (row.tree_conflict) " T" else "" }) catch ""
             else
-                std.fmt.bufPrint(&label, "{s}{s}{s}: ", .{ row.kind.label(), if (row.property_changed) " P" else "", if (row.tree_conflict) " T" else "" }) catch "";
-            self.add(ids[shown], prefix, files.slice(row.path));
-            if (row.original.len != 0) self.add(sources[shown], loc(lang, "From: ", "原路径："), files.slice(row.original));
+                std.fmt.bufPrint(&label, "{s}{s}{s}: ", .{ kind_name, if (row.property_changed) " P" else "", if (row.tree_conflict) " T" else "" }) catch "";
+            var row_nodes: [3]ui.Node = undefined;
+            var r_len: usize = 0;
+            row_nodes[r_len] = self.makeText(ids[shown], prefix, files.slice(row.path), null);
+            r_len += 1;
+            if (row.original.len != 0) {
+                row_nodes[r_len] = self.makeText(sources[shown], loc(lang, "From: ", "原路径："), files.slice(row.original), "caption");
+                r_len += 1;
+            }
             if (view.detail_supported and !view.detail_pending and !view.stale and view.phase == .ready) {
                 if (view.workspace) |workspace| {
                     if (contract.selectableFilePath(workspace.kind, workspace.root.slice(), files.slice(row.path), row.kind, &normalized) != null) {
-                        self.addButton(pick_actions[shown], loc(lang, "Select this file", "选择此文件"), pick_actions[shown]);
-                    } else self.add(disabled_ids[shown], "", loc(lang, "Display only: not an admissible file path", "仅展示：不是可安全查询的文件路径"));
+                        row_nodes[r_len] = makeButton(pick_actions[shown], loc(lang, "Select", "选中"), pick_actions[shown], "standard");
+                    } else {
+                        row_nodes[r_len] = self.makeText(disabled_ids[shown], "", loc(lang, "Display only: not an admissible file path", "仅展示：不是可安全查询的文件路径"), "caption");
+                    }
+                    r_len += 1;
                 }
             }
+            items[count] = self.makeStack("vcs.file.row", r_len == 2, 6, row_nodes[0..r_len]);
+            count += 1;
             shown += 1;
         }
-        if (shown == 0) self.add("vcs.files.empty", "", loc(lang, "No matching retained records", "没有匹配的已保留记录"));
-        if (view.file_controls and !view.stale and view.phase == .ready) {
-            var node = ui.node(ui.NodeKind.text_input);
-            node.id = abi.view(state_file_filter);
-            node.state = .{ .present = 1, .value = abi.view(state_file_filter) };
-            node.text = .{ .present = 1, .value = abi.view(loc(lang, "Search retained path/status (case-sensitive)", "搜索已保留路径或状态（区分大小写）")) };
-            self.nodes[self.len] = node;
-            self.len += 1;
-            self.addButton("vcs.files.search.action", loc(lang, "Search / clear", "搜索 / 清除"), command_file_filter);
-            if (page > 0) self.addButton("vcs.files.prev.action", loc(lang, "Previous files", "上一页文件"), command_file_prev);
-            if (page + 1 < page_count) self.addButton("vcs.files.next.action", loc(lang, "Next files", "下一页文件"), command_file_next);
+        if (shown == 0) {
+            items[count] = self.makeText("vcs.files.empty", "", loc(lang, "No matching retained records", "没有匹配的已保留记录"), "caption");
+            count += 1;
         }
+        if (view.file_controls and !view.stale and view.phase == .ready and (page > 0 or page + 1 < page_count)) {
+            var pager: [2]ui.Node = undefined;
+            var p_len: usize = 0;
+            if (page > 0) {
+                pager[p_len] = makeButton("vcs.files.prev.action", loc(lang, "Previous files", "上一页文件"), command_file_prev, "standard");
+                p_len += 1;
+            }
+            if (page + 1 < page_count) {
+                pager[p_len] = makeButton("vcs.files.next.action", loc(lang, "Next files", "下一页文件"), command_file_next, "standard");
+                p_len += 1;
+            }
+            items[count] = self.makeStack("vcs.files.pager", true, 6, pager[0..p_len]);
+            count += 1;
+        }
+        self.pushSection(self.makeGroup("vcs.files.card", loc(lang, "Changed Files", "变更文件"), items[0..count]));
     }
 
-    fn detailInput(self: *Content, key: []const u8, label: []const u8) void {
-        var node = ui.node(ui.NodeKind.text_input);
-        node.id = abi.view(key);
-        node.state = .{ .present = 1, .value = abi.view(key) };
-        node.text = .{ .present = 1, .value = abi.view(label) };
-        self.nodes[self.len] = node;
-        self.len += 1;
-    }
-
-    fn addDetails(self: *Content, lang: Language, view: *const View, kind: identity.Kind) void {
-        self.add("vcs.detail.heading", "", loc(lang, "Local read-only details", "本地只读详情"));
+    fn addDetailsSection(self: *Content, lang: Language, view: *const View, kind: identity.Kind) void {
+        var items: [28]ui.Node = undefined;
+        var count: usize = 0;
+        items[count] = self.makeText("vcs.detail.heading", "", loc(lang, "Local read-only details", "本地只读详情"), "caption");
+        count += 1;
         if (kind == .git and @import("builtin").os.tag == .windows) {
-            self.add("vcs.detail.write-limit", "", loc(lang, "Use the project library to review one-file stage or unstage. Commit, update and push remain disabled.", "在项目库审核单文件暂存或取消暂存。提交、更新和推送尚未开放。"));
+            items[count] = self.makeText("vcs.detail.write-limit", "", loc(lang, "Use the project library to review one-file stage or unstage. Commit, update and push remain disabled.", "在项目库审核单文件暂存或取消暂存。提交、更新和推送尚未开放。"), "caption");
         } else {
-            self.add("vcs.detail.write-limit", "", loc(lang, "Use a reviewed external client for repository mutations.", "如需修改仓库，请使用已确认的外部客户端。"));
+            items[count] = self.makeText("vcs.detail.write-limit", "", loc(lang, "Use a reviewed external client for repository mutations.", "如需修改仓库，请使用已确认的外部客户端。"), "caption");
         }
-        if (kind == .git) self.add("vcs.detail.git-limit", "", loc(lang, "Working diff compares index to worktree; staged diff compares selected revision to index. Untracked files may have no diff.", "工作区差异比较索引和工作树；暂存差异比较所选版本和索引。未跟踪文件可能没有差异。"));
-        if (kind == .hg) self.add("vcs.detail.hg-limit", "", loc(lang, "Local Mercurial only; shared/subrepositories and upstream distance unsupported. History uses first parent as default anchor.", "仅本地 Mercurial；不支持共享/子仓库及远端距离。历史默认以第一父版本为锚点。"));
-        if (kind == .svn) self.add("vcs.detail.svn-limit", "", loc(lang, "Server history is not authorized; BASE/diff require a supported pristine-copy version.", "服务器历史未授权；本地 BASE 与差异需要支持完整 pristine 副本的版本。"));
-        if (kind == .jj) self.add("vcs.detail.jj-limit", "", loc(lang, "Recorded revisions only; unsnapshotted edits are not included.", "仅已记录版本，不包含尚未快照的编辑。"));
+        count += 1;
+        if (kind == .git) {
+            items[count] = self.makeText("vcs.detail.git-limit", "", loc(lang, "Working diff compares index to worktree; staged diff compares selected revision to index.", "工作区差异比较索引和工作树；暂存差异比较所选版本和索引。"), "caption");
+            count += 1;
+        } else if (kind == .hg) {
+            items[count] = self.makeText("vcs.detail.hg-limit", "", loc(lang, "Local Mercurial only; history uses first parent as default anchor.", "仅本地 Mercurial；历史默认以第一父版本为锚点。"), "caption");
+            count += 1;
+        } else if (kind == .svn) {
+            items[count] = self.makeText("vcs.detail.svn-limit", "", loc(lang, "Server history is not authorized; BASE/diff require a supported pristine-copy version.", "服务器历史未授权；本地 BASE 与差异需要支持完整 pristine 副本的版本。"), "caption");
+            count += 1;
+        } else if (kind == .jj) {
+            items[count] = self.makeText("vcs.detail.jj-limit", "", loc(lang, "Recorded revisions only; unsnapshotted edits are not included.", "仅已记录版本，不包含尚未快照的编辑。"), "caption");
+            count += 1;
+        }
         if (view.detail_pending) {
-            self.add("vcs.detail.pending", "", loc(lang, "Query in progress; check or cancel", "正在查询；可检查结果或取消"));
+            items[count] = self.makeText("vcs.detail.pending", "", loc(lang, "Query in progress; check or cancel", "正在查询；可检查结果或取消"), null);
+            count += 1;
+            self.pushSection(self.makeGroup("vcs.detail.card", loc(lang, "History & Diff", "历史与差异"), items[0..count]));
             return;
         }
-        self.detailInput(state_detail_path, loc(lang, "File (relative to repository; select above or enter)", "文件（相对仓库路径；在上方选中或填写）"));
-        if (kind != .svn) self.detailInput(state_detail_revision, loc(lang, "Full commit ID (empty uses current recorded revision)", "完整提交 ID（留空使用当前已记录版本）"));
-        if (kind == .git or kind == .hg) self.detailInput(state_history_offset, loc(lang, "History offset (0, 32, 64 ... up to 4096)", "历史偏移（0、32、64……至 4096）")) else if (kind == .jj) self.detailInput(state_history_offset, loc(lang, "History offset (0, 32, 64 ... up to 224)", "历史偏移（0、32、64……至 224）"));
-        const en = [_][]const u8{ "History (32 revisions)", "File history", "Revision details", "Working / recorded file diff", "Staged file diff", "Revision file diff", "Revision file content / BASE", "References / bookmarks", "Workspaces", "Operation log", "Local revision metadata", "Local property names" };
-        const zh = [_][]const u8{ "提交历史（32 条）", "文件历史", "版本详情", "工作区 / 已记录文件差异", "暂存文件差异", "版本文件差异", "版本文件内容 / BASE", "引用 / 书签", "工作区", "操作日志", "本地版本元数据", "本地属性名" };
-        for (detail_kinds, 0..) |action, i| {
-            if (contract.detailSupported(kind, action)) self.addButton(detail_actions[i], loc(lang, en[i], zh[i]), detail_actions[i]);
+        items[count] = makeInput(state_detail_path, loc(lang, "File (relative path; select above or enter)", "文件（相对仓库路径；可在上方选中或填写）"), null);
+        count += 1;
+        if (kind != .svn) {
+            items[count] = makeInput(state_detail_revision, loc(lang, "Full commit ID (empty = current revision)", "完整提交 ID（留空使用当前版本）"), null);
+            count += 1;
         }
-        if (view.detail_error) |err| self.add("vcs.detail.error", "", failureLabel(lang, err));
+        if (kind == .git or kind == .hg or kind == .jj) {
+            const offset_label = if (kind == .jj) loc(lang, "History offset (0–224, step 32)", "历史偏移（0–224，步长 32）") else loc(lang, "History offset (0–4096, step 32)", "历史偏移（0–4096，步长 32）");
+            items[count] = makeInput(state_history_offset, offset_label, "0");
+            count += 1;
+            const hist_nav = [_]ui.Node{
+                makeButton("vcs.detail.history-prev.action", loc(lang, "Newer 32 commits", "较新 32 条提交"), command_history_prev, "standard"),
+                makeButton("vcs.detail.history-next.action", loc(lang, "Older 32 commits", "更早 32 条提交"), command_history_next, "standard"),
+            };
+            items[count] = self.makeStack("vcs.detail.history-nav", true, 6, &hist_nav);
+            count += 1;
+        }
+        // Compact 2-column grid for detail actions.
+        const en = [_][]const u8{ "History (32)", "File history", "Revision info", "Working diff", "Staged diff", "Revision diff", "File content / BASE", "Refs / bookmarks", "Workspaces", "Operation log", "Local metadata", "Property names" };
+        const zh = [_][]const u8{ "提交历史（32 条）", "文件历史", "版本详情", "工作区差异", "暂存差异", "版本差异", "文件内容 / BASE", "引用 / 书签", "工作区", "操作日志", "本地版本元数据", "本地属性名" };
+        var action_btns: [detail_kinds.len]ui.Node = undefined;
+        var ab_len: usize = 0;
+        for (detail_kinds, 0..) |action, i| {
+            if (!contract.detailSupported(kind, action)) continue;
+            // JJ maps working_diff and revision_diff to the same command; avoid duplicate button.
+            if (kind == .jj and action == .revision_diff) continue;
+            action_btns[ab_len] = makeButton(detail_actions[i], loc(lang, en[i], zh[i]), detail_actions[i], "standard");
+            ab_len += 1;
+        }
+        if (ab_len != 0) {
+            items[count] = self.makeGrid("vcs.detail.actions", 2, 6, action_btns[0..ab_len]);
+            count += 1;
+        }
+        if (view.detail_error) |err| {
+            items[count] = self.makeText("vcs.detail.error", "", failureLabel(lang, err), null);
+            count += 1;
+        }
         if (view.detail_scope) |scope| {
-            self.add("vcs.detail.kind", loc(lang, "Result: ", "结果："), @tagName(scope.kind));
-            if (scope.path.len != 0) self.add("vcs.detail.result-path", loc(lang, "File: ", "文件："), scope.path.slice());
-            if (scope.revision) |rev| self.add("vcs.detail.result-revision", loc(lang, "Revision: ", "版本："), rev.slice());
+            items[count] = self.makeText("vcs.detail.kind", loc(lang, "Result: ", "结果："), detailKindLabel(lang, scope.kind), "caption");
+            count += 1;
+            if (scope.path.len != 0) {
+                items[count] = self.makeText("vcs.detail.result-path", loc(lang, "File: ", "文件："), scope.path.slice(), "caption");
+                count += 1;
+            }
+            if (scope.revision) |rev| {
+                items[count] = self.makeText("vcs.detail.result-revision", loc(lang, "Revision: ", "版本："), rev.slice(), "caption");
+                count += 1;
+            }
         }
         if (view.detail_data) |data| {
             switch (data.state) {
-                .binary => self.add("vcs.detail.binary", "", loc(lang, "Binary content; not rendered as text", "二进制内容；不作为文本显示")),
-                .invalid_encoding => self.add("vcs.detail.encoding", "", loc(lang, "Not valid UTF-8; text preview unavailable", "不是有效 UTF-8；无法显示文本")),
+                .binary => {
+                    items[count] = self.makeText("vcs.detail.binary", "", loc(lang, "Binary content; not rendered as text", "二进制内容；不作为文本显示"), "caption");
+                    count += 1;
+                },
+                .invalid_encoding => {
+                    items[count] = self.makeText("vcs.detail.encoding", "", loc(lang, "Not valid UTF-8; text preview unavailable", "不是有效 UTF-8；无法显示文本"), "caption");
+                    count += 1;
+                },
                 .text => {
                     const pages = data.pages();
                     const page = @min(view.detail_page, pages - 1);
                     var heading: [64]u8 = undefined;
-                    self.add("vcs.detail.page", loc(lang, "Output page: ", "输出页："), std.fmt.bufPrint(&heading, "{d}/{d}", .{ page + 1, pages }) catch "");
+                    items[count] = self.makeText("vcs.detail.page", loc(lang, "Output page: ", "输出页："), std.fmt.bufPrint(&heading, "{d}/{d}", .{ page + 1, pages }) catch "", "caption");
+                    count += 1;
                     const ids = [_][]const u8{ "vcs.output.0", "vcs.output.1", "vcs.output.2", "vcs.output.3", "vcs.output.4", "vcs.output.5", "vcs.output.6", "vcs.output.7" };
                     var cursor: usize = 0;
                     var index: usize = 0;
@@ -489,96 +738,134 @@ pub const Content = struct {
                         if (index < page * contract.DetailText.page_size) continue;
                         const row = index - page * contract.DetailText.page_size;
                         if (row >= ids.len) break;
-                        self.add(ids[row], "", if (line.len == 0) " " else line);
+                        const line_node = self.makeText(ids[row], "", if (line.len == 0) " " else line, null);
                         if (view.detail_scope) |scope| {
-                            if ((scope.kind == .history or scope.kind == .file_history) and data.revisionAt(kind, index) != null) self.addButton(revision_pick_actions[row], loc(lang, "Select this revision", "选择此版本"), revision_pick_actions[row]);
+                            if ((scope.kind == .history or scope.kind == .file_history) and data.revisionAt(kind, index) != null) {
+                                const pair = [_]ui.Node{ line_node, makeButton(revision_pick_actions[row], loc(lang, "Use ID", "选用"), revision_pick_actions[row], "standard") };
+                                items[count] = self.makeStack("vcs.output.row", true, 6, &pair);
+                                count += 1;
+                                continue;
+                            }
                         }
+                        items[count] = line_node;
+                        count += 1;
                     }
-                    if (data.len == 0) self.add("vcs.detail.empty", "", loc(lang, "No text returned", "没有返回文本"));
-                    if (page > 0) self.addButton("vcs.detail.prev.action", loc(lang, "Previous output page", "上一页输出"), command_detail_prev);
-                    if (page + 1 < pages) self.addButton("vcs.detail.next.action", loc(lang, "Next output page", "下一页输出"), command_detail_next);
+                    if (data.len == 0) {
+                        items[count] = self.makeText("vcs.detail.empty", "", loc(lang, "No text returned", "没有返回文本"), "caption");
+                        count += 1;
+                    }
+                    if (page > 0 or page + 1 < pages) {
+                        var pager: [2]ui.Node = undefined;
+                        var p_len: usize = 0;
+                        if (page > 0) {
+                            pager[p_len] = makeButton("vcs.detail.prev.action", loc(lang, "Previous page", "上一页输出"), command_detail_prev, "standard");
+                            p_len += 1;
+                        }
+                        if (page + 1 < pages) {
+                            pager[p_len] = makeButton("vcs.detail.next.action", loc(lang, "Next page", "下一页输出"), command_detail_next, "standard");
+                            p_len += 1;
+                        }
+                        items[count] = self.makeStack("vcs.detail.pager", true, 6, pager[0..p_len]);
+                        count += 1;
+                    }
                 },
             }
         }
+        self.pushSection(self.makeGroup("vcs.detail.card", loc(lang, "History & Diff", "历史与差异"), items[0..count]));
     }
 
-    fn addButton(self: *Content, id: []const u8, label: []const u8, command: []const u8) void {
-        std.debug.assert(self.len < capacity);
-        var node = ui.button(label, command);
-        node.id = abi.view(id);
-        self.nodes[self.len] = node;
-        self.len += 1;
-    }
-
-    fn addExecutableInput(self: *Content, lang: Language) void {
-        std.debug.assert(self.len < capacity);
-        var node = ui.node(ui.NodeKind.text_input);
-        node.id = abi.view(state_executable);
-        node.state = .{ .present = 1, .value = abi.view(state_executable) };
-        node.text = .{ .present = 1, .value = abi.view(loc(lang, "Trusted executable (absolute path)", "受信任工具（绝对路径）")) };
-        node.placeholder = .{ .present = 1, .value = abi.view("C:\\Program Files\\Git\\cmd\\git.exe") };
-        self.nodes[self.len] = node;
-        self.len += 1;
-    }
-
-    fn addLocalSetup(self: *Content, lang: Language, view: *const View) void {
-        if (view.setup_issue) |issue| self.add("vcs.setup-error", "", switch (issue) {
-            .invalid => loc(lang, "Enter the absolute path to the matching git.exe, jj.exe or svn.exe.", "请输入对应 git.exe、jj.exe 或 svn.exe 的绝对路径。"),
-            .busy => loc(lang, "Wait for the current query to finish; Check result if needed.", "请等待当前查询结束，必要时点击检查结果。"),
-            .changed => loc(lang, "Directory or selection changed. Review the current repository again.", "目录或选择已变化，请重新确认当前仓库。"),
-            .denied => loc(lang, "Trust setup refused. Review the path and repository.", "授权设置被拒绝，请检查路径和仓库。"),
-            .forgotten => loc(lang, "Saved approval for this root/provider revoked", "已撤销此目录及类型的持久授权"),
-            .all_forgotten => loc(lang, "All saved local approvals revoked", "已撤销所有持久化本地授权"),
-        });
-        if (view.saved_trust_configured and view.metadata_only and !view.approval_required) self.addButton("vcs.action.trust-forget-all", loc(lang, "Revoke all saved local approvals", "撤销所有持久化本地授权"), command_trust_forget_all);
-        if (!view.metadata_only or view.approval_required) return;
-        if (view.phase != .ready or view.workspace == null or view.snapshot == null) return;
-        if (view.local_review) |review| {
-            self.add("vcs.review-kind", loc(lang, "Tool: ", "工具："), review.kind.displayName());
-            self.add("vcs.review-exe", loc(lang, "Executable: ", "程序："), review.executable.slice());
-            self.add("vcs.review-root", loc(lang, "Repository: ", "仓库："), review.root.slice());
-            self.add("vcs.review-warning", "", loc(lang, "Trust only known installations and repositories, including dependencies and configuration. Commands run as you; NOT a sandbox. Saved trust pins identities and executable digest, not all dependencies/configuration.", "仅信任已知的工具安装和仓库（含依赖及配置）。命令以当前用户身份运行，不是沙箱。持久授权校验身份和工具摘要，不审核全部依赖及配置。"));
-            self.add("vcs.review-scope", "", loc(lang, "Scope: local status, history, revision content, diff and references where supported. Older saved approvals require fresh Trust and remember.", "范围：支持的本地状态、历史、版本内容、差异和引用。旧持久授权需重新选择信任并记住。"));
-            self.addButton("vcs.action.trust-confirm", loc(lang, "Trust tool and repository for this session", "信任工具及仓库（仅本次会话）"), command_trust_confirm);
-            if (view.saved_trust_configured) {
-                self.addButton("vcs.action.trust-remember", loc(lang, "Trust and remember this root/provider/tool", "信任并记住此仓库、类型及工具"), command_trust_remember);
-                self.addButton("vcs.action.trust-reuse", loc(lang, "Use previously saved approval (exact match only)", "使用已有授权（仅完全匹配）"), command_trust_reuse);
-                self.addButton("vcs.action.trust-forget", loc(lang, "Revoke saved approval for this root/provider", "撤销此仓库及类型的持久授权"), command_trust_forget);
-            }
-            self.addButton("vcs.action.trust-cancel", loc(lang, "Cancel review", "取消确认"), command_trust_cancel);
-        } else {
-            const snapshot = view.snapshot orelse return;
-            if (view.stale) return;
-            self.addExecutableInput(lang);
-            self.add("vcs.setup-help", "", loc(lang, "Leave empty for configured, previously saved, or detected tool path, in that order. A saved record is not verified until explicit reuse.", "留空依次使用已配置、曾授权或检测到的工具路径。持久记录须明确选择复用后才能验证。"));
-            const kinds = [_]identity.Kind{ .git, .jj, .svn, .hg };
-            const ids = [_][]const u8{ "vcs.candidate.git", "vcs.candidate.jj", "vcs.candidate.svn", "vcs.candidate.hg" };
-            const button_ids = [_][]const u8{ "vcs.action.trust-git", "vcs.action.trust-jj", "vcs.action.trust-svn", "vcs.action.trust-hg" };
-            const labels = [_][]const u8{ "Git: ", "Jujutsu: ", "SVN: ", "Mercurial: " };
-            const en = [_][]const u8{ "Review Git access", "Review Jujutsu access", "Review SVN access", "Review Mercurial access" };
-            const zh = [_][]const u8{ "确认 Git 访问", "确认 Jujutsu 访问", "确认 SVN 访问", "确认 Mercurial 访问" };
-            const actions = [_][]const u8{ command_trust_git, command_trust_jj, command_trust_svn, command_trust_hg };
-            const saved_ids = [_][]const u8{ "vcs.saved.git", "vcs.saved.jj", "vcs.saved.svn", "vcs.saved.hg" };
-            const saved_paths = [_][]const u8{ "vcs.saved-path.git", "vcs.saved-path.jj", "vcs.saved-path.svn", "vcs.saved-path.hg" };
-            for (kinds, ids, button_ids, labels, en, zh, actions, saved_ids, saved_paths) |kind, id, button_id, label, english, chinese, action, saved_id, saved_path| {
-                if (!snapshot.previewHas(kind)) continue;
-                if (kind == .hg) self.add("vcs.setup.hg-runtime", "", loc(lang, "Mercurial needs a self-contained installation that starts without inherited PATH or Python search paths. A pip launcher may need its own adjacent hg-python runtime. Select that installation; no runtime is downloaded by this plugin.", "Mercurial 须使用无需继承 PATH 或 Python 搜索路径即可启动的安装。pip 启动器可能需要相邻的 hg-python 私有运行时；请选用此类安装，插件不会自行下载运行时。"));
-                if (snapshot.previewTool(kind)) |path| {
-                    self.add(id, label, path.slice());
-                } else self.add(id, label, loc(lang, "Not found; enter the installed path", "未找到，请填写已安装路径"));
+    fn addLocalSetupSection(self: *Content, lang: Language, view: *const View) void {
+        var items: [24]ui.Node = undefined;
+        var count: usize = 0;
+        if (view.setup_issue) |issue| {
+            items[count] = self.makeText("vcs.setup-error", "", switch (issue) {
+                .invalid => loc(lang, "Enter the absolute path to the matching git.exe, jj.exe, svn.exe or hg.exe.", "请输入对应 git.exe、jj.exe、svn.exe 或 hg.exe 的绝对路径。"),
+                .busy => loc(lang, "Wait for the current query to finish; Check result if needed.", "请等待当前查询结束，必要时点击检查结果。"),
+                .changed => loc(lang, "Directory or selection changed. Review the current repository again.", "目录或选择已变化，请重新确认当前仓库。"),
+                .denied => loc(lang, "Trust setup refused. Review the path and repository.", "授权设置被拒绝，请检查路径和仓库。"),
+                .forgotten => loc(lang, "Saved approval for this root/provider revoked", "已撤销此目录及类型的持久授权"),
+                .all_forgotten => loc(lang, "All saved local approvals revoked", "已撤销所有持久化本地授权"),
+            }, null);
+            count += 1;
+        }
+        if (view.saved_trust_configured and view.metadata_only and !view.approval_required) {
+            items[count] = makeButton("vcs.action.trust-forget-all", loc(lang, "Revoke all saved local approvals", "撤销所有持久化本地授权"), command_trust_forget_all, "danger");
+            count += 1;
+        }
+        if (view.metadata_only and !view.approval_required and view.phase == .ready and view.workspace != null and view.snapshot != null) {
+            if (view.local_review) |review| {
+                items[count] = self.makeText("vcs.review-kind", loc(lang, "Tool: ", "工具："), review.kind.displayName(), null);
+                count += 1;
+                items[count] = self.makeText("vcs.review-exe", loc(lang, "Executable: ", "程序："), review.executable.slice(), "caption");
+                count += 1;
+                items[count] = self.makeText("vcs.review-root", loc(lang, "Repository: ", "仓库："), review.root.slice(), "caption");
+                count += 1;
+                items[count] = self.makeText("vcs.review-warning", "", loc(lang, "Trust only known installations and repositories, including dependencies and configuration. Commands run as you; NOT a sandbox.", "仅信任已知的工具安装和仓库（含依赖及配置）。命令以当前用户身份运行，不是沙箱。"), "caption");
+                count += 1;
+                items[count] = self.makeText("vcs.review-scope", "", loc(lang, "Scope: local status, history, revision content, diff and references where supported.", "范围：支持的本地状态、历史、版本内容、差异和引用。"), "caption");
+                count += 1;
+                var btns: [5]ui.Node = undefined;
+                var b_len: usize = 0;
+                btns[b_len] = makeButton("vcs.action.trust-confirm", loc(lang, "Trust for this session", "信任（仅本次会话）"), command_trust_confirm, "primary");
+                b_len += 1;
                 if (view.saved_trust_configured) {
-                    const hint = snapshot.savedHint(kind);
-                    self.add(saved_id, label, switch (hint.state) {
-                        .not_checked => loc(lang, "Saved approval not checked", "尚未检查持久授权"),
-                        .absent => loc(lang, "No saved approval observed", "未发现持久授权"),
-                        .recorded => loc(lang, "Saved record observed; NOT revalidated", "发现持久授权记录，尚未重新验证"),
-                        .unavailable => loc(lang, "Saved approval unavailable", "无法读取持久授权"),
-                    });
-                    if (hint.executable) |path| self.add(saved_path, loc(lang, "Saved tool: ", "记录中的工具："), path.slice());
+                    btns[b_len] = makeButton("vcs.action.trust-remember", loc(lang, "Trust & remember", "信任并记住"), command_trust_remember, "primary");
+                    b_len += 1;
+                    btns[b_len] = makeButton("vcs.action.trust-reuse", loc(lang, "Reuse saved approval", "复用已有授权"), command_trust_reuse, "standard");
+                    b_len += 1;
+                    btns[b_len] = makeButton("vcs.action.trust-forget", loc(lang, "Revoke saved", "撤销持久授权"), command_trust_forget, "danger");
+                    b_len += 1;
                 }
-                self.addButton(button_id, loc(lang, english, chinese), action);
+                btns[b_len] = makeButton("vcs.action.trust-cancel", loc(lang, "Cancel review", "取消确认"), command_trust_cancel, "transparent");
+                b_len += 1;
+                items[count] = self.makeGrid("vcs.review.actions", 2, 6, btns[0..b_len]);
+                count += 1;
+            } else if (!view.stale) {
+                const snapshot = view.snapshot.?;
+                items[count] = makeInput(state_executable, loc(lang, "Trusted executable (optional absolute path)", "受信任工具（可选绝对路径）"), "git.exe / jj.exe / svn.exe / hg.exe");
+                count += 1;
+                items[count] = self.makeText("vcs.setup-help", "", loc(lang, "Leave empty for configured, previously saved, or detected tool path, in that order.", "留空依次使用已配置、曾授权或检测到的工具路径。"), "caption");
+                count += 1;
+                const kinds = [_]identity.Kind{ .git, .jj, .svn, .hg };
+                const ids = [_][]const u8{ "vcs.candidate.git", "vcs.candidate.jj", "vcs.candidate.svn", "vcs.candidate.hg" };
+                const button_ids = [_][]const u8{ "vcs.action.trust-git", "vcs.action.trust-jj", "vcs.action.trust-svn", "vcs.action.trust-hg" };
+                const labels = [_][]const u8{ "Git: ", "Jujutsu: ", "SVN: ", "Mercurial: " };
+                const en = [_][]const u8{ "Review Git access", "Review Jujutsu access", "Review SVN access", "Review Mercurial access" };
+                const zh = [_][]const u8{ "确认 Git 访问", "确认 Jujutsu 访问", "确认 SVN 访问", "确认 Mercurial 访问" };
+                const actions = [_][]const u8{ command_trust_git, command_trust_jj, command_trust_svn, command_trust_hg };
+                const saved_ids = [_][]const u8{ "vcs.saved.git", "vcs.saved.jj", "vcs.saved.svn", "vcs.saved.hg" };
+                const saved_paths = [_][]const u8{ "vcs.saved-path.git", "vcs.saved-path.jj", "vcs.saved-path.svn", "vcs.saved-path.hg" };
+                for (kinds, ids, button_ids, labels, en, zh, actions, saved_ids, saved_paths) |kind, id, button_id, label, english, chinese, action, saved_id, saved_path| {
+                    if (!snapshot.previewHas(kind)) continue;
+                    if (kind == .hg) {
+                        items[count] = self.makeText("vcs.setup.hg-runtime", "", loc(lang, "Mercurial needs a self-contained installation that starts without inherited PATH or Python search paths.", "Mercurial 须使用无需继承 PATH 或 Python 搜索路径即可启动的独立安装。"), "caption");
+                        count += 1;
+                    }
+                    items[count] = if (snapshot.previewTool(kind)) |path|
+                        self.makeText(id, label, path.slice(), null)
+                    else
+                        self.makeText(id, label, loc(lang, "Not found; enter the installed path", "未找到，请填写已安装路径"), "caption");
+                    count += 1;
+                    if (view.saved_trust_configured) {
+                        const hint = snapshot.savedHint(kind);
+                        items[count] = self.makeText(saved_id, label, switch (hint.state) {
+                            .not_checked => loc(lang, "Saved approval not checked", "尚未检查持久授权"),
+                            .absent => loc(lang, "No saved approval observed", "未发现持久授权"),
+                            .recorded => loc(lang, "Saved record observed; NOT revalidated", "发现持久授权记录，尚未重新验证"),
+                            .unavailable => loc(lang, "Saved approval unavailable", "无法读取持久授权"),
+                        }, "caption");
+                        count += 1;
+                        if (hint.executable) |path| {
+                            items[count] = self.makeText(saved_path, loc(lang, "Saved tool: ", "记录中的工具："), path.slice(), "caption");
+                            count += 1;
+                        }
+                    }
+                    items[count] = makeButton(button_id, loc(lang, english, chinese), action, "primary");
+                    count += 1;
+                }
             }
         }
+        if (count != 0) self.pushSection(self.makeGroup("vcs.setup.card", loc(lang, "Repository Trust", "仓库信任与授权"), items[0..count]));
     }
 
     /// Declare a stable vocabulary so subscriptions survive model updates.
@@ -588,38 +875,61 @@ pub const Content = struct {
         const base_commands = [_]abi.StringView{ abi.view(command_refresh), abi.view(command_cancel), abi.view(command_check), abi.view(command_revoke), abi.view(command_trust_git), abi.view(command_trust_jj), abi.view(command_trust_svn), abi.view(command_trust_hg), abi.view(command_trust_confirm), abi.view(command_trust_cancel), abi.view(command_trust_reset), abi.view(command_trust_remember), abi.view(command_trust_reuse), abi.view(command_trust_forget), abi.view(command_trust_forget_all), abi.view(command_file_filter), abi.view(command_file_prev), abi.view(command_file_next) };
         @memcpy(self.commands[0..base_commands.len], &base_commands);
         for (advanced_commands, base_commands.len..) |command, i| self.commands[i] = abi.view(command);
+        if (view.local_setup) self.addLocalSetupSection(lang, view);
+
+        // Footer horizontal action bar.
+        var footer: [4]ui.Node = undefined;
+        var f_len: usize = 0;
+        if (view.phase != .stopped) {
+            if (!view.approval_required and (view.workspace != null or view.discovery_available)) {
+                if (view.phase == .queued or view.phase == .refreshing or view.detail_pending) {
+                    footer[f_len] = makeButton("vcs.action.cancel", loc(lang, "Cancel", "取消"), command_cancel, "danger");
+                } else {
+                    footer[f_len] = makeButton("vcs.action.refresh", loc(lang, "Refresh", "刷新"), command_refresh, "primary");
+                }
+                f_len += 1;
+            }
+            footer[f_len] = makeButton("vcs.action.check", loc(lang, "Check result", "检查结果"), command_check, "standard");
+            f_len += 1;
+            if (view.local_setup and view.reset_configured and (!view.metadata_only or view.approval_required)) {
+                footer[f_len] = makeButton("vcs.action.trust-reset", loc(lang, "Switch repo / provider", "切换仓库 / 类型"), command_trust_reset, "standard");
+                f_len += 1;
+            }
+            if (view.revocation_configured and !view.approval_required) {
+                footer[f_len] = makeButton("vcs.action.revoke", if (view.persistent_revocation or view.saved_trust_selected) loc(lang, "Revoke saved", "永久撤销授权") else loc(lang, "Revoke session", "撤销本次授权"), command_revoke, "danger");
+                f_len += 1;
+            }
+        }
+        if (f_len != 0) self.pushSection(self.makeGrid("vcs.footer.actions", @intCast(@min(f_len, 2)), 6, footer[0..f_len]));
+
+        self.finalizeTree(tree);
         tree.commands = &self.commands;
         tree.command_count = if (view.local_setup and view.saved_trust_configured) (if (view.file_controls) @as(u32, full_command_count) else 15) else if (view.local_setup) 11 else if (view.revocation_configured) 4 else 3;
         if (view.local_setup) {
             self.states[0] = .{ .key = abi.view(state_executable), .value = abi.view("") };
-            tree.states = &self.states;
             self.states[1] = .{ .key = abi.view(state_file_filter), .value = abi.view(view.file_filter.slice()) };
             self.states[2] = .{ .key = abi.view(state_detail_path), .value = abi.view(view.detail_path.slice()) };
             self.states[3] = .{ .key = abi.view(state_detail_revision), .value = abi.view(view.detail_revision.slice()) };
             self.states[4] = .{ .key = abi.view(state_history_offset), .value = abi.view(view.history_offset.slice()) };
+            tree.states = &self.states;
             tree.state_count = if (view.file_controls) 5 else 1;
-            self.addLocalSetup(lang, view);
-            if (view.reset_configured and (!view.metadata_only or view.approval_required)) self.addButton("vcs.action.trust-reset", loc(lang, "Choose repository / provider again", "重新选择仓库 / 版本控制类型"), command_trust_reset);
         }
-        if (view.phase != .stopped) {
-            if (!view.approval_required and (view.workspace != null or view.discovery_available)) {
-                if (view.phase == .queued or view.phase == .refreshing or view.detail_pending) {
-                    self.addButton("vcs.action.cancel", loc(lang, "Cancel", "取消"), command_cancel);
-                } else {
-                    self.addButton("vcs.action.refresh", loc(lang, "Refresh", "刷新"), command_refresh);
-                }
+    }
+
+    fn findTextIn(node: *const ui.Node, id: []const u8) ?[]const u8 {
+        if (abi.slice(node.id)) |node_id| {
+            if (std.mem.eql(u8, node_id, id)) return abi.slice(node.text.value);
+        }
+        if (node.children.present != 0 and node.children.data != null) {
+            for (node.children.data[0..node.children.count]) |*child| {
+                if (findTextIn(child, id)) |found| return found;
             }
-            self.addButton("vcs.action.check", loc(lang, "Check result", "检查结果"), command_check);
-            if (view.revocation_configured and !view.approval_required) self.addButton("vcs.action.revoke", if (view.persistent_revocation or view.saved_trust_selected) loc(lang, "Revoke saved approval", "永久撤销授权") else loc(lang, "Revoke session approval", "撤销本次授权"), command_revoke);
         }
-        ui.withChildren(&self.root, self.nodes[0..self.len]);
+        return null;
     }
 
     pub fn textFor(self: *const Content, id: []const u8) ?[]const u8 {
-        for (self.nodes[0..self.len]) |node| {
-            if (std.mem.eql(u8, abi.slice(node.id) orelse continue, id)) return abi.slice(node.text.value);
-        }
-        return null;
+        return findTextIn(&self.root, id);
     }
 };
 
@@ -731,7 +1041,7 @@ test "model owns its text and never renders unknown counts as numeric zero" {
     try std.testing.expectEqualStrings("Modified: 0", content.textFor("vcs.modified").?);
     try std.testing.expectEqualStrings("Ahead: Not queried", content.textFor("vcs.ahead").?);
     try std.testing.expectEqualStrings("Workspace: repo", content.textFor("vcs.root").?);
-    try std.testing.expectEqual(@as(u32, @intCast(content.len)), content.root.children.count);
+    try std.testing.expectEqual(@as(u32, @intCast(content.top_len)), content.root.children.count);
     try std.testing.expect(content.len <= Content.capacity);
 }
 
@@ -840,4 +1150,30 @@ test "native file list keeps unsafe rows visible but offers only admissible sele
     try std.testing.expect(content.textFor("vcs.file.display-only.1") != null);
     try std.testing.expect(content.textFor("vcs.file.display-only.2") != null);
     try std.testing.expect(content.textFor("vcs.detail.write-limit") != null);
+}
+
+test "chinese localization translates file and detail kinds and shows history paging" {
+    const workspace = try identity.Workspace.init(.git, "repo", "repo");
+    var snapshot: contract.Snapshot = .{ .workspace = workspace, .availability = .ready };
+    snapshot.files.available = true;
+    snapshot.files.add("src/main.zig", "", .{ .path = .{}, .kind = .modified });
+    const scope: contract.DetailRequest = .{ .kind = .history, .offset = 32 };
+    const detail_text = try contract.DetailText.init("commit 1");
+    const view: View = .{
+        .phase = .ready,
+        .workspace = workspace,
+        .snapshot = snapshot,
+        .detail_supported = true,
+        .file_controls = true,
+        .detail_scope = &scope,
+        .detail_data = &detail_text,
+    };
+    var content: Content = undefined;
+    var tree: ui.Tree = undefined;
+    content.build(.zh, &view, &tree);
+    try std.testing.expectEqualStrings("修改: src/main.zig", content.textFor("vcs.file.0") orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqualStrings("结果：提交历史", content.textFor("vcs.detail.kind") orelse return error.TestUnexpectedResult);
+    try std.testing.expect(content.textFor("vcs.detail.history-prev.action") != null);
+    try std.testing.expect(content.textFor("vcs.detail.history-next.action") != null);
+    try std.testing.expect(content.textFor("vcs.files.clear.action") != null);
 }

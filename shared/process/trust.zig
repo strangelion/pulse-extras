@@ -162,7 +162,7 @@ fn validateEnvironmentInternal(map: *const std.process.Environ.Map, git_global: 
             (std.mem.eql(u8, key, "HGRCSKIPREPO") and std.mem.eql(u8, value, "1")) or
             (std.mem.eql(u8, key, "HGENCODING") and std.mem.eql(u8, value, "UTF-8")) or
             (std.mem.eql(u8, key, "PYTHONNOUSERSITE") and std.mem.eql(u8, value, "1")) or
-            (std.mem.eql(u8, key, "GIT_CONFIG_GLOBAL") and git_global != null and std.mem.eql(u8, value, git_global.?)) or
+            (std.mem.eql(u8, key, "GIT_CONFIG_GLOBAL") and ((git_global == null and value.len == 0) or (git_global != null and std.mem.eql(u8, value, git_global.?)))) or
             (std.mem.eql(u8, key, "GIT_INDEX_FILE") and git_index != null and std.mem.eql(u8, value, git_index.?)) or
             (git_global != null and (std.mem.eql(u8, key, "HOME") or std.mem.eql(u8, key, "XDG_CONFIG_HOME"))) or
             (git_global != null and std.mem.eql(u8, key, "GIT_ATTR_NOSYSTEM") and std.mem.eql(u8, value, "1"));
@@ -231,6 +231,8 @@ test "system Git configuration can only be disabled with an exact value" {
     try map.put("GIT_CONFIG_NOSYSTEM", "0");
     try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
     try map.put("GIT_CONFIG_NOSYSTEM", "1");
+    try map.put("GIT_CONFIG_GLOBAL", "");
+    try validateEnvironment(&map);
     try map.put("GIT_CONFIG_GLOBAL", "unapproved");
     try std.testing.expectError(error.UnapprovedEnvironment, validateEnvironment(&map));
 }

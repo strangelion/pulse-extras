@@ -121,12 +121,22 @@ const Instance = struct {
         self.openFromMenu() catch |err| diag.status("vcs-selected-folder-panel", @intFromError(err));
     }
 
+    fn sameTools(a: settings_mod.Tools, b: settings_mod.Tools) bool {
+        for (a, b) |lhs, rhs| {
+            if (lhs == null and rhs == null) continue;
+            if (lhs == null or rhs == null) return false;
+            if (!lhs.?.eql(rhs.?.slice())) return false;
+        }
+        return true;
+    }
+
     fn settingsUpdated(user: *anyopaque, tools: settings_mod.Tools, language: vcs_panel.Language) void {
         const self: *Instance = @ptrCast(@alignCast(user));
         if (self.binding) |binding| {
+            const tools_changed = !sameTools(binding.configured_tools, tools);
             binding.configured_tools = tools;
             binding.language = language;
-            binding.local_review = null;
+            if (tools_changed) binding.local_review = null;
             if (binding.accepting) binding.render() catch |err| diag.status("vcs-settings-view", @intFromError(err));
         }
     }
@@ -136,7 +146,6 @@ const Instance = struct {
         const binding = self.binding orelse return null;
         if (!binding.accepting) return null;
         binding.navigation.refreshCurrent() catch return null;
-        binding.render() catch return null;
         if (binding.navigation.pending or binding.controller.current.phase != .ready or binding.controller.current.stale) return null;
         const workspace = binding.controller.current.workspace orelse return null;
         const snapshot = binding.controller.current.snapshot orelse return null;

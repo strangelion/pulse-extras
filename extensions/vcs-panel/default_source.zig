@@ -709,7 +709,7 @@ const LocalSession = struct {
         if (!sameId(exe_id, try evidence.observeSessionToolIdentity(review.executable.slice()))) return error.Permission;
         const system = try evidence.systemDirectory(&path);
         self.neutral = identity.Path.init(system) catch return error.Permission;
-        for ([_][]const u8{ "SystemRoot", "WINDIR", "LANG", "LC_ALL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_NO_LAZY_FETCH" }, [_][]const u8{ system, system, "C", "C", "1", "0", "0", "1" }) |key, value| {
+        for ([_][]const u8{ "SystemRoot", "WINDIR", "LANG", "LC_ALL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_NO_LAZY_FETCH" }, [_][]const u8{ system, system, "C", "C", "1", "", "0", "0", "1" }) |key, value| {
             self.environment.put(key, value) catch return error.OutOfMemory;
         }
         if (review.kind == .hg) {

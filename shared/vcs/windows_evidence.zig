@@ -527,6 +527,92 @@ pub fn validateConfig(bytes: []const u8) Error!void {
     if (keys & 3 != 3) return error.Permission;
 }
 
+/// Fail-closed config check for single-file Git index transactions on ordinary
+/// cloned repositories. Preserves validateConfig untouched for strict read-only
+/// profiles while admitting inert remote/branch/user metadata and safe core flags.
+/// Rejects includes, filters, hooks, fsmonitor, worktree, extensions, promisor,
+/// credentials, quotes, escapes and line continuations.
+pub fn validateIndexConfig(bytes: []const u8) Error!void {
+    if (bytes.len == 0 or bytes.len > max_config_bytes or !std.unicode.utf8ValidateSlice(bytes)) return error.Permission;
+    const Section = enum { none, core, remote, branch, user };
+    var section: Section = .none;
+    var seen_core = false;
+    var core_keys: u16 = 0;
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |raw| {
+        for (raw, 0..) |byte, index| {
+            if (byte == '\r' and index + 1 != raw.len) return error.Permission;
+            if (byte == 0 or (byte < 0x20 and byte != '\t' and byte != '\r') or byte == 0x7f) return error.Permission;
+        }
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        if (line[0] == '#' or line[0] == ';') {
+            if (std.mem.indexOfScalar(u8, line, '\\') != null) return error.Permission;
+            continue;
+        }
+        if (line[0] == '[') {
+            if (line[line.len - 1] != ']') return error.Permission;
+            if (std.ascii.eqlIgnoreCase(line, "[core]")) {
+                if (seen_core) return error.Permission;
+                seen_core = true;
+                section = .core;
+                continue;
+            }
+            if (std.ascii.eqlIgnoreCase(line, "[user]")) {
+                section = .user;
+                continue;
+            }
+            const inner = line[1 .. line.len - 1];
+            const quote = std.mem.indexOfScalar(u8, inner, '"') orelse return error.Permission;
+            if (inner[inner.len - 1] != '"' or quote + 1 >= inner.len - 1) return error.Permission;
+            const head = std.mem.trim(u8, inner[0..quote], " \t");
+            const sub = inner[quote + 1 .. inner.len - 1];
+            if (sub.len == 0 or std.mem.indexOfAny(u8, sub, "\"\\") != null) return error.Permission;
+            if (std.ascii.eqlIgnoreCase(head, "remote")) {
+                section = .remote;
+                continue;
+            }
+            if (std.ascii.eqlIgnoreCase(head, "branch")) {
+                section = .branch;
+                continue;
+            }
+            return error.Permission;
+        }
+        if (section == .none) return error.Permission;
+        const split = std.mem.indexOfScalar(u8, line, '=') orelse return error.Permission;
+        const key = std.mem.trim(u8, line[0..split], " \t");
+        const value = std.mem.trim(u8, line[split + 1 ..], " \t");
+        if (value.len == 0 or std.mem.indexOfAny(u8, value, "\"\\") != null) return error.Permission;
+        switch (section) {
+            .core => {
+                const bit: u16 = if (std.ascii.eqlIgnoreCase(key, "repositoryformatversion")) 1 else if (std.ascii.eqlIgnoreCase(key, "bare")) 2 else if (std.ascii.eqlIgnoreCase(key, "filemode")) 4 else if (std.ascii.eqlIgnoreCase(key, "logallrefupdates")) 8 else if (std.ascii.eqlIgnoreCase(key, "ignorecase")) 16 else if (std.ascii.eqlIgnoreCase(key, "symlinks")) 32 else if (std.ascii.eqlIgnoreCase(key, "autocrlf")) 64 else if (std.ascii.eqlIgnoreCase(key, "fscache")) 128 else if (std.ascii.eqlIgnoreCase(key, "longpaths")) 256 else if (std.ascii.eqlIgnoreCase(key, "hidedotfiles")) 512 else if (std.ascii.eqlIgnoreCase(key, "precomposeunicode")) 1024 else return error.Permission;
+                if (core_keys & bit != 0) return error.Permission;
+                core_keys |= bit;
+                if (bit == 1) {
+                    if (!std.mem.eql(u8, value, "0")) return error.Permission;
+                } else if (bit == 2) {
+                    if (!std.ascii.eqlIgnoreCase(value, "false")) return error.Permission;
+                } else if (bit == 64) {
+                    if (!std.ascii.eqlIgnoreCase(value, "false") and !std.ascii.eqlIgnoreCase(value, "true") and !std.ascii.eqlIgnoreCase(value, "input")) return error.Permission;
+                } else if (bit == 512) {
+                    if (!std.ascii.eqlIgnoreCase(value, "false") and !std.ascii.eqlIgnoreCase(value, "true") and !std.ascii.eqlIgnoreCase(value, "dotgitonly")) return error.Permission;
+                } else if (!std.ascii.eqlIgnoreCase(value, "false") and !std.ascii.eqlIgnoreCase(value, "true")) return error.Permission;
+            },
+            .remote => {
+                if (!std.ascii.eqlIgnoreCase(key, "url") and !std.ascii.eqlIgnoreCase(key, "fetch") and !std.ascii.eqlIgnoreCase(key, "pushurl")) return error.Permission;
+            },
+            .branch => {
+                if (!std.ascii.eqlIgnoreCase(key, "remote") and !std.ascii.eqlIgnoreCase(key, "merge") and !std.ascii.eqlIgnoreCase(key, "vscode-merge-base")) return error.Permission;
+            },
+            .user => {
+                if (!std.ascii.eqlIgnoreCase(key, "name") and !std.ascii.eqlIgnoreCase(key, "email")) return error.Permission;
+            },
+            .none => unreachable,
+        }
+    }
+    if (core_keys & 3 != 3) return error.Permission;
+}
+
 fn absent(path: []const u8) Error!void {
     const wide = try Wide.init(path);
     if (GetFileAttributesW(wide.z()) != invalid_attributes) return error.Permission;
@@ -1061,6 +1147,19 @@ test "strict config accepts ordinary init and rejects unsupported semantics" {
         "[core]\nrepositoryformatversion=0\nbare=false\x00\n",
     }) |value| {
         try std.testing.expectError(error.Permission, validateConfig(value));
+    }
+}
+
+test "index config accepts ordinary cloned repo sections and rejects execution directives" {
+    try validateIndexConfig("[core]\r\n\trepositoryformatversion = 0\r\n\tfilemode = false\r\n\tbare = false\r\n\tlogallrefupdates = true\r\n\tignorecase = true\r\n\tautocrlf = input\r\n\tfscache = true\r\n\tlongpaths = true\r\n[remote \"origin\"]\r\n\turl = https://github.com/owner/repo.git\r\n\tfetch = +refs/heads/*:refs/remotes/origin/*\r\n[branch \"main\"]\r\n\tremote = origin\r\n\tmerge = refs/heads/main\r\n[user]\r\n\tname = Example User\r\n\temail = user@example.invalid\r\n");
+    for ([_][]const u8{
+        "[core]\nrepositoryformatversion=0\nbare=false\n[remote \"origin\"]\nuploadpack=evil\n",
+        "[core]\nrepositoryformatversion=0\nbare=false\n[remote \"origin\"]\npromisor=true\n",
+        "[core]\nrepositoryformatversion=0\nbare=false\n[filter \"lfs\"]\nclean=git-lfs clean\n",
+        "[core]\nrepositoryformatversion=0\nbare=false\n[include]\npath=other\n",
+        "[core]\nrepositoryformatversion=0\nbare=false\nhooksPath=hooks\n",
+    }) |value| {
+        try std.testing.expectError(error.Permission, validateIndexConfig(value));
     }
 }
 

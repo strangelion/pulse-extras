@@ -87,7 +87,7 @@ pub fn observePlan(io: std.Io, scope: Plan.Scope) !Plan {
     const config_path = try joined(git.slice(), "config");
     var config_buffer: [4096]u8 = undefined;
     const config = try readStamped(config_path.slice(), &config_buffer);
-    try windows.validateConfig(config.text);
+    try windows.validateIndexConfig(config.text);
     const head_path = try joined(git.slice(), "HEAD");
     var head_buffer: [256]u8 = undefined;
     const stored = try readStamped(head_path.slice(), &head_buffer);
