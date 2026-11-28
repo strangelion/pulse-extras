@@ -41,6 +41,7 @@ def api(dll, name, result, *args):
     return function
 
 
+process_dpi = api(user, "SetProcessDpiAwarenessContext", w.BOOL, ct.c_void_p)
 create_desktop = api(user, "CreateDesktopW", w.HANDLE, w.LPCWSTR, w.LPCWSTR,
                      ct.c_void_p, w.DWORD, w.DWORD, ct.c_void_p)
 close_desktop = api(user, "CloseDesktop", w.BOOL, w.HANDLE)
@@ -190,6 +191,7 @@ def check_layout(panel):
     source = rectangle(panel.labelled("待发送内容"))
     target = rectangle(panel.labelled("接收设备"))
     assert source.left == target.left and target.top > source.bottom, "narrow cards did not stack"
+    assert rectangle(panel.labelled("发送", "Button")).right < rectangle(panel.hwnd).right, "narrow layout clipped the send button"
     panel.select_tab(5)
     advanced = panel.labelled("高级配对")
     viewport = get_parent(advanced)
@@ -311,6 +313,7 @@ def run_fixture(exe):
 
 
 if __name__ == "__main__":
+    process_dpi(ct.c_void_p(-4))
     repository = Path(__file__).resolve().parents[2]
     with tempfile.TemporaryDirectory(prefix="share-desktop-") as temporary:
         run_fixture(build_fixture(Path(temporary), repository))

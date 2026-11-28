@@ -35,6 +35,7 @@ extern int share_desktop_close(void);
 extern void share_desktop_changed(const char *);
 extern void share_desktop_drop(const char *, size_t, uint32_t, int);
 static void layout(void);
+static LRESULT CALLBACK tabs_proc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
 
 static int scale(int value) { return MulDiv(value, dpi, 96); }
 static COLORREF canvas(void) { return contrast ? GetSysColor(COLOR_WINDOW) : RGB(244, 246, 249); }
@@ -170,7 +171,6 @@ int share_desktop_node(int parent, int kind, const char *id, const char *key,
     case TABS:
         class_name = WC_TABCONTROLW;
         style |= WS_TABSTOP | TCS_BUTTONS | TCS_FIXEDWIDTH;
-        if (!contrast) style |= TCS_OWNERDRAWFIXED;
         break;
     case TAB: {
         wchar_t caption[64];
@@ -191,6 +191,7 @@ int share_desktop_node(int parent, int kind, const char *id, const char *key,
         SendMessageW(node->hwnd, WM_SETFONT, (WPARAM)node_font(node), TRUE);
         if (!strcmp(id, "status-line")) ShowScrollBar(node->hwnd, SB_VERT, FALSE);
         if (kind == BUTTON && !contrast) SetWindowSubclass(node->hwnd, button_proc, 1, 0);
+        if (kind == TABS && !contrast) SetWindowSubclass(node->hwnd, tabs_proc, 1, 0);
         if (kind == EDIT_FIELD) {
             SendMessageW(node->hwnd, EM_SETLIMITTEXT, appearance == 1 ? 8 : 2047, 0);
             if (caption[0]) SendMessageW(node->hwnd, EM_SETCUEBANNER, TRUE, (LPARAM)caption);
@@ -528,6 +529,34 @@ static BOOL draw_control(const DRAWITEMSTRUCT *item) {
     if ((item->itemState & ODS_FOCUS) && !(item->itemState & ODS_NOFOCUSRECT)) DrawFocusRect(dc, &area);
     SelectObject(dc, old_font);
     return TRUE;
+}
+
+static void draw_tabs(HWND hwnd, HDC dc) {
+    RECT client;
+    GetClientRect(hwnd, &client);
+    FillRect(dc, &client, canvas_brush);
+    int focus = TabCtrl_GetCurFocus(hwnd);
+    for (int i = 0; i < TabCtrl_GetItemCount(hwnd); i++) {
+        DRAWITEMSTRUCT item = { .CtlType = ODT_TAB, .itemID = (UINT)i,
+            .itemState = i == focus && GetFocus() == hwnd ? ODS_FOCUS : 0, .hwndItem = hwnd, .hDC = dc };
+        if (TabCtrl_GetItemRect(hwnd, i, &item.rcItem)) draw_control(&item);
+    }
+}
+
+static LRESULT CALLBACK tabs_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data) {
+    (void)id; (void)data;
+    switch (msg) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PRINTCLIENT: draw_tabs(hwnd, (HDC)w); return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT paint;
+        HDC dc = BeginPaint(hwnd, &paint);
+        draw_tabs(hwnd, dc);
+        EndPaint(hwnd, &paint);
+        return 0;
+    }
+    default: return DefSubclassProc(hwnd, msg, w, l);
+    }
 }
 
 static HBRUSH control_background(HWND hwnd, HDC dc, BOOL editable) {
