@@ -146,7 +146,11 @@ class Window:
 
     def labelled(self, text, control="Static"):
         for hwnd in get_windows(children, self.hwnd):
-            if visible(hwnd) and klass(hwnd) == control and text_at(hwnd) == text:
+            if not visible(hwnd) or klass(hwnd) != control:
+                continue
+            if control == "Edit" and style(hwnd, -16) & 0x20:
+                continue
+            if text_at(hwnd) == text:
                 return hwnd
         raise AssertionError(f"visible control missing: {text}")
 
@@ -235,6 +239,8 @@ def check_layout(panel):
     short_page = get_parent(get_parent(panel.labelled("待发送内容")))
     assert not style(short_page, -16) & 0x00200000, "short page has a vertical scrollbar"
     desktop = rectangle(panel.hwnd)
+    footer = panel.labelled("就绪", "Edit")
+    footer_at_start = rectangle(footer)
     midpoint = (desktop.left + desktop.right) // 2
     margin = (dpi(panel.hwnd) or 96) * 6 // 96
     for page, heading, action in (
@@ -243,6 +249,11 @@ def check_layout(panel):
         (4, "设备与存储", "更改存储位置和端口"),
     ):
         panel.select_tab(page)
+        assert panel.labelled("就绪", "Edit") == footer
+        location = rectangle(footer)
+        assert (location.left, location.top, location.right, location.bottom) == (
+            footer_at_start.left, footer_at_start.top, footer_at_start.right, footer_at_start.bottom
+        ), f"tab {page} moved the shared footer"
         for control in (panel.labelled(heading), panel.labelled(action, "Button")):
             item = rectangle(control)
             assert abs((item.left + item.right) // 2 - midpoint) <= margin, f"page {page} is off center"
@@ -262,6 +273,7 @@ def check_layout(panel):
     viewport = get_parent(page)
     assert klass(viewport) == "PulseShareViewport"
     assert style(viewport, -20) & 0x02000000, "viewport does not compose child paints"
+    assert style(viewport, -16) & 0x04000000, "viewport can draw across the notification overlay"
     assert style(viewport, -16) & 0x00200000, "overflowing page lost its scrollbar"
     top = rectangle(advanced).top
     page_top = rectangle(page).top
@@ -370,6 +382,13 @@ def run_fixture(exe):
         panel.click("查找附近设备")
         eventually(lambda: panel.contains("未发现设备"), "missing empty discovery result")
         assert message(pair, 0x0146) == 1, "stale discovery result"
+        completed = panel.labelled("完成", "Edit")
+        complete_at = rectangle(completed)
+        for tab in (0, 3, 4, 5, 3, 2):
+            panel.select_tab(tab)
+            assert panel.labelled("完成", "Edit") == completed
+            located = rectangle(completed)
+            assert (located.left, located.top) == (complete_at.left, complete_at.top), "completion text moved between pages"
         panel.type("本机网络地址", "192.0.2.10")
         alias = text_at(panel.next_control("配对名称", "Edit"))
         assert alias and any(ord(letter) > 127 for letter in alias), "missing random Chinese label"
@@ -458,6 +477,14 @@ def run_fixture(exe):
         panel.click("更多接收方式")
         run_service("自动接收剪贴板")
         panel.select_tab(0)
+        assert panel.contains("选中.txt")
+        panel.click("清空选择")
+        eventually(lambda: not panel.has_button("清空选择"), "clear control stayed visible")
+        assert not panel.contains("选中.txt")
+        assert panel.contains("可将文件或文件夹拖到窗口")
+        panel.click("发送")
+        eventually(lambda: panel.notice() and "请先选择文件或文件夹" in text_at(panel.notice()),
+                   "send still used a cleared file")
         panel.click("选设备")
         panel.click("开启连接码并允许发现")
         eventually(lambda: panel.contains("01234567"), "pair task could not be restarted")

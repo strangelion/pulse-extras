@@ -487,10 +487,20 @@ const Instance = struct {
         self.showSelection();
     }
 
+    fn clearSelection(self: *Instance) void {
+        if (self.task.occupied() or self.selection_count == 0) return;
+        self.selected = .{};
+        self.selected_batch = .{};
+        self.selection_count = 0;
+        self.showSelection();
+        self.feedback("已清空待发送内容。", false);
+    }
+
     fn showSelection(self: *Instance) void {
+        self.set("show-source-clear", if (self.selection_count == 0) "false" else "true");
         var count: [72]u8 = undefined;
         self.set("source", if (self.selection_count == 0)
-            "可将文件或文件夹拖到窗口，也可以点击上方按钮选择。"
+            "可将文件或文件夹拖到窗口，也可以点击下方按钮选择。"
         else if (self.selection_count == 1)
             self.selected_batch.slice()
         else
@@ -909,9 +919,13 @@ const Instance = struct {
             view.button("选择文件", "share-pick-file", "standard", "state.ui-idle"),
             view.button("选择文件夹", "share-pick-folder", "standard", "state.ui-idle"),
         };
+        const clear_action = [_]ui.Node{
+            view.button("清空选择", "share-clear-selection", "standard", "state.ui-idle"),
+        };
         const source_card = [_]ui.Node{
             view.bound("source", "state.source"),
             view.grid("file-actions", &file_actions),
+            view.container(ui.NodeKind.stack, "source-clear", &clear_action),
         };
         const send_actions = [_]ui.Node{
             view.button("选设备", "share-open-devices", "standard", "state.ui-idle"),
@@ -1190,6 +1204,7 @@ fn command(self: *Instance, name: []const u8) void {
     if (std.mem.eql(u8, name, "share-open-devices")) return self.set("active-tab", "2");
     if (std.mem.eql(u8, name, "share-pick-file")) return self.pickSource(false);
     if (std.mem.eql(u8, name, "share-pick-folder")) return self.pickSource(true);
+    if (std.mem.eql(u8, name, "share-clear-selection")) return self.clearSelection();
     if (std.mem.eql(u8, name, "share-send-selection")) {
         if (self.selected_batch.len == 0) return self.feedback("请先选择文件或文件夹。", true);
         self.start(.send, false, false, false, 0, false, if (self.selected.len > 0) "" else "share-send-selection") catch |err| self.reportError(err);

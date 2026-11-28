@@ -38,7 +38,7 @@ static int count, tab, scroll, content_height, body_x, body_width, dpi = 96;
 static int hot_tab = -1;
 static HWND window, viewport, page, pair_popup;
 static Motion scroll_motion, notice_motion;
-static HWND notice, notice_text, notice_close;
+static HWND notice, notice_close;
 static BOOL notice_severe;
 static Motion tab_selection[ARRAYSIZE(page_width)] = {{ .value = FULL, .from = FULL, .to = FULL }};
 static Motion tab_hover[ARRAYSIZE(page_width)];
@@ -60,6 +60,7 @@ static struct {
 } sections[] = {
     { .id = "routed-pair-card", .key = "show-routed-pair" },
     { .id = "send-extras", .key = "show-send-options" },
+    { .id = "source-clear", .key = "show-source-clear" },
     { .id = "receive-extras", .key = "show-receive-options" },
     { .id = "network-options", .key = "show-network-options" },
     { .id = "storage-options", .key = "show-storage-options" },
@@ -214,7 +215,6 @@ static void fonts(void) {
     for (int i = 0; i < count; i++)
         if (nodes[i].hwnd) SendMessageW(nodes[i].hwnd, WM_SETFONT, (WPARAM)node_font(&nodes[i]), TRUE);
     popup_fonts();
-    if (notice_text) SendMessageW(notice_text, WM_SETFONT, (WPARAM)font, TRUE);
     if (notice_close) SendMessageW(notice_close, WM_SETFONT, (WPARAM)font, TRUE);
     for (size_t i = 0; i < ARRAYSIZE(previous); i++) DeleteObject(previous[i]);
 }
@@ -342,8 +342,8 @@ void share_desktop_set(const char *key, const char *value, int length) {
             HWND clip = sections[i].hwnd;
             HWND focus = GetFocus();
             if (clip && !on && focus && IsChild(clip, focus)) {
-                int nav = find_kind(TABS);
-                if (nav >= 0) SetFocus(nodes[nav].hwnd);
+                int next = !strcmp(sections[i].id, "source-clear") ? find("share-pick-file") : find_kind(TABS);
+                if (next >= 0) SetFocus(nodes[next].hwnd);
             }
             if (clip) EnableWindow(clip, on);
             retarget(reveal, goal);
@@ -618,27 +618,30 @@ static void layout(void) {
         (showing_code ? 43 : 0) + (has_bytes ? 45 : 0));
     int top = scale(64), bottom = box.bottom - task_height;
     position(viewport, x, top, width, max(bottom - top, 0), 0);
+    // Reserve the gutter even when the vertical scrollbar is hidden.
+    int gutter = GetSystemMetricsForDpi(SM_CXVSCROLL, dpi) + scale(6);
+    int usable_width = max(scale(110), width - 2 * gutter);
     if (tabs >= 0) {
         HWND nav = nodes[tabs].hwnd;
         int item_width = max(scale(50), min((width - scale(42)) / max(1, TabCtrl_GetItemCount(nav)), scale(96)));
         TabCtrl_SetItemSize(nav, item_width, scale(34));
         int nav_width = min(width, TabCtrl_GetItemCount(nav) * (item_width + scale(3)) + scale(6));
         position(nav, (box.right - nav_width) / 2, scale(14), nav_width, scale(42), SWP_SHOWWINDOW);
-        // Reserve the gutter even when the vertical scrollbar is hidden.
-        int gutter = GetSystemMetricsForDpi(SM_CXVSCROLL, dpi) + scale(6);
-        int usable_width = max(scale(110), width - 2 * gutter);
         body_width = min(usable_width, scale(page_width[tab]));
         body_x = (width - body_width) / 2;
         place_page(tabs);
         InvalidateRect(nav, NULL, FALSE);
     }
     if (task >= 0) {
+        // The task footer belongs to the window and uses the same position
+        // even when pages have different maximum widths.
+        int task_x = (box.right - usable_width) / 2;
         batch_parent = window;
         window_batch = BeginDeferWindowPos(10);
-        place(task, x + body_x, bottom + scale(8), body_width, TRUE);
+        place(task, task_x, bottom + scale(8), usable_width, TRUE);
         BOOL committed = window_batch && EndDeferWindowPos(window_batch);
         window_batch = NULL;
-        if (!committed) place(task, x + body_x, bottom + scale(8), body_width, TRUE);
+        if (!committed) place(task, task_x, bottom + scale(8), usable_width, TRUE);
         for (int i = 0; i < count; i++)
             if (nodes[i].hwnd && GetParent(nodes[i].hwnd) == window && in_task(i)) InvalidateRect(nodes[i].hwnd, NULL, FALSE);
     }
@@ -898,9 +901,8 @@ static void place_notice(void) {
     if (w <= scale(180) || client.bottom <= scale(150)) return;
     int action = scale(36), pad = scale(14);
     int text_width = w - action - 3 * pad;
-    int h = max(scale(54), min(scale(104), text_height(notice_text, text_width) + 2 * pad));
+    int h = max(scale(54), min(scale(104), text_height(notice, text_width) + 2 * pad));
     int drift = MulDiv(FULL - notice_motion.value, scale(9), FULL);
-    MoveWindow(notice_text, pad + scale(3), pad, text_width, h - 2 * pad, FALSE);
     MoveWindow(notice_close, w - action - pad, (h - scale(28)) / 2, action, scale(28), FALSE);
     SetWindowPos(notice, HWND_TOP, (client.right - w) / 2, scale(78) - drift, w, h,
         SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -919,29 +921,42 @@ static void dismiss_notice(void) {
     place_notice();
 }
 
+static void draw_notice(HWND hwnd, HDC dc) {
+    RECT area;
+    GetClientRect(hwnd, &area);
+    FillRect(dc, &area, card_brush);
+    HBRUSH accent = CreateSolidBrush(contrast ? ink() : notice_severe ? RGB(174, 75, 41) : RGB(69, 92, 171));
+    if (accent) {
+        RECT stripe = {0, 0, scale(4), area.bottom};
+        FillRect(dc, &stripe, accent);
+        DeleteObject(accent);
+    }
+    wchar_t text[768];
+    GetWindowTextW(hwnd, text, ARRAYSIZE(text));
+    HGDIOBJ previous = SelectObject(dc, font);
+    SetTextColor(dc, ink());
+    SetBkMode(dc, TRANSPARENT);
+    area.left += scale(17);
+    area.top += scale(14);
+    area.right -= scale(64);
+    DrawTextW(dc, text, -1, &area, DT_WORDBREAK | DT_NOPREFIX);
+    SelectObject(dc, previous);
+}
+
 static LRESULT CALLBACK notice_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     switch (msg) {
     case WM_ERASEBKGND: return 1;
-    case WM_CTLCOLORSTATIC:
-        SetTextColor((HDC)w, ink());
-        SetBkColor((HDC)w, card());
-        return (LRESULT)card_brush;
     case WM_DRAWITEM: return draw_control((const DRAWITEMSTRUCT *)l);
     case WM_COMMAND:
         if ((HWND)l == notice_close && HIWORD(w) == BN_CLICKED) dismiss_notice();
         return 0;
+    case WM_PRINTCLIENT:
+        draw_notice(hwnd, (HDC)w);
+        return 0;
     case WM_PAINT: {
         PAINTSTRUCT paint;
         HDC dc = BeginPaint(hwnd, &paint);
-        RECT area;
-        GetClientRect(hwnd, &area);
-        FillRect(dc, &paint.rcPaint, card_brush);
-        HBRUSH accent = CreateSolidBrush(contrast ? ink() : notice_severe ? RGB(174, 75, 41) : RGB(69, 92, 171));
-        if (accent) {
-            RECT stripe = {0, 0, scale(4), area.bottom};
-            FillRect(dc, &stripe, accent);
-            DeleteObject(accent);
-        }
+        draw_notice(hwnd, dc);
         EndPaint(hwnd, &paint);
         return 0;
     }
@@ -956,7 +971,6 @@ void share_desktop_notice(const char *message, int length, int severe) {
     if (!text[0]) return;
     notice_severe = severe != 0;
     set_text(notice, text);
-    set_text(notice_text, text);
     EnableWindow(notice_close, TRUE);
     retarget(&notice_motion, FULL);
     place_notice();
@@ -998,6 +1012,22 @@ static void animate(void) {
 
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     switch (msg) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PRINTCLIENT: {
+        RECT area;
+        GetClientRect(hwnd, &area);
+        FillRect((HDC)w, &area, canvas_brush);
+        return 0;
+    }
+    case WM_PAINT: {
+        // Batch positioning invalidates the old footer bounds without an
+        // erase pass. Paint the exposed canvas before the controls redraw.
+        PAINTSTRUCT paint;
+        HDC dc = BeginPaint(hwnd, &paint);
+        FillRect(dc, &paint.rcPaint, canvas_brush);
+        EndPaint(hwnd, &paint);
+        return 0;
+    }
     case WM_GETMINMAXINFO: {
         MINMAXINFO *info = (MINMAXINFO *)l;
         info->ptMinTrackSize.x = scale(470);
@@ -1105,7 +1135,8 @@ int share_desktop_create(void) {
         GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED);
     if (small_icon) SendMessageW(window, WM_SETICON, ICON_SMALL, (LPARAM)small_icon);
     viewport = CreateWindowExW(WS_EX_CONTROLPARENT | WS_EX_COMPOSITED, L"PulseShareViewport", NULL,
-        WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_CLIPCHILDREN, 0, 0, 0, 0, window, NULL, instance, NULL);
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+        0, 0, 0, 0, window, NULL, instance, NULL);
     if (!viewport) return 0;
     page = CreateWindowExW(WS_EX_CONTROLPARENT, L"PulseSharePage", NULL,
         WS_CHILD | WS_CLIPCHILDREN, 0, 0, 0, 0, viewport, NULL, instance, NULL);
@@ -1114,14 +1145,12 @@ int share_desktop_create(void) {
         notice = CreateWindowExW(WS_EX_CONTROLPARENT, L"PulseShareNotice", NULL,
             WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_BORDER, 0, 0, 0, 0, window, NULL, instance, NULL);
         if (notice) {
-            notice_text = CreateWindowExW(0, L"Static", NULL, WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
-                0, 0, 0, 0, notice, NULL, instance, NULL);
             notice_close = CreateWindowExW(0, L"Button", L"关闭",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | (contrast ? BS_PUSHBUTTON : BS_OWNERDRAW),
                 0, 0, 0, 0, notice, NULL, instance, NULL);
-            if (!notice_text || !notice_close) {
+            if (!notice_close) {
                 DestroyWindow(notice);
-                notice = notice_text = notice_close = NULL;
+                notice = NULL;
             }
         }
     }
