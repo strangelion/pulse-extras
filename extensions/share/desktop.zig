@@ -34,6 +34,7 @@ extern fn share_desktop_preferences_read([*]u8, c_int) c_int;
 extern fn share_desktop_preferences_write([*]const u8, c_int) c_int;
 
 const field_names = view.fields;
+const initial_request: managed.Request = .{};
 const Section = enum { send, receive, network, storage, address, join };
 
 const Service = enum { clipboard_send, clipboard_receive, directory_host };
@@ -642,7 +643,13 @@ const Instance = struct {
         if (managed.pairingMode(mode) and !managed.pairingConfigured()) return error.Unavailable;
         if (mode == .pair_join and (join_code == 0 or join_code > 100000000)) return error.Argument;
         if (self.task.occupied()) return error.State;
-        var next: managed.Request = .{ .mode = mode, .advertise = advertise, .routed = routed, .quic = quic };
+        const next = try std.heap.page_allocator.create(managed.Request);
+        defer std.heap.page_allocator.destroy(next);
+        @memcpy(std.mem.asBytes(next), std.mem.asBytes(&initial_request));
+        next.mode = mode;
+        next.advertise = advertise;
+        next.routed = routed;
+        next.quic = quic;
         const routed_pair = routed and managed.pairingMode(mode);
         if (batch_action.len != 0) {
             next.batch = true;
@@ -786,7 +793,7 @@ const Instance = struct {
             if (self.session_only and next.prepare_default_parent) return error.SessionUseTestDirectories;
         }
         next.validate() catch return error.Argument;
-        try self.task.start(&next, join_code);
+        try self.task.start(next, join_code);
         self.active_service = serviceFor(batch_action);
         self.service_running = false;
         self.updateServices(.running, 0);
@@ -856,16 +863,23 @@ const Instance = struct {
     }
 
     fn render(self: *Instance, update: bool) !void {
-        var storage: [field_names.len]view.FieldNodes = @splat(.{});
-        var fields: [field_names.len]ui.Node = undefined;
-        for (&storage, 0..) |*item, n| fields[n] = item.build(n);
+        // The native panel synchronously copies the tree. Allocate a bounded
+        // per-render arena so nested node arrays never accumulate on the UI stack.
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const temporary = arena.allocator();
+        const storage = try temporary.alloc(view.FieldNodes, field_names.len);
+        @memset(storage, .{});
+        const fields = try temporary.alloc(ui.Node, field_names.len);
+        for (storage, 0..) |*item, n| fields[n] = item.build(n);
         var local_options: choices.Options = undefined;
         var endpoint_options: choices.Options = undefined;
         var pair_endpoint_options: choices.Options = undefined;
         var peer_options: choices.Options = undefined;
         var pair_peer: view.FieldNodes = .{};
         var pair_alias: view.FieldNodes = .{};
-        var route_fields: [5]view.FieldNodes = @splat(.{});
+        const route_fields = try temporary.alloc(view.FieldNodes, 5);
+        @memset(route_fields, .{});
         const route_labels = [_][4][]const u8{
             .{ "routed-bind-field", "routed-bind-label", "routed-bind", "本机组网 IP" },
             .{ "routed-alias-field", "routed-alias-label", "routed-alias", "组网对端名称" },
@@ -873,62 +887,62 @@ const Instance = struct {
             .{ "routed-source-field", "routed-source-label", "routed-pair-source", "允许连接的对端来源 IP" },
             .{ "routed-peer-field", "routed-peer-label", "routed-pair-peer", "对端组网地址与端口" },
         };
-        var route_nodes: [route_labels.len]ui.Node = undefined;
+        const route_nodes = try temporary.alloc(ui.Node, route_labels.len);
         for (route_labels, 0..) |keys, i|
             route_nodes[i] = route_fields[i].buildCustom(keys[0], keys[1], keys[2], keys[3]);
         var code_input = view.input("pair-input", true);
         code_input.text = .{ .present = 1, .value = abi.view("输入对端显示的 8 位连接码") };
-        const network_options = [_]ui.Node{
+        const network_options = try temporary.dupe(ui.Node, &[_]ui.Node{
             fields[0],
             view.button("列出本机地址", "share-interfaces", "standard", "state.idle"),
             view.select("local-options", "local-choice", "选择本机地址", self.local_choices.options(&local_options)),
             view.button("填入本机地址", "share-use-local", "standard", "state.idle"),
-        };
-        const network_actions = [_]ui.Node{
+        });
+        const network_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("查找附近设备", "share-discover", "primary", "state.idle"),
             view.button("更改本机网络", "share-toggle-network", "standard", "state.ui-idle"),
-        };
-        const found_receivers = [_]ui.Node{
+        });
+        const found_receivers = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.text("receiver-options-label", "可接收的附近设备", "caption"),
             view.select("endpoint-options", "endpoint-choice", "可接收的附近设备", self.endpoint_choices.options(&endpoint_options)),
             view.button("使用地址并进入发送", "share-use-endpoint", "standard", "state.idle"),
-        };
-        const found_pairing = [_]ui.Node{
+        });
+        const found_pairing = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.text("pair-endpoint-label", "等待配对的附近设备", "caption"),
             view.select("pair-endpoint-options", "pair-endpoint-choice", "等待配对的附近设备", self.pair_endpoint_choices.options(&pair_endpoint_options)),
             view.button("填入配对地址", "share-use-pair-endpoint", "standard", "state.idle"),
-        };
-        const nearby_card = [_]ui.Node{
+        });
+        const nearby_card = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.bound("current-network", "state.network-location"),
-            view.grid("network-actions", &network_actions),
-            view.container(ui.NodeKind.stack, "network-options", &network_options),
+            view.grid("network-actions", network_actions),
+            view.container(ui.NodeKind.stack, "network-options", network_options),
             view.bound("discovery-text", "state.discovery"),
-            view.container(ui.NodeKind.stack, "found-receivers", &found_receivers),
-            view.container(ui.NodeKind.stack, "found-pairing", &found_pairing),
-        };
-        const pair_actions = [_]ui.Node{
+            view.container(ui.NodeKind.stack, "found-receivers", found_receivers),
+            view.container(ui.NodeKind.stack, "found-pairing", found_pairing),
+        });
+        const pair_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("开启连接码并允许发现", "share-pair-host-advertise", "primary", "state.idle"),
             view.button("输入连接码", "share-toggle-join", "standard", "state.ui-idle"),
-        };
+        });
         const pair_peer_field = pair_peer.buildCustom("pair-peer-group", "pair-peer-label", "pair-peer", "对端配对地址");
         pair_peer.children[1].placeholder = .{ .present = 1, .value = abi.view("例如 192.168.1.21:45843") };
         route_fields[4].children[1].placeholder = .{ .present = 1, .value = abi.view("例如 100.64.1.20:45843") };
-        const join_form = [_]ui.Node{
+        const join_form = try temporary.dupe(ui.Node, &[_]ui.Node{
             pair_peer_field,
             view.text("pair-input-label", "对端的 8 位连接码", "caption"),
             code_input,
             view.button("连接", "share-pair-join", "primary", "state.idle"),
-        };
-        const pairing_card = [_]ui.Node{
+        });
+        const pairing_card = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("首次使用：初始化本机", "share-prepare-device", "standard", "state.idle"),
             pair_alias.buildCustom("pair-alias-field", "pair-alias-label", "pair-alias", "配对名称"),
-            view.grid("pair-actions", &pair_actions),
+            view.grid("pair-actions", pair_actions),
             view.button("粘贴配对信息", "share-paste-pair", "standard", "state.ui-idle"),
             view.bound("pair-help", "state.pair-help"),
-            view.container(ui.NodeKind.stack, "lan-join-form", &join_form),
+            view.container(ui.NodeKind.stack, "lan-join-form", join_form),
             view.button("已组网？手动配对", "share-show-routed-pair", "standard", "state.ui-idle"),
-        };
-        const routed_pair_card = [_]ui.Node{
+        });
+        const routed_pair_card = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.text("routed-pair-note", "使用两台设备现有的私有或虚拟组网地址。手动连接后，两边都需核对并确认指纹。", "body"),
             route_nodes[0],
             route_nodes[1],
@@ -940,255 +954,255 @@ const Instance = struct {
             view.input("routed-pair-input", true),
             view.button("连接组网设备", "share-pair-join-routed", "primary", "state.idle"),
             view.button("收起组网配对", "share-close-routed-pair", "standard", "state.ui-idle"),
-        };
-        const listed_peers = [_]ui.Node{
+        });
+        const listed_peers = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.select("peer-options", "peer-choice", "选择已配对设备", self.peer_choices.options(&peer_options)),
             view.button("设为当前对端", "share-use-peer", "standard", "state.idle"),
-        };
-        const trusted_card = [_]ui.Node{
+        });
+        const trusted_card = try temporary.dupe(ui.Node, &[_]ui.Node{
             fields[3],
             view.button("刷新已配对设备", "share-peer-list", "standard", "state.idle"),
-            view.container(ui.NodeKind.stack, "listed-peers", &listed_peers),
-        };
-        const device_content = [_]ui.Node{
+            view.container(ui.NodeKind.stack, "listed-peers", listed_peers),
+        });
+        const device_content = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.text("devices-heading", "设备", "section"),
-            view.group("nearby-card", "附近设备", &nearby_card),
-            view.group("pairing-card", "配对新设备", &pairing_card),
-            view.group("routed-pair-card", "组网配对", &routed_pair_card),
-            view.group("trusted-card", "已配对的设备", &trusted_card),
-        };
-        const file_actions = [_]ui.Node{
+            view.group("nearby-card", "附近设备", nearby_card),
+            view.group("pairing-card", "配对新设备", pairing_card),
+            view.group("routed-pair-card", "组网配对", routed_pair_card),
+            view.group("trusted-card", "已配对的设备", trusted_card),
+        });
+        const file_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("选择文件", "share-pick-file", "standard", "state.ui-idle"),
             view.button("选择文件夹", "share-pick-folder", "standard", "state.ui-idle"),
-        };
-        const clear_action = [_]ui.Node{
+        });
+        const clear_action = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("清空选择", "share-clear-selection", "standard", "state.ui-idle"),
-        };
-        const source_card = [_]ui.Node{
+        });
+        const source_card = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.bound("source", "state.source"),
-            view.grid("file-actions", &file_actions),
-            view.container(ui.NodeKind.stack, "source-clear", &clear_action),
-        };
-        const send_actions = [_]ui.Node{
+            view.grid("file-actions", file_actions),
+            view.container(ui.NodeKind.stack, "source-clear", clear_action),
+        });
+        const send_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("选设备", "share-open-devices", "standard", "state.ui-idle"),
             view.button("发送", "share-send-selection", "primary", "state.idle"),
-        };
-        const address_field = [_]ui.Node{fields[1]};
-        const target_card = [_]ui.Node{
+        });
+        const address_field = try temporary.dupe(ui.Node, &[_]ui.Node{fields[1]});
+        const target_card = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.bound("current-peer", "state.current-peer"),
             view.bound("send-endpoint-label", "state.send-endpoint"),
             view.button("手动输入对端地址", "share-toggle-address", "standard", "state.ui-idle"),
-            view.container(ui.NodeKind.stack, "send-address-field", &address_field),
-            view.grid("send-actions", &send_actions),
-        };
-        const send_cards = [_]ui.Node{
-            view.group("source-card", "待发送内容", &source_card),
-            view.group("target-card", "接收设备", &target_card),
-        };
-        const send_clipboard_actions = [_]ui.Node{
+            view.container(ui.NodeKind.stack, "send-address-field", address_field),
+            view.grid("send-actions", send_actions),
+        });
+        const send_cards = try temporary.dupe(ui.Node, &[_]ui.Node{
+            view.group("source-card", "待发送内容", source_card),
+            view.group("target-card", "接收设备", target_card),
+        });
+        const send_clipboard_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("发送剪贴板", "share-clipboard-send", "standard", "state.idle"),
             view.action("开启自动发送剪贴板", "share-sync-send", "state.sync-send-caption", "state.sync-send-enabled"),
-        };
-        const send_clipboard = [_]ui.Node{
+        });
+        const send_clipboard = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.text("send-clipboard-label", "内容类型", "caption"),
             view.select("send-clipboard-select", "send-clipboard-kind", "内容类型", &clipboard_names),
-            view.grid("send-clipboard-actions", &send_clipboard_actions),
-        };
-        const send_directory_actions = [_]ui.Node{
+            view.grid("send-clipboard-actions", send_clipboard_actions),
+        });
+        const send_directory_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("提供只读目录", "share-root-offer", "standard", "state.idle"),
             view.action("开启只读目录服务", "share-directory-service", "state.directory-caption", "state.directory-enabled"),
-        };
-        const send_queue_actions = [_]ui.Node{
+        });
+        const send_queue_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("将选中项目加入队列", "share-queue-add", "standard", "state.idle"),
             view.button("查看发送队列", "share-queue-list", "standard", "state.idle"),
             view.button("发送队列中的待发项目", "share-queue-run", "standard", "state.idle"),
-        };
-        const send_extras = [_]ui.Node{
-            view.group("send-clipboard", "剪贴板", &send_clipboard),
-            view.group("send-directory", "目录共享", &send_directory_actions),
-            view.group("send-queue", "发送队列", &send_queue_actions),
+        });
+        const send_extras = try temporary.dupe(ui.Node, &[_]ui.Node{
+            view.group("send-clipboard", "剪贴板", send_clipboard),
+            view.group("send-directory", "目录共享", send_directory_actions),
+            view.group("send-queue", "发送队列", send_queue_actions),
             view.bound("send-inventory", "state.inventory"),
-        };
-        const send_content = [_]ui.Node{
+        });
+        const send_content = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.text("send-heading", "发送文件或文件夹", "section"),
-            view.grid("send-cards", &send_cards),
+            view.grid("send-cards", send_cards),
             view.button("更多发送方式", "share-toggle-send", "standard", "state.ui-idle"),
-            view.container(ui.NodeKind.stack, "send-extras", &send_extras),
-        };
-        const alternate_receive = [_]ui.Node{
+            view.container(ui.NodeKind.stack, "send-extras", send_extras),
+        });
+        const alternate_receive = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("接收单文件（不广播）", "share-receive", "standard", "state.idle"),
             view.button("接收文件夹 / 多文件", "share-receive-selection", "standard", "state.idle"),
-        };
-        const receive_clipboard_actions = [_]ui.Node{
+        });
+        const receive_clipboard_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("接收剪贴板", "share-clipboard-receive", "standard", "state.idle"),
             view.action("开启自动接收剪贴板", "share-sync-receive", "state.sync-receive-caption", "state.sync-receive-enabled"),
-        };
-        const receive_clipboard = [_]ui.Node{
+        });
+        const receive_clipboard = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.text("receive-clipboard-label", "内容类型", "caption"),
             view.select("receive-clipboard-select", "receive-clipboard-kind", "内容类型", &clipboard_names),
             view.text("clipboard-delivery-label", "接收后放到", "caption"),
             view.select("clipboard-delivery-select", "clipboard-delivery", "接收后放到", &delivery_names),
-            view.grid("receive-clipboard-actions", &receive_clipboard_actions),
-        };
-        const receive_directory_actions = [_]ui.Node{
+            view.grid("receive-clipboard-actions", receive_clipboard_actions),
+        });
+        const receive_directory_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("浏览或下载对端目录", "share-root-receive", "standard", "state.idle"),
             view.button("连接只读目录服务", "share-directory-connect", "standard", "state.idle"),
-        };
-        const receive_extras = [_]ui.Node{
-            view.group("receive-clipboard", "剪贴板", &receive_clipboard),
-            view.group("receive-directory", "目录共享", &receive_directory_actions),
+        });
+        const receive_extras = try temporary.dupe(ui.Node, &[_]ui.Node{
+            view.group("receive-clipboard", "剪贴板", receive_clipboard),
+            view.group("receive-directory", "目录共享", receive_directory_actions),
             view.bound("receive-inventory", "state.inventory"),
-        };
-        const receive_card = [_]ui.Node{
+        });
+        const receive_card = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.bound("save-location", "state.receive-location"),
             view.button("更改保存位置", "share-browse-destination", "standard", "state.ui-idle"),
             view.bound("receive-peer", "state.current-peer"),
             view.button("开始接收单文件 · 允许附近发现", "share-receive-advertise", "primary", "state.idle"),
-            view.grid("receive-options", &alternate_receive),
+            view.grid("receive-options", alternate_receive),
             view.text("receive-confirm", "发送单个文件用「单文件」接收，发送文件夹或多文件用「文件夹 / 多文件」接收；收到请求后在下方核对确认。", "caption"),
-        };
-        const receive_content = [_]ui.Node{
+        });
+        const receive_content = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.text("receive-heading", "接收文件", "section"),
-            view.group("receive-card", "保存位置", &receive_card),
+            view.group("receive-card", "保存位置", receive_card),
             view.button("更多接收方式", "share-toggle-receive", "standard", "state.ui-idle"),
-            view.container(ui.NodeKind.stack, "receive-extras", &receive_extras),
-        };
-        const routed_actions = [_]ui.Node{
+            view.container(ui.NodeKind.stack, "receive-extras", receive_extras),
+        });
+        const routed_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("发送（组网/转发）", "share-send-routed", "standard", "state.idle"),
             view.button("接收（组网/转发）", "share-receive-routed", "standard", "state.idle"),
-        };
-        const quic_actions = [_]ui.Node{
+        });
+        const quic_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("QUIC 发送", "share-send-quic", "standard", "state.idle"),
             view.button("QUIC 接收", "share-receive-quic", "standard", "state.idle"),
             view.button("QUIC 组网发送", "share-send-quic-routed", "standard", "state.idle"),
             view.button("QUIC 组网接收", "share-receive-quic-routed", "standard", "state.idle"),
-        };
-        const batch_actions = [_]ui.Node{
+        });
+        const batch_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("按批量选项发送选中项", "share-batch-send", "standard", "state.idle"),
             view.button("按批量选项接收或恢复", "share-batch-receive", "standard", "state.idle"),
-        };
-        const queue_actions = [_]ui.Node{
+        });
+        const queue_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("放弃指定任务", "share-queue-discard", "standard", "state.idle"),
             view.button("清理终态记录", "share-queue-prune", "standard", "state.idle"),
-        };
-        const advanced_pair_actions = [_]ui.Node{
+        });
+        const advanced_pair_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("开启连接码（不广播）", "share-pair-host", "standard", "state.idle"),
             view.button("显示本机指纹", "share-identity-show", "standard", "state.idle"),
             view.button("打开组网配对", "share-open-routed-pair", "standard", "state.ui-idle"),
             view.button("手动指纹配对", "share-peer-add", "standard", "state.idle"),
             view.button("撤销当前配对", "share-peer-revoke", "danger", "state.idle"),
-        };
+        });
         var advanced_alias: view.FieldNodes = .{};
         const advanced_alias_field = advanced_alias.buildCustom("advanced-alias-field", "advanced-alias-label", "advanced-pair-alias", "新配对设备名称（用于手动指纹配对）");
         advanced_alias.children[1].placeholder = .{ .present = 1, .value = abi.view("留空自动生成名称") };
-        const advanced_pair = [_]ui.Node{
+        const advanced_pair = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.bound("advanced-current-peer", "state.current-peer"),
             advanced_alias_field,
             fields[7],
             view.text("advanced-pair-help", "手动指纹配对前，请通过另一渠道核对完整指纹；「撤销当前配对」将撤销上方显示的当前对端。", "caption"),
-            view.grid("advanced-pair-actions", &advanced_pair_actions),
-        };
-        const transport = [_]ui.Node{
+            view.grid("advanced-pair-actions", advanced_pair_actions),
+        });
+        const transport = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.text("routed-help", "高级：仅已配对设备。使用具体数字 IP 和端口；接收须填写实际 TCP 来源 IP（代理场景可为代理地址）。不自动映射端口。", "caption"),
             fields[8],
-            view.grid("routed-actions", &routed_actions),
+            view.grid("routed-actions", routed_actions),
             view.text("quic-help", "QUIC：使用 UDP，双方手动选择 QUIC，不自动回退 TCP；目前仅单文件。", "caption"),
-            view.grid("quic-actions", &quic_actions),
-        };
-        const batch_options = [_]ui.Node{
+            view.grid("quic-actions", quic_actions),
+        });
+        const batch_options = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.text("batch-help", "批量使用已配对设备。选择协议、通道和接收选项；多选路径受宿主命令长度限制。恢复须手动选择原事务。", "caption"),
             fields[9],
             fields[10],
             fields[11],
             fields[14],
             fields[15],
-            view.grid("batch-actions", &batch_actions),
-        };
-        const queue_and_services = [_]ui.Node{
+            view.grid("batch-actions", batch_actions),
+        });
+        const queue_and_services = try temporary.dupe(ui.Node, &[_]ui.Node{
             fields[16],
             view.text("queue-help", "队列保存在私有身份目录。留空 ID 分页查看或运行全部待发任务；每页 20 条，使用列表偏移。放弃需指定 ID。结果不确定时先检查接收端。", "caption"),
-            view.grid("queue-actions", &queue_actions),
+            view.grid("queue-actions", queue_actions),
             view.bound("batch-inventory", "state.inventory"),
-        };
-        const advanced_content = [_]ui.Node{
+        });
+        const advanced_content = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.text("advanced-heading", "高级操作", "section"),
-            view.group("advanced-pair-card", "高级配对", &advanced_pair),
-            view.group("transport-card", "组网与 QUIC", &transport),
-            view.group("batch-card", "批量与内容类型", &batch_options),
-            view.group("queue-card", "队列与服务", &queue_and_services),
-        };
-        const setup_actions = [_]ui.Node{
+            view.group("advanced-pair-card", "高级配对", advanced_pair),
+            view.group("transport-card", "组网与 QUIC", transport),
+            view.group("batch-card", "批量与内容类型", batch_options),
+            view.group("queue-card", "队列与服务", queue_and_services),
+        });
+        const setup_actions = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("应用已保存设置", "share-apply-prefs", "standard", "state.ui-idle"),
             view.button("保存当前配置", "share-save-prefs", "primary", "state.ui-idle"),
-        };
-        const storage_options = [_]ui.Node{
+        });
+        const storage_options = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("选择身份和暂存的父文件夹", "share-browse-parent", "standard", "state.ui-idle"),
             fields[2],
             fields[5],
             fields[4],
             fields[6],
-        };
-        const setup_card = [_]ui.Node{
+        });
+        const setup_card = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.text("setup-help", "接收文件默认存到「下载」。首次使用可直接初始化本机。", "body"),
             view.button("初始化本机身份和暂存", "share-prepare-from-settings", "primary", "state.idle"),
             view.button("更改存储位置和端口", "share-toggle-storage", "standard", "state.ui-idle"),
-            view.container(ui.NodeKind.stack, "storage-options", &storage_options),
-            view.grid("setup-actions", &setup_actions),
-        };
-        const maintenance_buttons = [_]ui.Node{
+            view.container(ui.NodeKind.stack, "storage-options", storage_options),
+            view.grid("setup-actions", setup_actions),
+        });
+        const maintenance_buttons = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("检查暂存残留", "share-spool-recovery", "standard", "state.idle"),
             view.button("检查身份目录残留", "share-recovery-list", "standard", "state.idle"),
-        };
-        const maintenance_card = [_]ui.Node{
-            view.grid("maintenance-buttons", &maintenance_buttons),
+        });
+        const maintenance_card = try temporary.dupe(ui.Node, &[_]ui.Node{
+            view.grid("maintenance-buttons", maintenance_buttons),
             view.bound("setup-inventory", "state.inventory"),
-        };
-        const setup_content = [_]ui.Node{
+        });
+        const setup_content = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.text("setup-heading", "设置", "section"),
-            view.group("setup-card", "设备与存储", &setup_card),
-            view.group("maintenance-card", "维护", &maintenance_card),
-        };
-        const diagnostic_card = [_]ui.Node{
+            view.group("setup-card", "设备与存储", setup_card),
+            view.group("maintenance-card", "维护", maintenance_card),
+        });
+        const diagnostic_card = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.bound("diagnostic-text", "state.diagnostic"),
             view.button("导出诊断…", "share-export-diagnostics", "standard", "state.ui-idle"),
-        };
-        const history_content = [_]ui.Node{
+        });
+        const history_content = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.text("history-heading", "记录", "section"),
             view.bound("history-text", "state.history"),
-            view.group("diagnostic-card", "诊断", &diagnostic_card),
-        };
-        const tabs_children = [_]ui.Node{
-            view.tab("send-tab", "发送", &send_content),
-            view.tab("receive-tab", "接收", &receive_content),
-            view.tab("devices-tab", "设备", &device_content),
-            view.tab("history-tab", "记录", &history_content),
-            view.tab("setup-tab", "设置", &setup_content),
-            view.tab("advanced-tab", "高级", &advanced_content),
-        };
-        var tabs = view.container(ui.NodeKind.tabs, "share-tabs", &tabs_children);
+            view.group("diagnostic-card", "诊断", diagnostic_card),
+        });
+        const tabs_children = try temporary.dupe(ui.Node, &[_]ui.Node{
+            view.tab("send-tab", "发送", send_content),
+            view.tab("receive-tab", "接收", receive_content),
+            view.tab("devices-tab", "设备", device_content),
+            view.tab("history-tab", "记录", history_content),
+            view.tab("setup-tab", "设置", setup_content),
+            view.tab("advanced-tab", "高级", advanced_content),
+        });
+        var tabs = view.container(ui.NodeKind.tabs, "share-tabs", tabs_children);
         tabs.state = .{ .present = 1, .value = abi.view("active-tab") };
         var bar = ui.node(ui.NodeKind.progress);
         bar.id = abi.view("transfer-progress");
         bar.binding = .{ .present = 1, .value = abi.view("state.progress") };
-        const controls = [_]ui.Node{
+        const controls = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.button("查看配对信息", "share-open-pair-popup", "standard", "state.pair-popup-ready"),
             view.action("复制接收地址", "share-copy-address", "state.copy-address-caption", "state.copy-address-ready"),
             view.button("取消任务", "share-cancel", "danger", "state.busy"),
             view.button("确认请求", "share-approve", "primary", "state.confirm"),
             view.button("拒绝请求", "share-decline", "standard", "state.confirm"),
-        };
-        const task_content = [_]ui.Node{
+        });
+        const task_content = try temporary.dupe(ui.Node, &[_]ui.Node{
             view.bound("pair-code", "state.pair-code"),
             view.bound("status-line", "state.status"),
             bar,
             view.bound("byte-count", "state.bytes"),
-            view.grid("task-controls", &controls),
-        };
-        const children = [_]ui.Node{
-            view.group("task-group", "当前任务", &task_content),
+            view.grid("task-controls", controls),
+        });
+        const children = try temporary.dupe(ui.Node, &[_]ui.Node{
+            view.group("task-group", "当前任务", task_content),
             tabs,
-        };
-        const root = view.container(ui.NodeKind.stack, "share-root", &children);
+        });
+        const root = view.container(ui.NodeKind.stack, "share-root", children);
         if (update) {
             if (self.panel) |panel| try panel.updateTree(&root);
             return;

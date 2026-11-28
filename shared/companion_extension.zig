@@ -787,6 +787,13 @@ pub const RunningSnapshot = struct {
     count: usize = 0,
     rows: [session_limit]RunningRow = undefined,
     sources: [session_limit]RunningSource = @splat(.{}),
+
+    // Only the live prefix can have populated labels. Keep the unused
+    // prefix tail empty without a capacity-sized temporary or full rewrite.
+    pub fn clear(self: *RunningSnapshot) void {
+        @memset(self.sources[0..self.count], .{});
+        self.count = 0;
+    }
 };
 
 pub const Session = struct {
@@ -872,17 +879,17 @@ pub const Session = struct {
     pub fn publishRows(self: *Session, rows: []const RunningRow) void {
         if (self.snapshot_lock.swap(true, .acquire)) return;
         defer self.snapshot_lock.store(false, .release);
+        self.snapshot.clear();
         self.snapshot.count = @min(rows.len, session_limit);
         @memcpy(self.snapshot.rows[0..self.snapshot.count], rows[0..self.snapshot.count]);
-        self.snapshot.sources = @splat(.{});
     }
 
     fn publishNamedRows(self: *Session, rows: []const RunningRow, sources: *const [session_limit]RunningSource) void {
         if (self.snapshot_lock.swap(true, .acquire)) return;
         defer self.snapshot_lock.store(false, .release);
+        self.snapshot.clear();
         self.snapshot.count = @min(rows.len, session_limit);
         @memcpy(self.snapshot.rows[0..self.snapshot.count], rows[0..self.snapshot.count]);
-        self.snapshot.sources = @splat(.{});
         // Bounded open-addressed lookup: one build per publication, rather
         // than scanning 1024 labels for each row. Zero denotes an empty slot.
         const table_size = session_limit * 2;
@@ -908,9 +915,11 @@ pub const Session = struct {
     pub fn copyRows(self: *Session, out: *RunningSnapshot) void {
         if (self.snapshot_lock.swap(true, .acquire)) return;
         defer self.snapshot_lock.store(false, .release);
-        out.count = self.snapshot.count;
+        const count = self.snapshot.count;
+        if (out.count > count) @memset(out.sources[count..out.count], .{});
+        out.count = count;
         @memcpy(out.rows[0..out.count], self.snapshot.rows[0..out.count]);
-        out.sources = self.snapshot.sources;
+        @memcpy(out.sources[0..out.count], self.snapshot.sources[0..out.count]);
     }
 
     pub fn reject(self: *Session, reason: Rejection) void {
@@ -1482,6 +1491,14 @@ test "running source labels follow stable instance IDs across row reorder" {
     session.publishNamedRows(rows[0..1], &sources);
     session.copyRows(&copy);
     try std.testing.expectEqual(@as(usize, 1), copy.count);
+    try std.testing.expectEqual(@as(u64, 0), copy.sources[1].id);
+    copy.clear();
+    try std.testing.expectEqual(@as(usize, 0), copy.count);
+    try std.testing.expectEqual(@as(u64, 0), copy.sources[0].id);
+    session.publishRows(&rows);
+    session.copyRows(&copy);
+    try std.testing.expectEqual(@as(usize, 2), copy.count);
+    try std.testing.expectEqual(@as(u64, 0), copy.sources[0].id);
     try std.testing.expectEqual(@as(u64, 0), copy.sources[1].id);
 }
 

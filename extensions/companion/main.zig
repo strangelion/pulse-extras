@@ -1956,7 +1956,7 @@ fn collectSession(instance: *Instance, stopping: bool) void {
     instance.session_worker = null;
     instance.runtime_task_state = if (instance.runtime_error != null) raw.PULSE_TASK_FAILED else if (instance.session_cancel.load(.acquire)) raw.PULSE_TASK_CANCELLED else raw.PULSE_TASK_COMPLETED;
     diag.status("companion-runtime-terminal", instance.runtime_task_state);
-    instance.running_rows = .{};
+    instance.running_rows.clear();
     instance.running_digest = 0;
     instance.stop_requested = false;
     const fatal_runtime = if (instance.runtime_error) |err|
@@ -2456,7 +2456,7 @@ fn pollLibrary(instance: *Instance) void {
     const done = instance.work_done.load(.acquire);
     if (instance.task_state == raw.PULSE_TASK_COMPLETED and done and instance.work_error == null) {
         clearLibrarySelection(instance);
-        instance.library_snapshot = instance.work_snapshot;
+        instance.library_snapshot.copyFrom(&instance.work_snapshot);
         instance.library_loaded = true;
         if (was_edit and instance.library_snapshot.count != 0) {
             const max_offset = ((instance.library_snapshot.count - 1) / 16) * 16;
@@ -2593,7 +2593,7 @@ fn pollRuntime(instance: *Instance) void {
     }
     diag.status("companion-runtime-terminal", instance.runtime_task_state);
     instance.runtime_task_id = 0;
-    instance.running_rows = .{};
+    instance.running_rows.clear();
     const done = instance.runtime_done.load(.acquire);
     instance.runtime_checked = instance.runtime_task_state == raw.PULSE_TASK_COMPLETED and done and instance.runtime_error == null;
     instance.runtime_status = if (instance.runtime_checked) "同包运行时已通过检查；可启动内置桌宠" else if (done) if (instance.runtime_error) |err| workFailureText(err) else "运行时检查未完成" else "运行时检查已取消";
@@ -2706,7 +2706,7 @@ fn startSession(instance: *Instance, asset_id: u64, choice: library.LaunchProfil
     instance.running_offset = 0;
     instance.session.start_profile.store(packed_profile, .release);
     instance.session.start_asset.store(asset_id, .release);
-    instance.running_rows = .{};
+    instance.running_rows.clear();
     instance.stop_requested = false;
     instance.task_kind = .builtin_session;
     instance.session_worker = std.Thread.spawn(.{}, runSessionWorker, .{instance}) catch |err| {
@@ -3427,7 +3427,7 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
     instance.work_error = null;
     if (instance.import_request != null or instance.preference_edit != null or instance.removal_request != null) instance.recovery_report = null;
     instance.removal_committed = false;
-    instance.work_snapshot = .{};
+    instance.work_snapshot.clear();
     if (instance.detail_request == null) {
         instance.library_detail = null;
         if (!instance.fallback_pick and !instance.recovery_scan) {
@@ -4187,6 +4187,8 @@ export fn PulsePluginSdkPreview() callconv(.c) u32 {
     return abi.sdk_preview;
 }
 
+const initial_instance: Instance = .{ .host = undefined };
+
 export fn PulsePluginEntryV1(host_ptr: ?*const abi.HostV1, out_ptr: ?*abi.PluginV1) callconv(.c) abi.Status {
     const host = host_ptr orelse return abi.error_abi;
     const out = out_ptr orelse return abi.error_abi;
@@ -4194,7 +4196,8 @@ export fn PulsePluginEntryV1(host_ptr: ?*const abi.HostV1, out_ptr: ?*abi.Plugin
     const validated = host_mod.Host.init(host) catch return abi.error_unavailable;
     diag.event("companion-entry");
     const instance = allocator.create(Instance) catch return abi.error_initialization;
-    instance.* = .{ .host = validated };
+    @memcpy(std.mem.asBytes(instance), std.mem.asBytes(&initial_instance));
+    instance.host = validated;
     out.* = .{ .size = @sizeOf(abi.PluginV1), .version = abi.abi_version, .instance = instance, .activate = activate, .deactivate = deactivate, .destroy = destroy };
     return abi.ok;
 }
