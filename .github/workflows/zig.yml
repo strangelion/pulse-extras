@@ -47,7 +47,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Check Python scripts compile
-        run: python -m compileall -q scripts tests/companion
+        run: python -m compileall -q scripts tests/companion tests/share
       - name: Test CI helper scripts
         run: python -m unittest discover -s scripts -p 'test_*.py'
       - name: Zig safety review inventory
@@ -77,8 +77,123 @@ jobs:
             echo "::error::Zig formatting differs; apply zig fmt locally before committing."
             exit 1
           fi
+      - name: Build isolated Share local transport
+        if: (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        run: zig build share-local -Doptimize=ReleaseSafe --summary all
+      - name: Real Windows Share worker integration
+        if: runner.os == 'Windows' && (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu tests/share/worker_fixture_win32.c -o zig-out/bin/pulse-share-worker-fixture.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu -DSHARE_FIXTURE_FALSE_SUCCESS tests/share/worker_fixture_win32.c -lshell32 -o zig-out/bin/pulse-share-worker-corrupt-fixture.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/share/test_local_copy.py zig-out/bin/pulse-share-local.exe zig-out/bin/pulse-share-worker.exe zig-out/bin/pulse-share-worker-fixture.exe zig-out/bin/pulse-share-worker-corrupt-fixture.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install pinned Go for Share LAN prototype
+        if: (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - name: Download and verify locked Share Go modules
+        if: (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        working-directory: shared/share/lan
+        env:
+          GOTOOLCHAIN: local
+          GOPROXY: https://proxy.golang.org
+          GOSUMDB: sum.golang.org
+          GOFLAGS: -mod=readonly
+          CGO_ENABLED: '0'
+        run: |
+          go mod download
+          go mod verify
+          git diff --exit-code -- go.mod go.sum
+      - name: Build experimental CPace adapter with locked dependencies
+        if: (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        working-directory: shared/share/pake
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          rustc --version
+          cargo --version
+          cargo build --locked --release
+      - name: Stage Windows CPace helper
+        if: runner.os == 'Windows' && (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        shell: bash
+        run: |
+          cp shared/share/pake/target/release/pulse-share-pake.exe zig-out/bin/pulse-share-pake.exe
+          python shared/share/pake/collect_notices.py zig-out/bin/pulse-share-pake-notices.txt
+      - name: Test Share LAN protocol, mutual TLS and CPace
+        if: (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        working-directory: shared/share/lan
+        shell: bash
+        timeout-minutes: 4
+        env:
+          GOTOOLCHAIN: local
+          GOPROXY: 'off'
+          GOFLAGS: -mod=readonly
+          CGO_ENABLED: '0'
+        run: |
+          helper="$PWD/../pake/target/release/pulse-share-pake"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            helper="$helper.exe"
+          fi
+          test -f "$helper"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            helper="$(cygpath -w "$helper")"
+          fi
+          export PULSE_SHARE_PAKE_TEST_HELPER="$helper"
+          go test -count=1 -timeout=90s -v ./...
+      - name: Cross-build native Share LAN executable
+        if: (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        working-directory: shared/share/lan
+        env:
+          GOTOOLCHAIN: local
+          GOPROXY: 'off'
+          GOFLAGS: -mod=readonly
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: go build -trimpath -o ../../../zig-out/bin/pulse-share-lan.exe .
+      - name: Collect locked Go dependency notices
+        if: runner.os == 'Windows' && (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        working-directory: shared/share/lan
+        env:
+          GOTOOLCHAIN: local
+          GOPROXY: 'off'
+          GOFLAGS: -mod=readonly
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: python collect_notices.py ../../../zig-out/bin/pulse-share-go-notices.txt
+      - name: Build Share DLL with verified sibling digests
+        if: (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        shell: bash
+        run: |
+          python -c 'import hashlib, os, pathlib, subprocess; p=pathlib.Path("zig-out/bin"); names=("lan","local","worker","pake") if os.name=="nt" else ("lan","local","worker"); subprocess.run(["zig","build","share-dev","-Dtarget=x86_64-windows-msvc","-Doptimize=ReleaseSafe",*["-Dshare-"+n+"-sha256="+hashlib.sha256((p/("pulse-share-"+n+".exe")).read_bytes()).hexdigest() for n in names]],check=True)'
+      - name: Real Windows encrypted Share LAN loopback
+        if: runner.os == 'Windows' && (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share')
+        timeout-minutes: 5
+        run: python tests/share/test_lan_copy.py zig-out/bin/pulse-share-lan.exe zig-out/bin/pulse-share-local.exe zig-out/bin/pulse-share-worker.exe
+      - name: Upload isolated Share acceptance inputs
+        if: runner.os == 'Windows' && (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'share') && github.ref == 'refs/heads/feature/share'
+        uses: actions/upload-artifact@v4
+        with:
+          name: share-acceptance-inputs
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            zig-out/bin/pulse-share-lan.exe
+            zig-out/bin/pulse-share-local.exe
+            zig-out/bin/pulse-share-worker.exe
+            zig-out/bin/pulse-share-pake.exe
+            zig-out/bin/pulse-share-pake-notices.txt
+            zig-out/bin/pulse-share-go-notices.txt
+            zig-out/bin/pulse_share.dll
       - name: Fast ZIP admission and extraction regression
-        if: needs.scope.outputs.level != 'vcs'
+        if: needs.scope.outputs.level != 'vcs' && needs.scope.outputs.level != 'share'
         timeout-minutes: 4
         run: zig test shared/companion/pet_zip.zig
       - name: Isolated Windows Job Object tests (phase diagnostics)
@@ -150,6 +265,7 @@ jobs:
           case "$CI_LEVEL" in
             companion|companion-host) zig build test-companion --summary all ;;
             vcs) zig build test-vcs --summary all ;;
+            share) zig build test-share --summary all ;;
             full) zig build test --summary all ;;
             *) exit 1 ;;
           esac
@@ -162,8 +278,11 @@ jobs:
           GIT_CONFIG_NOSYSTEM: '1'
           GIT_CONFIG_GLOBAL: ${{ runner.temp }}/pulse-vcs-ci-no-global-config
       - name: Build production extensions
-        if: needs.scope.outputs.level != 'companion'
+        if: needs.scope.outputs.level != 'companion' && needs.scope.outputs.level != 'share'
         run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
+      - name: Build experimental Share UI
+        if: needs.scope.outputs.level == 'full'
+        run: zig build share-dev -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
       - name: Verify forge Windows ABI constants and layouts
         if: runner.os == 'Windows' && (needs.scope.outputs.level == 'vcs' || needs.scope.outputs.level == 'full')
         shell: pwsh
@@ -471,7 +590,7 @@ jobs:
             docs:skipped:skipped)
               echo "Documentation-only change; code checks not run."
               ;;
-            vcs:success:skipped|companion:success:success|companion-host:success:success|full:success:success)
+            vcs:success:skipped|share:success:skipped|companion:success:success|companion-host:success:success|full:success:success)
               echo "Required $LEVEL regression checks passed."
               ;;
             *)

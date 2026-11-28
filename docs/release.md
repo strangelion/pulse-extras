@@ -162,7 +162,7 @@ inspect the report and adapt the wrappers/header inventory explicitly.
 For supported candidates it compares C ABI prefixes and regenerates pinned
 Zig bindings with the current compiler. A separate writer creates
 `deps/pulse-vX.Y.Z` with only the lock and generated binding, dispatches
-**Upstream candidate compatibility**, and opens a review PR. It never
+**Extension test package**, and opens a review PR. It never
 overwrites an existing branch, merges, signs or creates releases.
 
 Candidate compatibility runs full regression and official package verification
@@ -400,3 +400,27 @@ AI publication, no unnecessary jobs for docs. Maintain [testing](testing.md) and
 [roadmap](roadmap.md) with real evidence and actual current status.
 
 Isolated acceptance packaging is implemented separately by scripts/stage_vcs_test.py and extensions/vcs-panel/manifest.test.json. It delegates manifest generation, pack and verify to the official pinned tool and refuses existing output directories. No release signing, registry publication or installation is performed. Production eligibility remains blocked by the acceptance runbook.
+
+
+## Share packaging
+
+The existing release registry includes Share, with the fixed four helper
+executables and two Go/Rust third-party notices. Selecting share builds
+the locked Go and Rust modules, verifies their dependency preparation,
+then builds the DLL with all four helper SHA-256 values. The official
+author tool stages/verifies the complete archive. Other selected products
+do not require Share toolchains unless Share is also selected.
+
+For unsigned branch acceptance, dispatch Extension test package
+with request share=0.1.0-rc.1 (or another valid candidate SemVer).
+No additional workflow, signing or publication. The regular Extension
+release workflow remains main-only and stable promotion still requires
+exact accepted artifact evidence.
+
+The workflow filename remains upstream-candidate.yml for existing links and SDK automation.
+For a manually requested test package, run_regression defaults to false (package-only).
+Enable it when a full regression is required. SDK update dispatches explicitly enable
+full regression, and SDK pull requests always run full regression. A failed requested
+regression blocks packaging. All packages still undergo official format verification
+and digest checks; skipping regression is not proof of passing regression.
+The existing upstream-candidate-packages artifact name is retained for compatibility.

@@ -1,8 +1,52 @@
+import hashlib
 import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
 import release_workflow as release
+
+
+class CargoHelperStagingTests(unittest.TestCase):
+    def test_compiler_hardlink_is_copied_not_packaged_directly(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            compiler, staging = root / "compiler", root / "staging"
+            compiler.mkdir()
+            staging.mkdir()
+            source = compiler / "pulse-share-pake.exe"
+            source.write_bytes(b"synthetic compiler output")
+            os.link(source, compiler / "fingerprinted.exe")
+            with self.assertRaisesRegex(RuntimeError, "invalid bounded regular file"):
+                release.common.sha256(source)
+            destination = staging / source.name
+            self.assertEqual(release.stage_cargo_helper(source, destination),
+                             hashlib.sha256(source.read_bytes()).hexdigest())
+            self.assertEqual(destination.stat().st_nlink, 1)
+            self.assertEqual(release.common.sha256(destination),
+                             hashlib.sha256(source.read_bytes()).hexdigest())
+            source.write_bytes(b"modified compiler cache")
+            self.assertEqual(destination.read_bytes(), b"synthetic compiler output")
+            with self.assertRaises(FileExistsError):
+                release.stage_cargo_helper(source, destination)
+            self.assertEqual(destination.read_bytes(), b"synthetic compiler output")
+
+    def test_invalid_cargo_output_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "pulse-share-pake.exe"
+            destination = root / "staging" / source.name
+            destination.parent.mkdir()
+            source.touch()
+            with self.assertRaisesRegex(RuntimeError, "invalid freshly built Cargo helper"):
+                release.stage_cargo_helper(source, destination)
+            self.assertFalse(destination.exists())
+            source.unlink()
+            source.mkdir()
+            with self.assertRaisesRegex(RuntimeError, "invalid freshly built Cargo helper"):
+                release.stage_cargo_helper(source, destination)
+            self.assertFalse(destination.exists())
 
 
 class ReleaseSelectionTests(unittest.TestCase):
@@ -13,6 +57,12 @@ class ReleaseSelectionTests(unittest.TestCase):
 
     def test_single_selection(self):
         self.assertEqual(len(release.plan("vcs=0.1.0", "dry-run")), 1)
+
+    def test_share_selection(self):
+        items = release.plan("share=0.1.0-rc.1", "dry-run")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["asset"], "strangelion.share-0.1.0-rc.1.pulse-ext")
+        self.assertEqual(release.package.PRODUCTS["share"]["build_profile"], "share")
 
     def test_all(self):
         items = release.plan("all=0.2.0-rc.1", "draft")

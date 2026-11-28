@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       request:
-        description: 'Build: companion=1.1.0,vcs=1.2.0 | Stable: run=123456,host=1.0.61'
+        description: 'Build: share=0.1.0,companion=1.1.0,vcs=1.2.0 | Stable: run=123456,host=1.0.61'
         required: true
         type: string
       mode:
@@ -93,6 +93,19 @@ jobs:
           ref: ${{ steps.upstream.outputs.revision }}
           path: .local/sdk
           persist-credentials: false
+      - name: Set up pinned Go for selected Share package
+        if: contains(needs.plan.outputs.plan, '"product":"share"')
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - name: Prepare pinned Rust for selected Share package
+        if: contains(needs.plan.outputs.plan, '"product":"share"')
+        working-directory: shared/share/pake
+        run: |
+          rustup show active-toolchain
+          rustc --version
+          rustup target add x86_64-pc-windows-msvc
       - name: Build and verify selected packages
         run: python scripts/release_workflow.py build
       - name: Preserve official packaging diagnostics

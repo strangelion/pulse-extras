@@ -1,0 +1,117 @@
+name: Share isolated network acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/share]
+    paths:
+      - '.github/workflows/share-network-acceptance.yml'
+      - 'tests/share/network_acceptance.py'
+      - 'shared/share/lan/acceptance_linux_test.go'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: share-network-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  isolated-network:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - name: Verify locked Go dependencies
+        working-directory: shared/share/lan
+        env:
+          GOTOOLCHAIN: local
+          GOPROXY: https://proxy.golang.org
+          GOSUMDB: sum.golang.org
+          GOFLAGS: -mod=readonly
+          CGO_ENABLED: '0'
+        run: |
+          go mod download
+          go mod verify
+          git diff --exit-code -- go.mod go.sum
+      - name: Build acceptance-only test executable
+        working-directory: shared/share/lan
+        env:
+          GOTOOLCHAIN: local
+          GOPROXY: 'off'
+          GOFLAGS: -mod=readonly
+          CGO_ENABLED: '0'
+        run: go test -c -o "$RUNNER_TEMP/share-network.test" .
+      - name: Install isolated-network tooling on disposable runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends iproute2 iptables iputils-ping wireguard-tools nginx libnginx-mod-stream time
+          sudo systemctl stop nginx || true
+          dpkg-query -W iproute2 iptables iputils-ping wireguard-tools nginx libnginx-mod-stream time
+      - name: Real routed transport, overlays and performance
+        timeout-minutes: 40
+        run: |
+          sudo env GITHUB_ACTIONS=true python3 tests/share/network_acceptance.py \
+            --binary "$RUNNER_TEMP/share-network.test" \
+            --out "$RUNNER_TEMP/share-network-results"
+      - name: Upload actual acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: share-network-acceptance
+          path: ${{ runner.temp }}/share-network-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+
+  concurrency-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - name: Verify locked modules and record dependency graph
+        working-directory: shared/share/lan
+        env:
+          GOTOOLCHAIN: local
+          GOPROXY: https://proxy.golang.org
+          GOSUMDB: sum.golang.org
+          GOFLAGS: -mod=readonly
+        run: |
+          mkdir -p "$RUNNER_TEMP/share-audit"
+          go mod download
+          go mod verify
+          git diff --exit-code -- go.mod go.sum
+          go list -m -json all > "$RUNNER_TEMP/share-audit/modules.json"
+      - name: Race detector for Share concurrency paths
+        working-directory: shared/share/lan
+        env:
+          GOTOOLCHAIN: local
+          GOPROXY: 'off'
+          GOFLAGS: -mod=readonly
+          CGO_ENABLED: '1'
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -race -count=1 -timeout=120s -v \
+            -run 'Test(BatchSessionTCPAndQUIC|DirectoryReversedConnectionRoles|ClipboardSync|QueueRecordAndCrashState|ParallelLanesAndGlobalBudget|BudgetCeilingAndCancellation|ScheduledResumeAndAdmission|ScheduleCancellationAndRetryLimit)' \
+            ./... | tee "$RUNNER_TEMP/share-audit/race.log"
+      - name: Upload concurrency audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: share-concurrency-audit
+          path: ${{ runner.temp }}/share-audit/
+          if-no-files-found: warn
+          retention-days: 14

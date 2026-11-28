@@ -63,6 +63,33 @@ class DeclarationTests(unittest.TestCase):
         self.assertIn("was not built against", str(raised.exception))
         self.assertIn("-Dcompanion-runtime-sha256=", str(raised.exception))
 
+    def test_share_exact_members_and_all_four_digests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            from release_registry import SHARE_HELPERS, SHARE_MEMBERS
+            digests = []
+            for key in SHARE_HELPERS:
+                path = root / f"pulse-share-{key}.exe"
+                path.write_bytes(key.encode("ascii"))
+                digests.append(hashlib.sha256(path.read_bytes()).hexdigest())
+            library = root / "pulse_share.dll"
+            library.write_bytes("--".join(digests).encode("ascii"))
+            for name in SHARE_MEMBERS[len(SHARE_HELPERS):]:
+                (root / name).write_text("fixture notice", encoding="utf-8")
+            plan = package_release.plan("share", root)
+            self.assertEqual(plan["id"], "strangelion.share")
+            self.assertEqual([name for _, name in plan["members"]], list(SHARE_MEMBERS))
+            for key in SHARE_HELPERS:
+                path = root / f"pulse-share-{key}.exe"
+                original = path.read_bytes()
+                path.write_bytes(b"changed")
+                with self.assertRaisesRegex(ValueError, f"-Dshare-{key}-sha256"):
+                    package_release.plan("share", root)
+                path.write_bytes(original)
+            (root / SHARE_MEMBERS[-1]).unlink()
+            with self.assertRaisesRegex(ValueError, "missing build output"):
+                package_release.plan("share", root)
+
     def test_vcs_has_no_extra_members(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -76,7 +103,7 @@ class DeclarationTests(unittest.TestCase):
                          "strangelion.vcs-0.1.0.pulse-ext")
 
     def test_release_manifests_are_templates_without_native(self):
-        for extension in ("companion", "vcs"):
+        for extension in ("companion", "vcs", "share"):
             with self.subTest(extension=extension):
                 product = package_release.PRODUCTS[extension]
                 document = json.loads(

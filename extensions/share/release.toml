@@ -1,0 +1,13 @@
+key = "share"
+id = "strangelion.share"
+manifest = "manifest.release.json"
+library = "pulse_share.dll"
+build_profile = "share"
+members = [
+    "pulse-share-lan.exe",
+    "pulse-share-local.exe",
+    "pulse-share-worker.exe",
+    "pulse-share-pake.exe",
+    "pulse-share-pake-notices.txt",
+    "pulse-share-go-notices.txt",
+]

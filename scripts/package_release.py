@@ -69,6 +69,21 @@ def plan(extension: str, artifacts: Path):
                 f"{library.name} was not built against {member.name} "
                 f"(sha256 {digest}); rebuild with {option}{digest} "
                 "and the other digest option as scripts/companion_host_smoke.py does")
+    if product["build_profile"] == "share":
+        package_common.regular_file(library, package_common.FILE_MAX)
+        dll = library.read_bytes()
+        for key in release_registry.SHARE_HELPERS:
+            helper = artifacts / f"pulse-share-{key}.exe"
+            digest = package_common.sha256(helper, package_common.FILE_MAX)
+            if digest.encode("ascii") not in dll:
+                raise ValueError(
+                    f"{library.name} was not built against {helper.name}; "
+                    f"rebuild with -Dshare-{key}-sha256={digest}")
+        for name in release_registry.SHARE_MEMBERS[len(release_registry.SHARE_HELPERS):]:
+            notice = artifacts / name
+            package_common.regular_file(notice, 4 * 1024 * 1024)
+            if not notice.read_text(encoding="utf-8").strip():
+                raise ValueError("empty Share dependency notices: " + name)
     return {
         "id": product["id"],
         "versioned_id": product["id"],

@@ -49,6 +49,19 @@ class ReleaseRegistryTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     release_registry.discover(root)
 
+    def test_share_profile_has_fixed_composition(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            descriptor = self.add(root, folder="share", key="share",
+                                  ident="strangelion.share", library="pulse_share.dll",
+                                  profile="share", members=json.dumps(release_registry.SHARE_MEMBERS))
+            self.assertEqual(release_registry.discover(root)["share"]["members"],
+                             release_registry.SHARE_MEMBERS)
+            descriptor.write_text(descriptor.read_text(encoding="utf-8").replace(
+                "pulse-share-go-notices.txt", "other.txt"), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "share profile"):
+                release_registry.discover(root)
+
     def test_manifest_mismatch(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

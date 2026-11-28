@@ -504,6 +504,35 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(hello_panel);
     b.installArtifact(hello_panel);
 
+    const share_options = b.addOptions();
+    const share_lan_digest = b.option([]const u8, "share-lan-sha256", "Approved bundled Share LAN executable digest") orelse "";
+    const share_local_digest = b.option([]const u8, "share-local-sha256", "Approved bundled Share local supervisor digest") orelse "";
+    const share_worker_digest = b.option([]const u8, "share-worker-sha256", "Approved bundled Share worker digest") orelse "";
+    const share_pake_digest = b.option([]const u8, "share-pake-sha256", "Approved bundled Share CPace executable digest") orelse "";
+    for ([_][]const u8{ share_lan_digest, share_local_digest, share_worker_digest, share_pake_digest }) |digest| {
+        if (digest.len != 0 and (digest.len != 64 or !isHexDigest(digest))) @panic("Share digest must be exactly 64 hex characters");
+    }
+    share_options.addOption([]const u8, "lan_sha256", share_lan_digest);
+    share_options.addOption([]const u8, "local_sha256", share_local_digest);
+    share_options.addOption([]const u8, "worker_sha256", share_worker_digest);
+    share_options.addOption([]const u8, "pake_sha256", share_pake_digest);
+    const share_config = share_options.createModule();
+
+    // Share is experimental and intentionally absent from the default install.
+    const share = b.addLibrary(.{
+        .name = "pulse_share",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("extensions/share/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = dll_modules.imports(),
+        }),
+    });
+    share.root_module.addImport("share_config", share_config);
+    const share_dev = b.step("share-dev", "Build the experimental Pulse Share UI DLL");
+    share_dev.dependOn(&b.addInstallArtifact(share, .{}).step);
+
     // Optional trusted provisioning implementation compiled into the DLL.
     // The default is always locked. Never load an arbitrary runtime source.
     const source_path = b.option([]const u8, "vcs-approval-source", "Trusted reviewed approval provisioning Zig source (relative to repository)") orelse "extensions/vcs-panel/default_source.zig";
@@ -542,6 +571,41 @@ pub fn build(b: *std.Build) void {
     // Standalone companion uses the existing GNU Windows native ABI.
     // Explicit step: no demo in the default production DLL install.
     const pet_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu });
+
+    // Explicit Share worker/harness only. No automatic network listener,
+    // normal install or release registration.
+    const share_worker_root = b.createModule(.{
+        .root_source_file = b.path("shared/share/worker.zig"),
+        .target = pet_target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    share_worker_root.addCSourceFiles(.{
+        .files = &.{"shared/share/worker_win32.c"},
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
+    });
+    share_worker_root.linkSystemLibrary("shell32", .{});
+    const share_worker = b.addExecutable(.{ .name = "pulse-share-worker", .root_module = share_worker_root });
+    const share_local_root = b.createModule(.{
+        .target = pet_target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    share_local_root.addCSourceFiles(.{
+        .files = &.{
+            "shared/share/local_copy_win32.c",
+            "shared/process/image_win32.c",
+            "shared/process/job_win32.c",
+        },
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
+    });
+    for ([_][]const u8{ "shell32", "bcrypt", "advapi32" }) |lib|
+        share_local_root.linkSystemLibrary(lib, .{});
+    const share_local = b.addExecutable(.{ .name = "pulse-share-local", .root_module = share_local_root });
+    const share_local_step = b.step("share-local", "Build the isolated Share worker and local developer harness");
+    share_local_step.dependOn(&b.addInstallArtifact(share_worker, .{}).step);
+    share_local_step.dependOn(&b.addInstallArtifact(share_local, .{}).step);
+
     var pet_modules = Modules.add(b, pet_target, optimize, vcs_test_config, companion_config);
     const pet_root = b.createModule(.{
         .root_source_file = b.path("shared/companion/pet_demo.zig"),
@@ -683,6 +747,8 @@ pub fn build(b: *std.Build) void {
     const test_sources = [_][]const u8{
         "extensions/abi-probe/main.zig",
         "extensions/hello-panel/main.zig",
+        "extensions/share/main.zig",
+        "shared/share/transfer.zig",
         "extensions/vcs-panel/main.zig",
         "extensions/vcs-panel/default_source.zig",
         "extensions/companion/main.zig",
@@ -757,6 +823,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run native ABI, wrapper and lifecycle regression tests");
     const companion_tests = b.step("test-companion", "Run companion unit and shared runtime tests");
     const vcs_tests = b.step("test-vcs", "Run VCS unit and shared runtime tests");
+    const share_tests = b.step("test-share", "Run Share transfer and native UI foundation tests");
     for (test_sources) |source| {
         const unit_tests = b.addTest(.{
             .root_module = b.createModule(.{
@@ -766,9 +833,12 @@ pub fn build(b: *std.Build) void {
                 .imports = host_modules.imports(),
             }),
         });
+        if (std.mem.eql(u8, source, "extensions/share/main.zig")) unit_tests.root_module.addImport("share_config", share_config);
         if (std.mem.eql(u8, source, "extensions/vcs-panel/main.zig")) unit_tests.root_module.addImport("vcs_native_source", locked_source);
         const run = b.addRunArtifact(unit_tests);
         test_step.dependOn(&run.step);
+        if (std.mem.startsWith(u8, source, "shared/share/") or std.mem.startsWith(u8, source, "extensions/share/"))
+            share_tests.dependOn(&run.step);
         const runtime = std.mem.startsWith(u8, source, "shared/runtime/") or std.mem.startsWith(u8, source, "shared/process/");
         if (runtime or std.mem.startsWith(u8, source, "shared/companion/") or std.mem.eql(u8, source, "extensions/companion/main.zig") or std.mem.eql(u8, source, "shared/companion_extension.zig"))
             companion_tests.dependOn(&run.step);

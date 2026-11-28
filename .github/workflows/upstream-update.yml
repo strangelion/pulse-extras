@@ -97,7 +97,7 @@ jobs:
           files=(sdk/upstream.toml shared/pulse/raw/pulse_all.zig)
           if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
             echo "Candidate branch already exists; not overwriting it."
-            echo "Review existing branch/PR or dispatch Upstream candidate compatibility manually."
+            echo "Review existing branch/PR or dispatch Extension test package manually."
             exit 0
           else
             code=$?
@@ -115,7 +115,7 @@ jobs:
           git commit -m "deps: propose Pulse ${BRANCH#deps/pulse-}"
           git push origin "HEAD:refs/heads/$BRANCH"
           # Explicit dispatch is required because bot-token pushes/PRs may not trigger CI.
-          gh workflow run upstream-candidate.yml --ref "$BRANCH"
+          gh workflow run upstream-candidate.yml --ref "$BRANCH" -f request=all=0.0.0-upstream -f run_regression=true
           gh pr create --base main --head "$BRANCH" \
             --title "deps: review Pulse ${BRANCH#deps/pulse-}" \
-            --body "Generated from an exact stable upstream tag and GitHub asset digest. C ABI prefix comparison and Zig binding regeneration passed. Wait for Upstream candidate compatibility (full regression and all-product package validation), inspect SDK changes, and perform real-host acceptance where needed. Do not merge or publish automatically. Local host snapshot remains historical."
+            --body "Generated from an exact stable upstream tag and GitHub asset digest. C ABI prefix comparison and Zig binding regeneration passed. Wait for Extension test package (full regression and all-product package validation), inspect SDK changes, and perform real-host acceptance where needed. Do not merge or publish automatically. Local host snapshot remains historical."

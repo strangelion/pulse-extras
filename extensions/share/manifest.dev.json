@@ -1,0 +1,9 @@
+{
+  "apiVersion": 1,
+  "id": "strangelion.share-dev",
+  "name": "Pulse Share (Development)",
+  "resources": [
+    "context.read",
+    "settings.own"
+  ]
+}

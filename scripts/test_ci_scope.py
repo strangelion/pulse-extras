@@ -1,7 +1,7 @@
 """Test conservative CI scope classification without network access."""
 import unittest
 
-from ci_scope import classify, event_base
+from ci_scope import classify, event_base, event_scope
 
 
 SHA = "a" * 40
@@ -10,6 +10,36 @@ SHA = "a" * 40
 class ScopeTests(unittest.TestCase):
     def test_docs_only(self):
         self.assertEqual(classify(["README.md", "docs/roadmap.md", "docs/nested/notes.md"]), "docs")
+
+    def test_share_only(self):
+        for path in (
+            "extensions/share/main.zig", "extensions/share/manifest.dev.json",
+            "shared/share/lan/internal/pairauth/auth.go",
+            "shared/share/pake/Cargo.lock", "shared/share/worker_win32.c",
+            "tests/share/test_lan_copy.py", "scripts/stage_share_test.py",
+            "scripts/test_stage_share_test.py",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(classify([path, "docs/share/pairing.md"]), "share")
+
+    def test_share_mixed_requires_full(self):
+        for path in (
+            "shared/pulse/host.zig", "shared/process/job_win32.c",
+            "shared/companion/pet_demo.zig", "shared/vcs/providers/git.zig",
+            "build.zig", ".zig-version", "sdk/upstream.toml",
+            ".github/workflows/zig.yml", "scripts/package_common.py",
+            "scripts/ci_scope.py", "shared/share_unknown.zig",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(classify(["shared/share/lan/main.go", path]), "full")
+
+    def test_share_feature_push_and_merge_policy(self):
+        paths = ["extensions/share/main.zig"]
+        self.assertEqual(event_scope(paths, "push", "refs/heads/feature/share"), "share")
+        self.assertEqual(event_scope(paths, "push", "refs/heads/main"), "full")
+        self.assertEqual(event_scope(paths, "pull_request", "refs/pull/1/merge"), "full")
+        self.assertEqual(event_scope(paths, "workflow_dispatch", "refs/heads/feature/share"), "full")
+        self.assertEqual(event_scope(paths, "push", "refs/tags/test"), "full")
 
     def test_vcs_only(self):
         self.assertEqual(classify(["shared/vcs/providers/git.zig", "docs/roadmap.md"]), "vcs")
