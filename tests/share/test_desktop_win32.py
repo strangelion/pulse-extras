@@ -16,6 +16,10 @@ kernel = ct.WinDLL("kernel32", use_last_error=True)
 enum_window = ct.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
 
 
+class HighContrast(ct.Structure):
+    _fields_ = [("size", w.UINT), ("flags", w.DWORD), ("scheme", w.LPWSTR)]
+
+
 class Startup(ct.Structure):
     _fields_ = [
         ("cb", w.DWORD), ("reserved", w.LPWSTR), ("desktop", w.LPWSTR),
@@ -42,6 +46,7 @@ def api(dll, name, result, *args):
 
 
 process_dpi = api(user, "SetProcessDpiAwarenessContext", w.BOOL, ct.c_void_p)
+system_parameters = api(user, "SystemParametersInfoW", w.BOOL, w.UINT, w.UINT, ct.c_void_p, w.UINT)
 create_desktop = api(user, "CreateDesktopW", w.HANDLE, w.LPCWSTR, w.LPCWSTR,
                      ct.c_void_p, w.DWORD, w.DWORD, ct.c_void_p)
 close_desktop = api(user, "CloseDesktop", w.BOOL, w.HANDLE)
@@ -166,6 +171,10 @@ class Window:
         eventually(lambda: enabled(hwnd), f"control stayed disabled: {label}")
         message(get_parent(hwnd), 0x0111, get_id(hwnd), hwnd)
 
+    def notice(self):
+        return next((hwnd for hwnd in get_windows(children, self.hwnd)
+                     if visible(hwnd) and klass(hwnd) == "PulseShareNotice"), None)
+
     def messages(self):
         for hwnd in get_windows(children, self.hwnd):
             if not visible(hwnd):
@@ -185,13 +194,45 @@ def rectangle(hwnd):
     return result
 
 
+def section_height(hwnd):
+    box = rectangle(get_parent(hwnd))
+    return box.bottom - box.top
+
+
+def check_disclosure(panel, command, option, with_motion):
+    assert not panel.has_button(option), "extra controls should start collapsed"
+    child = next(hwnd for hwnd in get_windows(children, panel.hwnd)
+                 if klass(hwnd) == "Button" and text_at(hwnd) == option)
+    pane = get_parent(child)
+    assert klass(pane) == "PulseSharePage" and not visible(child)
+    panel.click(command)
+    assert visible(child)
+    if with_motion:
+        # A clipped child pane grows during the transition. The controls keep
+        # their natural height instead of being individually stretched.
+        heights = [section_height(child)]
+        end = time.monotonic() + 0.3
+        while time.monotonic() < end:
+            time.sleep(0.012)
+            heights.append(section_height(child))
+        assert len(set(heights)) >= 3 and heights == sorted(heights), f"invalid section transition: {heights}"
+    panel.click(command)
+    if with_motion and panel.has_button(option):
+        assert not enabled(get_parent(child)), "closing controls remain available to keyboard navigation"
+    eventually(lambda: not panel.has_button(option), "expanded controls did not become hidden")
+
+
 def check_layout(panel):
+    setting = w.BOOL()
+    contrast = HighContrast(size=ct.sizeof(HighContrast))
+    system_parameters(0x0042, contrast.size, ct.byref(contrast), 0)
+    with_motion = system_parameters(0x1042, 0, ct.byref(setting), 0) and setting.value and not contrast.flags & 1
     assert message(panel.hwnd, 0x007F, 0), "small application icon missing"
     panel.resize(940, 700)
     source = rectangle(panel.labelled("待发送内容"))
     target = rectangle(panel.labelled("接收设备"))
     assert source.top == target.top and target.left > source.left, "wide cards did not share a row"
-    short_page = get_parent(panel.labelled("待发送内容"))
+    short_page = get_parent(get_parent(panel.labelled("待发送内容")))
     assert not style(short_page, -16) & 0x00200000, "short page has a vertical scrollbar"
     desktop = rectangle(panel.hwnd)
     midpoint = (desktop.left + desktop.right) // 2
@@ -206,16 +247,9 @@ def check_layout(panel):
             item = rectangle(control)
             assert abs((item.left + item.right) // 2 - midpoint) <= margin, f"page {page} is off center"
     panel.select_tab(0)
-    assert not panel.has_button("开启自动发送剪贴板"), "send options should start collapsed"
-    panel.click("更多发送方式")
-    assert panel.has_button("开启自动发送剪贴板") and panel.has_button("开启只读目录服务")
-    panel.click("更多发送方式")
-    assert not panel.has_button("开启自动发送剪贴板")
+    check_disclosure(panel, "更多发送方式", "开启自动发送剪贴板", with_motion)
     panel.select_tab(1)
-    assert not panel.has_button("开启自动接收剪贴板"), "receive options should start collapsed"
-    panel.click("更多接收方式")
-    assert panel.has_button("开启自动接收剪贴板") and panel.has_button("连接只读目录服务")
-    panel.click("更多接收方式")
+    check_disclosure(panel, "更多接收方式", "开启自动接收剪贴板", with_motion)
     panel.select_tab(0)
     panel.resize(490, 650)
     source = rectangle(panel.labelled("待发送内容"))
@@ -224,9 +258,23 @@ def check_layout(panel):
     assert rectangle(panel.labelled("发送", "Button")).right < rectangle(panel.hwnd).right, "narrow layout clipped the send button"
     panel.select_tab(5)
     advanced = panel.labelled("高级配对")
-    viewport = get_parent(advanced)
+    page = get_parent(advanced)
+    viewport = get_parent(page)
+    assert klass(viewport) == "PulseShareViewport"
+    assert style(viewport, -20) & 0x02000000, "viewport does not compose child paints"
     assert style(viewport, -16) & 0x00200000, "overflowing page lost its scrollbar"
     top = rectangle(advanced).top
+    page_top = rectangle(page).top
+    nav = next(h for h in get_windows(children, panel.hwnd) if klass(h) == "SysTabControl32")
+    nav_top = rectangle(nav).top
+    wheel_down = (-120 & 0xFFFF) << 16
+    for _ in range(3):
+        message(viewport, 0x020A, wheel_down)
+    eventually(lambda: rectangle(page).top < page_top, "wheel did not scroll the page canvas")
+    assert rectangle(advanced).top - rectangle(page).top == top - page_top, "wheel moved a control inside its page"
+    assert rectangle(nav).top == nav_top, "wheel moved the fixed navigation"
+    message(viewport, 0x0115, 6)
+    assert rectangle(advanced).top == top
     for _ in range(5):
         message(viewport, 0x0115, 3)
         message(viewport, 0x0115, 3)
@@ -283,6 +331,8 @@ def run_fixture(exe):
                                          if klass(hwnd) == "PulseShareDesktop" and visible(hwnd)), None),
                           "standalone Share window did not open")
         panel = Window(hwnd)
+        frame = rectangle(hwnd)
+        assert abs(3 * (frame.right - frame.left) - 4 * (frame.bottom - frame.top)) <= 2, "initial window is not 4:3"
         check_layout(panel)
         eventually(lambda: panel.contains("选中.txt"), "selected Unicode path did not reach Share")
         panel.select_tab(4)
@@ -304,6 +354,13 @@ def run_fixture(exe):
         except AssertionError:
             print([item for item in panel.messages() if item])
             raise
+        found = eventually(lambda: panel.notice() if panel.notice() and "可配对 1 台" in text_at(panel.notice()) else None,
+                           "discovery result did not show a notification")
+        overlay, frame = rectangle(found), rectangle(panel.hwnd)
+        assert abs(overlay.left + overlay.right - frame.left - frame.right) <= 2
+        Window(found).click("关闭提示")
+        eventually(lambda: not panel.notice(), "notification did not dismiss")
+        assert panel.contains("可配对 1 台"), "dismissal removed the discovery result"
         pair = panel.next_control("等待配对的附近设备", "ComboBox")
         assert message(pair, 0x0146) == 2, "missing discovered address"
         message(pair, 0x014E, 1)
@@ -339,7 +396,10 @@ def run_fixture(exe):
         panel.type("对端配对地址", "192.0.2.90:45844")
         panel.type("对端的 8 位连接码", "01234567")
         panel.click("连接")
-        eventually(lambda: panel.contains("请输入可达的对端数字 IP 和端口"), "helper endpoint error was not localized")
+        eventually(lambda: panel.notice() and "请输入可达的对端数字 IP 和端口" in text_at(panel.notice()),
+                   "localized endpoint error did not show a notification")
+        Window(panel.notice()).click("关闭提示")
+        eventually(lambda: not panel.notice(), "error notification did not dismiss")
         panel.select_tab(3)
         assert panel.contains("请输入可达的对端数字 IP 和端口")
         panel.labelled("导出诊断…", "Button")
@@ -369,7 +429,7 @@ def run_fixture(exe):
         panel.click("确认请求")
         eventually(lambda: panel.contains("COMPLETED routed pairing"), "routed pairing terminal state absent")
         panel.click("收起组网配对")
-        assert not panel.contains("对端组网地址与端口"), "collapsed routed controls stayed visible"
+        eventually(lambda: not panel.contains("对端组网地址与端口"), "collapsed routed controls stayed visible")
         panel.click("刷新已配对设备")
         use_peer = eventually(lambda: panel.has_button("设为当前对端"), "UTF-8 peer list did not open")
         assert use_peer
@@ -403,7 +463,7 @@ def run_fixture(exe):
         eventually(lambda: panel.contains("01234567"), "pair task could not be restarted")
         checked(post(hwnd, 0x0010, 0, 0))
         assert wait(process.process, 12000) == 0, "window did not drain active worker"
-        print("Share desktop: handoff, discovery, address selection, persistent code, LAN and routed approval, UTF-8 peers, diagnostics, service toggles, layout, scrolling, icon and close passed")
+        print("Share desktop: handoff, discovery, address selection, persistent code, LAN and routed approval, UTF-8 peers, diagnostics, service toggles, notifications, 4:3 layout, motion, scrolling, icon and close passed")
     finally:
         if process.process:
             if wait(process.process, 0) != 0:

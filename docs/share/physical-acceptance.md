@@ -41,7 +41,7 @@ tree using the same script (no overwriting, deletion or clipboard access):
 | H09 | Manual text/image/file clipboard, folder/clipboard delivery | Explicit approval, correct content and valid local file references |
 | H10 | Automatic text and image sessions | Switch shows waiting, on, stopping and off. New changes only. Local edit stops overwrite and the same switch stops sync |
 | H11 | Directory service: repeated listing, subtree download | Only selected root; read-only; stop releases listening port |
-| H12 | Preference save/reload, resize, prompts and diagnostics export | Values retained, responsive UI. Known input errors show Chinese guidance, and the exported report contains no paths, addresses or codes |
+| H12 | Preference save/reload, resize, prompts and diagnostics export | Initial window is 4:3 and resizes freely. Rapid scrolling keeps navigation and footer steady. Sections follow the Windows animation setting. Notices can be dismissed while the details stay available. The exported report excludes paths, addresses and codes |
 | H13 | Close Share with an active service, then restart | Helper processes, handles and sockets released; no automatic listener |
 | H14 | Repeated transfers (20), idle and active CPU/RSS | Record actual peak/idle values and sustained growth trend |
 | H15 | IPv6 or an existing private overlay, when available | Enter addresses and source restriction at pairing time, verify both fingerprints, then transfer using the routed actions |

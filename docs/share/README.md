@@ -271,6 +271,13 @@ LAN and host lifecycle acceptance remain outstanding.
 
 ## Desktop workflow
 
+The desktop opens at a 4:3 aspect ratio within the Windows work area. Users
+can resize it freely. The wheel scrolls the page independently of navigation
+and the task footer. Disclosure transitions and control motion follow the
+Windows animation setting. Discovery results, approvals and important outcomes
+show a dismissible notice inside the window. Details remain in the relevant
+page or the task footer.
+
 - **发送** accepts files and folders by picker, drag and drop, or Pulse
   selection. Review the endpoint and choose a saved peer before starting.
   **接收** offers single-file receipt, optional single-file discovery, and a

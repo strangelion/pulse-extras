@@ -26,6 +26,7 @@ extern fn share_desktop_pair_popup([*]const u8, c_int, [*]const u8, c_int, c_int
 extern fn share_desktop_pair_clear(c_int) void;
 extern fn share_desktop_pair_copied(contains_code: c_int) void;
 extern fn share_desktop_show_section([*:0]const u8) void;
+extern fn share_desktop_notice([*]const u8, c_int, c_int) void;
 extern fn share_desktop_pick(c_int, [*]u8, c_int) c_int;
 extern fn share_desktop_default_network([*]u8, c_int) c_int;
 extern fn share_desktop_default_path(c_int, [*]u8, c_int) c_int;
@@ -93,6 +94,15 @@ const Instance = struct {
         self.set("status", message);
     }
 
+    fn notice(message: []const u8, severe: bool) void {
+        share_desktop_notice(message.ptr, @intCast(message.len), @intFromBool(severe));
+    }
+
+    fn feedback(self: *Instance, message: []const u8, severe: bool) void {
+        self.status(message);
+        notice(message, severe);
+    }
+
     fn recordDiagnostic(self: *Instance, operation: []const u8, result: []const u8, finding: ?worker_messages.Finding) void {
         var stamp: [32]u8 = undefined;
         const len = share_desktop_stamp(&stamp, stamp.len);
@@ -104,14 +114,14 @@ const Instance = struct {
     fn reportError(self: *Instance, err: anyerror) void {
         const message = errorMessage(err);
         self.recordDiagnostic("input", "refused", .{ .code = @errorName(err), .message = message });
-        self.status(message);
+        self.feedback(message, true);
     }
 
     fn exportDiagnostics(self: *Instance) void {
         var buffer: [4608]u8 = undefined;
         const text = std.fmt.bufPrint(&buffer, "\xef\xbb\xbfPulse Share 诊断\r\n时间\t操作\t结果\t类别\t建议\r\n{s}", .{self.diagnostics.slice()}) catch return;
         const result = share_desktop_export_diagnostics(text.ptr, @intCast(text.len));
-        if (result > 0) self.status("诊断已导出。") else if (result < 0) self.status("无法导出。请选择一个新的本机文件名。");
+        if (result > 0) self.feedback("诊断已导出。", false) else if (result < 0) self.feedback("无法导出。请选择一个新的本机文件名。", true);
     }
 
     fn updateServices(self: *Instance, phase: ?task_mod.State, prompt: u32) void {
@@ -162,8 +172,12 @@ const Instance = struct {
             }
         }
         useful = worker_messages.localize(useful);
-        if (canClassifyService(self.active_service, &snap)) self.service_running = true;
+        if (!self.service_running and state == .running and canClassifyService(self.active_service, &snap)) {
+            self.service_running = true;
+            notice("会话已开启，再点同一个按钮即可停止。", false);
+        }
         self.updateServices(state, prompt);
+        if (prompt != 0 and prompt != self.shown_prompt) notice("收到请求，请在下方核对并确认。", false);
         self.shown_prompt = prompt;
         self.set("confirm", if (prompt != 0) "true" else "false");
         var detail: [4300]u8 = undefined;
@@ -193,6 +207,7 @@ const Instance = struct {
             else
                 null;
             self.recordDiagnostic(@tagName(self.task.request.mode), @tagName(state), diagnostic);
+            const service_was_active = self.active_service != null;
             self.active_service = null;
             self.service_running = false;
             self.updateServices(null, 0);
@@ -200,6 +215,21 @@ const Instance = struct {
             self.set("idle", "true");
             self.set("ui-idle", "true");
             self.rememberTerminal(state, message);
+            if (diagnostic) |finding| {
+                notice(finding.message, true);
+            } else if (state == .completed) {
+                const outcome: []const u8 = switch (self.task.request.mode) {
+                    .pair_host, .pair_join => "配对完成，已保存设备。",
+                    .device_prepare => "本机已初始化，可以开始配对。",
+                    .peer_add => "已保存配对设备。",
+                    .peer_revoke => "已撤销配对。",
+                    .send, .receive => "任务已完成。详情见下方任务区。",
+                    else => "",
+                };
+                if (outcome.len != 0) notice(outcome, false);
+            } else if (state == .cancelled and service_was_active) {
+                notice("会话已停止。", false);
+            }
         }
     }
 
@@ -251,20 +281,21 @@ const Instance = struct {
         if (snap.state != .running or self.shown_prompt != 0) return;
         var buffer: [pair_ticket.capacity]u8 = undefined;
         defer @memset(&buffer, 0);
-        const address = pair_ticket.endpoint(snap.listeningAddress(), &buffer) orelse return self.status("当前没有可复制的监听地址。");
+        const address = pair_ticket.endpoint(snap.listeningAddress(), &buffer) orelse return self.feedback("当前没有可复制的监听地址。", true);
         if (!pairing) {
             if (self.task.request.mode != .receive and self.task.request.mode != .pair_host) return;
-            if (share_desktop_copy(address.ptr, @intCast(address.len), 0) == 0) return self.status("剪贴板正忙，请重试。");
+            if (share_desktop_copy(address.ptr, @intCast(address.len), 0) == 0) return self.feedback("剪贴板正忙，请重试。", true);
             if (self.task.request.mode == .pair_host) {
                 share_desktop_pair_copied(0);
             } else {
                 self.set("copy-address-caption", "已复制接收地址");
+                notice("已复制接收地址。", false);
             }
             return;
         }
         if (self.task.request.mode != .pair_host) return;
         const code: u32 = @truncate(self.task.decisions.display_code.load(.acquire));
-        if (code == 0 or code > 100000000) return self.status("连接码正在更新，请稍后再试。");
+        if (code == 0 or code > 100000000) return self.feedback("连接码正在更新，请稍后再试。", true);
         if (open_popup) {
             var number: [8]u8 = undefined;
             defer @memset(&number, 0);
@@ -273,7 +304,7 @@ const Instance = struct {
             return;
         }
         const value = pair_ticket.Ticket.format(self.task.request.routed, snap.listeningAddress(), code - 1, &buffer) catch return;
-        if (share_desktop_copy(value.ptr, @intCast(value.len), 1) == 0) return self.status("剪贴板正忙，请重试。");
+        if (share_desktop_copy(value.ptr, @intCast(value.len), 1) == 0) return self.feedback("剪贴板正忙，请重试。", true);
         self.copied_code = code;
         share_desktop_pair_copied(1);
     }
@@ -283,8 +314,8 @@ const Instance = struct {
         var buffer: [pair_ticket.capacity + 1]u8 = undefined;
         defer @memset(&buffer, 0);
         const len = share_desktop_paste(&buffer, buffer.len);
-        if (len < 0) return self.status("剪贴板正忙，或内容过长。");
-        const ticket = pair_ticket.Ticket.parse(buffer[0..@intCast(len)]) catch return self.status("剪贴板里没有有效的 Share 配对信息。请复制对方的地址和连接码。");
+        if (len < 0) return self.feedback("剪贴板正忙，或内容过长。", true);
+        const ticket = pair_ticket.Ticket.parse(buffer[0..@intCast(len)]) catch return self.feedback("剪贴板里没有有效的 Share 配对信息。请复制对方的地址和连接码。", true);
         var address_buffer: [pair_ticket.capacity]u8 = undefined;
         const address = pair_ticket.endpoint(ticket.endpoint, &address_buffer) orelse return;
         if (ticket.routed) {
@@ -297,7 +328,7 @@ const Instance = struct {
             self.set("pair-peer", address);
             self.set("pair-input", ticket.code);
         }
-        self.status("已填入地址和连接码。请点「连接」，再核对两边指纹。");
+        self.feedback("已填入地址和连接码。请点「连接」，再核对两边指纹。", false);
     }
 
     fn suggestName(self: *Instance, field: []const u8) void {
@@ -364,28 +395,28 @@ const Instance = struct {
                 13 => self.readClipboardDelivery(&values.fields[n]),
                 else => self.readField(field_names[index], &values.fields[n]),
             };
-            result catch return self.status("输入无效，未保存设置。");
+            result catch return self.feedback("输入无效，未保存设置。", true);
         }
         var buffer: [prefs.limit]u8 = undefined;
-        const encoded = values.encode(&buffer) catch return self.status("设置过长，未保存。");
-        _ = prefs.Values.decode(encoded) catch return self.status("请检查端口和通道等设置。");
-        if (share_desktop_preferences_write(encoded.ptr, @intCast(encoded.len)) == 0) return self.status("无法写入本机设置。");
+        const encoded = values.encode(&buffer) catch return self.feedback("设置过长，未保存。", true);
+        _ = prefs.Values.decode(encoded) catch return self.feedback("请检查端口和通道等设置。", true);
+        if (share_desktop_preferences_write(encoded.ptr, @intCast(encoded.len)) == 0) return self.feedback("无法写入本机设置。", true);
         self.saved = values;
-        self.status("已保存设置。");
+        self.feedback("已保存设置。", false);
     }
 
     fn browse(self: *Instance, parent: bool) void {
         var buffer: [2048]u8 = undefined;
         const len = share_desktop_pick(1, &buffer, buffer.len);
-        if (len < 0) return self.status("无法读取所选目录。");
+        if (len < 0) return self.feedback("无法读取所选目录。", true);
         if (len == 0) return;
         const path = buffer[0..@intCast(len)];
         if (parent) {
             const root = std.mem.trimEnd(u8, path, "\\/");
             var store: [2048]u8 = undefined;
             var spool: [2048]u8 = undefined;
-            self.set("store", std.fmt.bufPrint(&store, "{s}\\PulseShare-identity", .{root}) catch return self.status("目录太长。"));
-            self.set("spool", std.fmt.bufPrint(&spool, "{s}\\PulseShare-spool", .{root}) catch return self.status("目录太长。"));
+            self.set("store", std.fmt.bufPrint(&store, "{s}\\PulseShare-identity", .{root}) catch return self.feedback("目录太长。", true));
+            self.set("spool", std.fmt.bufPrint(&spool, "{s}\\PulseShare-spool", .{root}) catch return self.feedback("目录太长。", true));
             self.status("已填入两个独立目录，请确认后创建。");
         } else {
             self.set("destination", path);
@@ -396,10 +427,10 @@ const Instance = struct {
     fn pickSource(self: *Instance, folder: bool) void {
         var buffer: [2048]u8 = undefined;
         const len = share_desktop_pick(@intFromBool(folder), &buffer, buffer.len);
-        if (len < 0) return self.status("无法读取所选文件或文件夹。");
+        if (len < 0) return self.feedback("无法读取所选文件或文件夹。", true);
         if (len == 0) return;
         const path = buffer[0..@intCast(len)];
-        self.selected_batch.set(path) catch return self.status("所选路径过长或无效。");
+        self.selected_batch.set(path) catch return self.feedback("所选路径过长或无效。", true);
         self.selected = if (folder) .{} else self.selected_batch;
         self.selection_count = 1;
         self.showSelection();
@@ -517,6 +548,7 @@ const Instance = struct {
             else
                 std.fmt.bufPrint(&counts, "可配对 {d} 台 · 可接收 {d} 台", .{ self.pair_endpoint_choices.count, self.endpoint_choices.count }) catch "已发现设备";
             self.set("discovery", result);
+            if (state == .completed) notice(result, false);
         }
         switch (self.task.request.mode) {
             .interfaces, .discover, .peer_list, .peer_add, .peer_revoke, .pair_host, .pair_join => self.render(true) catch self.set("status", "更新选项失败，请重新打开 Share"),
@@ -1159,7 +1191,7 @@ fn command(self: *Instance, name: []const u8) void {
     if (std.mem.eql(u8, name, "share-pick-file")) return self.pickSource(false);
     if (std.mem.eql(u8, name, "share-pick-folder")) return self.pickSource(true);
     if (std.mem.eql(u8, name, "share-send-selection")) {
-        if (self.selected_batch.len == 0) return self.status("请先选择文件或文件夹。");
+        if (self.selected_batch.len == 0) return self.feedback("请先选择文件或文件夹。", true);
         self.start(.send, false, false, false, 0, false, if (self.selected.len > 0) "" else "share-send-selection") catch |err| self.reportError(err);
         return;
     }
@@ -1175,8 +1207,8 @@ fn command(self: *Instance, name: []const u8) void {
         var value: [24]u8 = @splat(0);
         defer @memset(&value, 0);
         const panel = self.panel orelse return;
-        const input = panel.read(key, &value) catch return self.status("请输入完整的 8 位连接码。");
-        const code = managed.parseCode(input) catch return self.status("请输入完整的 8 位连接码。");
+        const input = panel.read(key, &value) catch return self.feedback("请输入完整的 8 位连接码。", true);
+        const code = managed.parseCode(input) catch return self.feedback("请输入完整的 8 位连接码。", true);
         self.set(key, "");
         self.start(.pair_join, false, false, routed, code, false, "") catch |err| self.reportError(err);
         return;
