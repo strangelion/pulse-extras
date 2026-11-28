@@ -1,18 +1,21 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
+#include <winsock2.h>
 #include <windows.h>
+#include <iphlpapi.h>
 #include <windowsx.h>
 #include <commctrl.h>
 #include <shellapi.h>
 #include <shobjidl.h>
 #include <shlobj.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #include <wchar.h>
 
-enum { STACK, GRID, GROUP, TEXT, BUTTON, EDIT_FIELD, SELECT, PROGRESS, TABS, TAB, HEADING };
-enum { FIRST_CONTROL = 100, MAX_NODES = 240, TIMER = 1 };
+enum { STACK, GRID, GROUP_BOX, TEXT, BUTTON, EDIT_FIELD, SELECT, PROGRESS, TABS, TAB, HEADING };
+enum { FIRST_CONTROL = 100, MAX_NODES = 288, TIMER = 1 };
 typedef struct {
     int kind, parent, appearance;
     char id[64], key[64], enabled[64];
@@ -29,6 +32,21 @@ static HBRUSH canvas_brush, card_brush, drop_brush;
 static HDWP window_batch;
 static HWND hot_button;
 static BOOL in_layout, measure_only, busy, showing_code, confirming, has_bytes, contrast, long_status;
+static struct {
+    const char *id, *key;
+    BOOL visible;
+} sections[] = {
+    {"routed-pair-card", "show-routed-pair", FALSE},
+    {"send-extras", "show-send-options", FALSE},
+    {"receive-extras", "show-receive-options", FALSE},
+    {"network-options", "show-network-options", FALSE},
+    {"storage-options", "show-storage-options", FALSE},
+    {"send-address-field", "show-address-field", FALSE},
+    {"lan-join-form", "show-lan-join", FALSE},
+    {"found-receivers", "show-found-receivers", FALSE},
+    {"found-pairing", "show-found-pairing", FALSE},
+    {"listed-peers", "show-listed-peers", FALSE},
+};
 extern void share_desktop_command(const char *);
 extern void share_desktop_tick(void);
 extern int share_desktop_close(void);
@@ -90,14 +108,14 @@ static void set_text(HWND hwnd, const wchar_t *text) {
 
 static BOOL inside_card(int i) {
     for (; i >= 0; i = nodes[i].parent)
-        if (nodes[i].kind == GROUP) return TRUE;
+        if (nodes[i].kind == GROUP_BOX) return TRUE;
     return FALSE;
 }
 
 static HFONT node_font(const Node *node) {
     if (!strcmp(node->id, "pair-code")) return code_font;
     if (node->kind == HEADING) return heading;
-    if (node->kind == GROUP) return caption;
+    if (node->kind == GROUP_BOX) return caption;
     return font;
 }
 
@@ -149,11 +167,12 @@ int share_desktop_node(int parent, int kind, const char *id, const char *key,
     HWND owner = viewport;
     if (in_task(index) || kind == TABS) owner = window;
     switch (kind) {
-    case HEADING:
-    case GROUP: class_name = L"Static"; break;
+    case HEADING: class_name = L"Static"; style |= SS_CENTER; break;
+    case GROUP_BOX: class_name = L"Static"; break;
     case TEXT:
         if (key[0] && strcmp(id, "pair-code") && strcmp(id, "byte-count") &&
-            strcmp(id, "current-peer") && strcmp(id, "receive-peer") && strcmp(id, "pair-help")) {
+            strcmp(id, "current-peer") && strcmp(id, "receive-peer") && strcmp(id, "pair-help") &&
+            strcmp(id, "save-location") && strcmp(id, "current-network") && strcmp(id, "send-endpoint-label")) {
             class_name = L"Edit";
             style |= WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY;
             if (!strcmp(id, "source")) style |= ES_CENTER;
@@ -215,6 +234,12 @@ void share_desktop_set(const char *key, const char *value, int length) {
     BOOL relayout = FALSE, on = !wcscmp(text, L"true");
     if (!strcmp(key, "busy") && busy != on) { busy = on; relayout = TRUE; }
     if (!strcmp(key, "confirm") && confirming != on) { confirming = on; relayout = TRUE; }
+    for (size_t i = 0; i < ARRAYSIZE(sections); i++) {
+        if (!strcmp(key, sections[i].key) && sections[i].visible != on) {
+            sections[i].visible = on;
+            relayout = TRUE;
+        }
+    }
     if (!strcmp(key, "pair-code") && showing_code != (length != 0)) { showing_code = length != 0; relayout = TRUE; }
     if (!strcmp(key, "bytes") && has_bytes != (length != 0)) { has_bytes = length != 0; relayout = TRUE; }
     if (!strcmp(key, "status")) {
@@ -288,17 +313,27 @@ static void position(HWND hwnd, int x, int y, int width, int height, UINT visibi
     SetWindowPos(hwnd, NULL, x, y, width, height, flags);
 }
 
-static int place(int i, int x, int y, int width, BOOL visible) {
-    Node *n = &nodes[i];
-    BOOL omitted = (!strcmp(n->id, "pair-code") && !showing_code) ||
+static BOOL omitted_from_layout(const Node *n) {
+    for (size_t i = 0; i < ARRAYSIZE(sections); i++)
+        if (!sections[i].visible && !strcmp(n->id, sections[i].id)) return TRUE;
+    return (!strcmp(n->id, "pair-code") && !showing_code) ||
         ((!strcmp(n->id, "byte-count") || n->kind == PROGRESS) && !has_bytes) ||
         (!strcmp(n->id, "share-cancel") && !busy) ||
         ((!strcmp(n->id, "share-approve") || !strcmp(n->id, "share-decline")) && !confirming);
+}
+
+static int place(int i, int x, int y, int width, BOOL visible) {
+    Node *n = &nodes[i];
+    BOOL omitted = omitted_from_layout(n);
     if ((!visible || omitted) && n->hwnd && n->kind != TABS &&
         (GetWindowLongPtrW(n->hwnd, GWL_STYLE) & WS_VISIBLE))
         position(n->hwnd, 0, 0, 0, 0, SWP_HIDEWINDOW | SWP_NOMOVE | SWP_NOSIZE);
     n->shown = visible && !omitted;
-    if (omitted) return 0;
+    if (omitted) {
+        for (int j = i + 1; j < count; j++)
+            if (nodes[j].parent == i) place(j, x, y, width, FALSE);
+        return 0;
+    }
     if (n->kind == TABS) {
         int ordinal = 0;
         for (int j = i + 1; j < count; j++) if (nodes[j].parent == i) {
@@ -308,23 +343,29 @@ static int place(int i, int x, int y, int width, BOOL visible) {
         return 0;
     }
     int height = 0;
-    if (n->kind == GRID || n->kind == STACK || n->kind == TAB || n->kind == GROUP) {
+    if (n->kind == GRID || n->kind == STACK || n->kind == TAB || n->kind == GROUP_BOX) {
         BOOL cards = !strcmp(n->id, "send-cards");
-        BOOL grouping = n->kind == GROUP && !in_task(i);
+        BOOL grouping = n->kind == GROUP_BOX && !in_task(i);
         int pad = grouping ? scale(18) : 0;
         int gap = scale(cards ? 16 : 9);
-        int title = n->kind == GROUP && (grouping || busy || long_status) ? scale(27) : 0;
+        int title = n->kind == GROUP_BOX && (grouping || busy || long_status) ? scale(27) : 0;
         BOOL columns = n->kind == GRID && width >= scale(cards ? 680 : 290);
         int inside = max(80, width - 2 * pad);
         int cell = columns ? (inside - gap) / 2 : inside;
-        int row = 0, slot = 0;
-        if (n->kind == GRID && !cards) cell = min(cell, scale(columns ? 232 : 300));
+        int row = 0, slot = 0, remaining = 0;
+        for (int j = i + 1; j < count; j++)
+            if (nodes[j].parent == i && !omitted_from_layout(&nodes[j])) remaining++;
+        if (n->kind == GRID && !cards) cell = min(cell, scale(columns ? 268 : 330));
         height = title + pad;
         for (int j = i + 1; j < count; j++) if (nodes[j].parent == i) {
-            int h = place(j, x + pad + slot * (cell + gap), y + height, cell, visible);
+            BOOL pair = columns && (slot == 1 || remaining > 1);
+            int span = pair ? 2 * cell + gap : cell;
+            int start = x + pad + (inside - span) / 2;
+            int h = place(j, start + slot * (cell + gap), y + height, cell, visible);
             if (h == 0) continue;
+            remaining--;
             row = max(row, h);
-            if (!columns || slot == 1) {
+            if (!pair || slot == 1) {
                 height += row + gap;
                 slot = row = 0;
             } else slot = 1;
@@ -345,15 +386,18 @@ static int place(int i, int x, int y, int width, BOOL visible) {
             !strcmp(n->id, "status-line") ? scale(long_status ? 51 : 24) :
             !strcmp(n->id, "source") ? scale(76) :
             !strcmp(n->id, "discovery-text") ? scale(43) :
-            !strcmp(n->id, "history-text") || !strcmp(n->id, "batch-inventory") ? scale(68) :
+            !strcmp(n->id, "history-text") || strstr(n->id, "-inventory") ? scale(68) :
             text_height(n->hwnd, width);
         break;
     case HEADING: height = scale(39); break;
     case PROGRESS: height = scale(7); break;
-    case BUTTON:
+    case BUTTON: {
         height = scale(36);
-        width = min(width, scale(276));
+        int button_width = min(width, scale(316));
+        x += (width - button_width) / 2;
+        width = button_width;
         break;
+    }
     default: height = scale(36); break;
     }
     SetRect(&n->bounds, x, y, x + width, y + height);
@@ -379,22 +423,30 @@ static void layout(void) {
     position(viewport, x, top, width, max(bottom - top, 0), 0);
     RECT inner;
     GetClientRect(viewport, &inner);
+    int status_x = x, status_width = width;
     if (tabs >= 0) {
         HWND nav = nodes[tabs].hwnd;
         int item_width = max(scale(50), min((width - scale(42)) / max(1, TabCtrl_GetItemCount(nav)), scale(96)));
         TabCtrl_SetItemSize(nav, item_width, scale(34));
-        position(nav, x, scale(14), min(width, scale(630)), scale(42), SWP_SHOWWINDOW);
-        int body_width = max(scale(110), inner.right - scale(6));
+        int nav_width = min(width, TabCtrl_GetItemCount(nav) * (item_width + scale(3)) + scale(6));
+        position(nav, (box.right - nav_width) / 2, scale(14), nav_width, scale(42), SWP_SHOWWINDOW);
+        static const int page_width[] = { 850, 552, 696, 568, 632, 760 };
+        int gutter = max(0, width - inner.right) + scale(6);
+        int usable_width = max(scale(110), width - 2 * gutter);
+        int body_width = min(usable_width, scale(page_width[tab >= 0 && tab < (int)ARRAYSIZE(page_width) ? tab : 0]));
+        int body_x = (width - body_width) / 2;
+        status_x = x + body_x;
+        status_width = body_width;
         // Measure and clamp first, then move all siblings in one batch.
         measure_only = TRUE;
-        place(tabs, 0, 0, body_width, TRUE);
+        place(tabs, body_x, 0, body_width, TRUE);
         measure_only = FALSE;
         scroll = max(0, min(scroll, content_height - inner.bottom));
         window_batch = BeginDeferWindowPos(count);
-        place(tabs, 0, scale(4) - scroll, body_width, TRUE);
+        place(tabs, body_x, scale(4) - scroll, body_width, TRUE);
         BOOL committed = window_batch && EndDeferWindowPos(window_batch);
         window_batch = NULL;
-        if (!committed) place(tabs, 0, scale(4) - scroll, body_width, TRUE);
+        if (!committed) place(tabs, body_x, scale(4) - scroll, body_width, TRUE);
         int source = find("source");
         if (source >= 0 && nodes[source].shown) {
             RECT edit;
@@ -411,16 +463,23 @@ static void layout(void) {
     }
     if (task >= 0) {
         window_batch = BeginDeferWindowPos(10);
-        place(task, x, bottom + scale(8), width, TRUE);
+        place(task, status_x, bottom + scale(8), status_width, TRUE);
         BOOL committed = window_batch && EndDeferWindowPos(window_batch);
         window_batch = NULL;
-        if (!committed) place(task, x, bottom + scale(8), width, TRUE);
+        if (!committed) place(task, status_x, bottom + scale(8), status_width, TRUE);
     }
     RedrawWindow(window, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
     in_layout = FALSE;
 }
 
 void share_desktop_layout(void) { layout(); }
+
+void share_desktop_show_section(const char *id) {
+    int i = find(id);
+    if (i < 0 || !nodes[i].shown) return;
+    scroll += nodes[i].bounds.top - scale(4);
+    layout();
+}
 
 static LRESULT CALLBACK view_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     switch (msg) {
@@ -431,7 +490,7 @@ static LRESULT CALLBACK view_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         for (int i = 0; i < count; i++) {
             const Node *n = &nodes[i];
             RECT changed;
-            if (n->kind == GROUP && n->shown && !in_task(i) && IntersectRect(&changed, &n->bounds, &paint.rcPaint))
+            if (n->kind == GROUP_BOX && n->shown && !in_task(i) && IntersectRect(&changed, &n->bounds, &paint.rcPaint))
                 surface(dc, n->bounds, card(), border(), 20);
         }
         EndPaint(hwnd, &paint);
@@ -728,7 +787,7 @@ int share_desktop_pick(int directory, char *out, int capacity) {
     return size;
 }
 
-static BOOL preferences_path(wchar_t out[MAX_PATH], wchar_t directory[MAX_PATH], BOOL create) {
+static BOOL app_directory(wchar_t directory[MAX_PATH], BOOL create) {
     PWSTR known = NULL;
     if (FAILED(SHGetKnownFolderPath(&FOLDERID_LocalAppData, KF_FLAG_DEFAULT, NULL, &known))) return FALSE;
     int n = swprintf(directory, MAX_PATH, L"%ls\\PulseShare", known);
@@ -736,12 +795,39 @@ static BOOL preferences_path(wchar_t out[MAX_PATH], wchar_t directory[MAX_PATH],
     if (n <= 0 || n >= MAX_PATH) return FALSE;
     if (create && !CreateDirectoryW(directory, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) return FALSE;
     DWORD attrs = GetFileAttributesW(directory);
-    if (attrs == INVALID_FILE_ATTRIBUTES && GetLastError() != ERROR_FILE_NOT_FOUND &&
-        GetLastError() != ERROR_PATH_NOT_FOUND) return FALSE;
-    if (attrs != INVALID_FILE_ATTRIBUTES &&
-        (!(attrs & FILE_ATTRIBUTE_DIRECTORY) || (attrs & FILE_ATTRIBUTE_REPARSE_POINT))) return FALSE;
-    n = swprintf(out, MAX_PATH, L"%ls\\preferences.dat", directory);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        DWORD error = GetLastError();
+        return !create && (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND);
+    }
+    return (attrs & FILE_ATTRIBUTE_DIRECTORY) && !(attrs & FILE_ATTRIBUTE_REPARSE_POINT);
+}
+
+static BOOL preferences_path(wchar_t out[MAX_PATH], wchar_t directory[MAX_PATH], BOOL create) {
+    if (!app_directory(directory, create)) return FALSE;
+    int n = swprintf(out, MAX_PATH, L"%ls\\preferences.dat", directory);
     return n > 0 && n < MAX_PATH;
+}
+
+int share_desktop_default_path(int kind, char *out, int capacity) {
+    wchar_t directory[MAX_PATH], result[MAX_PATH];
+    PWSTR known = NULL;
+    const wchar_t *path = result;
+    if (kind == 2) {
+        if (FAILED(SHGetKnownFolderPath(&FOLDERID_Downloads, KF_FLAG_DEFAULT, NULL, &known))) return 0;
+        path = known;
+    } else {
+        if (!app_directory(directory, FALSE)) return 0;
+        int n = swprintf(result, MAX_PATH, L"%ls\\%ls", directory, kind == 0 ? L"identity" : L"spool");
+        if (n <= 0 || n >= MAX_PATH) return 0;
+    }
+    int n = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, path, -1, out, capacity, NULL, NULL);
+    CoTaskMemFree(known);
+    return n > 1 ? n - 1 : 0;
+}
+
+int share_desktop_prepare_default_parent(void) {
+    wchar_t directory[MAX_PATH];
+    return app_directory(directory, TRUE);
 }
 
 int share_desktop_preferences_read(char *out, int capacity) {
@@ -780,4 +866,49 @@ int share_desktop_preferences_write(const char *bytes, int length) {
     if (ok) ok = MoveFileExW(temporary, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
     if (!ok) DeleteFileW(temporary);
     return ok;
+}
+
+int share_desktop_default_network(char *out, int capacity) {
+    ULONG size = 15 * 1024;
+    ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_INCLUDE_GATEWAYS;
+    HANDLE heap = GetProcessHeap();
+    IP_ADAPTER_ADDRESSES *list = HeapAlloc(heap, 0, size);
+    if (!list) return 0;
+    ULONG status = GetAdaptersAddresses(AF_INET, flags, NULL, list, &size);
+    if (status == ERROR_BUFFER_OVERFLOW && size <= 128 * 1024) {
+        IP_ADAPTER_ADDRESSES *larger = HeapReAlloc(heap, 0, list, size);
+        if (larger) {
+            list = larger;
+            status = GetAdaptersAddresses(AF_INET, flags, NULL, list, &size);
+        }
+    }
+    const unsigned char *best = NULL, *fallback = NULL;
+    ULONG best_metric = ULONG_MAX;
+    BOOL tie = FALSE;
+    int candidates = 0;
+    if (status == NO_ERROR) for (const IP_ADAPTER_ADDRESSES *nic = list; nic; nic = nic->Next) {
+        if (nic->OperStatus != IfOperStatusUp ||
+            (nic->IfType != IF_TYPE_ETHERNET_CSMACD && nic->IfType != IF_TYPE_IEEE80211) ||
+            (nic->Flags & IP_ADAPTER_NO_MULTICAST)) continue;
+        for (const IP_ADAPTER_UNICAST_ADDRESS *a = nic->FirstUnicastAddress; a; a = a->Next) {
+            if (a->DadState != IpDadStatePreferred || a->Address.iSockaddrLength < (int)sizeof(SOCKADDR_IN)) continue;
+            const SOCKADDR_IN *address = (const SOCKADDR_IN *)a->Address.lpSockaddr;
+            if (!address || address->sin_family != AF_INET) continue;
+            const unsigned char *ip = (const unsigned char *)&address->sin_addr;
+            if (ip[0] == 0 || ip[0] == 127 || (ip[0] == 169 && ip[1] == 254)) continue;
+            candidates++;
+            fallback = ip;
+            if (!nic->FirstGatewayAddress) continue;
+            if (!best || nic->Ipv4Metric < best_metric) {
+                best = ip;
+                best_metric = nic->Ipv4Metric;
+                tie = FALSE;
+            } else if (nic->Ipv4Metric == best_metric) tie = TRUE;
+        }
+    }
+    if (tie) best = NULL;
+    if (!best && candidates == 1) best = fallback;
+    int result = best ? snprintf(out, capacity, "%u.%u.%u.%u", best[0], best[1], best[2], best[3]) : 0;
+    HeapFree(heap, 0, list);
+    return result > 0 && result < capacity ? result : 0;
 }

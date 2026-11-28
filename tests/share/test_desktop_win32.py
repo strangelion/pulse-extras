@@ -139,11 +139,15 @@ class Window:
         message(nav, 0x0201, 1, point)
         message(nav, 0x0202, 0, point)
 
-    def labelled(self, text, control=None):
+    def labelled(self, text, control="Static"):
         for hwnd in get_windows(children, self.hwnd):
-            if visible(hwnd) and (not control or klass(hwnd) == control) and text_at(hwnd) == text:
+            if visible(hwnd) and klass(hwnd) == control and text_at(hwnd) == text:
                 return hwnd
         raise AssertionError(f"visible control missing: {text}")
+
+    def has_button(self, text):
+        return any(visible(hwnd) and klass(hwnd) == "Button" and text_at(hwnd) == text
+                   for hwnd in get_windows(children, self.hwnd))
 
     def next_control(self, label, kind):
         original = get_id(self.labelled(label))
@@ -187,6 +191,30 @@ def check_layout(panel):
     source = rectangle(panel.labelled("待发送内容"))
     target = rectangle(panel.labelled("接收设备"))
     assert source.top == target.top and target.left > source.left, "wide cards did not share a row"
+    desktop = rectangle(panel.hwnd)
+    midpoint = (desktop.left + desktop.right) // 2
+    margin = (dpi(panel.hwnd) or 96) * 6 // 96
+    for page, heading, action in (
+        (1, "保存位置", "更改保存位置"),
+        (2, "附近设备", "刷新已配对设备"),
+        (4, "设备与存储", "更改存储位置和端口"),
+    ):
+        panel.select_tab(page)
+        for control in (panel.labelled(heading), panel.labelled(action, "Button")):
+            item = rectangle(control)
+            assert abs((item.left + item.right) // 2 - midpoint) <= margin, f"page {page} is off center"
+    panel.select_tab(0)
+    assert not panel.has_button("开始自动发送剪贴板"), "send options should start collapsed"
+    panel.click("更多发送方式")
+    assert panel.has_button("开始自动发送剪贴板") and panel.has_button("开启只读目录服务")
+    panel.click("更多发送方式")
+    assert not panel.has_button("开始自动发送剪贴板")
+    panel.select_tab(1)
+    assert not panel.has_button("开始自动接收剪贴板"), "receive options should start collapsed"
+    panel.click("更多接收方式")
+    assert panel.has_button("开始自动接收剪贴板") and panel.has_button("连接只读目录服务")
+    panel.click("更多接收方式")
+    panel.select_tab(0)
     panel.resize(490, 650)
     source = rectangle(panel.labelled("待发送内容"))
     target = rectangle(panel.labelled("接收设备"))
@@ -253,7 +281,18 @@ def run_fixture(exe):
         panel = Window(hwnd)
         check_layout(panel)
         eventually(lambda: panel.contains("选中.txt"), "selected Unicode path did not reach Share")
+        panel.select_tab(4)
+        assert not panel.contains("设备身份目录"), "raw storage paths exposed by default"
+        panel.click("更改存储位置和端口")
+        assert "PulseShare\\identity" in text_at(panel.next_control("设备身份目录", "Edit"))
+        assert "PulseShare\\spool" in text_at(panel.next_control("私有暂存目录", "Edit"))
+        panel.type("设备身份目录", str(exe.parent / "identity"))
+        panel.type("私有暂存目录", str(exe.parent / "spool"))
+        panel.click("初始化本机身份和暂存")
+        eventually(lambda: panel.contains("本机身份和私有暂存目录已就绪"), "one-step device setup did not finish")
+        panel.select_tab(0)
         panel.click("选设备")
+        panel.click("更改本机网络")
         panel.type("本机网络地址", "192.0.2.10")
         panel.click("查找附近设备")
         try:
@@ -272,17 +311,6 @@ def run_fixture(exe):
         assert message(pair, 0x0146) == 1, "stale discovery result"
         panel.type("本机网络地址", "192.0.2.10")
         panel.type("已配对设备名称", "fixture")
-        # Seed private preferences only in this process via the startup pipe, or
-        # set a fixture value via the Settings edit without saving to disk.
-        for item in get_windows(children, hwnd):
-            if klass(item) == "Static" and text_at(item) == "设备身份目录":
-                store_label = get_id(item)
-                break
-        else:
-            raise AssertionError("identity settings missing")
-        store = next(i for i in get_windows(children, hwnd) if get_id(i) == store_label + 1)
-        store_text = ct.create_unicode_buffer(str(exe.parent / "identity"))
-        message(store, 0x000C, 0, ct.addressof(store_text))
         panel.click("开启连接码并允许发现")
         eventually(lambda: panel.contains("01234567"), "no inline pairing code")
         time.sleep(0.6)
@@ -297,11 +325,31 @@ def run_fixture(exe):
         eventually(lambda: panel.contains("Trust device"), "no confirmation after code entry")
         panel.click("确认请求")
         eventually(lambda: panel.contains("COMPLETED pairing"), "pairing terminal state absent")
+        panel.click("已组网？手动配对")
+        panel.type("本机组网 IP", "100.64.1.10")
+        panel.type("组网对端名称", "overlay-test")
+        panel.type("生成端监听端口（0 自动）", "45844")
+        panel.click("生成组网连接码")
+        eventually(lambda: panel.contains("请填写允许连接的对端来源 IP"), "routed host accepted an empty source")
+        panel.type("允许连接的对端来源 IP", "100.64.1.20")
+        panel.click("生成组网连接码")
+        eventually(lambda: panel.contains("01234567") and panel.contains("100.64.1.10:45844"),
+                   "edited routed host address, source and port were not sent to the worker")
+        panel.click("取消任务")
+        eventually(lambda: panel.contains("已取消"), "routed cancellation did not complete")
+        panel.type("对端组网地址与端口", "100.64.1.20:45844")
+        panel.type("对端显示的 8 位组网连接码", "01234567")
+        panel.click("连接组网设备")
+        eventually(lambda: panel.contains("Trust device"), "edited routed endpoint did not reach the worker")
+        panel.click("确认请求")
+        eventually(lambda: panel.contains("COMPLETED routed pairing"), "routed pairing terminal state absent")
+        panel.click("收起组网配对")
+        assert not panel.contains("对端组网地址与端口"), "collapsed routed controls stayed visible"
         panel.click("开启连接码并允许发现")
         eventually(lambda: panel.contains("01234567"), "pair task could not be restarted")
         checked(post(hwnd, 0x0010, 0, 0))
         assert wait(process.process, 12000) == 0, "window did not drain active worker"
-        print("Share desktop: handoff, discovery, address selection, persistent code, approval, responsive layout, scrolling, icon and close passed")
+        print("Share desktop: handoff, discovery, address selection, persistent code, LAN and routed approval, responsive layout, scrolling, icon and close passed")
     finally:
         if process.process:
             if wait(process.process, 0) != 0:

@@ -44,7 +44,7 @@ tree using the same script (no overwriting, deletion or clipboard access):
 | H12 | Preference save/reload; panel resize; task progress and prompts | Values retained, no stale selection, responsive UI |
 | H13 | Close Share with an active service, then restart | Helper processes, handles and sockets released; no automatic listener |
 | H14 | Repeated transfers (20), idle and active CPU/RSS | Record actual peak/idle values and sustained growth trend |
-| H15 | Optional available IPv6/overlay route | Record actual environment; not mandatory to install vendor tools |
+| H15 | IPv6 or an existing private overlay, when available | Enter addresses and source restriction at pairing time, verify both fingerprints, then transfer using the routed actions |
 | H16 | Tray Shelf | DEFERRED: public SDK adapter unavailable |
 
 For each test record PASS/FAIL/NOT_RUN/ENVIRONMENT_ERROR, time, expected

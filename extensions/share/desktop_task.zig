@@ -17,6 +17,7 @@ pub const Snapshot = struct {
     }
 };
 
+extern fn share_desktop_prepare_default_parent() c_int;
 extern "kernel32" fn CreateThread(?*anyopaque, usize, *const fn (?*anyopaque) callconv(.winapi) u32, *anyopaque, u32, ?*u32) callconv(.winapi) usize;
 extern "kernel32" fn WaitForSingleObject(usize, u32) callconv(.winapi) u32;
 extern "kernel32" fn CloseHandle(usize) callconv(.winapi) i32;
@@ -90,10 +91,22 @@ pub const Task = struct {
         return abi.ok;
     }
 
+    fn execute(self: *Task, ctx: *const raw.PulseTaskContext) !void {
+        if (cancelled(self) != 0) return error.Cancelled;
+        if (self.request.prepare_default_parent and share_desktop_prepare_default_parent() == 0) {
+            const message = abi.view("无法准备 Share 的本机目录，请检查设置。");
+            var progress = std.mem.zeroes(raw.PulseTaskProgress);
+            progress.current_item = message;
+            _ = report(self, &progress);
+            return error.DefaultDirectory;
+        }
+        return managed.run(&self.request, ctx, &self.decisions);
+    }
+
     fn work(user: ?*anyopaque) callconv(.winapi) u32 {
         const self: *Task = @ptrCast(@alignCast(user orelse return 1));
         const ctx: raw.PulseTaskContext = .{ .context = self, .report = report, .cancelled = cancelled };
-        const result: State = if (managed.run(&self.request, &ctx, &self.decisions)) .completed else |err| if (err == error.Cancelled) .cancelled else .failed;
+        const result: State = if (self.execute(&ctx)) .completed else |err| if (err == error.Cancelled) .cancelled else .failed;
         while (!self.lock.tryLock()) _ = SwitchToThread();
         self.snapshot.state = result;
         self.lock.unlock();

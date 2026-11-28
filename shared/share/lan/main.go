@@ -389,6 +389,7 @@ func run(ctx context.Context,args []string) error {
 	switch args[0]{
 	case "identity-init","identity-show","peer-add","peer-list","peer-revoke":return manageTrust(c,args[0],args[1:])
 	case "pair-host","pair-join":return managedPair(c,args[0],args[1:])
+	case "device-prepare":return prepareDeviceCLI(ctx,args[1:])
 	case "private-init","recovery-list":
 		f:=flags(args[0])
 		root:=f.String("store","","explicit absolute directory")

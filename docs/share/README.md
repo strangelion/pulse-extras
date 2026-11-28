@@ -278,19 +278,32 @@ LAN and host lifecycle acceptance remain outstanding.
   address, progress and approval actions whenever they are relevant.
 - **设备** lists local addresses and shows a count and selectable addresses
   after discovery. Use the interface on the same LAN as the other device.
-  The nearby pairing and receiving lists are separate. Selecting an address
+  A single usable interface or a uniquely preferred gateway interface is
+  selected automatically when no address was saved. **更改本机网络** lets
+  you choose another interface. The nearby pairing and receiving lists are separate. Selecting an address
   only fills a field. The active code stays in the task strip, and the other
   device enters it in a masked field. Compare the displayed fingerprints and
-  approve the pairing on both devices.
-- **设置** holds common defaults and identity/spool initialization. The first
+  approve the pairing on both devices. For an existing private overlay, open
+  **已组网？手动配对**. Enter the local overlay IP and peer label. On the code
+  host, specify the expected incoming source IP and optional port. On the
+  other device, enter the host's announced numeric address and port, then the
+  code. Transfer routing settings do not determine these pairing inputs.
+- **设置** defaults to the Windows Downloads folder and private identity/spool
+  folders under LocalAppData PulseShare. Open **更改存储位置和端口** to edit them.
+  **初始化本机** prepares both private directories and the device identity in
+  one operation. It refuses an existing ordinary directory or unreadable
+  identity, and a successful repeated run preserves the existing identity.
+  The first
   desktop launch from Pulse can read older Pulse defaults. The app saves its
   current defaults under the Windows user's LocalAppData PulseShare directory,
   so an isolated Pulse store alone does not isolate desktop preferences.
   Use a dedicated Windows user or VM for installed acceptance. A standalone
   launch with `--session-only` skips disk preference reads and writes.
-- **高级** exposes manual fingerprint management, routed and QUIC transport,
-  recovery, content options, queues and service actions. **记录** lists
-  recent outcomes for the current window.
+- **更多发送方式** and **更多接收方式** expose the clipboard and directory
+  operations from the appropriate page. Clipboard sync starts only on explicit
+  request and still requires approval. The outgoing queue is on **发送**.
+  **高级** holds protocol options, manual fingerprint management and recovery.
+  **记录** lists recent outcomes for the current window.
 
 One task runs at a time in each window. Windows-owned controls stay on the
 UI thread; the worker publishes a bounded snapshot. A window close cancels

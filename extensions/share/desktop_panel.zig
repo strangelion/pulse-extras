@@ -20,7 +20,7 @@ fn string(value: abi.StringView) []const u8 {
     return abi.slice(value) orelse "";
 }
 
-fn render(node: *const ui.Node, parent: c_int) !void {
+fn render(node: *const ui.Node, parent: c_int, update: bool) !void {
     const t = ui.NodeKind;
     const kind: c_int = switch (node.type) {
         t.stack => 0,
@@ -46,24 +46,25 @@ fn render(node: *const ui.Node, parent: c_int) !void {
     const appearance: c_int = if (std.mem.eql(u8, style, "password")) 1 else if (std.mem.eql(u8, style, "primary")) 2 else 0;
     const index = share_desktop_node(parent, kind, id, key, enabled, text.ptr, @intCast(text.len), appearance);
     if (index < 0) return error.State;
-    if (node.type == t.select and node.options.present != 0) {
+    if (node.type == t.select and node.options.present != 0 and (!update or !std.mem.endsWith(u8, id, "-select"))) {
         for (node.options.data[0..node.options.count], 0..) |item, i| {
             const option = string(item);
             share_desktop_options(index, @intFromBool(i == 0), option.ptr, @intCast(option.len));
         }
     }
-    if (node.children.present != 0) for (node.children.data[0..node.children.count]) |*child| try render(child, index);
+    if (node.children.present != 0) for (node.children.data[0..node.children.count]) |*child| try render(child, index, update);
 }
 
 pub const Panel = struct {
     pub fn updateTree(_: Panel, root: *const ui.Node) !void {
-        try render(root, -1);
+        try render(root, -1, true);
         share_desktop_layout();
     }
 
     pub fn openTree(root: *const ui.Node) !Panel {
         const panel: Panel = .{};
-        try panel.updateTree(root);
+        try render(root, -1, false);
+        share_desktop_layout();
         return panel;
     }
 

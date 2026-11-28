@@ -5,7 +5,7 @@ const builtin = @import("builtin");
 const config = @import("share_config");
 const raw = @import("pulse_raw");
 
-pub const Mode = enum { discover, send, receive, identity_init, identity_show, peer_add, peer_list, peer_revoke, private_init, recovery_list, interfaces, pair_host, pair_join };
+pub const Mode = enum { discover, send, receive, identity_init, identity_show, peer_add, peer_list, peer_revoke, private_init, recovery_list, interfaces, pair_host, pair_join, device_prepare };
 pub const Field = struct {
     bytes: [2048]u8 = @splat(0),
     len: usize = 0,
@@ -42,6 +42,7 @@ pub const Request = struct {
     delivery: Field = .{},
     remote_path: Field = .{},
     browse_offset: Field = .{},
+    prepare_default_parent: bool = false,
     allowed_source: Field = .{},
     bind: Field = .{},
     peer: Field = .{},
@@ -56,6 +57,10 @@ pub const Request = struct {
     pub fn validate(self: *const Request) !void {
         switch (self.mode) {
             .interfaces => return,
+            .device_prepare => {
+                if (self.store.len == 0 or self.spool.len == 0) return error.InvalidInput;
+                return;
+            },
             .identity_init, .identity_show, .peer_list, .private_init, .recovery_list => {
                 if (self.store.len == 0) return error.InvalidInput;
                 return;
@@ -586,6 +591,7 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
         .recovery_list => "recovery-list",
         .pair_host => "pair-host",
         .pair_join => "pair-join",
+        .device_prepare => "device-prepare",
         else => @tagName(request.mode),
     });
     switch (request.mode) {
@@ -606,6 +612,10 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
     }
     switch (request.mode) {
         .discover, .interfaces => {},
+        .device_prepare => {
+            try command.pair("--store", request.store.slice());
+            try command.pair("--spool", request.spool.slice());
+        },
         .pair_host, .pair_join => {
             try command.pair("--store", request.store.slice());
             try command.pair("--name", request.paired.slice());
