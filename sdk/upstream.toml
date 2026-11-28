@@ -2,10 +2,10 @@
 # The installed Pulse host can be newer than the published source; its embedded
 # SDK is snapshotted separately by scripts/host_sdk.py (see [host]).
 repository = "https://github.com/jimmgreen/pulse"
-revision = "b32436831a066e18448b2810bef4bf989024fc68"
+revision = "edaa34117f76188801e9a90c741924fea31804e3"
 sdk_preview = 3
 abi_version = 1
-pulse_source_version = "1.0.60"
+pulse_source_version = "1.0.62"
 abi_header_blob = "a4f247e41a50361e4f1c5f30bafc7c6c33b0d1ef"
 target = "x86_64-windows-msvc"
 
@@ -13,36 +13,48 @@ target = "x86_64-windows-msvc"
 # activation, deactivation and unload were verified on a real Pulse host; the
 # evidence for the 2026-11-24 run is in docs/host-compatibility.md.
 # A new public baseline resets this flag; [host] is a historical local snapshot.
-host_verified = true
+host_verified = false
 
 # Public Windows installer paired with the exact SDK release tag.
 [installer]
-filename = "PulseSetup-1.0.60.exe"
-size = 12240072
-sha256 = "827aebcb14a9e4f4ec8281cf89e339cc887ec6f541ff6e80518ac463732c5234"
+filename = "PulseSetup-1.0.62.exe"
+size = 13655984
+sha256 = "951b5d2a88418965638189da08a2d8fb17e53fc5a5298f4be8e5e49ed1a9e117"
 
 # Published header digests (sha256) of the pinned revision. They are what
 # `scripts/fetch_sdk.py` downloads and what `scripts/generate_bindings.py`
 # feeds to translate-c; a digest mismatch aborts instead of building on drift.
 [headers]
+workbench = "29bcd75b909b3d63fbc8b471c82f8aacce9015c3fb79f96d7c5458a3ae042ba6"
+vfs = "75ef1d7b53b79dffc5c3f88b96dbf7c20ae551687a9279414c88c8ddd14b861e"
+tray = "00657a420b5e825499693f4695e23af3853c6fd7a36b960bef6fcc3193d0984b"
+statusbar = "b571da4b36047048e24546ba21a6edc49469ae1b4e26578e6e7508064b7591e9"
+shell = "eb1d09f1524e18bbe542af286b82b32201913e44500b305f808860ca979d374a"
+search = "55e66994e9a19e6a6663d1a5adf253c66727fac51221fd80df2a442b914a582c"
+pickers = "103b59a0289caf0096f00e35dc53b6ff6e8759e3c83438b2a463ca855a5fbf46"
+icons = "31b32a03bcbfe3d76e5c7bdd3fc3ecd4dabc3001c12140f48b3ebe6cd47e53fb"
+fileevents = "ea1a1ebe47b61645d3bab9a437cec6854e19adf06a42e60ad06cd37ee7340543"
+diagnostics = "efd701f2926133acf187beac8c5ca0a8c32cfa5f559e61065ef6a04ae4d207f1"
+columns = "745d4c9ddf11d7b78a7c85cd77108137e860a098e8f9ae63a19d88799095b93a"
+associations = "a8d9c1d317acf594149675864cea6d1d013b7436bec32444d7fb93378da6466c"
 abi = "b56be7fd458c78b2befabce385b0824590df86edfb3bc69a4c9dd98c05c9ef70"
 context = "2e66723d4293f672a3a609dcf44e3f828c6cdc183de883e757e8eedcfef5e26f"
-commands = "3386f018530ac1bfb55a74dd6c848d633fc0040b9516f0333ab156f0adadcf38"
+commands = "2972c43cc2a84ee8d45edadba75352724f20ab64942e32f3dd78b4c8f39c1c3c"
 dispatch = "9b183e0ea52e8733715c4215895d59c6e784decef224d178ed6b8015c6a0e4f5"
-preview = "5cfa4394f7fb8e70899bdca5ac41bc04672049fab797fbadc0fe2d8c52a8b4a8"
+preview = "59f92f8af69a3490dc3e9dc595d3462634b27ecb563a47a750d6ed3b45396941"
 ui = "241ab6be688be6f7f18a73b4ffbe49405137466d147e0fa0360ba3580ae80f88"
-ui_model = "6dab4e8b05cf1fc1551ccdf9e75cecd6fc142ddefe512aa4043b7fb85583e689"
+ui_model = "a07f8449a6cd6801877813d30c0b7a6a3755a659c0f0154e093540fde140e792"
 ui_data = "8f5add6b2b9692a8402de214d71035051de1fb73801abf723653b01c9ea3cff2"
 ui_mount = "d67508a965972dca328b46c6e12213536d61afad66c41f51e2c74105639f923f"
 ui_events = "03c3f6986fab18b1dd0c6eb708aff9b869d0cb5810c8f24854e9569d21b09591"
-dialogs = "4c6a92ca753bd35c438c6f50b97103f14ff7fe4e0879c94d2004838618250e6c"
+dialogs = "19d6eef77e85c3541cd0b6fe4c6c84df45f7767b6f87877f79c326bb816dfa0b"
 directories = "4c231ddd6c2e24bf0c5ece6cba08de1ecd4ed600bb4d63d057a2fed4a1756995"
 fileops = "6de0d83978b7083b98a77670d9ff8be8feaefc173d029c3bb7b7a917db8b71a1"
 files = "ec3a30be6e0f9733bbd04c67d483221d5b0fd61a99b1d9229e32912da280802c"
 resources = "bc029891506dc23939484d9726d2ab538d587782c540277f4bb56ab89d25e382"
-settings_pages = "84b19931ce0145100413f251240999750d8a40c1faaecbf58f1940f2d906f526"
+settings_pages = "d344311ce21f1295453ecf383616f5ca9eb2eb042714cb339b06d550e8636943"
 staging = "f33b5b7f178cac58fd13eb4ee65341875aa23e01a2ce1012e936befe8ee3ba14"
-tasks = "b237523c8395d030a3b40e80e46b66618d5ef6d28d53bc1c2395a3467772fc92"
+tasks = "168642587f9b4e1d9dfc3a4dfef98e03e3740eb9dd9e34f6f46ff9919d991315"
 
 # Authoritative SDK of the locally installed host, captured from
 # `pulse.exe --extension-api --extension-check` by scripts/host_sdk.py.

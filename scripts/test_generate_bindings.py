@@ -1,7 +1,7 @@
 """Reproducibility tests for generated binding diagnostics."""
 import unittest
 
-from generate_bindings import normalize_source_locations, upstream_pin
+from generate_bindings import normalize_source_locations, public_bindings, upstream_pin
 
 
 class SourceLocationTests(unittest.TestCase):
@@ -48,6 +48,45 @@ class SourceLocationTests(unittest.TestCase):
             normalize_source_locations("// /a/pulse/abi.h:5:9\n"),
             normalize_source_locations("// /b/pulse/abi.h:6:9\n"),
         )
+
+
+class PublicBindingTests(unittest.TestCase):
+    def test_host_runtime_noise_does_not_change_sdk(self):
+        sdk = (
+            '//! SDK revision: exact\n'
+            'const __root = @This();\n'
+            'pub const __helpers = @import("std").zig.c_translation.helpers;\n'
+        )
+        public = (
+            'pub const PulseStatus = i32;\n'
+            'pub const struct_PulseTest = extern struct {\n'
+            '    size: u32 = 0,\n'
+            '};\n'
+            'pub const PulseTest = struct_PulseTest;\n'
+            'pub const PULSE_TEST_SIZE = @compileError("invalid macro");\n'
+            '// pulse/test.h:12:9\n'
+            'pub inline fn PULSE_TEST_MASK(n: anytype) @TypeOf(n) {\n'
+            '    return n;\n'
+            '}\n'
+        )
+        linux = sdk + 'pub const __int64_t = c_long;\n' + public + 'pub const _GLIBC_ = 1;\n'
+        windows = sdk + 'pub const __int64_t = i64;\n' + public + 'pub const _WIN32 = 1;\n'
+        self.assertEqual(public_bindings(linux), sdk + public)
+        self.assertEqual(public_bindings(linux), public_bindings(windows))
+        self.assertEqual(public_bindings(sdk + public), sdk + public)
+        self.assertNotEqual(public_bindings(linux), public_bindings(windows.replace("size: u32", "size: u64")))
+
+    def test_dependency_on_excluded_declaration_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "needs excluded C declaration"):
+            public_bindings("pub const platform_t = c_long;\npub const PulseStatus = platform_t;\n")
+
+    def test_non_namespaced_sdk_diagnostic_is_not_dropped(self):
+        with self.assertRaisesRegex(ValueError, "outside Pulse namespace"):
+            public_bindings("pub const PulseStatus = i32;\npub const other = 1;\n// pulse/test.h:1:2\n")
+
+    def test_unknown_top_level_syntax_is_not_dropped(self):
+        with self.assertRaisesRegex(ValueError, "unsupported top-level syntax"):
+            public_bindings("pub const PulseStatus = i32;\npub extern var platform: u32;\n")
 
 
 if __name__ == "__main__":

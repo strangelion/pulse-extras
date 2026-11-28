@@ -7,6 +7,7 @@ const context = @import("pulse_context");
 const diag = @import("pulse_diagnostics");
 const async_host = @import("pulse_async_host");
 const raw = @import("pulse_raw");
+const task_progress = @import("pulse_task_progress");
 const prefs = @import("preferences.zig");
 const managed = @import("managed.zig");
 const handoff = @import("handoff.zig");
@@ -47,7 +48,7 @@ fn selected(snapshot: [*c]const commands.SelectionSnapshot, buffer: []u8) handof
 fn result(ctx: *const raw.PulseTaskContext, text: []const u8) void {
     if (ctx.report) |report| {
         var progress = std.mem.zeroes(raw.PulseTaskProgress);
-        progress.size = @sizeOf(raw.PulseTaskProgress);
+        progress.size = task_progress.progress_v1_size;
         progress.percent = std.math.maxInt(u32);
         progress.current_item = abi.view(text);
         _ = report(ctx.context, &progress);
@@ -90,7 +91,7 @@ fn invoke(user: ?*anyopaque, _: commands.CommandId, snapshot: [*c]const commands
         break :blk (handoff.Selection{ .preferences = selection.preferences }).encode(&self.payload) catch return;
     }).len;
     var descriptor = std.mem.zeroes(raw.PulseTaskDescriptor);
-    descriptor.size = @sizeOf(raw.PulseTaskDescriptor);
+    descriptor.size = task_progress.descriptor_v1_size;
     descriptor.title = abi.view("打开 Pulse Share");
     descriptor.type = abi.view("share");
     descriptor.work = &launch;

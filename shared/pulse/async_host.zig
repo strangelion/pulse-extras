@@ -10,6 +10,7 @@ const host_mod = @import("pulse_host");
 
 pub const TaskTable = raw.PulseTasksV1;
 pub const Descriptor = raw.PulseTaskDescriptor;
+pub const descriptor_v1_size: u32 = 64;
 pub const Context = raw.PulseTaskContext;
 pub const Snapshot = raw.PulseTaskSnapshot;
 pub const TaskState = enum(u32) {
@@ -82,7 +83,7 @@ pub const Task = struct {
 
     pub fn start(self: *Task, descriptor: *const Descriptor) host_mod.Error!void {
         if (self.destroyed or self.occupied()) return error.State;
-        if (descriptor.size < @sizeOf(Descriptor) or descriptor.work == null) return error.Argument;
+        if (descriptor.size < descriptor_v1_size or descriptor.work == null) return error.Argument;
         const title = abi.slice(descriptor.title) orelse return error.Argument;
         const kind = abi.slice(descriptor.type) orelse return error.Argument;
         for ([_][]const u8{ title, kind }) |value| {
@@ -347,7 +348,7 @@ const Mock = struct {
     }
 
     fn descriptor() Descriptor {
-        return .{ .size = @sizeOf(Descriptor), .title = abi.view("VCS query"), .type = abi.view("vcs"), .work = &work };
+        return .{ .size = descriptor_v1_size, .title = abi.view("VCS query"), .type = abi.view("vcs"), .work = &work };
     }
 
     fn postInline(_: ?*anyopaque, callback: raw.PulseDispatchCallback, user: ?*anyopaque, token: [*c]u64) callconv(.c) abi.Status {

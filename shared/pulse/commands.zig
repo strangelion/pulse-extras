@@ -1,7 +1,7 @@
 //! `pulse.commands` V1 - registering plugin commands with the host.
 //!
 //! Only the V1 prefix is used. The host appends V2/V3 fields at the tail, so
-//! descriptors are always built with `size = @sizeOf(Descriptor)` (the V1 size).
+//! descriptors advertise the frozen V1 prefix, not the current SDK's full size.
 
 const std = @import("std");
 const raw = @import("pulse_raw");
@@ -32,6 +32,7 @@ pub const Icon = struct {
 pub const CommandId = raw.PulseCommandId;
 pub const SelectionSnapshot = raw.PulseContextSelectionSnapshot;
 pub const Descriptor = raw.PulseCommandDescriptor;
+pub const descriptor_v1_size: u32 = 96;
 pub const TableV1 = raw.PulseCommandsV1;
 pub const InvokeFn = raw.PulseCommandFn;
 
@@ -46,7 +47,7 @@ pub fn query(host: *const abi.HostV1, out: *TableV1) abi.Status {
 /// Builds a V1 descriptor with every optional list empty.
 pub fn descriptor(id: []const u8, title: []const u8, invoke: InvokeFn) Descriptor {
     return .{
-        .size = @sizeOf(Descriptor),
+        .size = descriptor_v1_size,
         .id = abi.view(id),
         .title = abi.view(title),
         .icon = Icon.default,
@@ -84,7 +85,7 @@ fn validTitle(title: []const u8) bool {
 /// Checks everything the host would otherwise reject at registration time.
 /// Doing it here keeps a bad descriptor from failing silently inside the host.
 pub fn validateDescriptor(item: *const Descriptor) host_mod.Error!void {
-    if (item.size != @sizeOf(Descriptor)) return error.Argument;
+    if (item.size != descriptor_v1_size) return error.Argument;
     const id = abi.slice(item.id) orelse return error.Argument;
     const title = abi.slice(item.title) orelse return error.Argument;
     if (!validId(id) or !validTitle(title)) return error.Argument;
@@ -122,7 +123,8 @@ pub const Table = struct {
 
 comptime {
     // `PULSE_COMMAND_DESCRIPTOR_SIZE_V1` ends at `detail`; the V1 prefix is 96 bytes.
-    if (@sizeOf(Descriptor) != 96) @compileError("PulseCommandDescriptor V1 size must be 96 on x86_64");
+    const prefix = if (@hasField(Descriptor, "detail")) @offsetOf(Descriptor, "detail") else @sizeOf(Descriptor);
+    if (prefix != descriptor_v1_size or @offsetOf(Descriptor, "user") != 88) @compileError("PulseCommandDescriptor V1 prefix changed");
     if (@sizeOf(TableV1) != 32) @compileError("PulseCommandsV1 must be 32 bytes on x86_64");
     if (@offsetOf(Descriptor, "invoke") != 80) @compileError("descriptor invoke offset");
 }

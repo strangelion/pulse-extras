@@ -1606,66 +1606,19 @@ fn saveSetting(instance: *Instance, key: []const u8, value: []const u8) void {
     refresh(instance);
 }
 
-// Optional append-only task ABI from installed Pulse 1.0.61 tasks.h.
-// The pinned 1.0.60 host accepts size >= its prefix and ignores the tail.
-// Do not change the generated baseline or the version of pulse.tasks.
-const TaskDescriptor61 = extern struct {
-    base: raw.PulseTaskDescriptor,
-    source: abi.StringView,
-    destination: abi.StringView,
-    steps: [*c]const abi.StringView,
-    step_count: u32,
-    on_action: ?*const fn (?*anyopaque, u64, abi.StringView) callconv(.c) void,
-    action_user: ?*anyopaque,
-};
-
-const TaskProgress61 = extern struct {
-    base: raw.PulseTaskProgress,
-    step: u32,
-    action_count: u32,
-    linked_operation: u64,
-    note: abi.StringView,
-    detail: abi.StringView,
-    assurance: abi.StringView,
-    actions: ?*const anyopaque,
-    log: abi.StringView,
-    result: abi.StringView,
-    result_path: abi.StringView,
-};
-
-comptime {
-    if (@sizeOf(raw.PulseTaskDescriptor) != 64 or @offsetOf(TaskDescriptor61, "source") != 64 or @offsetOf(TaskDescriptor61, "steps") != 96 or @offsetOf(TaskDescriptor61, "step_count") != 104 or @sizeOf(TaskDescriptor61) != 128) @compileError("task descriptor 1.0.61 x64 ABI mismatch");
-    if (@sizeOf(raw.PulseTaskProgress) != 72 or @offsetOf(TaskProgress61, "step") != 72 or @offsetOf(TaskProgress61, "linked_operation") != 80 or @sizeOf(TaskProgress61) != 192) @compileError("task progress 1.0.61 x64 ABI mismatch");
-}
+const task_progress = @import("pulse_task_progress");
 
 const market_steps = [_]abi.StringView{ abi.view("读取目录索引"), abi.view("验证目录分片"), abi.view("整理搜索结果") };
 
-fn steppedDescriptor(base: raw.PulseTaskDescriptor, steps: []const abi.StringView) TaskDescriptor61 {
-    var descriptor = std.mem.zeroes(TaskDescriptor61);
-    descriptor.base = base;
-    descriptor.base.size = @sizeOf(TaskDescriptor61);
-    descriptor.steps = steps.ptr;
-    descriptor.step_count = @intCast(steps.len);
-    return descriptor;
-}
-
 // Host-owned worker. Writes only the private result buffer; no UI call.
-// Host report is explicitly worker-safe, valid only during the work call.
-// Keep long-lived runtime tasks indeterminate: reaching first frame is not
-// completion of ownership or cleanup, and counters must not move backward.
 fn reportTask(context: [*c]const raw.PulseTaskContext, message: []const u8, step: u32) void {
-    const report = context[0].report orelse {
+    if (context == null or context[0].report == null) {
         diag.event("companion-task-report-unavailable");
         return;
-    };
-    var progress = std.mem.zeroes(TaskProgress61);
-    progress.base.size = if (step == 0) @sizeOf(raw.PulseTaskProgress) else @sizeOf(TaskProgress61);
-    progress.base.percent = std.math.maxInt(u32);
-    progress.base.current_item = abi.view(message);
-    progress.step = step;
-    const status = report(context[0].context, &progress.base);
+    }
+    const status = task_progress.report(context, message, step, task_progress.indeterminate);
     diag.status("companion-task-report-id", context[0].id);
-    diag.status("companion-task-report-percent", progress.base.percent);
+    diag.status("companion-task-report-percent", task_progress.indeterminate);
     diag.status("companion-task-report-step", step);
     diag.status("companion-task-report-status", status);
 }
@@ -1700,7 +1653,7 @@ fn reportMarketFailure(context: [*c]const raw.PulseTaskContext, err: anyerror) v
     diag.event(@errorName(err));
     const report = context[0].report orelse return;
     var progress = std.mem.zeroes(raw.PulseTaskProgress);
-    progress.size = @sizeOf(raw.PulseTaskProgress);
+    progress.size = task_progress.progress_v1_size;
     progress.percent = std.math.maxInt(u32);
     progress.@"error" = abi.view(@errorName(err));
     diag.status("companion-market-error-report-status", report(context[0].context, &progress));
@@ -2613,7 +2566,7 @@ fn startRuntimeCheck(instance: *Instance) void {
     instance.runtime_error = null;
     instance.task_kind = .runtime_check;
     const descriptor: raw.PulseTaskDescriptor = .{
-        .size = @sizeOf(raw.PulseTaskDescriptor),
+        .size = task_progress.descriptor_v1_size,
         .title = abi.view("检查桌宠运行时"),
         .type = abi.view("companion.runtime"),
         .work = checkRuntime,
@@ -2760,7 +2713,7 @@ fn exportDiagnostic(instance: *Instance) void {
     instance.work_done.store(false, .release);
     instance.work_error = null;
     const descriptor: raw.PulseTaskDescriptor = .{
-        .size = @sizeOf(raw.PulseTaskDescriptor),
+        .size = task_progress.descriptor_v1_size,
         .title = abi.view("导出桌宠诊断"),
         .type = abi.view("companion.diagnostic"),
         .work = readLibrary,
@@ -3436,7 +3389,7 @@ fn startLibrary(instance: *Instance, capture_query: bool) void {
         }
     }
     const descriptor: raw.PulseTaskDescriptor = .{
-        .size = @sizeOf(raw.PulseTaskDescriptor),
+        .size = task_progress.descriptor_v1_size,
         .title = abi.view(if (instance.detail_request != null) "验证素材详情" else if (instance.fallback_pick) (if (instance.fallback_pick_file) "选择桌宠文件" else "选择素材文件夹") else if (instance.recovery_scan) "扫描桌宠恢复状态" else if (instance.removal_request != null) "维护桌宠素材" else if (instance.import_request != null) "导入桌宠素材" else if (instance.preference_edit != null) "保存桌宠偏好" else "读取桌宠素材清单"),
         .type = abi.view("companion.library"),
         .work = readLibrary,
@@ -3462,7 +3415,7 @@ fn openMarketGallery(instance: *Instance) void {
     instance.work_done.store(false, .release);
     instance.work_error = null;
     const descriptor: raw.PulseTaskDescriptor = .{
-        .size = @sizeOf(raw.PulseTaskDescriptor),
+        .size = task_progress.descriptor_v1_size,
         .title = abi.view("打开 OpenPets 官方图库"),
         .type = abi.view("companion.market.browser"),
         .work = readLibrary,
@@ -3503,7 +3456,7 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
     instance.work_done.store(false, .release);
     instance.work_error = null;
     const descriptor: raw.PulseTaskDescriptor = .{
-        .size = @sizeOf(raw.PulseTaskDescriptor),
+        .size = task_progress.descriptor_v1_size,
         .title = abi.view(switch (request) {
             .search => "搜索 OpenPets 市场",
             .detail => "读取素材详情",
@@ -3514,9 +3467,9 @@ fn startMarket(instance: *Instance, request: library.MarketRequest) void {
         .work = readLibrary,
         .user = instance,
     };
-    const extended = steppedDescriptor(descriptor, &market_steps);
+    const extended = task_progress.steppedDescriptor(descriptor, &market_steps) catch unreachable;
     var id: u64 = 0;
-    if (create(tasks.context, if (request == .search) &extended.base else &descriptor, &id) == abi.ok and id != 0) {
+    if (create(tasks.context, if (request == .search) task_progress.descriptorPtr(&extended) else &descriptor, &id) == abi.ok and id != 0) {
         instance.task_id = id;
         instance.market_status = switch (request) {
             .search => if (request.search.len == 0) "正在加载默认市场目录" else "正在读取市场搜索目录",
@@ -4589,8 +4542,8 @@ test "default market browsing has an empty optional query and never admits insta
 }
 
 test "append-only finite market task phase ABI" {
-    const desc = steppedDescriptor(.{}, &market_steps);
-    try std.testing.expectEqual(@as(u32, 128), desc.base.size);
+    const desc = try task_progress.steppedDescriptor(.{}, &market_steps);
+    try std.testing.expectEqual(@as(u32, 128), task_progress.descriptorPtr(&desc).size);
     try std.testing.expectEqual(@as(u32, 3), desc.step_count);
     try std.testing.expectEqualStrings("验证目录分片", abi.slice(desc.steps[1]).?);
 }

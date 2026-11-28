@@ -39,7 +39,7 @@ fn registerProbeCommand(host: *const abi.HostV1) abi.Status {
     const id = "strangelion.abi-probe.ping";
     const title = "Pulse ABI Probe: Ping";
     var descriptor = commands.Descriptor{
-        .size = @sizeOf(commands.Descriptor),
+        .size = commands.descriptor_v1_size,
         .id = .{ .data = id.ptr, .length = id.len },
         .title = .{ .data = title.ptr, .length = title.len },
         .icon = commands.Icon.default,

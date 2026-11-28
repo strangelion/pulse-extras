@@ -222,7 +222,7 @@ static PulseStatus PULSE_CALL task_get(void *context, PulseTaskId id, PulseTaskS
 static PulseStatus PULSE_CALL register_menu(void *context, const PulseCommandDescriptor *descriptor, PulseCommandId *id) {
     LockedHost *host = context;
     if (host->stopped || host->menu || !descriptor || !id) return PULSE_ERROR_STATE;
-    if (descriptor->size != sizeof(*descriptor) || !equals(descriptor->id, "vcs.open-current") ||
+    if (descriptor->size != 96 || !equals(descriptor->id, "vcs.open-current") ||
         !descriptor->title.data || !descriptor->title.length ||
         descriptor->kinds != (PULSE_COMMAND_FILES | PULSE_COMMAND_DIRECTORIES) ||
         descriptor->min_selection != 0 || descriptor->max_selection != 4096 ||

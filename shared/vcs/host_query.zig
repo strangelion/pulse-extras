@@ -60,7 +60,7 @@ pub const Query = struct {
         self.published.store(false, .monotonic);
         self.discard = false;
         const descriptor: async_host.Descriptor = .{
-            .size = @sizeOf(async_host.Descriptor),
+            .size = async_host.descriptor_v1_size,
             .title = abi.view("VCS status"),
             .type = abi.view("vcs.status"),
             .work = &work,
@@ -80,7 +80,7 @@ pub const Query = struct {
         self.detail_result = error.Cancelled;
         self.published.store(false, .monotonic);
         self.discard = false;
-        const descriptor: async_host.Descriptor = .{ .size = @sizeOf(async_host.Descriptor), .title = abi.view("VCS read-only detail"), .type = abi.view("vcs.detail"), .work = &work, .user = self };
+        const descriptor: async_host.Descriptor = .{ .size = async_host.descriptor_v1_size, .title = abi.view("VCS read-only detail"), .type = abi.view("vcs.detail"), .work = &work, .user = self };
         self.admitting = true;
         defer self.admitting = false;
         errdefer if (!self.task.occupied()) {
@@ -279,7 +279,7 @@ pub const Resolution = struct {
         self.published.store(false, .monotonic);
         self.discard = false;
         const descriptor: async_host.Descriptor = .{
-            .size = @sizeOf(async_host.Descriptor),
+            .size = async_host.descriptor_v1_size,
             .title = abi.view("VCS repository discovery"),
             .type = abi.view("vcs.resolve"),
             .work = &work,

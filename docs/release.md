@@ -427,3 +427,9 @@ full regression, and SDK pull requests always run full regression. A failed requ
 regression blocks packaging. All packages still undergo official format verification
 and digest checks; skipping regression is not proof of passing regression.
 The existing upstream-candidate-packages artifact name is retained for compatibility.
+
+### Pulse 1.0.62 append-only ABI adaptation
+
+Keep command descriptors at the original 96-byte advertised prefix. Basic task descriptors and progress retain 64 and 72 bytes; stepped tasks use the official 128/192-byte layouts when declared by the pinned SDK, otherwise the audited legacy extension. The Companion and Share task paths share the same helpers. The generated raw bindings are unchanged from the exact candidate generation. Tree and dialog requests built with the current SDK use zero/default-initialized optional fields; the new UI menu array and preview extensions are not enabled by this change. Candidate packaging and actual host acceptance remain required before publishing.
+
+The binding generator retains the complete Pulse namespace and compiler translation helpers, not transitive host C runtime declarations. It checks the resulting SDK declarations and diagnostics byte for byte on regeneration; a Pulse declaration depending on an excluded C declaration fails generation. This prevents Linux glibc typedefs/macros from contaminating the Windows-target SDK binding. Header digests, exact upstream revision and C ABI checks remain mandatory.
