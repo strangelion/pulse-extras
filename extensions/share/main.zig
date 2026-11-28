@@ -132,15 +132,9 @@ fn destroy(raw_instance: ?*anyopaque) callconv(.c) void {
     self.active = false;
     if (self.command_id != 0) self.menu.unregister(self.command_id) catch |err| switch (err) {
         error.State => {},
-        else => {
-            diag.status("share-command-unregister", @intFromError(err));
-            return;
-        },
+        else => diag.status("share-command-unregister", @intFromError(err)),
     };
-    self.legacy.close() catch |err| {
-        diag.status("share-legacy-destroy", @intFromError(err));
-        return;
-    };
+    self.legacy.close() catch |err| diag.status("share-legacy-destroy", @intFromError(err));
     if (self.task) |*task| task.retireAtHostDestroy();
     allocator.destroy(self);
 }
@@ -168,7 +162,10 @@ export fn PulsePluginEntryV1(host_ptr: ?*const abi.HostV1, out_ptr: ?*abi.Plugin
         allocator.destroy(self);
         return statusOf(err);
     };
-    if (self.command_id == 0) return abi.error_state;
+    if (self.command_id == 0) {
+        allocator.destroy(self);
+        return abi.error_state;
+    }
     out.* = .{
         .size = @sizeOf(abi.PluginV1),
         .version = abi.abi_version,

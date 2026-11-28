@@ -24,10 +24,26 @@ pub fn find(value: []const u8) ?Finding {
         .{ .code = "CLIPBOARD_DECLINED", .technical = "clipboard sync declined", .user = "未批准自动剪贴板会话。" },
         .{ .code = "DIRECTORY_DECLINED", .technical = "directory service declined", .user = "未批准开启只读目录服务。" },
         .{ .code = "SPOOL_MISSING", .technical = "receive spool missing", .user = "私有暂存目录尚未创建。请在「设备」页点「初始化本机」，或在设置里更改位置。" },
+        .{ .code = "STORE_UNINITIALIZED", .technical = "identity missing", .user = "本机身份尚未初始化。请在「设备」或「设置」页点击「初始化本机」。" },
+        .{ .code = "STORE_UNINITIALIZED", .technical = "store not initialized", .user = "本机身份目录尚未初始化。请在「设备」或「设置」页点击「初始化本机」。" },
+        .{ .code = "DESTINATION_EXISTS", .technical = "destination already exists", .user = "接收目录中已存在同名文件，已停止传输以避免覆盖。" },
+        .{ .code = "DECLINED", .technical = "local user declined", .user = "已拒绝本次传输请求。" },
+        .{ .code = "DECLINED", .technical = "peer declined", .user = "对端拒绝了本次传输请求。" },
+        .{ .code = "DECLINED", .technical = "batch not approved", .user = "对端未批准本次批量传输。" },
+        .{ .code = "PROMPT_TIMEOUT", .technical = "confirmation timed out", .user = "等待确认超时，本次任务已自动结束。" },
+        .{ .code = "PAIR_CODE", .technical = "pairing code", .user = "配对连接码不匹配或已轮换过期，请核对最新的 8 位连接码。" },
     };
     for (messages) |message| {
         if (std.mem.startsWith(u8, error_text, message.technical)) return .{ .code = message.code, .message = message.user };
     }
+    if (std.mem.indexOf(u8, error_text, "no application protocol") != null or std.mem.indexOf(u8, error_text, "application protocol") != null or std.mem.indexOf(u8, error_text, "ALPN") != null)
+        return .{ .code = "PROTOCOL_MISMATCH", .message = "收发模式不匹配：发送单文件请点「接收单文件」，发送文件夹或多个文件请点「接收文件夹 / 多文件」，QUIC 需双方一致。" };
+    if (std.mem.indexOf(u8, error_text, "connection refused") != null or std.mem.indexOf(u8, error_text, "actively refused") != null)
+        return .{ .code = "CONNECTION_REFUSED", .message = "无法连接到对端：请确认对端已开启接收或配对，且端口未被防火墙拦截。" };
+    if (std.mem.indexOf(u8, error_text, "already exists") != null or std.mem.indexOf(u8, error_text, "file exists") != null)
+        return .{ .code = "DESTINATION_EXISTS", .message = "接收目录中已存在同名文件，未覆盖原文件。" };
+    if (std.mem.indexOf(u8, error_text, "pake") != null or std.mem.indexOf(u8, error_text, "wrong code") != null or std.mem.indexOf(u8, error_text, "confirmation mismatch") != null)
+        return .{ .code = "PAIR_CODE", .message = "配对连接码不匹配或已过期，请核对最新的 8 位连接码。" };
     if (std.mem.indexOf(u8, error_text, "i/o timeout") != null or std.mem.indexOf(u8, error_text, "deadline exceeded") != null)
         return .{ .code = "TIMEOUT", .message = "连接超时。请检查两台设备的网络、端口及接收是否仍在运行。" };
     if (std.mem.indexOf(u8, error_text, "fp mismatch") != null or std.mem.indexOf(u8, error_text, "certificate pin mismatch") != null)
@@ -48,5 +64,8 @@ pub fn localize(value: []const u8) []const u8 {
 
 test "explain endpoint errors and retain unexpected diagnostic information" {
     try std.testing.expect(std.mem.startsWith(u8, localize("Pulse Share: peer must be a permitted numeric address and port"), "请输入"));
+    try std.testing.expect(std.mem.startsWith(u8, localize("tls: no application protocol"), "收发模式不匹配"));
+    try std.testing.expect(std.mem.startsWith(u8, localize("dial tcp 192.168.1.2:45843: connectex: connection refused"), "无法连接到对端"));
+    try std.testing.expect(std.mem.startsWith(u8, localize("Pulse Share: destination already exists"), "接收目录中已存在同名文件"));
     try std.testing.expectEqualStrings("Pulse Share: unexpected error", localize("Pulse Share: unexpected error"));
 }

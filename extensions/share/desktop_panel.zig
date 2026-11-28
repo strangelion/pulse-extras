@@ -43,7 +43,7 @@ fn render(node: *const ui.Node, parent: c_int, update: bool) !void {
     const enabled = try zero(&enable_buffer, node.enabled_binding.value);
     const text = string(if (node.type == t.text_input) node.placeholder.value else node.text.value);
     const style = string(node.kind.value);
-    const appearance: c_int = if (std.mem.eql(u8, style, "password")) 1 else if (std.mem.eql(u8, style, "primary")) 2 else 0;
+    const appearance: c_int = if (std.mem.eql(u8, style, "password")) 1 else if (std.mem.eql(u8, style, "primary")) 2 else if (std.mem.eql(u8, style, "danger")) 3 else 0;
     const index = share_desktop_node(parent, kind, id, key, enabled, text.ptr, @intCast(text.len), appearance);
     if (index < 0) return error.State;
     if (node.type == t.select and node.options.present != 0 and (!update or !std.mem.endsWith(u8, id, "-select"))) {

@@ -98,8 +98,8 @@ pub const Request = struct {
         if (self.mode == .pair_join and self.peer.len == 0) return error.InvalidInput;
         if (self.root_service and self.port.len == 0) return error.InvalidInput;
         if (self.root_connect and self.peer.len == 0) return error.InvalidInput;
-        if (self.mode == .receive and !self.sync_clipboard and (self.destination.len == 0 or self.spool.len == 0 or (!self.root_connect and self.port.len == 0))) return error.InvalidInput;
-        if (self.mode == .receive and self.sync_clipboard and (self.port.len == 0 or self.clipboard.len == 0)) return error.InvalidInput;
+        if (self.mode == .receive and !self.sync_clipboard and (self.destination.len == 0 or self.spool.len == 0)) return error.InvalidInput;
+        if (self.mode == .receive and self.sync_clipboard and self.clipboard.len == 0) return error.InvalidInput;
     }
 };
 
@@ -491,18 +491,24 @@ const Output = struct {
             if (self.waiting or self.generation >= 16) return error.PromptProtocol;
             self.generation += 1;
             self.waiting = true;
-            var msg: [4200]u8 = undefined;
-            const prompt = try std.fmt.bufPrint(&msg, "PROMPT {d} {s}", .{ self.generation, line });
-            self.report(ctx, prompt);
+            var msg: [4096]u8 = undefined;
+            var prefix_buf: [24]u8 = undefined;
+            const prefix = try std.fmt.bufPrint(&prefix_buf, "PROMPT {d} ", .{self.generation});
+            var fit = @min(line.len, msg.len - prefix.len);
+            while (fit > 0 and !std.unicode.utf8ValidateSlice(line[0..fit])) fit -= 1;
+            @memcpy(msg[0..prefix.len], prefix);
+            @memcpy(msg[prefix.len..][0..fit], line[0..fit]);
+            self.report(ctx, msg[0 .. prefix.len + fit]);
         } else if (!self.waiting and line.len != 0) {
             if (request.mode == .discover or request.mode == .peer_list or request.mode == .recovery_list or request.mode == .interfaces or std.mem.eql(u8, request.queue_action, "list") or (request.browse and request.mode == .receive and request.remote_path.len == 0)) {
-                if (!self.inventory_truncated and line.len + 1 + 32 <= self.inventory.len - self.inventory_len) {
+                if (!self.inventory_truncated and line.len + 2 + 32 <= self.inventory.len - self.inventory_len) {
                     @memcpy(self.inventory[self.inventory_len..][0..line.len], line);
                     self.inventory_len += line.len;
-                    self.inventory[self.inventory_len] = '\n';
-                    self.inventory_len += 1;
+                    self.inventory[self.inventory_len] = '\r';
+                    self.inventory[self.inventory_len + 1] = '\n';
+                    self.inventory_len += 2;
                 } else if (!self.inventory_truncated) {
-                    const note = "[inventory truncated]\n";
+                    const note = "[inventory truncated]\r\n";
                     @memcpy(self.inventory[self.inventory_len..][0..note.len], note);
                     self.inventory_len += note.len;
                     self.inventory_truncated = true;
@@ -771,7 +777,8 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
             return error.Wait;
         }
         const now = GetTickCount64();
-        if (stop_at == null and (cancelled(ctx) or now -% start >= 40 * 60 * 1000)) {
+        const long_lived = request.sync_clipboard or request.root_service;
+        if (stop_at == null and (cancelled(ctx) or (!long_lived and now -% start >= 40 * 60 * 1000))) {
             if (SetEvent(event) == 0) {
                 if (!drain(job)) return error.Drain;
                 return error.CancelUncertain;

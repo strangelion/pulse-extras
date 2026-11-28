@@ -16,7 +16,7 @@
 #include <wchar.h>
 
 enum { STACK, GRID, GROUP_BOX, TEXT, BUTTON, EDIT_FIELD, SELECT, PROGRESS, TABS, TAB, HEADING };
-enum { FIRST_CONTROL = 100, MAX_NODES = 288, TIMER = 1, MOTION_TIMER = 2, NOTICE_TIMER = 3, FULL = 1000 };
+enum { FIRST_CONTROL = 100, MAX_NODES = 384, TIMER = 1, MOTION_TIMER = 2, NOTICE_TIMER = 3, FULL = 1000 };
 enum { WHEEL_MS = 135, SECTION_MS = 200, BUTTON_MS = 110, TAB_MS = 160 };
 static const int page_width[] = { 850, 552, 696, 568, 632, 760 };
 
@@ -269,7 +269,7 @@ int share_desktop_node(int parent, int kind, const char *id, const char *key,
     case GROUP_BOX: class_name = L"Static"; break;
     case TEXT:
         if (key[0] && strcmp(id, "pair-code") && strcmp(id, "byte-count") &&
-            strcmp(id, "current-peer") && strcmp(id, "receive-peer") && strcmp(id, "pair-help") &&
+            strcmp(id, "current-peer") && strcmp(id, "receive-peer") && strcmp(id, "advanced-current-peer") && strcmp(id, "pair-help") &&
             strcmp(id, "save-location") && strcmp(id, "current-network") && strcmp(id, "send-endpoint-label")) {
             class_name = L"Edit";
             style |= WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY;
@@ -318,12 +318,22 @@ int share_desktop_node(int parent, int kind, const char *id, const char *key,
 }
 
 void share_desktop_options(int i, int reset, const char *value, int length) {
+    if (i < 0 || i >= count || !nodes[i].hwnd) return;
     HWND hwnd = nodes[i].hwnd;
     if (reset) SendMessageW(hwnd, CB_RESETCONTENT, 0, 0);
     wchar_t item[256];
     wide(value, length, item, ARRAYSIZE(item));
     if (length) SendMessageW(hwnd, CB_ADDSTRING, 0, (LPARAM)item);
     if (reset) SendMessageW(hwnd, CB_SETCURSEL, 0, 0);
+}
+
+static size_t status_display_columns(const wchar_t *text) {
+    size_t cols = 0;
+    for (const wchar_t *p = text; *p; p++) {
+        cols += (*p >= 0x1100) ? 2 : 1;
+        if (cols > 44) return cols;
+    }
+    return cols;
 }
 
 void share_desktop_set(const char *key, const char *value, int length) {
@@ -353,7 +363,7 @@ void share_desktop_set(const char *key, const char *value, int length) {
     if (!strcmp(key, "pair-code") && showing_code != (length != 0)) { showing_code = length != 0; relayout = TRUE; }
     if (!strcmp(key, "bytes") && has_bytes != (length != 0)) { has_bytes = length != 0; relayout = TRUE; }
     if (!strcmp(key, "status")) {
-        BOOL large = wcschr(text, L'\n') != NULL || wcslen(text) > 42;
+        BOOL large = wcschr(text, L'\n') != NULL || status_display_columns(text) > 44;
         if (long_status != large) { long_status = large; relayout = TRUE; }
     }
     for (int i = 0; i < count; i++) {
@@ -739,7 +749,11 @@ static void drop(HDROP request) {
             length = 0;
             break;
         }
-        if (i) paths[length++] = '|';
+        if (i) {
+            if (length + 2 >= sizeof(paths)) { length = 0; break; }
+            paths[length++] = '|';
+        }
+        if (length + 1 >= sizeof(paths)) { length = 0; break; }
         int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, path, (int)n,
             paths + length, (int)(sizeof(paths) - length - 1), NULL, NULL);
         if (!size) { length = 0; break; }
@@ -778,17 +792,18 @@ static BOOL draw_control(const DRAWITEMSTRUCT *item) {
         BOOL disabled = (item->itemState & ODS_DISABLED) != 0;
         BOOL down = (item->itemState & ODS_SELECTED) != 0;
         BOOL primary = n && n->appearance == 2 && !disabled;
+        BOOL danger = n && n->appearance == 3 && !disabled;
         FillRect(dc, &area, !n || (inside_card(i) && !in_task(i)) ? card_brush : canvas_brush);
-        COLORREF idle = primary ? RGB(52, 72, 155) : card();
-        COLORREF hovered = primary ? RGB(68, 90, 181) : RGB(232, 237, 248);
-        COLORREF pressed = primary ? RGB(35, 49, 107) : RGB(214, 222, 239);
+        COLORREF idle = primary ? RGB(52, 72, 155) : danger ? RGB(188, 48, 54) : card();
+        COLORREF hovered = primary ? RGB(68, 90, 181) : danger ? RGB(212, 62, 68) : RGB(232, 237, 248);
+        COLORREF pressed = primary ? RGB(35, 49, 107) : danger ? RGB(152, 34, 40) : RGB(214, 222, 239);
         fill = disabled ? RGB(239, 241, 246) : down ? pressed : blend(idle, hovered, n ? n->hover.value : 0);
         if (down && motion_enabled) {
             area.top += scale(1);
             InflateRect(&area, -scale(1), 0);
         }
-        line = primary ? fill : border();
-        fg = primary ? RGB(255, 255, 255) : disabled ? RGB(104, 112, 129) : ink();
+        line = (primary || danger) ? fill : border();
+        fg = (primary || danger) ? RGB(255, 255, 255) : disabled ? RGB(104, 112, 129) : ink();
         GetWindowTextW(item->hwndItem, text, ARRAYSIZE(text));
     } else return FALSE;
     surface(dc, area, fill, line, 12);
@@ -1315,6 +1330,7 @@ int share_desktop_default_network(char *out, int capacity) {
         }
     }
     const unsigned char *best = NULL, *fallback = NULL;
+    const IP_ADAPTER_ADDRESSES *best_nic = NULL;
     ULONG best_metric = ULONG_MAX;
     BOOL tie = FALSE;
     int candidates = 0;
@@ -1333,9 +1349,10 @@ int share_desktop_default_network(char *out, int capacity) {
             if (!nic->FirstGatewayAddress) continue;
             if (!best || nic->Ipv4Metric < best_metric) {
                 best = ip;
+                best_nic = nic;
                 best_metric = nic->Ipv4Metric;
                 tie = FALSE;
-            } else if (nic->Ipv4Metric == best_metric) tie = TRUE;
+            } else if (nic != best_nic && nic->Ipv4Metric == best_metric) tie = TRUE;
         }
     }
     if (tie) best = NULL;
@@ -1421,7 +1438,7 @@ int share_desktop_paste(char *out, int capacity) {
     return result;
 }
 
-enum { POPUP_COPY = 1, POPUP_COPY_ADDRESS, POPUP_CLOSE };
+enum { POPUP_COPY = 100, POPUP_COPY_ADDRESS = 101, POPUP_CLOSE = 102 };
 
 static void popup_fonts(void) {
     if (!pair_popup) return;
@@ -1441,6 +1458,7 @@ static LRESULT CALLBACK popup_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         switch (LOWORD(w)) {
         case POPUP_COPY: share_desktop_command("share-copy-pair"); return 0;
         case POPUP_COPY_ADDRESS: share_desktop_command("share-copy-address"); return 0;
+        case IDCANCEL:
         case POPUP_CLOSE: return SendMessageW(hwnd, WM_CLOSE, 0, 0);
         default: return 0;
         }
@@ -1553,13 +1571,14 @@ int share_desktop_stamp(char *out, int capacity) {
 int share_desktop_export_diagnostics(const char *bytes, int length) {
     if (length <= 0 || length > 8192) return -1;
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    if (FAILED(hr)) return -1;
+    BOOL com_init = SUCCEEDED(hr);
+    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) return -1;
     IFileSaveDialog *dialog = NULL;
     int result = -1;
     hr = CoCreateInstance(&CLSID_FileSaveDialog, NULL, CLSCTX_INPROC_SERVER, &IID_IFileSaveDialog, (void **)&dialog);
     if (SUCCEEDED(hr)) {
         const COMDLG_FILTERSPEC types[] = {{L"诊断文本 (*.txt)", L"*.txt"}};
-        DWORD options = FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR | FOS_NOREADONLYRETURN;
+        DWORD options = FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR | FOS_NOREADONLYRETURN | FOS_OVERWRITEPROMPT;
         hr = IFileSaveDialog_SetOptions(dialog, options);
         if (SUCCEEDED(hr)) hr = IFileSaveDialog_SetFileTypes(dialog, ARRAYSIZE(types), types);
         if (SUCCEEDED(hr)) hr = IFileSaveDialog_SetDefaultExtension(dialog, L"txt");
@@ -1572,11 +1591,12 @@ int share_desktop_export_diagnostics(const char *bytes, int length) {
             if (SUCCEEDED(IFileSaveDialog_GetResult(dialog, &item))) {
                 PWSTR path = NULL;
                 if (SUCCEEDED(IShellItem_GetDisplayName(item, SIGDN_FILESYSPATH, &path))) {
-                    HANDLE file = CreateFileW(path, GENERIC_WRITE | DELETE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+                    HANDLE file = CreateFileW(path, GENERIC_WRITE | DELETE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
                     if (file != INVALID_HANDLE_VALUE) {
+                        BOOL existed = GetLastError() == ERROR_ALREADY_EXISTS;
                         DWORD written;
                         if (WriteFile(file, bytes, (DWORD)length, &written, NULL) && written == (DWORD)length && FlushFileBuffers(file)) result = 1;
-                        else {
+                        else if (!existed) {
                             FILE_DISPOSITION_INFO discard = { .DeleteFile = TRUE };
                             SetFileInformationByHandle(file, FileDispositionInfo, &discard, sizeof(discard));
                         }
@@ -1589,6 +1609,6 @@ int share_desktop_export_diagnostics(const char *bytes, int length) {
         }
         IFileSaveDialog_Release(dialog);
     }
-    CoUninitialize();
+    if (com_init) CoUninitialize();
     return result;
 }

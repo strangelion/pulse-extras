@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	quic "github.com/quic-go/quic-go"
@@ -257,17 +258,37 @@ func batchSend(ctx context.Context,link *batchLink,source batchSource,kind share
 	budget,err:=sharecore.NewBudget(channels);if err!=nil{return err}
 	// Revalidate the local grant at each requested block, not merely lane
 	// establishment. Already transmitted bytes cannot be recalled.
+	var sentBytes atomic.Uint64
+	totalBytes := m.TotalBytes()
 	checkedSource:=func(ctx context.Context,i uint32)(io.ReaderAt,io.Closer,error){
 		if err:=check(ctx);err!=nil{return nil,nil,err}
-		return source.open(ctx,i)
+		r,c,err:=source.open(ctx,i)
+		if err!=nil{return nil,nil,err}
+		return &countingReaderAt{r: r, count: &sentBytes},c,nil
 	}
 	sender,err:=sharecore.NewSender(tx,m,budget,checkedSource);if err!=nil{return err}
+	sampleCtx,stopSample:=context.WithCancel(ctx)
+	var sampler sync.WaitGroup
+	sampler.Add(1)
+	go func(){
+		defer sampler.Done()
+		ticker:=time.NewTicker(time.Second);defer ticker.Stop()
+		var last uint64
+		consoleProgress(0,totalBytes)
+		for{select{
+		case <-sampleCtx.Done():return
+		case <-ticker.C:
+			now:=min(sentBytes.Load(),totalBytes)
+			if now>last{last=now}
+			consoleProgress(last,totalBytes)
+		}}
+	}()
 	var wg sync.WaitGroup
 	active:=make(chan struct{},channels)
 	var workErr error
 	var mu sync.Mutex
 	fail:=func(err error){mu.Lock();if workErr==nil{workErr=err};mu.Unlock();cancel()}
-	defer func(){cancel();wg.Wait()}()
+	defer func(){stopSample();sampler.Wait();cancel();wg.Wait()}()
 	var command [1]byte
 	for{
 		if _,err:=io.ReadFull(control,command[:]);err!=nil{
@@ -289,13 +310,28 @@ func batchSend(ctx context.Context,link *batchLink,source batchSource,kind share
 			}()
 		case 2:
 			wg.Wait()
+			stopSample();sampler.Wait()
 			if err:=check(ctx);err!=nil{return err}
 			mu.Lock();e:=workErr;mu.Unlock();if e!=nil{return e}
+			consoleProgress(totalBytes,totalBytes)
 			if err:=writeAll(control,[]byte{3});err!=nil{return err}
 			return link.finish(ctx)
 		default:return errors.New("invalid batch control command")
 		}
 	}
+}
+
+type countingReaderAt struct {
+	r     io.ReaderAt
+	count *atomic.Uint64
+}
+
+func (c *countingReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	n, err := c.r.ReadAt(p, off)
+	if n > 0 {
+		c.count.Add(uint64(n))
+	}
+	return n, err
 }
 
 type batchReceiveOptions struct{

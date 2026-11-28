@@ -78,6 +78,8 @@ pub const Legacy = struct {
     host: host_mod.Host,
     resources: ?raw.PulseResourcesV1 = null,
     pending: u64 = 0,
+    opening: bool = false,
+    completed_sync: bool = false,
     loaded: bool = false,
     active: bool = false,
     poisoned: bool = false,
@@ -91,8 +93,15 @@ pub const Legacy = struct {
         if (resources.cancel_request == null) return error.Unavailable;
         self.resources = resources;
         self.active = true;
+        self.opening = true;
+        self.completed_sync = false;
+        defer self.opening = false;
         var id: u64 = 0;
-        try host_mod.mapStatus(read(resources.context, &completed, self, &id));
+        host_mod.mapStatus(read(resources.context, &completed, self, &id)) catch |err| {
+            self.active = false;
+            return err;
+        };
+        if (self.completed_sync) return;
         if (id == 0) {
             self.poisoned = true;
             return error.State;
@@ -113,8 +122,14 @@ pub const Legacy = struct {
 
     fn completed(user: ?*anyopaque, reply: [*c]const raw.PulseResourcesReply) callconv(.c) void {
         const self: *Legacy = @ptrCast(@alignCast(user orelse return));
-        if (reply == null or reply.*.size < @sizeOf(raw.PulseResourcesReply) or self.pending == 0 or reply.*.request_id != self.pending) return;
-        self.pending = 0;
+        if (reply == null or reply.*.size < @sizeOf(raw.PulseResourcesReply)) return;
+        if (self.opening and self.pending == 0) {
+            self.completed_sync = true;
+        } else if (self.pending == 0 or reply.*.request_id != self.pending) {
+            return;
+        } else {
+            self.pending = 0;
+        }
         if (!self.active or reply.*.status != abi.ok or reply.*.operation != raw.PULSE_RESOURCES_SETTINGS_GET) return;
         const snapshot = reply.*.settings;
         if (snapshot.count > 1024 or (snapshot.count != 0 and snapshot.values == null)) return;

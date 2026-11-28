@@ -160,8 +160,9 @@ const Instance = struct {
         if (self.closing and terminal) return;
         const state = snap.state;
         const message = snap.message();
+        const is_progress = std.mem.startsWith(u8, message, "PROGRESS ");
         var prompt: u32 = 0;
-        var useful = message;
+        var useful = if (is_progress) "" else message;
         if (std.mem.startsWith(u8, message, "PROMPT ")) {
             if (std.mem.indexOfScalar(u8, message[7..], ' ')) |end| {
                 useful = message[end + 8 ..];
@@ -181,13 +182,13 @@ const Instance = struct {
         self.shown_prompt = prompt;
         self.set("confirm", if (prompt != 0) "true" else "false");
         var detail: [4300]u8 = undefined;
-        if (terminal or useful.len != 0 or state == .cancelling) {
+        if (terminal or useful.len != 0 or state == .cancelling or is_progress) {
             const prefix: []const u8 = switch (state) {
                 .completed => "完成",
                 .failed => "任务失败",
                 .cancelled => "已取消",
                 .cancelling => "正在取消",
-                .running => if (prompt != 0) "请核对并确认" else "运行中",
+                .running => if (prompt != 0) "请核对并确认" else if (is_progress) "正在传输…" else "运行中",
             };
             const text = if (self.task.request.mode == .device_prepare and state == .completed)
                 "本机身份和私有暂存目录已就绪，可以开始配对。"
@@ -195,10 +196,19 @@ const Instance = struct {
             self.status(text);
         }
         if (snap.total != 0 and snap.done <= snap.total) {
-            var count: [72]u8 = undefined;
+            var count: [96]u8 = undefined;
+            var done_buf: [32]u8 = undefined;
+            var total_buf: [32]u8 = undefined;
             var percent: [4]u8 = undefined;
-            self.set("bytes", std.fmt.bufPrint(&count, "{d} / {d} 字节", .{ snap.done, snap.total }) catch "");
-            self.set("progress", std.fmt.bufPrint(&percent, "{d}", .{@as(u128, snap.done) * 100 / snap.total}) catch "0");
+            const pct = @as(u128, snap.done) * 100 / snap.total;
+            self.set("bytes", std.fmt.bufPrint(&count, "{s} / {s}（{d}%）", .{
+                formatByteSize(&done_buf, snap.done),
+                formatByteSize(&total_buf, snap.total),
+                pct,
+            }) catch "");
+            self.set("progress", std.fmt.bufPrint(&percent, "{d}", .{pct}) catch "0");
+        } else if (terminal) {
+            self.set("bytes", "");
         }
         self.updatePairDisplay(&snap, terminal, prompt);
         if (terminal) {
@@ -242,9 +252,14 @@ const Instance = struct {
     fn updatePairDisplay(self: *Instance, snap: *const task_mod.Snapshot, terminal: bool, prompt: u32) void {
         const can_copy = !terminal and snap.state == .running and prompt == 0;
         const mode = self.task.request.mode;
-        const address_ready = can_copy and mode == .receive and snap.endpoint_len > 0;
+        const serving_directory = mode == .send and self.task.request.root_service;
+        const address_ready = can_copy and (mode == .receive or serving_directory) and snap.endpoint_len > 0;
         self.set("copy-address-ready", if (address_ready) "true" else "false");
-        if (!address_ready) self.set("copy-address-caption", "复制接收地址");
+        if (!address_ready) {
+            self.set("copy-address-caption", if (serving_directory) "复制服务地址" else "复制接收地址");
+        } else if (serving_directory) {
+            self.set("copy-address-caption", "复制服务地址");
+        }
         const packed_code = self.task.decisions.display_code.load(.acquire);
         const available: u32 = @truncate(packed_code);
         const code: u32 = if (can_copy and mode == .pair_host and available <= 100000000) available else 0;
@@ -283,10 +298,14 @@ const Instance = struct {
         defer @memset(&buffer, 0);
         const address = pair_ticket.endpoint(snap.listeningAddress(), &buffer) orelse return self.feedback("当前没有可复制的监听地址。", true);
         if (!pairing) {
-            if (self.task.request.mode != .receive and self.task.request.mode != .pair_host) return;
+            const serving_directory = self.task.request.mode == .send and self.task.request.root_service;
+            if (self.task.request.mode != .receive and self.task.request.mode != .pair_host and !serving_directory) return;
             if (share_desktop_copy(address.ptr, @intCast(address.len), 0) == 0) return self.feedback("剪贴板正忙，请重试。", true);
             if (self.task.request.mode == .pair_host) {
                 share_desktop_pair_copied(0);
+            } else if (serving_directory) {
+                self.set("copy-address-caption", "已复制服务地址");
+                notice("已复制目录服务地址。", false);
             } else {
                 self.set("copy-address-caption", "已复制接收地址");
                 notice("已复制接收地址。", false);
@@ -402,6 +421,9 @@ const Instance = struct {
         _ = prefs.Values.decode(encoded) catch return self.feedback("请检查端口和通道等设置。", true);
         if (share_desktop_preferences_write(encoded.ptr, @intCast(encoded.len)) == 0) return self.feedback("无法写入本机设置。", true);
         self.saved = values;
+        const kind = self.saved.value(12);
+        const kind_index = if (std.mem.eql(u8, kind, "image")) "1" else if (std.mem.eql(u8, kind, "files")) "2" else "0";
+        self.set("receive-clipboard-kind", kind_index);
         self.feedback("已保存设置。", false);
     }
 
@@ -524,9 +546,17 @@ const Instance = struct {
                 },
                 .peer_add, .peer_revoke, .pair_host, .pair_join => {
                     self.peer_choices = .{};
-                    if (self.task.request.mode != .peer_revoke) {
+                    if (self.task.request.mode == .peer_revoke) {
+                        self.set("paired", "");
+                        self.updateAlias();
+                    } else {
                         self.set("paired", self.task.request.paired.slice());
+                        self.updateAlias();
                         self.suggestName(if (self.task.request.routed) "routed-alias" else "pair-alias");
+                        if (self.task.request.mode == .peer_add) {
+                            self.set("advanced-pair-alias", "");
+                            self.set("fingerprint", "");
+                        }
                     }
                 },
                 else => {},
@@ -568,7 +598,7 @@ const Instance = struct {
         self.set("inventory", if (self.inventory_len == 0) "" else self.inventory[0..self.inventory_len]);
         if (self.task.request.mode != .send and self.task.request.mode != .receive) return;
         var line: [256]u8 = undefined;
-        const record = std.fmt.bufPrint(&line, "{s} · {s} · {s}\n", .{
+        const record = std.fmt.bufPrint(&line, "{s} · {s} · {s}\r\n", .{
             if (self.task.request.mode == .send) "发送" else "接收",
             self.task.request.paired.slice(),
             switch (state) {
@@ -578,7 +608,7 @@ const Instance = struct {
             },
         }) catch return;
         // Keep only a bounded, session-local history; do not persist paths.
-        if (record.len + self.history_len > self.history.len) {
+        while (record.len + self.history_len > self.history.len and self.history_len > 0) {
             const remove = std.mem.indexOfScalar(u8, self.history[0..self.history_len], '\n') orelse self.history_len;
             const count = @min(remove + 1, self.history_len);
             std.mem.copyForwards(u8, self.history[0 .. self.history_len - count], self.history[count..self.history_len]);
@@ -628,7 +658,9 @@ const Instance = struct {
                 "prune"
             else
                 "";
-            if (next.queue_action.len != 0 and !std.mem.eql(u8, next.queue_action, "enqueue")) {
+            const local_queue_action = next.queue_action.len != 0 and !std.mem.eql(u8, next.queue_action, "enqueue");
+            const queue_manage_only = local_queue_action and !std.mem.eql(u8, next.queue_action, "run");
+            if (local_queue_action) {
                 try self.readField("queue-id", &next.queue_id);
                 if (std.mem.eql(u8, next.queue_action, "list")) try self.readField("browse-offset", &next.browse_offset);
                 if (std.mem.eql(u8, next.queue_action, "discard") and next.queue_id.len == 0) return error.Argument;
@@ -636,7 +668,7 @@ const Instance = struct {
             next.sync_clipboard = std.mem.eql(u8, batch_action, "share-sync-send") or std.mem.eql(u8, batch_action, "share-sync-receive");
             next.root_service = std.mem.eql(u8, batch_action, "share-directory-service");
             next.root_connect = std.mem.eql(u8, batch_action, "share-directory-connect");
-            if (!std.mem.eql(u8, batch_action, "share-send-selection") and !std.mem.eql(u8, batch_action, "share-receive-selection")) {
+            if (!local_queue_action and !std.mem.eql(u8, batch_action, "share-send-selection") and !std.mem.eql(u8, batch_action, "share-receive-selection")) {
                 var transport: managed.Field = .{};
                 try self.readField("batch-mode", &transport);
                 const value = transport.slice();
@@ -648,7 +680,7 @@ const Instance = struct {
             if (std.mem.eql(u8, batch_action, "share-clipboard-send") or std.mem.eql(u8, batch_action, "share-sync-send")) {
                 try self.readClipboardKind("send-clipboard-kind", &next.clipboard);
                 if (next.clipboard.len == 0) return error.Argument;
-            } else if (mode == .send) next.sources = self.selected_batch;
+            } else if (mode == .send and !queue_manage_only) next.sources = self.selected_batch;
             if (std.mem.eql(u8, batch_action, "share-clipboard-receive") or std.mem.eql(u8, batch_action, "share-sync-receive")) {
                 next.clipboard_receive = true;
                 try self.readClipboardKind("receive-clipboard-kind", &next.clipboard);
@@ -666,15 +698,25 @@ const Instance = struct {
                 }
             }
         }
+        const local_queue_action = next.queue_action.len != 0 and !std.mem.eql(u8, next.queue_action, "enqueue");
         switch (mode) {
-            .discover, .send, .receive, .pair_host, .pair_join => try self.readField(if (routed_pair) "routed-bind" else "bind", &next.bind),
+            .discover, .send, .receive, .pair_host, .pair_join => {
+                if (!local_queue_action) try self.readField(if (routed_pair) "routed-bind" else "bind", &next.bind);
+            },
             else => {},
         }
         if (mode != .discover and mode != .interfaces) try self.readField(if (use_spool) "spool" else "store", &next.store);
         const enrolling = managed.pairingMode(mode) or mode == .peer_add;
-        const alias_field = if (routed_pair) "routed-alias" else if (enrolling) "pair-alias" else "paired";
+        const alias_field = if (routed_pair) "routed-alias" else if (mode == .peer_add) "advanced-pair-alias" else if (enrolling) "pair-alias" else "paired";
         switch (mode) {
-            .send, .receive, .peer_add, .peer_revoke, .pair_host, .pair_join => try self.readField(alias_field, &next.paired),
+            .send, .receive, .peer_add, .peer_revoke, .pair_host, .pair_join => {
+                if (!local_queue_action) {
+                    try self.readField(alias_field, &next.paired);
+                    if (mode == .peer_add and next.paired.len == 0) {
+                        self.readField("pair-alias", &next.paired) catch {};
+                    }
+                }
+            },
             else => {},
         }
         if (enrolling and next.paired.len == 0) {
@@ -685,13 +727,13 @@ const Instance = struct {
         if (next.paired.len != 0 and !choices.validPeerName(next.paired.slice())) return error.PeerNameFormat;
         if (mode == .peer_add) try self.readField("fingerprint", &next.fingerprint);
         if (mode == .send) {
-            if (!next.batch) next.source = self.selected;
-            try self.readField("peer", &next.peer);
+            if (!next.batch and !local_queue_action) next.source = self.selected;
+            if (!next.root_service and !local_queue_action) try self.readField("peer", &next.peer);
             if (next.root_service) {
                 try self.readField("port", &next.port);
                 if (next.routed) try self.readField("allowed-source", &next.allowed_source);
             }
-            if (next.queue_action.len != 0 and !std.mem.eql(u8, next.queue_action, "enqueue")) {
+            if (local_queue_action) {
                 next.batch = false;
                 next.quic = false;
                 next.routed = false;
@@ -878,7 +920,7 @@ const Instance = struct {
             view.button("连接", "share-pair-join", "primary", "state.idle"),
         };
         const pairing_card = [_]ui.Node{
-            view.button("初始化本机", "share-prepare-device", "standard", "state.idle"),
+            view.button("首次使用：初始化本机", "share-prepare-device", "standard", "state.idle"),
             pair_alias.buildCustom("pair-alias-field", "pair-alias-label", "pair-alias", "配对名称"),
             view.grid("pair-actions", &pair_actions),
             view.button("粘贴配对信息", "share-paste-pair", "standard", "state.ui-idle"),
@@ -974,8 +1016,8 @@ const Instance = struct {
             view.container(ui.NodeKind.stack, "send-extras", &send_extras),
         };
         const alternate_receive = [_]ui.Node{
-            view.button("接收单文件", "share-receive", "standard", "state.idle"),
-            view.button("接收文件夹或多个文件", "share-receive-selection", "standard", "state.idle"),
+            view.button("接收单文件（不广播）", "share-receive", "standard", "state.idle"),
+            view.button("接收文件夹 / 多文件", "share-receive-selection", "standard", "state.idle"),
         };
         const receive_clipboard_actions = [_]ui.Node{
             view.button("接收剪贴板", "share-clipboard-receive", "standard", "state.idle"),
@@ -1001,9 +1043,9 @@ const Instance = struct {
             view.bound("save-location", "state.receive-location"),
             view.button("更改保存位置", "share-browse-destination", "standard", "state.ui-idle"),
             view.bound("receive-peer", "state.current-peer"),
-            view.button("开始接收 · 允许附近设备发现", "share-receive-advertise", "primary", "state.idle"),
+            view.button("开始接收单文件 · 允许附近发现", "share-receive-advertise", "primary", "state.idle"),
             view.grid("receive-options", &alternate_receive),
-            view.text("receive-confirm", "收到请求后，在下方核对并确认。", "caption"),
+            view.text("receive-confirm", "发送单个文件用「单文件」接收，发送文件夹或多文件用「文件夹 / 多文件」接收；收到请求后在下方核对确认。", "caption"),
         };
         const receive_content = [_]ui.Node{
             view.text("receive-heading", "接收文件", "section"),
@@ -1036,9 +1078,14 @@ const Instance = struct {
             view.button("手动指纹配对", "share-peer-add", "standard", "state.idle"),
             view.button("撤销当前配对", "share-peer-revoke", "danger", "state.idle"),
         };
+        var advanced_alias: view.FieldNodes = .{};
+        const advanced_alias_field = advanced_alias.buildCustom("advanced-alias-field", "advanced-alias-label", "advanced-pair-alias", "新配对设备名称（用于手动指纹配对）");
+        advanced_alias.children[1].placeholder = .{ .present = 1, .value = abi.view("留空自动生成名称") };
         const advanced_pair = [_]ui.Node{
+            view.bound("advanced-current-peer", "state.current-peer"),
+            advanced_alias_field,
             fields[7],
-            view.text("advanced-pair-help", "手动指纹配对前，请通过另一渠道核对完整指纹。", "caption"),
+            view.text("advanced-pair-help", "手动指纹配对前，请通过另一渠道核对完整指纹；「撤销当前配对」将撤销上方显示的当前对端。", "caption"),
             view.grid("advanced-pair-actions", &advanced_pair_actions),
         };
         const transport = [_]ui.Node{
@@ -1088,14 +1135,18 @@ const Instance = struct {
             view.container(ui.NodeKind.stack, "storage-options", &storage_options),
             view.grid("setup-actions", &setup_actions),
         };
-        const maintenance_actions = [_]ui.Node{
+        const maintenance_buttons = [_]ui.Node{
             view.button("检查暂存残留", "share-spool-recovery", "standard", "state.idle"),
             view.button("检查身份目录残留", "share-recovery-list", "standard", "state.idle"),
+        };
+        const maintenance_card = [_]ui.Node{
+            view.grid("maintenance-buttons", &maintenance_buttons),
+            view.bound("setup-inventory", "state.inventory"),
         };
         const setup_content = [_]ui.Node{
             view.text("setup-heading", "设置", "section"),
             view.group("setup-card", "设备与存储", &setup_card),
-            view.group("maintenance-card", "维护", &maintenance_actions),
+            view.group("maintenance-card", "维护", &maintenance_card),
         };
         const diagnostic_card = [_]ui.Node{
             view.bound("diagnostic-text", "state.diagnostic"),
@@ -1224,8 +1275,8 @@ fn command(self: *Instance, name: []const u8) void {
         const panel = self.panel orelse return;
         const input = panel.read(key, &value) catch return self.feedback("请输入完整的 8 位连接码。", true);
         const code = managed.parseCode(input) catch return self.feedback("请输入完整的 8 位连接码。", true);
+        self.start(.pair_join, false, false, routed, code, false, "") catch |err| return self.reportError(err);
         self.set(key, "");
-        self.start(.pair_join, false, false, routed, code, false, "") catch |err| self.reportError(err);
         return;
     }
     if (std.mem.eql(u8, name, "share-apply-prefs")) return self.applyPreferences();
@@ -1287,6 +1338,25 @@ fn command(self: *Instance, name: []const u8) void {
 }
 
 var instance: Instance = .{};
+
+fn formatByteSize(buffer: []u8, bytes: u64) []const u8 {
+    if (bytes >= 1024 * 1024 * 1024) {
+        const whole = bytes / (1024 * 1024 * 1024);
+        const tenths = (bytes % (1024 * 1024 * 1024)) * 10 / (1024 * 1024 * 1024);
+        return std.fmt.bufPrint(buffer, "{d}.{d} GB", .{ whole, tenths }) catch "";
+    }
+    if (bytes >= 1024 * 1024) {
+        const whole = bytes / (1024 * 1024);
+        const tenths = (bytes % (1024 * 1024)) * 10 / (1024 * 1024);
+        return std.fmt.bufPrint(buffer, "{d}.{d} MB", .{ whole, tenths }) catch "";
+    }
+    if (bytes >= 1024) {
+        const whole = bytes / 1024;
+        const tenths = (bytes % 1024) * 10 / 1024;
+        return std.fmt.bufPrint(buffer, "{d}.{d} KB", .{ whole, tenths }) catch "";
+    }
+    return std.fmt.bufPrint(buffer, "{d} B", .{bytes}) catch "";
+}
 
 fn canClassifyService(service: ?Service, snapshot: *const task_mod.Snapshot) bool {
     return switch (service orelse return false) {
