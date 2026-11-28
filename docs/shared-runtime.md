@@ -618,3 +618,16 @@ measurement for a reviewed per-image baseline; subsequent reviewed baselines
 must never be increased merely to pass CI. Existing C ABI tests retain the
 512 KiB VCS and Companion owner-thread limits. Real-host and allocation-failure
 coverage remain necessary, especially for deep trees, large batches and reentry.
+
+### Large owner objects: in-place update before structural replacement
+
+Keep the existing worker publication, owner thread and cache lifetimes. A large
+snapshot already stored in an instance does not need a new generic reference
+counted allocator: use an explicit owner scratch or copy only the populated
+prefix first. The VCS terminal view is owner-owned scratch; release must succeed
+before publishing it. Cache lookups borrow a pointer only until the immediate
+owner copy; no pointer escapes eviction. Companion running/source snapshots
+clear only their live prefix and copy only published rows under the existing
+lock. The 1024 instance cap is unchanged. Share's request and render workspace
+use bounded per-operation allocation; the native tree is synchronously copied
+before arena release. Allocation failures must use existing error paths.

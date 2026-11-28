@@ -4,6 +4,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const config = @import("share_config");
 const raw = @import("pulse_raw");
+const task_progress = @import("pulse_task_progress");
 
 pub const Mode = enum { discover, send, receive, identity_init, identity_show, peer_add, peer_list, peer_revoke, private_init, recovery_list, interfaces, pair_host, pair_join, device_prepare };
 pub const Field = struct {
@@ -423,7 +424,7 @@ const Output = struct {
     fn report(self: *Output, ctx: *const raw.PulseTaskContext, msg: []const u8) void {
         self.had_report = true;
         var p = std.mem.zeroes(raw.PulseTaskProgress);
-        p.size = @sizeOf(raw.PulseTaskProgress);
+        p.size = task_progress.progress_v1_size;
         p.percent = std.math.maxInt(u32);
         p.completed_bytes = self.done_bytes;
         p.total_bytes = self.total_bytes;

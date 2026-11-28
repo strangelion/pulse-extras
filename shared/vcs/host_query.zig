@@ -23,6 +23,13 @@ const detect = @import("vcs_detect");
 
 pub const HostError = host_mod.Error;
 
+const initial_view: panel.View = .{ .phase = .empty };
+
+fn resetView(view: *panel.View, phase: panel.Phase) void {
+    @memcpy(std.mem.asBytes(view), std.mem.asBytes(&initial_view));
+    view.phase = phase;
+}
+
 pub const Query = struct {
     task: async_host.Task,
     provider: contract.Provider = undefined,
@@ -53,7 +60,7 @@ pub const Query = struct {
         self.published.store(false, .monotonic);
         self.discard = false;
         const descriptor: async_host.Descriptor = .{
-            .size = @sizeOf(async_host.Descriptor),
+            .size = async_host.descriptor_v1_size,
             .title = abi.view("VCS status"),
             .type = abi.view("vcs.status"),
             .work = &work,
@@ -73,7 +80,7 @@ pub const Query = struct {
         self.detail_result = error.Cancelled;
         self.published.store(false, .monotonic);
         self.discard = false;
-        const descriptor: async_host.Descriptor = .{ .size = @sizeOf(async_host.Descriptor), .title = abi.view("VCS read-only detail"), .type = abi.view("vcs.detail"), .work = &work, .user = self };
+        const descriptor: async_host.Descriptor = .{ .size = async_host.descriptor_v1_size, .title = abi.view("VCS read-only detail"), .type = abi.view("vcs.detail"), .work = &work, .user = self };
         self.admitting = true;
         defer self.admitting = false;
         errdefer if (!self.task.occupied()) {
@@ -108,23 +115,26 @@ pub const Query = struct {
 
     /// Owner poll, only on a UI event or supported scheduler. Does not block
     /// awaiting the worker and never reads its result before terminal state.
-    /// Returns a copy of the terminal view only after successful release.
-    pub fn poll(self: *Query) host_mod.Error!?panel.View {
+    /// Fill owner-owned scratch only when terminal. The caller publishes it
+    /// after successful release; on error the previous visible view survives.
+    pub fn pollInto(self: *Query, view: *panel.View) host_mod.Error!bool {
         if (self.detail_request != null) return error.State;
-        if (!self.task.occupied()) return null;
+        if (!self.task.occupied()) return false;
         const state = try self.task.poll();
-        if (!state.terminal()) return null;
-        var view: panel.View = .{ .phase = .failed, .workspace = self.workspace, .failure = error.Io };
+        if (!state.terminal()) return false;
+        resetView(view, .failed);
+        view.workspace = self.workspace;
+        view.failure = error.Io;
         if (self.stopped or self.discard or state == .cancelled) {
             view.phase = if (self.stopped) .stopped else .cancelled;
             view.failure = null;
         } else if (self.published.load(.acquire)) {
-            if (self.result) |snapshot| {
+            if (self.result) |*snapshot| {
                 if (state == .completed) {
-                    if (snapshot.workspace) |actual| {
+                    if (snapshot.workspace) |*actual| {
                         if (actual.kind == self.workspace.kind and actual.root.eql(self.workspace.root.slice()) and actual.repository_root.eql(self.workspace.repository_root.slice())) {
                             view.phase = .ready;
-                            view.snapshot = snapshot;
+                            view.snapshot = snapshot.*;
                             view.failure = null;
                         } else view.failure = error.Parse;
                     } else view.failure = error.Parse;
@@ -132,7 +142,14 @@ pub const Query = struct {
             } else |err| view.failure = err;
         }
         try self.task.releaseTerminal();
-        return view;
+        return true;
+    }
+
+    // Value-returning convenience for callers with their own stack budget.
+    // Production host callbacks use pollInto with stable owner storage.
+    pub fn poll(self: *Query) host_mod.Error!?panel.View {
+        var view: panel.View = undefined;
+        return if (try self.pollInto(&view)) view else null;
     }
 
     pub const DetailTerminal = struct { result: contract.Error!contract.DetailText };
@@ -262,7 +279,7 @@ pub const Resolution = struct {
         self.published.store(false, .monotonic);
         self.discard = false;
         const descriptor: async_host.Descriptor = .{
-            .size = @sizeOf(async_host.Descriptor),
+            .size = async_host.descriptor_v1_size,
             .title = abi.view("VCS repository discovery"),
             .type = abi.view("vcs.resolve"),
             .work = &work,
@@ -339,6 +356,7 @@ pub const Controller = struct {
     selection: ?Selection = null,
     queued: ?Selection = null,
     current: panel.View = .{ .phase = .empty },
+    terminal_view: panel.View = .{ .phase = .empty },
     detail_data: ?contract.DetailText = null,
     detail_error: ?contract.Error = null,
     detail_scope: ?contract.DetailRequest = null,
@@ -374,10 +392,15 @@ pub const Controller = struct {
         }
         const next: Selection = .{ .provider = provider, .workspace = workspace.* };
         const retain = if (self.selection) |previous| previous.same(&next) else false;
-        const previous_data = if (retain) self.current.snapshot else null;
         self.selection = next;
         self.queued = next;
-        self.current = .{ .phase = .queued, .workspace = workspace.*, .snapshot = previous_data, .stale = previous_data != null };
+        resetView(&self.terminal_view, .queued);
+        self.terminal_view.workspace = workspace.*;
+        if (retain) {
+            @memcpy(std.mem.asBytes(&self.terminal_view.snapshot), std.mem.asBytes(&self.current.snapshot));
+            self.terminal_view.stale = self.current.snapshot != null;
+        }
+        @memcpy(std.mem.asBytes(&self.current), std.mem.asBytes(&self.terminal_view));
         if (self.query.task.occupied()) {
             // Mark obsolete before cancellation; a failure still suppresses
             // publication. Preserve the latest queued selection for retry.
@@ -416,7 +439,7 @@ pub const Controller = struct {
         self.dropDetail();
         self.selection = null;
         self.queued = null;
-        self.current = .{ .phase = .empty };
+        resetView(&self.current, .empty);
         try self.query.cancel();
     }
 
@@ -452,14 +475,13 @@ pub const Controller = struct {
             try self.startQueued();
             return;
         }
-        if (try self.query.poll()) |terminal| {
+        if (try self.query.pollInto(&self.terminal_view)) {
             if (!obsolete and self.queued == null and self.selection != null) {
-                const previous_data = self.current.snapshot;
-                self.current = terminal;
-                if (terminal.phase != .ready and previous_data != null) {
-                    self.current.snapshot = previous_data;
-                    self.current.stale = true;
+                if (self.terminal_view.phase != .ready and self.current.snapshot != null) {
+                    @memcpy(std.mem.asBytes(&self.terminal_view.snapshot), std.mem.asBytes(&self.current.snapshot));
+                    self.terminal_view.stale = true;
                 }
+                @memcpy(std.mem.asBytes(&self.current), std.mem.asBytes(&self.terminal_view));
             }
         }
         try self.startQueued();
@@ -470,7 +492,7 @@ pub const Controller = struct {
         self.stopped = true;
         self.selection = null;
         self.queued = null;
-        self.current = .{ .phase = .stopped };
+        resetView(&self.current, .stopped);
         try self.query.requestStop();
     }
 
@@ -515,22 +537,25 @@ const RecentSnapshots = struct {
             entry.workspace.repository_root.eql(workspace.repository_root.slice()) and std.mem.eql(u8, &entry.token, &token);
     }
 
-    fn get(self: *const RecentSnapshots, workspace: *const identity.Workspace, token: [32]u8) ?contract.Snapshot {
+    fn get(self: *const RecentSnapshots, workspace: *const identity.Workspace, token: [32]u8) ?*const contract.Snapshot {
         for (self.entries[0..self.len]) |*entry| {
-            if (same(entry, workspace, token)) return entry.snapshot;
+            if (same(entry, workspace, token)) return &entry.snapshot;
         }
         return null;
     }
 
-    fn put(self: *RecentSnapshots, workspace: *const identity.Workspace, token: [32]u8, snapshot: contract.Snapshot) void {
+    fn put(self: *RecentSnapshots, workspace: *const identity.Workspace, token: [32]u8, snapshot: *const contract.Snapshot) void {
         for (self.entries[0..self.len]) |*entry| {
             if (same(entry, workspace, token)) {
-                entry.snapshot = snapshot;
+                @memcpy(std.mem.asBytes(&entry.snapshot), std.mem.asBytes(snapshot));
                 return;
             }
         }
         const index = if (self.len < self.entries.len) self.len else self.next;
-        self.entries[index] = .{ .workspace = workspace.*, .token = token, .snapshot = snapshot };
+        const entry = &self.entries[index];
+        entry.workspace = workspace.*;
+        entry.token = token;
+        @memcpy(std.mem.asBytes(&entry.snapshot), std.mem.asBytes(snapshot));
         if (self.len < self.entries.len) self.len += 1 else self.next = (self.next + 1) % self.entries.len;
     }
 
@@ -540,7 +565,7 @@ const RecentSnapshots = struct {
             const entry = &self.entries[i];
             if (entry.workspace.kind == kind and entry.workspace.root.eql(root.slice())) {
                 self.len -= 1;
-                if (i != self.len) self.entries[i] = self.entries[self.len];
+                if (i != self.len) @memcpy(std.mem.asBytes(&self.entries[i]), std.mem.asBytes(&self.entries[self.len]));
                 self.next = 0;
             } else i += 1;
         }
@@ -816,7 +841,7 @@ pub const Binding = struct {
         self.pending_file = null;
         self.pending_file_generation = null;
         self.navigation_generation = latest.generation;
-        if (!self.approval_locked and self.resolver != null and self.navigation.pending and latest.directory() != null) self.controller.current = .{ .phase = .queued };
+        if (!self.approval_locked and self.resolver != null and self.navigation.pending and latest.directory() != null) resetView(&self.controller.current, .queued);
     }
 
     /// The owner can schedule independent repository discovery and approval
@@ -1389,7 +1414,7 @@ pub const Binding = struct {
         self.controller.clear() catch |err| {
             failure = err;
         };
-        self.controller.current = .{ .phase = .queued };
+        resetView(&self.controller.current, .queued);
         if (failure) |err| return err;
         try self.pump();
     }
@@ -1399,7 +1424,7 @@ pub const Binding = struct {
         self.verified_version = .{};
         self.cache_token = null;
         self.navigation.pending = false;
-        self.controller.current = .{ .phase = .cancelled };
+        resetView(&self.controller.current, .cancelled);
         var failure: ?host_mod.Error = null;
         self.resolution.cancel() catch |err| {
             failure = err;
@@ -1425,13 +1450,14 @@ pub const Binding = struct {
                         self.cache_token = if (self.metadata_only) null else selected.cache_token;
                         if (self.cache_token) |token| {
                             if (self.recent.get(&selected.workspace, token)) |snapshot| {
-                                self.controller.current.snapshot = snapshot;
+                                self.controller.current.snapshot = snapshot.*;
                                 self.controller.current.stale = true;
                             }
                         }
-                    } else self.controller.current = .{ .phase = .empty };
+                    } else resetView(&self.controller.current, .empty);
                 } else |err| {
-                    self.controller.current = .{ .phase = if (err == error.Cancelled) .cancelled else .failed, .failure = if (err == error.Cancelled) null else err };
+                    resetView(&self.controller.current, if (err == error.Cancelled) .cancelled else .failed);
+                    self.controller.current.failure = if (err == error.Cancelled) null else err;
                 }
             }
         }
@@ -1468,13 +1494,14 @@ pub const Binding = struct {
                 }
             }
         }
-        self.controller.current = .{ .phase = .queued };
+        resetView(&self.controller.current, .queued);
         self.resolution.start(active_resolver, &ticket) catch |err| {
-            self.controller.current = .{ .phase = .failed, .failure = if (err == error.Permission) error.Permission else error.Io };
+            resetView(&self.controller.current, .failed);
+            self.controller.current.failure = if (err == error.Permission) error.Permission else error.Io;
             return err;
         };
         _ = self.navigation.take();
-        self.controller.current = .{ .phase = .refreshing };
+        resetView(&self.controller.current, .refreshing);
     }
 
     fn pathWithinRoot(path: []const u8, root: []const u8) bool {
@@ -1517,7 +1544,7 @@ pub const Binding = struct {
             const current = &self.controller.current;
             if (self.accepting and !self.approval_locked and !self.metadata_only and current.phase == .ready and !current.stale) {
                 if (current.workspace) |*workspace| {
-                    if (current.snapshot) |snapshot| self.recent.put(workspace, token, snapshot);
+                    if (current.snapshot) |*snapshot| self.recent.put(workspace, token, snapshot);
                 }
             }
         }
@@ -1685,7 +1712,7 @@ pub const Binding = struct {
         self.controller.stopped = true;
         self.controller.selection = null;
         self.controller.queued = null;
-        self.controller.current = .{ .phase = .stopped };
+        resetView(&self.controller.current, .stopped);
         self.controller.query.stopped = true;
         self.controller.query.discard = true;
         self.controller.query.task.retireAtHostDestroy();
@@ -2785,8 +2812,8 @@ test "recent snapshots separate provider workspace and revalidated trust fingerp
     const git = try identity.Workspace.init(.git, "root", "root/.git");
     const jj = try identity.Workspace.init(.jj, "root", "root/.jj");
     const token: [32]u8 = @splat(1);
-    cache.put(&git, token, .{ .workspace = git, .changes = .{ .modified = 4 } });
-    cache.put(&jj, token, .{ .workspace = jj, .changes = .{ .modified = 7 } });
+    cache.put(&git, token, &.{ .workspace = git, .changes = .{ .modified = 4 } });
+    cache.put(&jj, token, &.{ .workspace = jj, .changes = .{ .modified = 7 } });
     try std.testing.expectEqual(@as(u32, 4), cache.get(&git, token).?.changes.modified);
     try std.testing.expectEqual(@as(u32, 7), cache.get(&jj, token).?.changes.modified);
     try std.testing.expect(cache.get(&git, @splat(2)) == null);

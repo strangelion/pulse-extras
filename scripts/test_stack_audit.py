@@ -1,8 +1,10 @@
 """Synthetic PE64 and unwind fixtures, independent of Windows or Zig."""
+import json
+from pathlib import Path
 import struct
 import unittest
 
-from stack_audit import LIMIT, PE, regressions
+from stack_audit import LIMIT, PE, apply_symbols, regressions, source_location
 
 
 def image(codes, *, flags=0, count=None):
@@ -67,6 +69,23 @@ class StackAudit(unittest.TestCase):
         struct.pack_into("<IIH", data, 0x440, 0x1100, 0x1250, 0)
         data[0x450:0x450 + 19] = b"PulsePluginEntryV1\0"
         self.assertEqual(PE(data).inventory()["frames"][0]["exports"], ["PulsePluginEntryV1"])
+
+    def test_symbol_address_and_source_identity(self):
+        rows = [{"rva": "0x00001100", "bytes": 200000}, {"rva": "0x00001200", "bytes": 70000}]
+        base = 0x180000000
+        root = Path.cwd()
+        good = {"Address": hex(base + 0x1100), "Symbol": [
+            {"FunctionName": "vcs.pump", "FileName": str(root / "shared/vcs/host_query.zig"), "Line": 441}]}
+        missing = {"Address": hex(base + 0x1200), "Symbol": [{"FunctionName": "??"}]}
+        foreign = {"Address": hex(base + 0x1300), "Symbol": [{"FunctionName": "not ours"}]}
+        output = "\n".join(json.dumps(item) for item in (foreign, good, missing, good))
+        self.assertEqual(apply_symbols(rows, output, base, root), 1)
+        self.assertEqual(rows[0]["symbol"]["origin"], "project")
+        self.assertEqual(rows[0]["symbol"]["source"], "shared/vcs/host_query.zig")
+        self.assertEqual(rows[0]["symbol"]["line"], 441)
+        self.assertNotIn("symbol", rows[1])
+        self.assertEqual(source_location("C:/zig/lib/std/Io.zig", root), ("zig-stdlib", "std/Io.zig"))
+        self.assertEqual(source_location("C:/private/path/foo.c", root), ("other", "foo.c"))
 
     def test_rank_baseline(self):
         self.assertEqual(regressions([LIMIT + 8], [LIMIT + 16]), [])

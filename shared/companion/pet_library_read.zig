@@ -43,6 +43,20 @@ pub const Snapshot = struct {
     rows: [inventory.max_entries]Row = undefined,
     missing: bool = false,
     total: usize = 0,
+
+    pub fn clear(self: *Snapshot) void {
+        self.count = 0;
+        self.missing = false;
+        self.total = 0;
+    }
+
+    // Caller owns both distinct snapshots; worker publication has completed.
+    pub fn copyFrom(self: *Snapshot, source: *const Snapshot) void {
+        @memcpy(self.rows[0..source.count], source.rows[0..source.count]);
+        self.count = source.count;
+        self.missing = source.missing;
+        self.total = source.total;
+    }
 };
 
 const invalid = @as(usize, @bitCast(@as(isize, -1)));
@@ -332,4 +346,26 @@ test "library removal selection retains both durable fingerprints" {
     try std.testing.expectError(error.NeedsRevalidation, snapshot.rows[1].removalRecord());
     snapshot.rows[0].digest = null;
     try std.testing.expectError(error.NeedsRevalidation, snapshot.rows[0].removalRecord());
+}
+
+test "snapshot copy publishes only live rows and clear resets metadata" {
+    const source = try std.testing.allocator.create(Snapshot);
+    defer std.testing.allocator.destroy(source);
+    source.clear();
+    const target = try std.testing.allocator.create(Snapshot);
+    defer std.testing.allocator.destroy(target);
+    target.clear();
+    source.rows[0] = .{ .id = 7, .source = @splat('a'), .len = 1, .paired = false };
+    source.count = 1;
+    source.total = 2;
+    target.copyFrom(source);
+    try std.testing.expectEqual(@as(usize, 1), target.count);
+    try std.testing.expectEqual(@as(usize, 2), target.total);
+    try std.testing.expectEqual(@as(u64, 7), target.rows[0].id);
+    source.rows[0].id = 8;
+    try std.testing.expectEqual(@as(u64, 7), target.rows[0].id);
+    target.clear();
+    try std.testing.expectEqual(@as(usize, 0), target.count);
+    try std.testing.expectEqual(@as(usize, 0), target.total);
+    try std.testing.expect(!target.missing);
 }

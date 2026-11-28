@@ -1530,7 +1530,7 @@ pub const Settings = struct {
             self.grant_revoke_pending = false;
         };
         const descriptor: async_host.Descriptor = .{
-            .size = @sizeOf(async_host.Descriptor),
+            .size = async_host.descriptor_v1_size,
             .title = abi.view("Manage selected project saved approval"),
             .type = abi.view("vcs.projects.grants"),
             .work = &grantWork,
@@ -1569,7 +1569,7 @@ pub const Settings = struct {
             self.checked_project = null;
         };
         const descriptor: async_host.Descriptor = .{
-            .size = @sizeOf(async_host.Descriptor),
+            .size = async_host.descriptor_v1_size,
             .title = abi.view("Verify local project identity"),
             .type = abi.view("vcs.projects.identity"),
             .work = &projectWork,
@@ -1879,7 +1879,7 @@ pub const Settings = struct {
         self.index_review_result = null;
         self.index_result = null;
         const descriptor: async_host.Descriptor = .{
-            .size = @sizeOf(async_host.Descriptor),
+            .size = async_host.descriptor_v1_size,
             .title = abi.view("Explicit project integration"),
             .type = abi.view("vcs.projects.integration"),
             .work = &browserWork,

@@ -529,13 +529,13 @@ static uint32_t PULSE_CALL worker_cancelled(void *ctx) {
 }
 static PulseStatus PULSE_CALL worker_report(void *ctx, const PulseTaskProgress *progress) {
     (void)ctx;
-    REQUIRE(progress && progress->size >= sizeof(*progress));
+    REQUIRE(progress && (progress->size == 72 || progress->size == 192));
     if (progress->size == 192) {
         uint32_t step = 0;
         memcpy(&step, (const char *)progress + 72, sizeof(step));
         REQUIRE(step >= 1 && step <= 3 && progress->percent == UINT32_MAX);
     } else {
-        REQUIRE(progress->size == sizeof(*progress));
+        REQUIRE(progress->size == 72);
     }
     return PULSE_OK;
 }
@@ -552,7 +552,7 @@ static void observe_worker(Fixture *f) {
 }
 static PulseStatus PULSE_CALL create_task(void *ctx, const PulseTaskDescriptor *desc, PulseTaskId *id) {
     Fixture *f = ctx;
-    REQUIRE(desc && desc->size >= sizeof(*desc) && desc->work && desc->user && id);
+    REQUIRE(desc && (desc->size == 64 || desc->size == 128) && desc->work && desc->user && id);
     /* Long-lived sessions must not allocate a Pulse progress task. */
     REQUIRE(!same(desc->type, "companion.session"));
     if (f->bundled && f->worker && same(desc->type, "companion.library")) {

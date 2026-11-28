@@ -44,7 +44,7 @@ pub const Task = struct {
 
     pub fn start(self: *Task, request: *const managed.Request, code: u32) !void {
         if (self.occupied()) return error.State;
-        self.request = request.*;
+        @memcpy(std.mem.asBytes(&self.request), std.mem.asBytes(request));
         self.snapshot = .{};
         self.cancel_requested.store(false, .release);
         self.decisions.answer.store(0, .release);
