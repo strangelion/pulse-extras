@@ -9,6 +9,31 @@ import (
 	"strings"
 )
 
+func ensurePrivateDirectory(ctx context.Context, path string, create bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := os.Lstat(path)
+	if create && errors.Is(err, os.ErrNotExist) {
+		if err := createPrivateDirectory(path); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	return auditPrivateDirectory(path)
+}
+
+func prepareReceiveSpool(ctx context.Context, path string, create bool) error {
+	err := ensurePrivateDirectory(ctx, path, create)
+	if errors.Is(err, os.ErrNotExist) {
+		return errReceiveSpoolMissing
+	}
+	return err
+}
+
+var errReceiveSpoolMissing = errors.New("receive spool missing; initialize this device or choose an existing private spool")
+
 func prepareDevice(ctx context.Context, store, spool string) error {
 	store, spool = filepath.Clean(store), filepath.Clean(spool)
 	if !filepath.IsAbs(store) || !filepath.IsAbs(spool) {
@@ -20,18 +45,7 @@ func prepareDevice(ctx context.Context, store, spool string) error {
 		return errors.New("identity and spool require separate directories")
 	}
 	for _, path := range []string{store, spool} {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		_, err := os.Lstat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			if err := createPrivateDirectory(path); err != nil && !errors.Is(err, os.ErrExist) {
-				return err
-			}
-		} else if err != nil {
-			return err
-		}
-		if err := auditPrivateDirectory(path); err != nil {
+		if err := ensurePrivateDirectory(ctx, path, true); err != nil {
 			return err
 		}
 	}

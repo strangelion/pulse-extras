@@ -431,7 +431,9 @@ static void layout(void) {
         int nav_width = min(width, TabCtrl_GetItemCount(nav) * (item_width + scale(3)) + scale(6));
         position(nav, (box.right - nav_width) / 2, scale(14), nav_width, scale(42), SWP_SHOWWINDOW);
         static const int page_width[] = { 850, 552, 696, 568, 632, 760 };
-        int gutter = max(0, width - inner.right) + scale(6);
+        // Reserve the same gutter with or without a scrollbar so cards do not
+        // jump when a section is expanded or a different tab is selected.
+        int gutter = GetSystemMetricsForDpi(SM_CXVSCROLL, dpi) + scale(6);
         int usable_width = max(scale(110), width - 2 * gutter);
         int body_width = min(usable_width, scale(page_width[tab >= 0 && tab < (int)ARRAYSIZE(page_width) ? tab : 0]));
         int body_x = (width - body_width) / 2;
@@ -457,9 +459,10 @@ static void layout(void) {
             edit.bottom -= scale(8);
             SendMessageW(nodes[source].hwnd, EM_SETRECTNP, 0, (LPARAM)&edit);
         }
-        SCROLLINFO info = { .cbSize = sizeof(info), .fMask = SIF_ALL | SIF_DISABLENOSCROLL,
+        SCROLLINFO info = { .cbSize = sizeof(info), .fMask = SIF_ALL,
             .nMax = max(0, content_height - 1), .nPage = (UINT)inner.bottom, .nPos = scroll };
         SetScrollInfo(viewport, SB_VERT, &info, TRUE);
+        ShowScrollBar(viewport, SB_VERT, content_height > inner.bottom);
     }
     if (task >= 0) {
         window_batch = BeginDeferWindowPos(10);

@@ -191,6 +191,8 @@ def check_layout(panel):
     source = rectangle(panel.labelled("待发送内容"))
     target = rectangle(panel.labelled("接收设备"))
     assert source.top == target.top and target.left > source.left, "wide cards did not share a row"
+    short_page = get_parent(panel.labelled("待发送内容"))
+    assert not style(short_page, -16) & 0x00200000, "short page has a vertical scrollbar"
     desktop = rectangle(panel.hwnd)
     midpoint = (desktop.left + desktop.right) // 2
     margin = (dpi(panel.hwnd) or 96) * 6 // 96
@@ -223,6 +225,7 @@ def check_layout(panel):
     panel.select_tab(5)
     advanced = panel.labelled("高级配对")
     viewport = get_parent(advanced)
+    assert style(viewport, -16) & 0x00200000, "overflowing page lost its scrollbar"
     top = rectangle(advanced).top
     for _ in range(5):
         message(viewport, 0x0115, 3)
@@ -233,6 +236,7 @@ def check_layout(panel):
     panel.select_tab(0)
     panel.labelled("待发送内容")
     panel.resize(940, 700)
+    assert not style(short_page, -16) & 0x00200000, "scrollbar stayed visible after returning to a short page"
 
 
 def build_fixture(root, repo):

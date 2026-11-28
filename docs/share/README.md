@@ -274,7 +274,9 @@ LAN and host lifecycle acceptance remain outstanding.
 - **发送** accepts files and folders by picker, drag and drop, or Pulse
   selection. Review the endpoint and choose a saved peer before starting.
   **接收** offers single-file receipt, optional single-file discovery, and a
-  separate folder/multiple-file receiver. The task strip exposes the listening
+  separate folder/multiple-file receiver. Starting a managed receive creates
+  the default private spool if missing. A custom path must already be private
+  or be initialized explicitly. The task strip exposes the listening
   address, progress and approval actions whenever they are relevant.
 - **设备** lists local addresses and shows a count and selectable addresses
   after discovery. Use the interface on the same LAN as the other device.

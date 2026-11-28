@@ -279,7 +279,8 @@ func receiver(ctx context.Context,c console,args []string) error {
 	port:=f.Uint("port",0,"local TCP port (0 selects a free port)")
 	advert:=f.Bool("advertise",false,"opt-in multicast discovery on selected interface")
 	directory:=f.String("directory","","explicit destination directory")
-	spool:=f.String("spool","","existing, trusted, user-private local spool directory")
+	spool:=f.String("spool","","trusted, user-private local spool directory")
+	prepareSpool:=f.Bool("prepare-spool",false,"create the explicitly selected private spool when missing")
 	supervisor:=f.String("supervisor","","absolute local P1 supervisor executable")
 	supervisorSHA:=f.String("supervisor-sha256","","locally verified supervisor SHA-256")
 	worker:=f.String("worker","","absolute local P1 worker executable")
@@ -298,15 +299,18 @@ func receiver(ctx context.Context,c console,args []string) error {
 	if *rootConnect{
 		if !*batch||!*browse||*syncClip||*allowedSource!=""||*advert{return errors.New("invalid directory service client options")}
 	}else if err=b.setAllowedSource(*allowedSource);err!=nil{return err}
+	if *prepareSpool&&(!isManaged(ctx)||*syncClip||*store==""||*paired==""||strings.EqualFold(filepath.Clean(*store),filepath.Clean(*spool))){
+		return errors.New("spool preparation requires a managed receive with a separate identity directory")
+	}
 	if *syncClip{
 		if !*batch||!*allowClipboard||*browse||*rootConnect||*resume!=""||*advert||*delivery!="clipboard"{return errors.New("invalid clipboard sync receive options")}
 		return clipboardSyncCLI(ctx,c,b,netip.AddrPort{},uint16(*port),*store,*paired,*clipboardType,*useQUIC,true)
 	}
 	dest,err:=existingPath(*directory,true)
 	if err!=nil{return err}
+	if isManaged(ctx){if err:=prepareReceiveSpool(ctx,*spool,*prepareSpool);err!=nil{return err}}
 	sp,err:=existingPath(*spool,true)
 	if err!=nil{return err}
-	if isManaged(ctx){if err:=auditPrivateDirectory(*spool);err!=nil{return err}}
 	sup,err:=existingPath(*supervisor,false)
 	if err!=nil{return err}
 	work,err:=existingPath(*worker,false)

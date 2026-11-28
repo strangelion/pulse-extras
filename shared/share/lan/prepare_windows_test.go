@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -56,5 +58,39 @@ func TestPrepareDeviceRejectsOrdinaryExistingDirectory(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(store, identityFile)); !os.IsNotExist(err) {
 		t.Fatalf("changed refused identity directory: %v", err)
+	}
+}
+
+func TestManagedReceiveSpoolCreationIsExplicitAndProtected(t *testing.T) {
+	root := t.TempDir()
+	spool := filepath.Join(root, "spool")
+	if err := prepareReceiveSpool(t.Context(), spool, false); !errors.Is(err, errReceiveSpoolMissing) {
+		t.Fatalf("expected an actionable missing-directory error: %v", err)
+	}
+	if _, err := os.Lstat(spool); !os.IsNotExist(err) {
+		t.Fatalf("an unrequested spool appeared: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := prepareReceiveSpool(cancelled, spool, true); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled request was admitted: %v", err)
+	}
+	if _, err := os.Lstat(spool); !os.IsNotExist(err) {
+		t.Fatalf("cancelled request created a spool: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := prepareReceiveSpool(t.Context(), spool, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := auditPrivateDirectory(spool); err != nil {
+		t.Fatal(err)
+	}
+	ordinary := filepath.Join(root, "ordinary")
+	if err := os.Mkdir(ordinary, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareReceiveSpool(t.Context(), ordinary, true); err == nil {
+		t.Fatal("accepted an existing directory with an inherited ACL")
 	}
 }

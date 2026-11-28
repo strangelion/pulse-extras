@@ -43,6 +43,7 @@ pub const Request = struct {
     remote_path: Field = .{},
     browse_offset: Field = .{},
     prepare_default_parent: bool = false,
+    prepare_spool: bool = false,
     allowed_source: Field = .{},
     bind: Field = .{},
     peer: Field = .{},
@@ -672,6 +673,7 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
             try command.pair("--port", if (request.port.len == 0) "0" else request.port.slice());
             try command.pair("--directory", request.destination.slice());
             try command.pair("--spool", request.spool.slice());
+            if (request.prepare_spool) try command.arg("--prepare-spool");
             try command.arg("--supervisor");
             try command.wide(std.mem.sliceTo(&local, 0));
             try command.pair("--supervisor-sha256", config.local_sha256);

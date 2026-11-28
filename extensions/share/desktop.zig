@@ -82,6 +82,9 @@ const Instance = struct {
                 }
             }
         }
+        if (std.mem.startsWith(u8, useful, "Pulse Share: receive spool missing")) {
+            useful = "私有暂存目录尚未创建。请在「设备」页点「初始化本机」，或在设置里更改位置。";
+        }
         self.shown_prompt = prompt;
         self.set("confirm", if (prompt != 0) "true" else "false");
         var detail: [4300]u8 = undefined;
@@ -496,6 +499,12 @@ const Instance = struct {
             (next.queue_action.len == 0 or std.mem.eql(u8, next.queue_action, "enqueue"))) return error.DeviceNameRequired;
         if (mode == .pair_join and next.peer.len == 0) return error.PeerAddressRequired;
         if (mode == .receive and !next.sync_clipboard and (next.destination.len == 0 or next.spool.len == 0)) return error.ReceiveDirectoriesRequired;
+        if (mode == .receive and !next.sync_clipboard and !self.session_only and self.default_paths[1].len > 0 and
+            std.ascii.eqlIgnoreCase(self.default_paths[1].slice(), next.spool.slice()))
+        {
+            next.prepare_default_parent = true;
+            next.prepare_spool = true;
+        }
         if (mode == .device_prepare) {
             try self.readField("spool", &next.spool);
             if (next.spool.len == 0) return error.ReceiveDirectoriesRequired;
