@@ -63,6 +63,27 @@ class UpstreamUpdateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "changed in place"):
                 update.discover(Path(temp))
 
+    def test_candidate_can_add_headers_but_not_remove_them(self):
+        old = pins.load()
+        names = list(old["headers"])
+        new_name = next(name for name in ("future_sdk", "future_sdk_two") if name not in names)
+        payload = b"/* fixture */\n"
+        entries = [{"name": name + ".h", "type": "file", "size": len(payload),
+                    "sha": update.git_blob(payload)} for name in names + [new_name]]
+        with tempfile.TemporaryDirectory() as temp, patch.object(update, "gh", return_value=entries), \
+                patch.object(update, "raw", return_value=payload):
+            root = Path(temp)
+            digests, blob = update.headers("a" * 40, root / "headers", names)
+            self.assertIn(new_name, digests)
+            candidate = update.render_pin((pins.ROOT / "sdk/upstream.toml").read_text(encoding="utf-8"),
+                                          old, "1.0.999", "b" * 40,
+                                          update.release_installer(row("1.0.999")), digests, blob)
+            import tomllib
+            self.assertEqual(pins.validate(tomllib.loads(candidate))["headers"], digests)
+            entries.pop(0)
+            with self.assertRaisesRegex(ValueError, "headers removed"):
+                update.headers("a" * 40, root / "removed", names)
+
     def test_git_blob(self):
         self.assertEqual(update.git_blob(b"hello\n"), hashlib.sha1(b"blob 6\0hello\n").hexdigest())
 

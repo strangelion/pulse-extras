@@ -26,7 +26,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from sdk_headers import HEADERS  # noqa: E402  (script-local helper, not a package)
+from sdk_headers import header_order  # noqa: E402
 import upstream_pin as pin_config  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -52,7 +52,11 @@ def upstream_pin() -> dict:
 def verify_headers(include: pathlib.Path, pin: dict) -> None:
     """Verify every pinned header digest before generating bindings."""
     digests = pin.get("headers", {})
-    for name in HEADERS:
+    names = header_order(digests)
+    actual_names = {path.name for path in (include / "pulse").glob("*.h")}
+    if actual_names != {name + ".h" for name in names}:
+        raise SystemExit("SDK header inventory differs from the pin")
+    for name in names:
         header = include / "pulse" / f"{name}.h"
         if not header.is_file():
             raise SystemExit(f"missing SDK header {header}; run scripts/fetch_sdk.py")
@@ -81,12 +85,13 @@ def verify_abi_header(include: pathlib.Path, pin: dict) -> None:
         )
 
 
-def normalize_source_locations(text: str) -> str:
+def normalize_source_locations(text: str, names=None) -> str:
     """Normalize only standalone translate-c source-location comments.
 
     Preserve declarations, diagnostics, line/column numbers and all other
     text. SDK and compiler header paths vary between installations.
     """
+    names = header_order(upstream_pin()["headers"] if names is None else names)
     pattern = re.compile(r"(?m)^(?P<indent>[ \t]*)// (?P<path>[^\r\n]+):(?P<line>[0-9]+):(?P<column>[0-9]+)$")
 
     def replace(match: re.Match[str]) -> str:
@@ -94,7 +99,7 @@ def normalize_source_locations(text: str) -> str:
         if not (path.startswith("/") or re.match(r"^[A-Za-z]:/", path)):
             return match[0]
         # Only known headers in the pinned SDK or compiler stdint header.
-        for name in HEADERS:
+        for name in names:
             if path.endswith(f"/pulse/{name}.h"):
                 path = f"pulse/{name}.h"
                 break
@@ -108,11 +113,11 @@ def normalize_source_locations(text: str) -> str:
     return pattern.sub(replace, text)
 
 
-def build_bindings(zig: str, include: pathlib.Path) -> str:
+def build_bindings(zig: str, include: pathlib.Path, names: list[str]) -> str:
     with tempfile.TemporaryDirectory(prefix="pulse-bindings-") as directory:
         umbrella = pathlib.Path(directory) / "pulse_all.h"
         umbrella.write_text(
-            "\n".join(f'#include "pulse/{name}.h"' for name in HEADERS) + "\n", encoding="utf-8"
+            "\n".join(f'#include "pulse/{name}.h"' for name in names) + "\n", encoding="utf-8"
         )
         result = subprocess.run(
             [zig, "translate-c", "-target", "x86_64-windows-msvc", "-I", str(include), str(umbrella)],
@@ -139,7 +144,7 @@ def banner(include: pathlib.Path, pin: dict) -> str:
         "//!",
         "//! Header digests (sha256):",
     ]
-    for name in HEADERS:
+    for name in header_order(pin["headers"]):
         digest = hashlib.sha256((include / "pulse" / f"{name}.h").read_bytes()).hexdigest()
         lines.append(f"//!   pulse/{name}.h {digest}")
     return "\n".join(lines) + "\n"
@@ -165,7 +170,8 @@ def main() -> int:
     include = resolve_include(args.include)
     pin = upstream_pin()
     verify_headers(include, pin)
-    content = formatted(args.zig, banner(include, pin) + normalize_source_locations(build_bindings(args.zig, include)))
+    names = header_order(pin["headers"])
+    content = formatted(args.zig, banner(include, pin) + normalize_source_locations(build_bindings(args.zig, include, names), names))
     output = args.out if args.out.is_absolute() else ROOT / args.out
 
     if args.check:

@@ -152,15 +152,18 @@ No release uses an unreviewed "latest" binary. The separate `[host]` section
 is the historical local SDK snapshot; a candidate resets `host_verified`
 without changing that snapshot.
 
-**Actions → Pulse upstream updates** runs daily (02:37 UTC) and on demand.
+**Actions → Pulse upstream updates** runs daily (02:37 UTC), on demand, and when the update tooling changes on main.
 It ignores component-pack releases, drafts and prereleases, compares stable
 versions numerically, detects in-place tag/asset changes, resolves the new
 tag to its commit, and checks official installer digest metadata and SDK
 header Git blobs. Changed ABI version, SDK preview, architecture, missing
-installer metadata or new/missing C headers block automatic proposals:
-inspect the report and adapt the wrappers/header inventory explicitly.
-For supported candidates it compares C ABI prefixes and regenerates pinned
-Zig bindings with the current compiler. A separate writer creates
+installer metadata or removed C headers block automatic proposals:
+inspect the report and adapt the wrappers explicitly. Added headers are verified
+against their exact Git blobs, included in the candidate lock, and translated
+in deterministic baseline-plus-additions order.
+For supported candidates it compares every old public struct's ABI prefix
+against the complete candidate and regenerates pinned Zig bindings with the
+current compiler. A separate writer creates
 `deps/pulse-vX.Y.Z` with only the lock and generated binding, dispatches
 **Extension test package**, and opens a review PR. It never
 overwrites an existing branch, merges, signs or creates releases.

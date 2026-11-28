@@ -18,6 +18,11 @@ class SourceLocationTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(normalize_source_locations(f"// {path}:5:9\n"), expected)
 
+    def test_new_header_paths_are_reproducible(self):
+        names = set(upstream_pin()["headers"]) | {"future_sdk"}
+        self.assertEqual(normalize_source_locations("// /tmp/include/pulse/future_sdk.h:5:9\n", names),
+                         "// pulse/future_sdk.h:5:9\n")
+
     def test_compiler_paths_are_reproducible(self):
         expected = "// zig/lib/include/stdint.h:291:9\n"
         for path in (r"C:\zig\lib\include\stdint.h", "/opt/zig/lib/include/stdint.h"):

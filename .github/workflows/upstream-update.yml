@@ -4,6 +4,16 @@ on:
   schedule:
     - cron: '37 2 * * *'
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/sdk_headers.py'
+      - 'scripts/upstream_update.py'
+      - 'scripts/upstream_pin.py'
+      - 'scripts/generate_bindings.py'
+      - 'scripts/fetch_sdk.py'
+      - 'scripts/verify_abi_prefix.py'
+      - '.github/workflows/upstream-update.yml'
 
 permissions:
   contents: read
@@ -39,7 +49,7 @@ jobs:
         if: steps.discover.outputs.status == 'candidate'
         run: |
           python scripts/fetch_sdk.py
-          python scripts/verify_abi_prefix.py --zig zig --pinned-include .sdk-cache/include --host-include .local/upstream-update/include
+          python scripts/verify_abi_prefix.py --zig zig --pinned-include .sdk-cache/include --host-include .local/upstream-update/include --complete-candidate
       - name: Regenerate exact candidate Zig bindings
         if: steps.discover.outputs.status == 'candidate'
         run: |

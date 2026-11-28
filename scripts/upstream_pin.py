@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import tomllib
 
-from sdk_headers import HEADERS
+from sdk_headers import header_order
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = "jimmgreen/pulse"
@@ -40,7 +40,8 @@ def validate(pin: dict) -> dict:
             or type(installer["size"]) is not int or not 0 < installer["size"] <= MAX_INSTALLER_SIZE
             or not valid_hex(installer["sha256"], 64)):
         raise ValueError("invalid pinned Windows installer")
-    if set(pin["headers"]) != set(HEADERS) or not all(valid_hex(v, 64) for v in pin["headers"].values()):
+    header_order(pin["headers"])
+    if not all(valid_hex(v, 64) for v in pin["headers"].values()):
         raise ValueError("incomplete or invalid SDK header pin")
     if type(pin.get("host_verified")) is not bool:
         raise ValueError("invalid host acceptance flag")

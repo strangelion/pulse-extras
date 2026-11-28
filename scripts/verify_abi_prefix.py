@@ -27,26 +27,9 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-HEADERS = [
-    "abi",
-    "context",
-    "commands",
-    "dispatch",
-    "preview",
-    "ui",
-    "ui_model",
-    "ui_data",
-    "ui_mount",
-    "ui_events",
-    "dialogs",
-    "directories",
-    "fileops",
-    "files",
-    "resources",
-    "settings_pages",
-    "staging",
-    "tasks",
-]
+from sdk_headers import header_order
+import upstream_pin
+
 
 STRUCT = re.compile(r"^pub const (?:struct_)?(Pulse[A-Za-z0-9_]+) = extern struct \{", re.MULTILINE)
 TYPEDEF = re.compile(r"\}\s*(Pulse[A-Za-z0-9_]+)\s*;")
@@ -142,12 +125,12 @@ def header_structs(path: pathlib.Path) -> set[str]:
     return set(TYPEDEF.findall(text)) | set(DECL.findall(text))
 
 
-def merge_includes(pinned: pathlib.Path, host: pathlib.Path, work: pathlib.Path) -> tuple[pathlib.Path, list[str], list[str]]:
+def merge_includes(pinned: pathlib.Path, host: pathlib.Path, work: pathlib.Path, names: list[str]) -> tuple[pathlib.Path, list[str], list[str]]:
     merged = work / "merged"
     (merged / "pulse").mkdir(parents=True)
     shipped: list[str] = []
     fallback: list[str] = []
-    for header in HEADERS:
+    for header in names:
         name = f"{header}.h"
         host_file = host / "pulse" / name
         pinned_file = pinned / "pulse" / name
@@ -159,10 +142,10 @@ def merge_includes(pinned: pathlib.Path, host: pathlib.Path, work: pathlib.Path)
     return merged, shipped, fallback
 
 
-def translate(zig: str, include: pathlib.Path, work: pathlib.Path, name: str) -> pathlib.Path:
+def translate(zig: str, include: pathlib.Path, work: pathlib.Path, name: str, names: list[str]) -> pathlib.Path:
     umbrella = work / f"{name}_all.h"
     umbrella.write_text(
-        "".join(f'#include "pulse/{header}.h"\n' for header in HEADERS),
+        "".join(f'#include "pulse/{header}.h"\n' for header in names),
         encoding="utf-8",
         newline="\n",
     )
@@ -191,31 +174,39 @@ def main() -> int:
         default=ROOT / ".local" / "host-sdk" / "sdk" / "native" / "include",
     )
     parser.add_argument("--zig", default=None)
+    parser.add_argument("--complete-candidate", action="store_true",
+                        help="require all old headers and compare every old public struct")
     args = parser.parse_args()
 
     pinned_include = args.pinned_include.resolve()
     host_include = args.host_include.resolve()
-    missing = [h for h in HEADERS if not (pinned_include / "pulse" / f"{h}.h").is_file()]
+    pinned_headers = header_order(upstream_pin.load()["headers"])
+    host_headers = {path.stem for path in (host_include / "pulse").glob("*.h")}
+    missing = [h for h in pinned_headers if not (pinned_include / "pulse" / f"{h}.h").is_file()]
+    if args.complete_candidate and not set(pinned_headers) <= host_headers:
+        print("complete candidate is missing pinned headers", file=sys.stderr)
+        return 2
+    merged_headers = header_order(set(pinned_headers) | host_headers)
     if missing:
         print(f"pinned header set is incomplete under {pinned_include}: {missing}", file=sys.stderr)
         return 2
-    if not any((host_include / "pulse" / f"{h}.h").is_file() for h in HEADERS):
+    if not any((host_include / "pulse" / f"{h}.h").is_file() for h in pinned_headers):
         print(f"no host headers found under {host_include}", file=sys.stderr)
         return 2
 
     zig = zig_executable(args.zig)
     with tempfile.TemporaryDirectory(prefix="pulse-abi-prefix-") as temp:
         work = pathlib.Path(temp)
-        merged, shipped, fallback = merge_includes(pinned_include, host_include, work)
-        pinned_zig = translate(zig, pinned_include, work, "pinned")
-        translate(zig, merged, work, "host")
+        merged, shipped, fallback = merge_includes(pinned_include, host_include, work, merged_headers)
+        pinned_zig = translate(zig, pinned_include, work, "pinned", pinned_headers)
+        translate(zig, merged, work, "host", merged_headers)
 
         pinned_names = struct_names(pinned_zig.read_text(encoding="utf-8"))
         host_names: set[str] = set()
         for name in shipped:
             host_names |= header_structs(host_include / "pulse" / name)
-        names = [name for name in pinned_names if name in host_names]
-        skipped = [name for name in pinned_names if name not in host_names]
+        names = pinned_names if args.complete_candidate else [name for name in pinned_names if name in host_names]
+        skipped = sorted(set(pinned_names) - set(names))
         if not names:
             print("no structs are covered by host-shipped headers", file=sys.stderr)
             return 2

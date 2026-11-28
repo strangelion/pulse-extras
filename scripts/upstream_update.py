@@ -1,7 +1,8 @@
 """Read-only discovery of stable upstream releases and compatible SDK candidates.
 
 Only GitHub's official Pulse repository is consulted. No upstream program is
-executed here. A new ABI/preview or changed C-header inventory needs review.
+executed here. New headers may enter a candidate; removed headers or a new
+ABI/preview require manual adaptation.
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ import sys
 import tomllib
 from urllib.request import urlopen
 
-from sdk_headers import HEADERS
+from sdk_headers import header_order
 import upstream_pin as pins
 
 ROOT = pins.ROOT
@@ -97,17 +98,24 @@ def git_blob(data: bytes) -> str:
     return hashlib.sha1(f"blob {len(data)}\0".encode("ascii") + data).hexdigest()
 
 
-def headers(sha: str, dest: Path) -> tuple[dict, str]:
+def headers(sha: str, dest: Path, old_names) -> tuple[dict, str]:
     prefix = "sdk/native/include/pulse"
     rows = gh(f"repos/{pins.REPOSITORY}/contents/{prefix}?ref={sha}")
-    entries = {row["name"]: row for row in rows if row["name"].endswith(".h")}
-    expected = {name + ".h" for name in HEADERS}
-    if set(entries) != expected:
-        raise ValueError(f"C header inventory changed; manual adaptation required; added={sorted(set(entries) - expected)}, removed={sorted(expected - set(entries))}")
+    entries = {}
+    for row in rows:
+        filename = row["name"]
+        if filename.endswith(".h"):
+            if filename in entries:
+                raise ValueError("duplicate upstream header: " + filename)
+            entries[filename] = row
+    expected = {name + ".h" for name in old_names}
+    if removed := expected - set(entries):
+        raise ValueError(f"C headers removed; manual adaptation required: {sorted(removed)}")
+    names = header_order(name[:-2] for name in entries)
     dest.mkdir(parents=True, exist_ok=False)
     digests = {}
     abi_blob = ""
-    for name in HEADERS:
+    for name in names:
         filename = name + ".h"
         entry = entries[filename]
         if (entry.get("type") != "file" or not pins.valid_hex(entry.get("sha"), 40)
@@ -140,8 +148,21 @@ def render_pin(text: str, old: dict, version: str, sha: str, installer: dict,
     replace("host_verified", False)
     for key, value in installer.items():
         replace(key, value)
-    for key, value in digests.items():
-        replace(key, value)
+    # Only rewrite keys inside [headers], preserving the historical [host].
+    section = re.search(r"(?ms)^\[headers\]\n(.*?)(?=^\[|\Z)", text)
+    if section is None:
+        raise ValueError("missing headers section")
+    body = section[1]
+    for key in header_order(digests):
+        line = f"{key} = {json.dumps(digests[key])}"
+        pattern = rf"(?m)^{re.escape(key)} = [^\r\n]+$"
+        if key in old["headers"]:
+            body, count = re.subn(pattern, lambda _: line, body)
+            if count != 1:
+                raise ValueError("ambiguous or missing header pin: " + key)
+        else:
+            body = line + "\n" + body
+    text = text[:section.start(1)] + body + text[section.end(1):]
     result = pins.validate(tomllib.loads(text))
     if result.get("host") != old.get("host"):
         raise ValueError("historical host snapshot must not be overwritten")
@@ -173,7 +194,7 @@ def discover(out: Path) -> tuple[str, str, dict]:
             or catalog.get("abiVersion") != old["abi_version"]
             or catalog.get("sdkPreview") != old["sdk_preview"]):
         raise ValueError(f"upstream {version} ABI/SDK preview or architecture changed; manual adaptation required")
-    digests, abi_blob = headers(sha, out / "include/pulse")
+    digests, abi_blob = headers(sha, out / "include/pulse", old["headers"])
     text = render_pin((ROOT / "sdk/upstream.toml").read_text(encoding="utf-8"),
                       old, version, sha, installer, digests, abi_blob)
     target = out / "candidate/sdk/upstream.toml"
@@ -181,7 +202,8 @@ def discover(out: Path) -> tuple[str, str, dict]:
     target.write_text(text, encoding="utf-8", newline="\n")
     report = {"current": old["pulse_source_version"], "latest": version,
               "revision": sha, "installer": installer,
-              "changed_headers": sorted(name for name in HEADERS if old["headers"][name] != digests[name]),
+              "added_headers": sorted(set(digests) - set(old["headers"])),
+              "changed_headers": sorted(name for name in old["headers"] if old["headers"][name] != digests[name]),
               "abi_version": old["abi_version"], "sdk_preview": old["sdk_preview"],
               "real_host_accepted": False}
     return "candidate", "deps/pulse-v" + version, report

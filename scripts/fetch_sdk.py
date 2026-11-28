@@ -14,18 +14,11 @@ from pathlib import Path
 from urllib.request import urlopen
 
 import upstream_pin
+from sdk_headers import header_order
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = "https://raw.githubusercontent.com/jimmgreen/pulse"
 LIMIT = 1024 * 1024
-
-
-def header_names() -> list[str]:
-    """The shared header list lives next to this script, not on sys.path."""
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from sdk_headers import HEADERS
-
-    return HEADERS
 
 
 def main() -> int:
@@ -36,7 +29,7 @@ def main() -> int:
     dest = ROOT / ".sdk-cache/include/pulse"
     dest.mkdir(parents=True, exist_ok=True)
     payloads: dict[str, bytes] = {}
-    for name in header_names():
+    for name in header_order(expected):
         url = (
             f"{SOURCE}/{pin['revision']}/sdk/native/include/pulse/{name}.h"
         )
@@ -52,6 +45,9 @@ def main() -> int:
                 f"pulse/{name}.h sha256 mismatch: {digest} != {expected.get(name)}"
             )
         payloads[name] = data
+    unexpected = {path.name for path in dest.glob('*.h')} - {name + '.h' for name in payloads}
+    if unexpected:
+        raise SystemExit(f"unexpected cached SDK headers: {sorted(unexpected)}; clear .sdk-cache and retry")
     for name, data in payloads.items():
         (dest / f"{name}.h").write_bytes(data)
     print(f"{dest} ({len(payloads)} headers, digests verified)")

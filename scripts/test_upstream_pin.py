@@ -24,6 +24,14 @@ class UpstreamPinTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             upstream_pin.validate(pin)
 
+    def test_added_header_names_are_validated(self):
+        pin = copy.deepcopy(upstream_pin.load())
+        pin["headers"]["future_sdk"] = "a" * 64
+        upstream_pin.validate(pin)
+        pin["headers"]["../unsafe"] = "b" * 64
+        with self.assertRaises(ValueError):
+            upstream_pin.validate(pin)
+
     def test_reject_other_source(self):
         pin = copy.deepcopy(upstream_pin.load())
         pin["repository"] = "https://example.com/pulse"
