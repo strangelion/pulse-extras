@@ -568,6 +568,447 @@ const Content = struct {
         return node;
     }
 
+    noinline fn buildProjectList(self: *Content, owner: *const Settings, lang: vcs_panel.Language, idle: bool, page_items: *[16]ui.Node, page_len: *usize) void {
+        const visible = owner.visible();
+        var list_items: [12]ui.Node = undefined;
+        var list_len: usize = 0;
+
+        list_items[list_len] = textNode("settings.projects", tr(lang, "Bookmarks only — never grants execution or trust automatically.", "仅记录项目目录与备注，不自动授予执行权限。"), "caption");
+        list_len += 1;
+
+        // Search bar + Search/Clear buttons.
+        const search_btns = [_]ui.Node{
+            buttonNode(19, tr(lang, "Search", "搜索"), idle, "standard"),
+            buttonNode(61, tr(lang, "Clear search", "清空搜索"), idle and owner.search.len != 0, "transparent"),
+        };
+        list_items[list_len] = inputNode(search_key, tr(lang, "Search name, path, tags or remote", "搜索名称、路径、标签或远程地址"), idle);
+        list_len += 1;
+        list_items[list_len] = self.stackNode("settings.project.search-bar", true, 8, &search_btns);
+        list_len += 1;
+
+        const headers = [_][]const u8{ tr(lang, "Favorite", "收藏"), tr(lang, "Project", "项目"), tr(lang, "Provider hint", "类型提示"), tr(lang, "Local directory", "本地目录"), tr(lang, "Tags", "标签"), tr(lang, "Remote", "远程仓库"), tr(lang, "Address source", "地址来源"), tr(lang, "Open order", "打开顺序") };
+        const ids = [_][]const u8{ "favorite", "name", "provider", "path", "tags", "remote", "remote_source", "opened" };
+        for (headers, ids, 0..) |heading, id, i| {
+            self.columns[i] = std.mem.zeroes(raw.PulseUiModelColumn);
+            self.columns[i].size = @sizeOf(raw.PulseUiModelColumn);
+            self.columns[i].id = abi.view(id);
+            self.columns[i].text = abi.view(heading);
+        }
+        for (visible.indices[0..visible.count], 0..) |index, i| {
+            const project = &owner.stored.projects[index];
+            self.cells[i] = .{
+                abi.view(if (project.favorite) tr(lang, "Yes", "是") else ""),
+                abi.view(project.displayName()),
+                abi.view(if (project.kind) |kind| kind.displayName() else tr(lang, "Unknown", "未知")),
+                abi.view(project.root.slice()),
+                abi.view(project.tags.slice()),
+                abi.view(project.remote.slice()),
+                abi.view(if (project.remote.len == 0) "" else if (project.remote_detected) tr(lang, "Local hint", "本地检测") else tr(lang, "Manual / legacy", "手动 / 旧记录")),
+                abi.view(if (project.opened_order == 0) tr(lang, "Never", "未记录") else std.fmt.bufPrint(&self.recency_labels[i], "{d}", .{project.opened_order}) catch ""),
+            };
+            self.rows[i] = std.mem.zeroes(raw.PulseUiModelRow);
+            self.rows[i].size = @sizeOf(raw.PulseUiModelRow);
+            self.rows[i].id = abi.view(&project.key);
+            self.rows[i].cells = .{ .present = 1, .data = &self.cells[i], .count = self.cells[i].len };
+        }
+
+        if (visible.count != 0) {
+            var table = ui.node(ui.NodeKind.data_table);
+            table.id = abi.view("settings.project.table");
+            table.state = .{ .present = 1, .value = abi.view(selection_key) };
+            table.min_height = .{ .present = 1, .value = 176 };
+            table.rows = .{ .present = 1, .data = &self.rows, .count = @intCast(visible.count) };
+            table.data_columns = .{ .present = 1, .data = &self.columns, .count = self.columns.len };
+            list_items[list_len] = table;
+            list_len += 1;
+
+            // Horizontal pager.
+            const page_text = std.fmt.bufPrint(&self.page_label, "{d}/{d} · {d} / {d}", .{ owner.project_page + 1, @max(1, (visible.total + page_size - 1) / page_size), visible.total, owner.stored.count }) catch "";
+            const pager = [_]ui.Node{
+                buttonNode(20, tr(lang, "Previous page", "上一页"), idle and owner.project_page > 0, "standard"),
+                textNode("settings.project.page", page_text, "caption"),
+                buttonNode(21, tr(lang, "Next page", "下一页"), idle and (owner.project_page + 1) * page_size < visible.total, "standard"),
+            };
+            list_items[list_len] = self.stackNode("settings.project.pager", true, 8, &pager);
+            list_len += 1;
+
+            // Core project row actions (horizontal 4-col grid).
+            var core_btns: [4]ui.Node = undefined;
+            var core_len: usize = 0;
+            if (owner.route.table != null) {
+                core_btns[core_len] = buttonNode(22, tr(lang, "Open in Pulse", "在 Pulse 中打开"), idle, "primary");
+                core_len += 1;
+            }
+            core_btns[core_len] = buttonNode(16, tr(lang, "Edit / show path", "编辑 / 查看路径"), idle, "standard");
+            core_len += 1;
+            core_btns[core_len] = buttonNode(18, tr(lang, "Toggle favorite", "切换收藏"), idle, "standard");
+            core_len += 1;
+            core_btns[core_len] = buttonNode(9, tr(lang, "Remove bookmark", "移除记录"), idle, "danger");
+            core_len += 1;
+            list_items[list_len] = self.gridNode("settings.project.core-actions", @intCast(core_len), 8, core_btns[0..core_len]);
+            list_len += 1;
+            if (owner.route.table == null) {
+                list_items[list_len] = textNode("settings.project.route-fallback", tr(lang, "Host navigation unavailable: edit selected and open its path manually.", "宿主不支持跳转：请编辑选中项目并手动打开路径。"), "caption");
+                list_len += 1;
+            }
+
+            // Remote / Forge web links (5-col grid).
+            const external_idle = idle and (if (owner.browser) |*task| !task.occupied() else false);
+            const web_btns = [_]ui.Node{
+                buttonNode(10, tr(lang, "Repository", "仓库主页"), external_idle, "standard"),
+                buttonNode(30, tr(lang, "Issues", "Issues"), external_idle, "standard"),
+                buttonNode(31, tr(lang, "PR / MR", "PR / MR"), external_idle, "standard"),
+                buttonNode(32, tr(lang, "Actions / CI", "Actions / CI"), external_idle, "standard"),
+                buttonNode(33, tr(lang, "Releases", "Releases"), external_idle, "standard"),
+            };
+            list_items[list_len] = self.gridNode("settings.forge.links", 5, 6, &web_btns);
+            list_len += 1;
+
+            // Inspect / Sync / External clients (grid).
+            var tool_btns: [6]ui.Node = undefined;
+            var tool_len: usize = 0;
+            tool_btns[tool_len] = buttonNode(34, tr(lang, "Detect local Git remotes", "检查本地 Git 远程"), external_idle, "standard");
+            tool_len += 1;
+            tool_btns[tool_len] = buttonNode(41, tr(lang, "Fetch GitHub info", "获取公开 GitHub 信息"), external_idle, "standard");
+            tool_len += 1;
+            tool_btns[tool_len] = buttonNode(49, tr(lang, "Copy panel summary", "复制面板摘要"), idle, "standard");
+            tool_len += 1;
+            if (owner.grant_access != null and owner.project_task != null) {
+                tool_btns[tool_len] = buttonNode(26, tr(lang, "Inspect saved approvals", "检查持久授权"), idle, "standard");
+                tool_len += 1;
+            }
+            tool_btns[tool_len] = buttonNode(44, tr(lang, "Open in VS Code…", "用 VS Code 打开…"), external_idle and owner.stored.client_paths[0] != null, "standard");
+            tool_len += 1;
+            tool_btns[tool_len] = buttonNode(45, tr(lang, "TortoiseSVN status…", "TortoiseSVN 状态…"), external_idle and owner.stored.client_paths[1] != null, "standard");
+            tool_len += 1;
+            list_items[list_len] = self.gridNode("settings.project.integrations", 3, 6, tool_btns[0..tool_len]);
+            list_len += 1;
+
+            // Windows Git single-file index review.
+            if (comptime builtin.os.tag == .windows) {
+                if (owner.stored.tools[0] != null) {
+                    const idx_btns = [_]ui.Node{
+                        buttonNode(54, tr(lang, "Review staging file", "审核暂存文件"), external_idle, "standard"),
+                        buttonNode(55, tr(lang, "Review unstaging file", "审核取消暂存"), external_idle, "standard"),
+                    };
+                    list_items[list_len] = inputNode(index_path_key, tr(lang, "Git file path relative to selected project", "相对于选中 Git 项目的文件路径"), external_idle);
+                    list_len += 1;
+                    list_items[list_len] = self.stackNode("settings.git-index.bar", true, 8, &idx_btns);
+                    list_len += 1;
+                }
+            }
+
+            list_items[list_len] = textNode("settings.forge.warning", tr(lang, "Browser availability and private access are not verified; external apps may access files/network independently.", "未验证网页可用性与私有访问权限；外部程序可自行访问文件或网络。"), "caption");
+            list_len += 1;
+        } else {
+            var empty = ui.node(ui.NodeKind.empty_state);
+            empty.id = abi.view("settings.project.empty");
+            empty.text = .{ .present = 1, .value = abi.view(tr(lang, "No matching projects", "没有匹配项目")) };
+            empty.detail = .{ .present = 1, .value = abi.view(tr(lang, "Add a project below (up to 64 records) or clear your search filter.", "请在下方添加项目（最多 64 项）或清空搜索词。")) };
+            list_items[list_len] = empty;
+            list_len += 1;
+        }
+
+        page_items[page_len.*] = self.groupNode("settings.projects.card", tr(lang, "Project Library", "项目库"), list_items[0..list_len]);
+        page_len.* += 1;
+    }
+
+    noinline fn buildRemoteReview(self: *Content, owner: *const Settings, lang: vcs_panel.Language, idle: bool, page_items: *[16]ui.Node, page_len: *usize) void {
+        // Inline transient review cards (bordered groups, only rendered when active).
+        if (owner.remote_review) |*review| {
+            var r_items: [16]ui.Node = undefined;
+            var r_len: usize = 0;
+            r_items[r_len] = textNode("settings.forge.review-root", review.scope.root.slice(), "caption");
+            r_len += 1;
+            const remote_ids = [_][]const u8{ "settings.remote.0", "settings.remote.1", "settings.remote.2", "settings.remote.3", "settings.remote.4", "settings.remote.5" };
+            for (review.value.rows[0..review.value.count], 0..) |row, i| {
+                const label = std.fmt.bufPrint(&self.remote_labels[i], "{s}: {s}", .{ row.name.slice(), row.url.slice() }) catch "";
+                const pair = [_]ui.Node{
+                    textNode(remote_ids[i], label, null),
+                    buttonNode(35 + i, tr(lang, "Save address", "保存此地址"), idle and !owner.externalBusy(), "primary"),
+                };
+                r_items[r_len] = self.stackNode("settings.remote.row", true, 8, &pair);
+                r_len += 1;
+            }
+            if (review.value.count == 0) {
+                r_items[r_len] = textNode("settings.remote.empty", tr(lang, "No supported literal remote", "没有支持的字面远程地址"), "caption");
+                r_len += 1;
+            }
+            if (review.value.omitted != 0) {
+                r_items[r_len] = textNode("settings.remote.omitted", tr(lang, "Some remote values were rejected or exceed the retained limit; raw values hidden.", "部分远程地址无效或超出保留上限；原始值不显示。"), "caption");
+                r_len += 1;
+            }
+            page_items[page_len.*] = self.groupNode("settings.remote.card", tr(lang, "Detected Local Git Remotes", "检测到的本地 Git 远程"), r_items[0..r_len]);
+            page_len.* += 1;
+        }
+    }
+
+    noinline fn buildLocalSummary(self: *Content, owner: *const Settings, lang: vcs_panel.Language, idle: bool, page_items: *[16]ui.Node, page_len: *usize) void {
+        if (owner.local_summary) |*review| {
+            const value = &review.value;
+            const c = value.changes;
+            const a = value.counts;
+            const values = [_][]const u8{
+                countLabel(&self.local_counts[0], c.staged, a.staged),
+                countLabel(&self.local_counts[1], c.modified, a.modified),
+                countLabel(&self.local_counts[2], c.untracked, a.untracked),
+                countLabel(&self.local_counts[3], c.conflicted, a.conflicted),
+                countLabel(&self.local_counts[4], c.ahead, a.ahead),
+                countLabel(&self.local_counts[5], c.behind, a.behind),
+            };
+            const label = if (lang == .zh)
+                std.fmt.bufPrint(&self.local_label, "暂存 {s} | 修改 {s} | 未跟踪 {s} | 冲突 {s} | 领先 {s} | 落后 {s}", .{ values[0], values[1], values[2], values[3], values[4], values[5] }) catch ""
+            else
+                std.fmt.bufPrint(&self.local_label, "Staged {s} | Modified {s} | Untracked {s} | Conflicts {s} | Ahead {s} | Behind {s}", .{ values[0], values[1], values[2], values[3], values[4], values[5] }) catch "";
+            const s_items = [_]ui.Node{
+                textNode("settings.local.heading", tr(lang, "Local panel snapshot, not live; may be cached", "本地面板快照，非实时，可能来自缓存"), "caption"),
+                textNode("settings.local.root", review.scope.root.slice(), null),
+                textNode("settings.local.provider", if (value.kind) |kind| kind.displayName() else "?", null),
+                textNode("settings.local.ref", if (value.reference.len == 0) "?" else value.reference.slice(), null),
+                textNode("settings.local.revision", if (value.revision) |*revision| revision.slice() else "?", null),
+                textNode("settings.local.counts", label, null),
+                buttonNode(50, tr(lang, "Clear local summary", "清除本地摘要"), idle, "standard"),
+            };
+            page_items[page_len.*] = self.groupNode("settings.local.card", tr(lang, "Local Panel Summary", "本地面板摘要"), &s_items);
+            page_len.* += 1;
+        }
+    }
+
+    noinline fn buildMetadataReview(self: *Content, owner: *const Settings, lang: vcs_panel.Language, page_items: *[16]ui.Node, page_len: *usize) void {
+        if (owner.metadata_review) |*review| {
+            var m_items: [5]ui.Node = undefined;
+            var m_len: usize = 0;
+            m_items[m_len] = textNode("settings.meta.repository", review.scope.remote.slice(), null);
+            m_len += 1;
+            m_items[m_len] = textNode("settings.meta.heading", tr(lang, "Last explicit public snapshot (not live; no automatic refresh)", "最近一次显式公开快照（非实时；不自动刷新）"), "caption");
+            m_len += 1;
+            const result = &review.value;
+            const status_text = if (result.status == .ready and forge.nowMs() -| result.fetched_ms > 300000) tr(lang, "Expired; fetch again", "已过期；请重新获取") else switch (result.status) {
+                .ready => tr(lang, "Public response verified", "已验证公开响应"),
+                .forbidden_or_limited => tr(lang, "Access denied or rate limited; retry manually later", "访问被拒绝或限流；稍后手动重试"),
+                .not_found => tr(lang, "Not found or private; no account connected", "不存在或为私有仓库；未连接账号"),
+                .redirected => tr(lang, "Redirect refused; review repository URL", "已拒绝重定向；请确认仓库地址"),
+                .http_error => tr(lang, "HTTP request failed", "HTTP 请求失败"),
+                .offline => tr(lang, "Offline, timeout or transport unavailable", "离线、超时或传输不可用"),
+                .invalid => tr(lang, "Invalid or mismatched response", "响应无效或仓库不匹配"),
+                .too_large => tr(lang, "Response exceeds 64 KiB", "响应超过 64 KiB"),
+                .cancelled => tr(lang, "Cancelled", "已取消"),
+            };
+            m_items[m_len] = textNode("settings.meta.status", status_text, null);
+            m_len += 1;
+            if (result.status == .ready and forge.nowMs() -| result.fetched_ms <= 300000) {
+                const label = if (lang == .zh)
+                    std.fmt.bufPrint(&self.meta_label, "星标 {d} | Fork {d} | 开放 Issue/PR {d} | 已归档：{s}", .{ result.stars, result.forks, result.open_items, if (result.archived) "是" else "否" }) catch ""
+                else
+                    std.fmt.bufPrint(&self.meta_label, "Stars {d} | Forks {d} | Open issues + PRs {d} | Archived {s}", .{ result.stars, result.forks, result.open_items, if (result.archived) "yes" else "no" }) catch "";
+                m_items[m_len] = textNode("settings.meta.counts", label, null);
+                m_len += 1;
+                m_items[m_len] = textNode("settings.meta.branch", result.branch.slice(), "caption");
+                m_len += 1;
+            }
+            page_items[page_len.*] = self.groupNode("settings.meta.card", tr(lang, "Public GitHub Metadata", "公开 GitHub 元数据"), m_items[0..m_len]);
+            page_len.* += 1;
+        }
+    }
+
+    noinline fn buildClientReview(self: *Content, owner: *const Settings, lang: vcs_panel.Language, idle: bool, page_items: *[16]ui.Node, page_len: *usize) void {
+        if (owner.client_review) |*review| {
+            var c_items: [6]ui.Node = undefined;
+            var c_len: usize = 0;
+            c_items[c_len] = textNode("settings.client.review-kind", review.client.name(), null);
+            c_len += 1;
+            c_items[c_len] = textNode("settings.client.review-exe", review.executable.slice(), "caption");
+            c_len += 1;
+            const command = forge.commandLine(review.client, review.executable.slice(), review.scope.root.slice(), review.scope.kind, &self.client_command) catch "";
+            if (command.len != 0) {
+                c_items[c_len] = textNode("settings.client.review-command", command, "caption");
+                c_len += 1;
+            }
+            c_items[c_len] = textNode("settings.client.review-root", review.scope.root.slice(), null);
+            c_len += 1;
+            const c_btns = [_]ui.Node{
+                buttonNode(46, tr(lang, "Confirm external launch (not a sandbox)", "确认启动外部程序（非沙箱）"), idle and !owner.externalBusy(), "primary"),
+                buttonNode(47, tr(lang, "Cancel launch review", "取消启动审核"), idle and !owner.externalBusy(), "standard"),
+            };
+            c_items[c_len] = self.stackNode("settings.client.review-actions", true, 8, &c_btns);
+            c_len += 1;
+            page_items[page_len.*] = self.groupNode("settings.client.review-card", tr(lang, "External Launch Review", "外部程序启动审核"), c_items[0..c_len]);
+            page_len.* += 1;
+        }
+    }
+
+    noinline fn buildIndexReview(self: *Content, owner: *const Settings, lang: vcs_panel.Language, idle: bool, page_items: *[16]ui.Node, page_len: *usize) void {
+        if (owner.index_review) |*review| {
+            const plan = &review.plan;
+            const i_btns = [_]ui.Node{
+                buttonNode(56, tr(lang, "Confirm this Git index update", "确认这一次 Git 索引写入"), idle, "primary"),
+                buttonNode(57, tr(lang, "Cancel index review", "取消索引审核"), idle, "standard"),
+            };
+            const i_items = [_]ui.Node{
+                textNode("settings.git-index.action", if (plan.scope.action == .stage) tr(lang, "Stage one file to the local Git index", "暂存单个文件到本地 Git 索引") else tr(lang, "Restore one staged file to the reviewed HEAD entry", "将单个暂存项恢复到已审核的 HEAD 条目"), null),
+                textNode("settings.git-index.root", plan.scope.root.slice(), "caption"),
+                textNode("settings.git-index.target", plan.scope.path.slice(), null),
+                textNode("settings.git-index.tool", plan.scope.tool.slice(), "caption"),
+                textNode("settings.git-index.head", &plan.evidence.head, "caption"),
+                self.stackNode("settings.git-index.actions", true, 8, &i_btns),
+            };
+            page_items[page_len.*] = self.groupNode("settings.git-index.card", tr(lang, "Git Index Review", "Git 索引写入审核"), &i_items);
+            page_len.* += 1;
+        }
+    }
+
+    noinline fn buildGrantReview(self: *Content, owner: *const Settings, lang: vcs_panel.Language, idle: bool, page_items: *[16]ui.Node, page_len: *usize) void {
+        if (owner.grant_review) |*review| {
+            var g_items: [14]ui.Node = undefined;
+            var g_len: usize = 0;
+            g_items[g_len] = textNode("settings.grants.heading", tr(lang, "Reviewed approval scope (no execution; keep this same row selected to revoke)", "已检查授权范围（不执行；撤销前请保持选中同一项目）"), "caption");
+            g_len += 1;
+            g_items[g_len] = textNode("settings.grants.root", review.root.slice(), null);
+            g_len += 1;
+            const ids_grant = [_][]const u8{ "settings.grants.git", "settings.grants.jj", "settings.grants.svn", "settings.grants.hg" };
+            const ids_path = [_][]const u8{ "settings.grants.git.path", "settings.grants.jj.path", "settings.grants.svn.path", "settings.grants.hg.path" };
+            const en = [_][]const u8{ "Revoke Git approval", "Revoke Jujutsu approval", "Revoke SVN approval", "Revoke Mercurial approval" };
+            const zh = [_][]const u8{ "撤销 Git 授权", "撤销 Jujutsu 授权", "撤销 SVN 授权", "撤销 Mercurial 授权" };
+            for (&review.hints, grant_kinds, 0..) |*hint, kind, i| {
+                const label = switch (hint.state) {
+                    .not_checked => tr(lang, "Not checked", "未检查"),
+                    .absent => tr(lang, "No record observed", "未发现记录"),
+                    .recorded => tr(lang, "Recorded; not revalidated", "存在记录；尚未验证"),
+                    .unavailable => tr(lang, "Unavailable", "无法读取"),
+                };
+                const status_node = textNode(ids_grant[i], std.fmt.bufPrint(&self.grant_labels[i], "{s}: {s}", .{ kind.displayName(), label }) catch "", null);
+                const revoke_btn = buttonNode(if (i == 3) 53 else 27 + i, tr(lang, en[i], zh[i]), idle and review.version == owner.stored.version and hint.state == .recorded, "danger");
+                const row_nodes = [_]ui.Node{ status_node, revoke_btn };
+                g_items[g_len] = self.stackNode("settings.grants.row", true, 8, &row_nodes);
+                g_len += 1;
+                if (hint.executable) |*path| {
+                    g_items[g_len] = textNode(ids_path[i], path.slice(), "caption");
+                    g_len += 1;
+                }
+            }
+            page_items[page_len.*] = self.groupNode("settings.grants.card", tr(lang, "Saved Approvals", "持久授权记录"), g_items[0..g_len]);
+            page_len.* += 1;
+        }
+    }
+
+    noinline fn buildProjectForm(self: *Content, owner: *const Settings, lang: vcs_panel.Language, idle: bool, page_items: *[16]ui.Node, page_len: *usize) void {
+        // Project Bookmark Add/Edit Form card.
+        var form_items: [6]ui.Node = undefined;
+        var form_len: usize = 0;
+        const edit_text = if (owner.edit_key) |key| blk: {
+            const display = if (owner.stored.find(&key)) |idx| owner.stored.projects[idx].displayName() else &key;
+            break :blk std.fmt.bufPrint(&self.edit_label, "{s}: {s}", .{ tr(lang, "Editing", "正在编辑"), display }) catch "";
+        } else tr(lang, "New project", "新建项目");
+        form_items[form_len] = textNode("settings.project.edit-mode", edit_text, "caption");
+        form_len += 1;
+
+        const row1 = [_]ui.Node{
+            inputNode(root_key, tr(lang, "Project root (absolute path)", "项目根目录（绝对路径）"), idle),
+            inputNode(name_key, tr(lang, "Project name (optional)", "项目名称（可选）"), idle),
+        };
+        form_items[form_len] = self.gridNode("settings.project.form-row1", 2, 8, &row1);
+        form_len += 1;
+
+        const row2 = [_]ui.Node{
+            inputNode(tags_key, tr(lang, "Tags (optional)", "标签（可选）"), idle),
+            inputNode(url_key, tr(lang, "Remote repository (optional: GitHub / GitLab / Bitbucket)", "远程仓库地址（可选：GitHub / GitLab / Bitbucket）"), idle),
+        };
+        form_items[form_len] = self.gridNode("settings.project.form-row2", 2, 8, &row2);
+        form_len += 1;
+
+        const kind_text = std.fmt.bufPrint(&self.kind_label, "{s}: {s}", .{
+            tr(lang, "Provider hint", "类型提示"),
+            if (owner.form_kind) |k| k.displayName() else tr(lang, "Auto / Unknown", "自动 / 未知"),
+        }) catch "";
+        var form_btns: [5]ui.Node = undefined;
+        var fb_len: usize = 0;
+        if (owner.edit_key != null) {
+            form_btns[fb_len] = buttonNode(17, tr(lang, "Update / relink", "更新 / 重新关联"), idle, "primary");
+        } else {
+            form_btns[fb_len] = buttonNode(8, tr(lang, "Add project", "添加项目"), idle, "primary");
+        }
+        fb_len += 1;
+        if (owner.picker != null) {
+            form_btns[fb_len] = buttonNode(23, tr(lang, "Browse folder", "浏览目录"), idle, "standard");
+            fb_len += 1;
+        }
+        form_btns[fb_len] = buttonNode(7, tr(lang, "Fill current repo", "填入当前仓库"), idle, "standard");
+        fb_len += 1;
+        form_btns[fb_len] = buttonNode(62, kind_text, idle, "standard");
+        fb_len += 1;
+        form_btns[fb_len] = buttonNode(15, tr(lang, "Clear form", "清空表单"), idle, "transparent");
+        fb_len += 1;
+        form_items[form_len] = self.stackNode("settings.project.form-actions", true, 8, form_btns[0..fb_len]);
+        form_len += 1;
+
+        page_items[page_len.*] = self.groupNode("settings.project.form-card", tr(lang, "Add or Edit Bookmark", "添加 / 编辑项目"), form_items[0..form_len]);
+        page_len.* += 1;
+    }
+
+    noinline fn buildTools(self: *Content, owner: *const Settings, lang: vcs_panel.Language, idle: bool, page_items: *[16]ui.Node, page_len: *usize) void {
+        var tool_rows: [6]ui.Node = undefined;
+        var tr_len: usize = 0;
+        tool_rows[tr_len] = textNode("settings.tools", tr(lang, "Saving a path is only a suggestion and never authorizes execution.", "保存路径仅作候选提示，不等于授予执行权限。"), "caption");
+        tr_len += 1;
+        for (fields, names, 0..) |field, name, i| {
+            var btns: [2]ui.Node = undefined;
+            var blen: usize = 0;
+            btns[blen] = buttonNode(if (i == 3) 51 else 1 + i, tr(lang, "Save path (empty = auto)", "保存路径（留空自动检测）"), idle, "primary");
+            blen += 1;
+            if (owner.picker != null) {
+                btns[blen] = buttonNode(if (i == 3) 52 else 4 + i, tr(lang, "Browse folder", "浏览所在目录"), idle, "standard");
+                blen += 1;
+            }
+            const entry = [_]ui.Node{
+                inputNode(field, name, idle),
+                self.stackNode("settings.tool.actions", true, 8, btns[0..blen]),
+            };
+            tool_rows[tr_len] = self.stackNode("settings.tool.row", false, 4, &entry);
+            tr_len += 1;
+        }
+        page_items[page_len.*] = self.groupNode("settings.tools.card", tr(lang, "VCS Executables", "版本控制工具路径"), tool_rows[0..tr_len]);
+        page_len.* += 1;
+
+        var client_rows: [5]ui.Node = undefined;
+        var cr_len: usize = 0;
+        client_rows[cr_len] = textNode("settings.client.heading", tr(lang, "Saving a client path does not launch it or grant VCS access.", "保存客户端路径不会启动程序或授予 VCS 权限。"), "caption");
+        cr_len += 1;
+        client_rows[cr_len] = textNode("settings.client.unsupported", tr(lang, "GitHub Desktop direct launch is not yet verified; use its documented github command manually. Sourcetree / GitKraken adapters unavailable.", "GitHub Desktop 直接启动尚未验证，可手动使用官方 github 命令；Sourcetree / GitKraken 适配暂不可用。"), "caption");
+        cr_len += 1;
+        for (clients, client_fields, 0..) |client, field, i| {
+            var btns: [2]ui.Node = undefined;
+            var blen: usize = 0;
+            btns[blen] = buttonNode(42 + i, tr(lang, "Save executable (empty clears)", "保存可执行文件（留空清除）"), idle, "primary");
+            blen += 1;
+            if (owner.picker != null) {
+                btns[blen] = buttonNode(63 + i, tr(lang, "Browse folder", "浏览所在目录"), idle, "standard");
+                blen += 1;
+            }
+            const entry = [_]ui.Node{
+                inputNode(field, client.name(), idle),
+                self.stackNode("settings.client.actions", true, 8, btns[0..blen]),
+            };
+            client_rows[cr_len] = self.stackNode("settings.client.row", false, 4, &entry);
+            cr_len += 1;
+        }
+        page_items[page_len.*] = self.groupNode("settings.client.card", tr(lang, "External Clients", "外部客户端路径"), client_rows[0..cr_len]);
+        page_len.* += 1;
+    }
+
+    noinline fn buildGeneral(self: *Content, owner: *const Settings, lang: vcs_panel.Language, idle: bool, page_items: *[16]ui.Node, page_len: *usize) void {
+        const locale_btns = [_]ui.Node{
+            buttonNode(12, tr(lang, "System language (Auto)", "跟随系统 (Auto)"), idle and owner.stored.locale != .auto, if (owner.stored.locale == .auto) "primary" else "standard"),
+            buttonNode(13, "English", idle and owner.stored.locale != .en, if (owner.stored.locale == .en) "primary" else "standard"),
+            buttonNode(14, "简体中文", idle and owner.stored.locale != .zh, if (owner.stored.locale == .zh) "primary" else "standard"),
+        };
+        const gen_items = [_]ui.Node{
+            textNode("settings.locale", tr(lang, "Choose interface language for both the VCS panel and this settings page.", "选择 VCS 面板与设置页的显示语言。"), "caption"),
+            self.gridNode("settings.locale.grid", 3, 8, &locale_btns),
+        };
+        page_items[page_len.*] = self.groupNode("settings.locale.card", tr(lang, "Language / 语言", "语言 / Language"), &gen_items);
+        page_len.* += 1;
+    }
+
     fn build(self: *Content, owner: *const Settings, tree: *ui.Tree) void {
         self.pool_len = 0;
         const idle = owner.loaded and owner.pending == 0 and owner.picker_request == 0 and !owner.poisoned and !owner.route.busy() and !owner.checkingProject() and !owner.externalBusy();
@@ -630,429 +1071,17 @@ const Content = struct {
 
         switch (owner.section) {
             .projects => {
-                const visible = owner.visible();
-                var list_items: [12]ui.Node = undefined;
-                var list_len: usize = 0;
-
-                list_items[list_len] = textNode("settings.projects", tr(lang, "Bookmarks only — never grants execution or trust automatically.", "仅记录项目目录与备注，不自动授予执行权限。"), "caption");
-                list_len += 1;
-
-                // Search bar + Search/Clear buttons.
-                const search_btns = [_]ui.Node{
-                    buttonNode(19, tr(lang, "Search", "搜索"), idle, "standard"),
-                    buttonNode(61, tr(lang, "Clear search", "清空搜索"), idle and owner.search.len != 0, "transparent"),
-                };
-                list_items[list_len] = inputNode(search_key, tr(lang, "Search name, path, tags or remote", "搜索名称、路径、标签或远程地址"), idle);
-                list_len += 1;
-                list_items[list_len] = self.stackNode("settings.project.search-bar", true, 8, &search_btns);
-                list_len += 1;
-
-                const headers = [_][]const u8{ tr(lang, "Favorite", "收藏"), tr(lang, "Project", "项目"), tr(lang, "Provider hint", "类型提示"), tr(lang, "Local directory", "本地目录"), tr(lang, "Tags", "标签"), tr(lang, "Remote", "远程仓库"), tr(lang, "Address source", "地址来源"), tr(lang, "Open order", "打开顺序") };
-                const ids = [_][]const u8{ "favorite", "name", "provider", "path", "tags", "remote", "remote_source", "opened" };
-                for (headers, ids, 0..) |heading, id, i| {
-                    self.columns[i] = std.mem.zeroes(raw.PulseUiModelColumn);
-                    self.columns[i].size = @sizeOf(raw.PulseUiModelColumn);
-                    self.columns[i].id = abi.view(id);
-                    self.columns[i].text = abi.view(heading);
-                }
-                for (visible.indices[0..visible.count], 0..) |index, i| {
-                    const project = &owner.stored.projects[index];
-                    self.cells[i] = .{
-                        abi.view(if (project.favorite) tr(lang, "Yes", "是") else ""),
-                        abi.view(project.displayName()),
-                        abi.view(if (project.kind) |kind| kind.displayName() else tr(lang, "Unknown", "未知")),
-                        abi.view(project.root.slice()),
-                        abi.view(project.tags.slice()),
-                        abi.view(project.remote.slice()),
-                        abi.view(if (project.remote.len == 0) "" else if (project.remote_detected) tr(lang, "Local hint", "本地检测") else tr(lang, "Manual / legacy", "手动 / 旧记录")),
-                        abi.view(if (project.opened_order == 0) tr(lang, "Never", "未记录") else std.fmt.bufPrint(&self.recency_labels[i], "{d}", .{project.opened_order}) catch ""),
-                    };
-                    self.rows[i] = std.mem.zeroes(raw.PulseUiModelRow);
-                    self.rows[i].size = @sizeOf(raw.PulseUiModelRow);
-                    self.rows[i].id = abi.view(&project.key);
-                    self.rows[i].cells = .{ .present = 1, .data = &self.cells[i], .count = self.cells[i].len };
-                }
-
-                if (visible.count != 0) {
-                    var table = ui.node(ui.NodeKind.data_table);
-                    table.id = abi.view("settings.project.table");
-                    table.state = .{ .present = 1, .value = abi.view(selection_key) };
-                    table.min_height = .{ .present = 1, .value = 176 };
-                    table.rows = .{ .present = 1, .data = &self.rows, .count = @intCast(visible.count) };
-                    table.data_columns = .{ .present = 1, .data = &self.columns, .count = self.columns.len };
-                    list_items[list_len] = table;
-                    list_len += 1;
-
-                    // Horizontal pager.
-                    const page_text = std.fmt.bufPrint(&self.page_label, "{d}/{d} · {d} / {d}", .{ owner.project_page + 1, @max(1, (visible.total + page_size - 1) / page_size), visible.total, owner.stored.count }) catch "";
-                    const pager = [_]ui.Node{
-                        buttonNode(20, tr(lang, "Previous page", "上一页"), idle and owner.project_page > 0, "standard"),
-                        textNode("settings.project.page", page_text, "caption"),
-                        buttonNode(21, tr(lang, "Next page", "下一页"), idle and (owner.project_page + 1) * page_size < visible.total, "standard"),
-                    };
-                    list_items[list_len] = self.stackNode("settings.project.pager", true, 8, &pager);
-                    list_len += 1;
-
-                    // Core project row actions (horizontal 4-col grid).
-                    var core_btns: [4]ui.Node = undefined;
-                    var core_len: usize = 0;
-                    if (owner.route.table != null) {
-                        core_btns[core_len] = buttonNode(22, tr(lang, "Open in Pulse", "在 Pulse 中打开"), idle, "primary");
-                        core_len += 1;
-                    }
-                    core_btns[core_len] = buttonNode(16, tr(lang, "Edit / show path", "编辑 / 查看路径"), idle, "standard");
-                    core_len += 1;
-                    core_btns[core_len] = buttonNode(18, tr(lang, "Toggle favorite", "切换收藏"), idle, "standard");
-                    core_len += 1;
-                    core_btns[core_len] = buttonNode(9, tr(lang, "Remove bookmark", "移除记录"), idle, "danger");
-                    core_len += 1;
-                    list_items[list_len] = self.gridNode("settings.project.core-actions", @intCast(core_len), 8, core_btns[0..core_len]);
-                    list_len += 1;
-                    if (owner.route.table == null) {
-                        list_items[list_len] = textNode("settings.project.route-fallback", tr(lang, "Host navigation unavailable: edit selected and open its path manually.", "宿主不支持跳转：请编辑选中项目并手动打开路径。"), "caption");
-                        list_len += 1;
-                    }
-
-                    // Remote / Forge web links (5-col grid).
-                    const external_idle = idle and (if (owner.browser) |*task| !task.occupied() else false);
-                    const web_btns = [_]ui.Node{
-                        buttonNode(10, tr(lang, "Repository", "仓库主页"), external_idle, "standard"),
-                        buttonNode(30, tr(lang, "Issues", "Issues"), external_idle, "standard"),
-                        buttonNode(31, tr(lang, "PR / MR", "PR / MR"), external_idle, "standard"),
-                        buttonNode(32, tr(lang, "Actions / CI", "Actions / CI"), external_idle, "standard"),
-                        buttonNode(33, tr(lang, "Releases", "Releases"), external_idle, "standard"),
-                    };
-                    list_items[list_len] = self.gridNode("settings.forge.links", 5, 6, &web_btns);
-                    list_len += 1;
-
-                    // Inspect / Sync / External clients (grid).
-                    var tool_btns: [6]ui.Node = undefined;
-                    var tool_len: usize = 0;
-                    tool_btns[tool_len] = buttonNode(34, tr(lang, "Detect local Git remotes", "检查本地 Git 远程"), external_idle, "standard");
-                    tool_len += 1;
-                    tool_btns[tool_len] = buttonNode(41, tr(lang, "Fetch GitHub info", "获取公开 GitHub 信息"), external_idle, "standard");
-                    tool_len += 1;
-                    tool_btns[tool_len] = buttonNode(49, tr(lang, "Copy panel summary", "复制面板摘要"), idle, "standard");
-                    tool_len += 1;
-                    if (owner.grant_access != null and owner.project_task != null) {
-                        tool_btns[tool_len] = buttonNode(26, tr(lang, "Inspect saved approvals", "检查持久授权"), idle, "standard");
-                        tool_len += 1;
-                    }
-                    tool_btns[tool_len] = buttonNode(44, tr(lang, "Open in VS Code…", "用 VS Code 打开…"), external_idle and owner.stored.client_paths[0] != null, "standard");
-                    tool_len += 1;
-                    tool_btns[tool_len] = buttonNode(45, tr(lang, "TortoiseSVN status…", "TortoiseSVN 状态…"), external_idle and owner.stored.client_paths[1] != null, "standard");
-                    tool_len += 1;
-                    list_items[list_len] = self.gridNode("settings.project.integrations", 3, 6, tool_btns[0..tool_len]);
-                    list_len += 1;
-
-                    // Windows Git single-file index review.
-                    if (comptime builtin.os.tag == .windows) {
-                        if (owner.stored.tools[0] != null) {
-                            const idx_btns = [_]ui.Node{
-                                buttonNode(54, tr(lang, "Review staging file", "审核暂存文件"), external_idle, "standard"),
-                                buttonNode(55, tr(lang, "Review unstaging file", "审核取消暂存"), external_idle, "standard"),
-                            };
-                            list_items[list_len] = inputNode(index_path_key, tr(lang, "Git file path relative to selected project", "相对于选中 Git 项目的文件路径"), external_idle);
-                            list_len += 1;
-                            list_items[list_len] = self.stackNode("settings.git-index.bar", true, 8, &idx_btns);
-                            list_len += 1;
-                        }
-                    }
-
-                    list_items[list_len] = textNode("settings.forge.warning", tr(lang, "Browser availability and private access are not verified; external apps may access files/network independently.", "未验证网页可用性与私有访问权限；外部程序可自行访问文件或网络。"), "caption");
-                    list_len += 1;
-                } else {
-                    var empty = ui.node(ui.NodeKind.empty_state);
-                    empty.id = abi.view("settings.project.empty");
-                    empty.text = .{ .present = 1, .value = abi.view(tr(lang, "No matching projects", "没有匹配项目")) };
-                    empty.detail = .{ .present = 1, .value = abi.view(tr(lang, "Add a project below (up to 64 records) or clear your search filter.", "请在下方添加项目（最多 64 项）或清空搜索词。")) };
-                    list_items[list_len] = empty;
-                    list_len += 1;
-                }
-
-                page_items[page_len] = self.groupNode("settings.projects.card", tr(lang, "Project Library", "项目库"), list_items[0..list_len]);
-                page_len += 1;
-
-                // Inline transient review cards (bordered groups, only rendered when active).
-                if (owner.remote_review) |*review| {
-                    var r_items: [16]ui.Node = undefined;
-                    var r_len: usize = 0;
-                    r_items[r_len] = textNode("settings.forge.review-root", review.scope.root.slice(), "caption");
-                    r_len += 1;
-                    const remote_ids = [_][]const u8{ "settings.remote.0", "settings.remote.1", "settings.remote.2", "settings.remote.3", "settings.remote.4", "settings.remote.5" };
-                    for (review.value.rows[0..review.value.count], 0..) |row, i| {
-                        const label = std.fmt.bufPrint(&self.remote_labels[i], "{s}: {s}", .{ row.name.slice(), row.url.slice() }) catch "";
-                        const pair = [_]ui.Node{
-                            textNode(remote_ids[i], label, null),
-                            buttonNode(35 + i, tr(lang, "Save address", "保存此地址"), idle and !owner.externalBusy(), "primary"),
-                        };
-                        r_items[r_len] = self.stackNode("settings.remote.row", true, 8, &pair);
-                        r_len += 1;
-                    }
-                    if (review.value.count == 0) {
-                        r_items[r_len] = textNode("settings.remote.empty", tr(lang, "No supported literal remote", "没有支持的字面远程地址"), "caption");
-                        r_len += 1;
-                    }
-                    if (review.value.omitted != 0) {
-                        r_items[r_len] = textNode("settings.remote.omitted", tr(lang, "Some remote values were rejected or exceed the retained limit; raw values hidden.", "部分远程地址无效或超出保留上限；原始值不显示。"), "caption");
-                        r_len += 1;
-                    }
-                    page_items[page_len] = self.groupNode("settings.remote.card", tr(lang, "Detected Local Git Remotes", "检测到的本地 Git 远程"), r_items[0..r_len]);
-                    page_len += 1;
-                }
-
-                if (owner.local_summary) |*review| {
-                    const value = &review.value;
-                    const c = value.changes;
-                    const a = value.counts;
-                    const values = [_][]const u8{
-                        countLabel(&self.local_counts[0], c.staged, a.staged),
-                        countLabel(&self.local_counts[1], c.modified, a.modified),
-                        countLabel(&self.local_counts[2], c.untracked, a.untracked),
-                        countLabel(&self.local_counts[3], c.conflicted, a.conflicted),
-                        countLabel(&self.local_counts[4], c.ahead, a.ahead),
-                        countLabel(&self.local_counts[5], c.behind, a.behind),
-                    };
-                    const label = if (lang == .zh)
-                        std.fmt.bufPrint(&self.local_label, "暂存 {s} | 修改 {s} | 未跟踪 {s} | 冲突 {s} | 领先 {s} | 落后 {s}", .{ values[0], values[1], values[2], values[3], values[4], values[5] }) catch ""
-                    else
-                        std.fmt.bufPrint(&self.local_label, "Staged {s} | Modified {s} | Untracked {s} | Conflicts {s} | Ahead {s} | Behind {s}", .{ values[0], values[1], values[2], values[3], values[4], values[5] }) catch "";
-                    const s_items = [_]ui.Node{
-                        textNode("settings.local.heading", tr(lang, "Local panel snapshot, not live; may be cached", "本地面板快照，非实时，可能来自缓存"), "caption"),
-                        textNode("settings.local.root", review.scope.root.slice(), null),
-                        textNode("settings.local.provider", if (value.kind) |kind| kind.displayName() else "?", null),
-                        textNode("settings.local.ref", if (value.reference.len == 0) "?" else value.reference.slice(), null),
-                        textNode("settings.local.revision", if (value.revision) |*revision| revision.slice() else "?", null),
-                        textNode("settings.local.counts", label, null),
-                        buttonNode(50, tr(lang, "Clear local summary", "清除本地摘要"), idle, "standard"),
-                    };
-                    page_items[page_len] = self.groupNode("settings.local.card", tr(lang, "Local Panel Summary", "本地面板摘要"), &s_items);
-                    page_len += 1;
-                }
-
-                if (owner.metadata_review) |*review| {
-                    var m_items: [5]ui.Node = undefined;
-                    var m_len: usize = 0;
-                    m_items[m_len] = textNode("settings.meta.repository", review.scope.remote.slice(), null);
-                    m_len += 1;
-                    m_items[m_len] = textNode("settings.meta.heading", tr(lang, "Last explicit public snapshot (not live; no automatic refresh)", "最近一次显式公开快照（非实时；不自动刷新）"), "caption");
-                    m_len += 1;
-                    const result = review.value;
-                    const status_text = if (result.status == .ready and forge.nowMs() -| result.fetched_ms > 300000) tr(lang, "Expired; fetch again", "已过期；请重新获取") else switch (result.status) {
-                        .ready => tr(lang, "Public response verified", "已验证公开响应"),
-                        .forbidden_or_limited => tr(lang, "Access denied or rate limited; retry manually later", "访问被拒绝或限流；稍后手动重试"),
-                        .not_found => tr(lang, "Not found or private; no account connected", "不存在或为私有仓库；未连接账号"),
-                        .redirected => tr(lang, "Redirect refused; review repository URL", "已拒绝重定向；请确认仓库地址"),
-                        .http_error => tr(lang, "HTTP request failed", "HTTP 请求失败"),
-                        .offline => tr(lang, "Offline, timeout or transport unavailable", "离线、超时或传输不可用"),
-                        .invalid => tr(lang, "Invalid or mismatched response", "响应无效或仓库不匹配"),
-                        .too_large => tr(lang, "Response exceeds 64 KiB", "响应超过 64 KiB"),
-                        .cancelled => tr(lang, "Cancelled", "已取消"),
-                    };
-                    m_items[m_len] = textNode("settings.meta.status", status_text, null);
-                    m_len += 1;
-                    if (result.status == .ready and forge.nowMs() -| result.fetched_ms <= 300000) {
-                        const label = if (lang == .zh)
-                            std.fmt.bufPrint(&self.meta_label, "星标 {d} | Fork {d} | 开放 Issue/PR {d} | 已归档：{s}", .{ result.stars, result.forks, result.open_items, if (result.archived) "是" else "否" }) catch ""
-                        else
-                            std.fmt.bufPrint(&self.meta_label, "Stars {d} | Forks {d} | Open issues + PRs {d} | Archived {s}", .{ result.stars, result.forks, result.open_items, if (result.archived) "yes" else "no" }) catch "";
-                        m_items[m_len] = textNode("settings.meta.counts", label, null);
-                        m_len += 1;
-                        m_items[m_len] = textNode("settings.meta.branch", result.branch.slice(), "caption");
-                        m_len += 1;
-                    }
-                    page_items[page_len] = self.groupNode("settings.meta.card", tr(lang, "Public GitHub Metadata", "公开 GitHub 元数据"), m_items[0..m_len]);
-                    page_len += 1;
-                }
-
-                if (owner.client_review) |*review| {
-                    var c_items: [6]ui.Node = undefined;
-                    var c_len: usize = 0;
-                    c_items[c_len] = textNode("settings.client.review-kind", review.client.name(), null);
-                    c_len += 1;
-                    c_items[c_len] = textNode("settings.client.review-exe", review.executable.slice(), "caption");
-                    c_len += 1;
-                    const command = forge.commandLine(review.client, review.executable.slice(), review.scope.root.slice(), review.scope.kind, &self.client_command) catch "";
-                    if (command.len != 0) {
-                        c_items[c_len] = textNode("settings.client.review-command", command, "caption");
-                        c_len += 1;
-                    }
-                    c_items[c_len] = textNode("settings.client.review-root", review.scope.root.slice(), null);
-                    c_len += 1;
-                    const c_btns = [_]ui.Node{
-                        buttonNode(46, tr(lang, "Confirm external launch (not a sandbox)", "确认启动外部程序（非沙箱）"), idle and !owner.externalBusy(), "primary"),
-                        buttonNode(47, tr(lang, "Cancel launch review", "取消启动审核"), idle and !owner.externalBusy(), "standard"),
-                    };
-                    c_items[c_len] = self.stackNode("settings.client.review-actions", true, 8, &c_btns);
-                    c_len += 1;
-                    page_items[page_len] = self.groupNode("settings.client.review-card", tr(lang, "External Launch Review", "外部程序启动审核"), c_items[0..c_len]);
-                    page_len += 1;
-                }
-
-                if (owner.index_review) |*review| {
-                    const plan = &review.plan;
-                    const i_btns = [_]ui.Node{
-                        buttonNode(56, tr(lang, "Confirm this Git index update", "确认这一次 Git 索引写入"), idle, "primary"),
-                        buttonNode(57, tr(lang, "Cancel index review", "取消索引审核"), idle, "standard"),
-                    };
-                    const i_items = [_]ui.Node{
-                        textNode("settings.git-index.action", if (plan.scope.action == .stage) tr(lang, "Stage one file to the local Git index", "暂存单个文件到本地 Git 索引") else tr(lang, "Restore one staged file to the reviewed HEAD entry", "将单个暂存项恢复到已审核的 HEAD 条目"), null),
-                        textNode("settings.git-index.root", plan.scope.root.slice(), "caption"),
-                        textNode("settings.git-index.target", plan.scope.path.slice(), null),
-                        textNode("settings.git-index.tool", plan.scope.tool.slice(), "caption"),
-                        textNode("settings.git-index.head", &plan.evidence.head, "caption"),
-                        self.stackNode("settings.git-index.actions", true, 8, &i_btns),
-                    };
-                    page_items[page_len] = self.groupNode("settings.git-index.card", tr(lang, "Git Index Review", "Git 索引写入审核"), &i_items);
-                    page_len += 1;
-                }
-
-                if (owner.grant_review) |*review| {
-                    var g_items: [14]ui.Node = undefined;
-                    var g_len: usize = 0;
-                    g_items[g_len] = textNode("settings.grants.heading", tr(lang, "Reviewed approval scope (no execution; keep this same row selected to revoke)", "已检查授权范围（不执行；撤销前请保持选中同一项目）"), "caption");
-                    g_len += 1;
-                    g_items[g_len] = textNode("settings.grants.root", review.root.slice(), null);
-                    g_len += 1;
-                    const ids_grant = [_][]const u8{ "settings.grants.git", "settings.grants.jj", "settings.grants.svn", "settings.grants.hg" };
-                    const ids_path = [_][]const u8{ "settings.grants.git.path", "settings.grants.jj.path", "settings.grants.svn.path", "settings.grants.hg.path" };
-                    const en = [_][]const u8{ "Revoke Git approval", "Revoke Jujutsu approval", "Revoke SVN approval", "Revoke Mercurial approval" };
-                    const zh = [_][]const u8{ "撤销 Git 授权", "撤销 Jujutsu 授权", "撤销 SVN 授权", "撤销 Mercurial 授权" };
-                    for (review.hints, grant_kinds, 0..) |hint, kind, i| {
-                        const label = switch (hint.state) {
-                            .not_checked => tr(lang, "Not checked", "未检查"),
-                            .absent => tr(lang, "No record observed", "未发现记录"),
-                            .recorded => tr(lang, "Recorded; not revalidated", "存在记录；尚未验证"),
-                            .unavailable => tr(lang, "Unavailable", "无法读取"),
-                        };
-                        const status_node = textNode(ids_grant[i], std.fmt.bufPrint(&self.grant_labels[i], "{s}: {s}", .{ kind.displayName(), label }) catch "", null);
-                        const revoke_btn = buttonNode(if (i == 3) 53 else 27 + i, tr(lang, en[i], zh[i]), idle and review.version == owner.stored.version and hint.state == .recorded, "danger");
-                        const row_nodes = [_]ui.Node{ status_node, revoke_btn };
-                        g_items[g_len] = self.stackNode("settings.grants.row", true, 8, &row_nodes);
-                        g_len += 1;
-                        if (hint.executable) |*path| {
-                            g_items[g_len] = textNode(ids_path[i], path.slice(), "caption");
-                            g_len += 1;
-                        }
-                    }
-                    page_items[page_len] = self.groupNode("settings.grants.card", tr(lang, "Saved Approvals", "持久授权记录"), g_items[0..g_len]);
-                    page_len += 1;
-                }
-
-                // Project Bookmark Add/Edit Form card.
-                var form_items: [6]ui.Node = undefined;
-                var form_len: usize = 0;
-                const edit_text = if (owner.edit_key) |key| blk: {
-                    const display = if (owner.stored.find(&key)) |idx| owner.stored.projects[idx].displayName() else &key;
-                    break :blk std.fmt.bufPrint(&self.edit_label, "{s}: {s}", .{ tr(lang, "Editing", "正在编辑"), display }) catch "";
-                } else tr(lang, "New project", "新建项目");
-                form_items[form_len] = textNode("settings.project.edit-mode", edit_text, "caption");
-                form_len += 1;
-
-                const row1 = [_]ui.Node{
-                    inputNode(root_key, tr(lang, "Project root (absolute path)", "项目根目录（绝对路径）"), idle),
-                    inputNode(name_key, tr(lang, "Project name (optional)", "项目名称（可选）"), idle),
-                };
-                form_items[form_len] = self.gridNode("settings.project.form-row1", 2, 8, &row1);
-                form_len += 1;
-
-                const row2 = [_]ui.Node{
-                    inputNode(tags_key, tr(lang, "Tags (optional)", "标签（可选）"), idle),
-                    inputNode(url_key, tr(lang, "Remote repository (optional: GitHub / GitLab / Bitbucket)", "远程仓库地址（可选：GitHub / GitLab / Bitbucket）"), idle),
-                };
-                form_items[form_len] = self.gridNode("settings.project.form-row2", 2, 8, &row2);
-                form_len += 1;
-
-                const kind_text = std.fmt.bufPrint(&self.kind_label, "{s}: {s}", .{
-                    tr(lang, "Provider hint", "类型提示"),
-                    if (owner.form_kind) |k| k.displayName() else tr(lang, "Auto / Unknown", "自动 / 未知"),
-                }) catch "";
-                var form_btns: [5]ui.Node = undefined;
-                var fb_len: usize = 0;
-                if (owner.edit_key != null) {
-                    form_btns[fb_len] = buttonNode(17, tr(lang, "Update / relink", "更新 / 重新关联"), idle, "primary");
-                } else {
-                    form_btns[fb_len] = buttonNode(8, tr(lang, "Add project", "添加项目"), idle, "primary");
-                }
-                fb_len += 1;
-                if (owner.picker != null) {
-                    form_btns[fb_len] = buttonNode(23, tr(lang, "Browse folder", "浏览目录"), idle, "standard");
-                    fb_len += 1;
-                }
-                form_btns[fb_len] = buttonNode(7, tr(lang, "Fill current repo", "填入当前仓库"), idle, "standard");
-                fb_len += 1;
-                form_btns[fb_len] = buttonNode(62, kind_text, idle, "standard");
-                fb_len += 1;
-                form_btns[fb_len] = buttonNode(15, tr(lang, "Clear form", "清空表单"), idle, "transparent");
-                fb_len += 1;
-                form_items[form_len] = self.stackNode("settings.project.form-actions", true, 8, form_btns[0..fb_len]);
-                form_len += 1;
-
-                page_items[page_len] = self.groupNode("settings.project.form-card", tr(lang, "Add or Edit Bookmark", "添加 / 编辑项目"), form_items[0..form_len]);
-                page_len += 1;
+                self.buildProjectList(owner, lang, idle, &page_items, &page_len);
+                self.buildRemoteReview(owner, lang, idle, &page_items, &page_len);
+                self.buildLocalSummary(owner, lang, idle, &page_items, &page_len);
+                self.buildMetadataReview(owner, lang, &page_items, &page_len);
+                self.buildClientReview(owner, lang, idle, &page_items, &page_len);
+                self.buildIndexReview(owner, lang, idle, &page_items, &page_len);
+                self.buildGrantReview(owner, lang, idle, &page_items, &page_len);
+                self.buildProjectForm(owner, lang, idle, &page_items, &page_len);
             },
-            .tools => {
-                var tool_rows: [6]ui.Node = undefined;
-                var tr_len: usize = 0;
-                tool_rows[tr_len] = textNode("settings.tools", tr(lang, "Saving a path is only a suggestion and never authorizes execution.", "保存路径仅作候选提示，不等于授予执行权限。"), "caption");
-                tr_len += 1;
-                for (fields, names, 0..) |field, name, i| {
-                    var btns: [2]ui.Node = undefined;
-                    var blen: usize = 0;
-                    btns[blen] = buttonNode(if (i == 3) 51 else 1 + i, tr(lang, "Save path (empty = auto)", "保存路径（留空自动检测）"), idle, "primary");
-                    blen += 1;
-                    if (owner.picker != null) {
-                        btns[blen] = buttonNode(if (i == 3) 52 else 4 + i, tr(lang, "Browse folder", "浏览所在目录"), idle, "standard");
-                        blen += 1;
-                    }
-                    const entry = [_]ui.Node{
-                        inputNode(field, name, idle),
-                        self.stackNode("settings.tool.actions", true, 8, btns[0..blen]),
-                    };
-                    tool_rows[tr_len] = self.stackNode("settings.tool.row", false, 4, &entry);
-                    tr_len += 1;
-                }
-                page_items[page_len] = self.groupNode("settings.tools.card", tr(lang, "VCS Executables", "版本控制工具路径"), tool_rows[0..tr_len]);
-                page_len += 1;
-
-                var client_rows: [5]ui.Node = undefined;
-                var cr_len: usize = 0;
-                client_rows[cr_len] = textNode("settings.client.heading", tr(lang, "Saving a client path does not launch it or grant VCS access.", "保存客户端路径不会启动程序或授予 VCS 权限。"), "caption");
-                cr_len += 1;
-                client_rows[cr_len] = textNode("settings.client.unsupported", tr(lang, "GitHub Desktop direct launch is not yet verified; use its documented github command manually. Sourcetree / GitKraken adapters unavailable.", "GitHub Desktop 直接启动尚未验证，可手动使用官方 github 命令；Sourcetree / GitKraken 适配暂不可用。"), "caption");
-                cr_len += 1;
-                for (clients, client_fields, 0..) |client, field, i| {
-                    var btns: [2]ui.Node = undefined;
-                    var blen: usize = 0;
-                    btns[blen] = buttonNode(42 + i, tr(lang, "Save executable (empty clears)", "保存可执行文件（留空清除）"), idle, "primary");
-                    blen += 1;
-                    if (owner.picker != null) {
-                        btns[blen] = buttonNode(63 + i, tr(lang, "Browse folder", "浏览所在目录"), idle, "standard");
-                        blen += 1;
-                    }
-                    const entry = [_]ui.Node{
-                        inputNode(field, client.name(), idle),
-                        self.stackNode("settings.client.actions", true, 8, btns[0..blen]),
-                    };
-                    client_rows[cr_len] = self.stackNode("settings.client.row", false, 4, &entry);
-                    cr_len += 1;
-                }
-                page_items[page_len] = self.groupNode("settings.client.card", tr(lang, "External Clients", "外部客户端路径"), client_rows[0..cr_len]);
-                page_len += 1;
-            },
-            .general => {
-                const locale_btns = [_]ui.Node{
-                    buttonNode(12, tr(lang, "System language (Auto)", "跟随系统 (Auto)"), idle and owner.stored.locale != .auto, if (owner.stored.locale == .auto) "primary" else "standard"),
-                    buttonNode(13, "English", idle and owner.stored.locale != .en, if (owner.stored.locale == .en) "primary" else "standard"),
-                    buttonNode(14, "简体中文", idle and owner.stored.locale != .zh, if (owner.stored.locale == .zh) "primary" else "standard"),
-                };
-                const gen_items = [_]ui.Node{
-                    textNode("settings.locale", tr(lang, "Choose interface language for both the VCS panel and this settings page.", "选择 VCS 面板与设置页的显示语言。"), "caption"),
-                    self.gridNode("settings.locale.grid", 3, 8, &locale_btns),
-                };
-                page_items[page_len] = self.groupNode("settings.locale.card", tr(lang, "Language / 语言", "语言 / Language"), &gen_items);
-                page_len += 1;
-            },
+            .tools => self.buildTools(owner, lang, idle, &page_items, &page_len),
+            .general => self.buildGeneral(owner, lang, idle, &page_items, &page_len),
         }
 
         for (commands, 0..) |command, i| self.vocabulary[i] = abi.view(command);

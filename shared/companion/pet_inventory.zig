@@ -42,6 +42,15 @@ pub const Inventory = struct {
     pending_id: ?u64 = null, // Session only; restart abandons unpublished reservations.
     entries: [max_entries]Record = undefined,
 
+    /// Both inventories are caller-owned and distinct. Preserve pending
+    /// reservations for staged transactions; decodeScratch clears them.
+    pub fn copyFrom(self: *Inventory, source: *const Inventory) void {
+        @memcpy(self.entries[0..source.count], source.entries[0..source.count]);
+        self.next_id = source.next_id;
+        self.pending_id = source.pending_id;
+        self.count = source.count;
+    }
+
     pub fn get(self: *const Inventory, id: u64) Error!Record {
         for (self.entries[0..self.count]) |entry| {
             if (entry.id == id) return entry;
@@ -188,10 +197,7 @@ pub fn encode(value: *const Inventory, out: []u8) Error![]const u8 {
 pub fn decode(value: *Inventory, input: []const u8) Error!void {
     var candidate: Inventory = undefined;
     try decodeScratch(&candidate, input);
-    @memcpy(value.entries[0..candidate.count], candidate.entries[0..candidate.count]);
-    value.next_id = candidate.next_id;
-    value.pending_id = null;
-    value.count = candidate.count;
+    value.copyFrom(&candidate);
 }
 
 /// Worker-owned, unpublished scratch only. On error its contents may be

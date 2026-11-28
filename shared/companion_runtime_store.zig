@@ -10,9 +10,14 @@ const recovery = @import("companion/pet_recovery_scan.zig");
 const receipt = @import("companion/pet_removal_receipt.zig");
 
 pub fn loadInventory(owner: *runtime.Owner, out: *inventory.Inventory) !bool {
-    var bytes: [inventory.max_bytes]u8 = undefined;
-    const len = (try owner.readStore(0, &bytes)) orelse return false;
-    try inventory.decode(out, bytes[0..len]);
+    const allocator = std.heap.page_allocator;
+    const bytes = try allocator.alloc(u8, inventory.max_bytes);
+    defer allocator.free(bytes);
+    const len = (try owner.readStore(0, bytes)) orelse return false;
+    const scratch = try allocator.create(inventory.Inventory);
+    defer allocator.destroy(scratch);
+    try inventory.decodeScratch(scratch, bytes[0..len]);
+    out.copyFrom(scratch);
     return true;
 }
 
@@ -23,8 +28,9 @@ pub fn saveInventory(owner: *runtime.Owner, value: *const inventory.Inventory) !
     if (try loadInventory(owner, previous)) {
         if (value.next_id < previous.next_id) return error.InvalidRecord;
     }
-    var bytes: [inventory.max_bytes]u8 = undefined;
-    try owner.writeStore(0, try inventory.encode(value, &bytes));
+    const bytes = try std.heap.page_allocator.alloc(u8, inventory.max_bytes);
+    defer std.heap.page_allocator.free(bytes);
+    try owner.writeStore(0, try inventory.encode(value, bytes));
 }
 
 // A complete bounded scan under the private lease. No mutation or automatic

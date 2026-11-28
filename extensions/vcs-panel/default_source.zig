@@ -171,7 +171,11 @@ const Session = struct {
     fn create(input: []const u8) Error!*Session {
         if (comptime builtin.os.tag != .windows) return error.Unsupported;
         const self = allocator.create(Session) catch return error.OutOfMemory;
-        self.* = .{ .environment = std.process.Environ.Map.init(allocator) };
+        // Initialize only live fields; decode fills the grant and manifest.
+        self.environment = std.process.Environ.Map.init(allocator);
+        self.principals = .{};
+        self.record_digest = null;
+        self.io = null;
         errdefer self.destroy();
         try self.decode(input);
         try self.principals.add(try evidence.currentProcessUser());
@@ -202,7 +206,7 @@ const Session = struct {
         const installation = try reader.path();
         const digest: approval.Digest = (try reader.take(32))[0..32].*;
         self.grant = approval.Grant.init(executable, digest, root, neutral, @splat(0), @splat(0)) catch return error.Permission;
-        self.manifest = try evidence.InstallationManifest.init(installation);
+        try self.manifest.initInPlace(installation);
         const count = try reader.number();
         if (count == 0 or count > evidence.max_install_files) return error.ResourceLimit;
         for (0..count) |_| {

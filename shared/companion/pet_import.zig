@@ -32,6 +32,10 @@ pub const Coordinator = struct {
     }
 
     pub fn importPackageControlled(self: *Coordinator, backend: anytype, source: []const u8, source_id: []const u8, cancel: Cancel) !Result {
+        return self.importPackageWithAllocator(std.heap.page_allocator, backend, source, source_id, cancel);
+    }
+
+    fn importPackageWithAllocator(self: *Coordinator, allocator: std.mem.Allocator, backend: anytype, source: []const u8, source_id: []const u8, cancel: Cancel) !Result {
         if (self.fault != null) return error.RecoveryRequired;
         if (!inventory.validSource(source_id)) return error.Invalid;
         try cancel.check();
@@ -41,36 +45,40 @@ pub const Coordinator = struct {
         try cancel.check();
         if (try self.index.findPair(digest)) |id| return .{ .existing = id };
 
-        var reserved = self.index;
-        const id = try reserved.reserve();
-        backend.save(&reserved) catch |err| {
+        // Allocate before reservation, so OOM cannot leave a durable change.
+        // Reuse one unpublished inventory for both stages.
+        const scratch = try allocator.create(inventory.Inventory);
+        defer allocator.destroy(scratch);
+        scratch.copyFrom(&self.index);
+        const id = try scratch.reserve();
+        backend.save(scratch) catch |err| {
             self.fault = .reservation_save;
             self.recovery_id = id;
             return err;
         };
-        self.index = reserved;
+        self.index.copyFrom(scratch);
         backend.stage(source, source_id, id, digest) catch |err| {
             self.index.pending_id = null;
             self.fault = .stage;
             self.recovery_id = id;
             return err;
         };
-        var published = self.index;
+        scratch.copyFrom(&self.index);
         // Preconditions were checked before invoking the helper; a failure
         // here is still a recovery fault since the directory now exists.
-        published.publishPair(id, source_id, digest) catch |err| {
+        scratch.publishPair(id, source_id, digest) catch |err| {
             self.index.pending_id = null;
             self.fault = .inventory_commit;
             self.recovery_id = id;
             return err;
         };
-        backend.save(&published) catch |err| {
+        backend.save(scratch) catch |err| {
             self.index.pending_id = null;
             self.fault = .inventory_commit;
             self.recovery_id = id;
             return err;
         };
-        self.index = published;
+        self.index.copyFrom(scratch);
         return .{ .imported = id };
     }
 };
@@ -117,9 +125,9 @@ test "failure boundaries stop writes and never expose partial imports" {
         var owner: Coordinator = .{};
         var backend: Mock = .{ .fail_save = if (case == 0) 1 else if (case == 2) 2 else 0, .fail_stage = case == 1 };
         if (case == 1) {
-            try std.testing.expectError(error.InjectedStage, owner.importPackage(&backend, "source", "cat"));
+            try std.testing.expectError(error.InjectedStage, owner.importPackageWithAllocator(std.testing.allocator, &backend, "source", "cat", .{}));
         } else {
-            try std.testing.expectError(error.InjectedWrite, owner.importPackage(&backend, "source", "cat"));
+            try std.testing.expectError(error.InjectedWrite, owner.importPackageWithAllocator(std.testing.allocator, &backend, "source", "cat", .{}));
         }
         try std.testing.expectEqual(@as(usize, 0), owner.index.count);
         try std.testing.expectEqual(@as(u64, 1), owner.recovery_id.?);
@@ -158,4 +166,17 @@ test "cancellation before reservation leaves index and filesystem untouched" {
     try std.testing.expectEqual(@as(u64, 1), (try owner.importPackageControlled(&backend, "source", "cat", .{ .callback = Probe.check, .context = &probe })).imported);
     try std.testing.expectEqual(@as(usize, 2), probe.calls);
     try std.testing.expectEqual(@as(usize, 2), backend.writes);
+}
+
+test "allocation failure before reservation leaves durable state untouched" {
+    var owner: Coordinator = .{};
+    var backend: Mock = .{};
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.OutOfMemory, owner.importPackageWithAllocator(failing.allocator(), &backend, "source", "cat", .{}));
+    try std.testing.expectEqual(@as(u64, 1), owner.index.next_id);
+    try std.testing.expectEqual(@as(usize, 0), owner.index.count);
+    try std.testing.expectEqual(@as(usize, 0), backend.writes);
+    try std.testing.expectEqual(@as(usize, 0), backend.stages);
+    try std.testing.expect(owner.fault == null);
+    try std.testing.expect(owner.index.pending_id == null);
 }

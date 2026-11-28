@@ -789,8 +789,17 @@ pub const InstallationManifest = struct {
     }
 
     pub fn init(root: []const u8) Error!InstallationManifest {
+        var result: InstallationManifest = undefined;
+        try result.initInPlace(root);
+        return result;
+    }
+
+    /// Caller-owned unpublished storage; only initialize the live prefix.
+    pub fn initInPlace(self: *InstallationManifest, root: []const u8) Error!void {
         if (!approval.strictPath(root)) return error.Permission;
-        return .{ .root = identity.Path.init(root) catch return error.Permission };
+        self.root = identity.Path.init(root) catch return error.Permission;
+        self.len = 0;
+        self.used = 0;
     }
 
     pub fn containsPath(self: *const InstallationManifest, path: []const u8) bool {

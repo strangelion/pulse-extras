@@ -284,10 +284,7 @@ pub fn readManagedIndex(root: [:0]const u16, out: *inventory.Inventory) !void {
     const scratch = try std.heap.page_allocator.create(inventory.Inventory);
     defer std.heap.page_allocator.destroy(scratch);
     try inventory.decodeScratch(scratch, bytes[0..size]);
-    @memcpy(out.entries[0..scratch.count], scratch.entries[0..scratch.count]);
-    out.next_id = scratch.next_id;
-    out.pending_id = null;
-    out.count = scratch.count;
+    out.copyFrom(scratch);
 }
 
 fn readRecord(path: [:0]const u16, bytes: []u8) !?usize {
