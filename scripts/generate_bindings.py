@@ -159,6 +159,60 @@ def formatted(zig: str, text: str) -> str:
         return path.read_text(encoding="utf-8")
 
 
+# translate-c also emits the runner's transitive libc headers and predefined
+# macros. Those are not Pulse API and may differ even for the same target.
+# Project the formatted translation onto the complete Pulse namespace, retaining
+# compiler translation helpers. Compare every retained declaration verbatim.
+DECLARATION = re.compile(r"(?m)^(?:pub )?(?:const|var|extern fn|inline fn|fn) ([A-Za-z_]\w*)\b")
+PULSE_NAMES = ("Pulse", "PULSE_", "struct_Pulse", "enum_Pulse", "union_Pulse")
+TRANSLATION_HELPERS = frozenset({"__root", "__builtin", "__helpers"})
+TOKEN = re.compile(r"[A-Za-z_]\w*")
+
+
+def public_bindings(text: str) -> str:
+    """Keep the full SDK namespace, excluding unrelated C runtime exports.
+
+    Fail closed if an SDK declaration needs a removed declaration or if the
+    formatted translator emits a new unsupported top-level syntax. Do not
+    rewrite types, constants, macro diagnostics or SDK source locations.
+    """
+    declarations = list(DECLARATION.finditer(text))
+    if not declarations:
+        raise ValueError("no declarations in translated SDK")
+    banner = text[:declarations[0].start()]
+    if any(line.strip() and not line.startswith("//") for line in banner.splitlines()):
+        raise ValueError("unexpected translated SDK preamble")
+    kept = []
+    removed = {}
+    names = set()
+    for i, match in enumerate(declarations):
+        name = match[1]
+        end = declarations[i + 1].start() if i + 1 < len(declarations) else len(text)
+        body = text[match.start():end]
+        if name in names:
+            raise ValueError(f"duplicate translated declaration: {name}")
+        names.add(name)
+        for line in body.splitlines()[1:]:
+            if line and not line[0].isspace() and not line.startswith(("//", "}", ");")):
+                raise ValueError(f"unsupported top-level syntax after {name}: {line}")
+        if name.startswith(PULSE_NAMES) or name in TRANSLATION_HELPERS:
+            kept.append((name, body))
+        else:
+            if re.search(r"(?m)^// pulse/.*:\d+:\d+$", body):
+                raise ValueError(f"SDK declaration outside Pulse namespace: {name}")
+            removed[name] = body
+    if not any(name.startswith("Pulse") for name, _ in kept):
+        raise ValueError("no Pulse API declarations in translation")
+    for name, body in kept:
+        # Exclude strings and line comments from dependency detection. All
+        # actual identifiers in the generated declaration remain significant.
+        tokens = set(TOKEN.findall(re.sub(r'"(?:\\.|[^"\\])*"|//[^\n]*', "", body)))
+        missing = sorted(tokens.intersection(removed))
+        if missing:
+            raise ValueError(f"Pulse declaration {name} needs excluded C declaration(s): {', '.join(missing)}")
+    return (banner + "".join(body for _, body in kept)).rstrip("\n") + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--zig", default=shutil.which("zig") or "zig")
@@ -171,7 +225,11 @@ def main() -> int:
     pin = upstream_pin()
     verify_headers(include, pin)
     names = header_order(pin["headers"])
-    content = formatted(args.zig, banner(include, pin) + normalize_source_locations(build_bindings(args.zig, include, names), names))
+    translated = formatted(args.zig, banner(include, pin) + normalize_source_locations(build_bindings(args.zig, include, names), names))
+    try:
+        content = public_bindings(translated)
+    except ValueError as exc:
+        raise SystemExit(f"cannot project translated SDK: {exc}") from exc
     output = args.out if args.out.is_absolute() else ROOT / args.out
 
     if args.check:
