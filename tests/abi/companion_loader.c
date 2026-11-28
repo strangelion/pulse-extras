@@ -868,6 +868,7 @@ static int cycle(PulsePluginEntryV1Fn entry, int fallback) {
     CHECK(click(&f, 6) == 0 && !f.pending);
     CHECK(click(&f, 3) == 0 && click(&f, 6) == 0 && f.requested == '6');
     CHECK(deliver(&f, PULSE_ERROR_STATE, 0) == 0 && !f.enabled_more && f.saved == '5');
+    CHECK(click(&f, 6) == 0 && !f.pending && f.saved == '5'); /* stale version must be reloaded */
     CHECK(click(&f, 4) == 0 && deliver(&f, PULSE_OK, 1) == 0 && !f.enabled_more);
     CHECK(click(&f, 4) == 0 && deliver(&f, PULSE_OK, 0) == 0 && f.enabled_more);
     CHECK(click(&f, 4) == 0 && f.pending);
@@ -876,6 +877,7 @@ static int cycle(PulsePluginEntryV1Fn entry, int fallback) {
     CHECK(!f.pending && f.canceled == 1 && f.page && f.subscribed == COMMAND_COUNT);
     CHECK(f.task_canceled == 1 && f.task_state == PULSE_TASK_CANCELLED);
     CHECK(click(&f, 6) == 0 && !f.pending); /* inactive callbacks cannot save */
+    CHECK(out.activate(out.instance) != PULSE_OK && f.page && f.subscribed == COMMAND_COUNT); /* no second page while close is refused */
     f.fail_remove = 0;
     out.deactivate(out.instance);
     CHECK(!f.page && !f.subscribed && f.removed == 1);

@@ -1452,15 +1452,15 @@ fn completed(user: ?*anyopaque, reply: [*c]const raw.PulseResourcesReply) callco
     if (reply == null or reply[0].size < @sizeOf(raw.PulseResourcesReply) or instance.pending == 0 or reply[0].request_id != instance.pending) return;
     const operation = instance.pending_operation;
     const policy_changed = instance.policy_write_pending;
-    const was_loaded = instance.loaded;
     instance.policy_write_pending = false;
     instance.pending = 0;
     instance.pending_operation = 0;
-    if (operation == raw.PULSE_RESOURCES_SETTINGS_GET) instance.loaded = false;
+    // A reply must confirm both the settings and their optimistic version.
+    // Keep the last values, but do not admit another write using a stale version.
+    instance.loaded = false;
     if (!instance.active) return;
     const value = &reply[0];
     if (value.operation != operation or value.status != abi.ok) {
-        instance.loaded = if (operation == raw.PULSE_RESOURCES_SETTINGS_SET) was_loaded else false;
         instance.status = if (operation == raw.PULSE_RESOURCES_SETTINGS_SET) "设置写入失败；可能存在版本冲突，请重新读取后重试" else "设置读取失败；请重新读取";
     } else if (readPreference(value.settings)) |saved| {
         const limits = readRuntimeLimits(value.settings) catch {
@@ -1600,7 +1600,8 @@ fn saveSetting(instance: *Instance, key: []const u8, value: []const u8) void {
         instance.pending_operation = raw.PULSE_RESOURCES_SETTINGS_SET;
         instance.status = "正在保存设置";
     } else {
-        instance.status = "保存请求被拒绝；可重新读取后重试";
+        instance.loaded = false;
+        instance.status = "保存请求被拒绝；请重新读取后重试";
     }
     refresh(instance);
 }
@@ -3905,10 +3906,6 @@ fn onCommand(user: ?*anyopaque, panel: u64, command: abi.StringView) callconv(.c
     }
 }
 
-fn recordCloseError(first: *?host_mod.Error, err: host_mod.Error) void {
-    if (first.* == null) first.* = err;
-}
-
 fn close(instance: *Instance) host_mod.Error!void {
     instance.active = false;
     instance.remove_after_scan = null;
@@ -3931,148 +3928,122 @@ fn close(instance: *Instance) host_mod.Error!void {
     instance.search_pending = false;
     instance.search_ticks = 0;
 
-    var first_err: ?host_mod.Error = null;
+    // Do not discard a token or page on a failed host acknowledgement.
+    // Inactive callbacks cannot admit work; the next deactivate retries.
     if (instance.library_selection_token != 0) {
-        const token = instance.library_selection_token;
+        const events = instance.search_events orelse return error.State;
+        const unsubscribe = events.unsubscribe orelse return error.Unavailable;
+        host_mod.mapStatus(unsubscribe(events.context, instance.library_selection_token)) catch |err| switch (err) {
+            error.State => {},
+            else => return err,
+        };
         instance.library_selection_token = 0;
         instance.library_selection_revision = 0;
-        if (instance.search_events) |events| {
-            if (events.unsubscribe) |unsubscribe| {
-                host_mod.mapStatus(unsubscribe(events.context, token)) catch |err| switch (err) {
-                    error.State => {},
-                    else => recordCloseError(&first_err, err),
-                };
-            } else recordCloseError(&first_err, error.Unavailable);
-        } else recordCloseError(&first_err, error.State);
     }
     if (instance.running_search_token != 0) {
-        const token = instance.running_search_token;
+        const events = instance.search_events orelse return error.State;
+        const unsubscribe = events.unsubscribe orelse return error.Unavailable;
+        host_mod.mapStatus(unsubscribe(events.context, instance.running_search_token)) catch |err| switch (err) {
+            error.State => {},
+            else => return err,
+        };
         instance.running_search_token = 0;
         instance.running_search_revision = 0;
-        if (instance.search_events) |events| {
-            if (events.unsubscribe) |unsubscribe| {
-                host_mod.mapStatus(unsubscribe(events.context, token)) catch |err| switch (err) {
-                    error.State => {},
-                    else => recordCloseError(&first_err, err),
-                };
-            } else recordCloseError(&first_err, error.Unavailable);
-        } else recordCloseError(&first_err, error.State);
     }
     if (instance.search_token != 0) {
-        const token = instance.search_token;
+        const events = instance.search_events orelse return error.State;
+        const unsubscribe = events.unsubscribe orelse return error.Unavailable;
+        host_mod.mapStatus(unsubscribe(events.context, instance.search_token)) catch |err| switch (err) {
+            error.State => {},
+            else => return err,
+        };
         instance.search_token = 0;
-        instance.search_revision = 0;
-        if (instance.search_events) |events| {
-            if (events.unsubscribe) |unsubscribe| {
-                host_mod.mapStatus(unsubscribe(events.context, token)) catch |err| switch (err) {
-                    error.State => {},
-                    else => recordCloseError(&first_err, err),
-                };
-            } else recordCloseError(&first_err, error.Unavailable);
-        } else recordCloseError(&first_err, error.State);
         instance.search_events = null;
+        instance.search_revision = 0;
     }
     if (instance.picker_request != 0) {
-        const req = instance.picker_request;
+        const picker = instance.picker orelse return error.State;
+        const cancel = picker.cancel orelse return error.Unavailable;
+        host_mod.mapStatus(cancel(picker.context, instance.picker_request)) catch |err| switch (err) {
+            error.State => {},
+            else => return err,
+        };
         instance.picker_request = 0;
-        const picker_opt = instance.picker;
         instance.picker = null;
-        if (picker_opt) |picker| {
-            if (picker.cancel) |cancel| {
-                host_mod.mapStatus(cancel(picker.context, req)) catch |err| switch (err) {
-                    error.State => {},
-                    else => recordCloseError(&first_err, err),
-                };
-            } else recordCloseError(&first_err, error.Unavailable);
-        } else recordCloseError(&first_err, error.State);
     }
     if (instance.import_dialog != 0) {
-        const dialog_id = instance.import_dialog;
-        const is_v2 = instance.import_dialog_v2;
+        if (instance.dialog_command_subscription != 0) {
+            const table = instance.dialog_v2_table orelse return error.State;
+            const unsubscribe = table.unsubscribe_command orelse return error.Unavailable;
+            host_mod.mapStatus(unsubscribe(table.context, instance.dialog_command_subscription)) catch |err| switch (err) {
+                error.State => {},
+                else => return err,
+            };
+            instance.dialog_command_subscription = 0;
+        }
+        const close_status = if (instance.import_dialog_v2) blk: {
+            const table = instance.dialog_v2_table orelse return error.State;
+            const close_dialog = table.close orelse return error.Unavailable;
+            break :blk close_dialog(table.context, instance.import_dialog);
+        } else blk: {
+            const dialogs = instance.dialogs orelse return error.State;
+            const close_dialog = dialogs.close orelse return error.Unavailable;
+            break :blk close_dialog(dialogs.context, instance.import_dialog);
+        };
+        host_mod.mapStatus(close_status) catch |err| switch (err) {
+            error.State => {},
+            else => return err,
+        };
         instance.import_dialog = 0;
         instance.import_dialog_v2 = false;
-        if (instance.dialog_command_subscription != 0) {
-            const subscription = instance.dialog_command_subscription;
-            instance.dialog_command_subscription = 0;
-            if (instance.dialog_v2_table) |table| {
-                if (table.unsubscribe_command) |unsubscribe| {
-                    const status = unsubscribe(table.context, subscription);
-                    if (status != abi.ok and status != abi.error_state) recordCloseError(&first_err, error.State);
-                } else recordCloseError(&first_err, error.Unavailable);
-            }
-        }
-        const close_status_opt: ?abi.Status = if (is_v2) blk: {
-            if (instance.dialog_v2_table) |table| {
-                if (table.close) |close_dialog| break :blk close_dialog(table.context, dialog_id);
-                recordCloseError(&first_err, error.Unavailable);
-            } else recordCloseError(&first_err, error.State);
-            break :blk null;
-        } else blk: {
-            if (instance.dialogs) |dialogs| {
-                if (dialogs.close) |close_dialog| break :blk close_dialog(dialogs.context, dialog_id);
-                recordCloseError(&first_err, error.Unavailable);
-            } else recordCloseError(&first_err, error.State);
-            break :blk null;
-        };
-        if (close_status_opt) |close_status| {
-            host_mod.mapStatus(close_status) catch |err| switch (err) {
-                error.State => {},
-                else => recordCloseError(&first_err, err),
-            };
-        }
     }
     if (instance.removal_dialog != 0) {
-        const dialog_id = instance.removal_dialog;
+        const dialogs = instance.dialogs orelse return error.State;
+        const close_dialog = dialogs.close orelse return error.Unavailable;
+        host_mod.mapStatus(close_dialog(dialogs.context, instance.removal_dialog)) catch |err| switch (err) {
+            error.State => {},
+            else => return err,
+        };
         instance.removal_dialog = 0;
         instance.removal_request = null;
-        if (instance.dialogs) |dialogs| {
-            if (dialogs.close) |close_dialog| {
-                host_mod.mapStatus(close_dialog(dialogs.context, dialog_id)) catch |err| switch (err) {
-                    error.State => {},
-                    else => recordCloseError(&first_err, err),
-                };
-            } else recordCloseError(&first_err, error.Unavailable);
-        } else recordCloseError(&first_err, error.State);
     }
     instance.dialogs = null;
     instance.dialog_v2_table = null;
     instance.picker_api = null;
     instance.dialog_picker_disabled = false;
     instance.picker_for_dialog = false;
+    var cancel_error: ?host_mod.Error = null;
     for ([_]u64{ instance.runtime_task_id, instance.task_id }) |id| {
         if (id == 0) continue;
-        if (instance.tasks) |tasks| {
-            if (tasks.cancel) |cancel| {
-                host_mod.mapStatus(cancel(tasks.context, id)) catch |err| switch (err) {
-                    error.State => {},
-                    else => recordCloseError(&first_err, err),
-                };
-            } else recordCloseError(&first_err, error.Unavailable);
-        } else recordCloseError(&first_err, error.State);
+        const tasks = instance.tasks orelse return error.State;
+        const cancel = tasks.cancel orelse return error.Unavailable;
+        host_mod.mapStatus(cancel(tasks.context, id)) catch |err| switch (err) {
+            error.State => {},
+            else => {
+                cancel_error = err;
+            },
+        };
     }
+    if (cancel_error) |err| return err;
     if (instance.pending != 0) {
-        const req = instance.pending;
+        const resources = instance.resources orelse return error.State;
+        const cancel = resources.cancel_request orelse return error.Unavailable;
+        host_mod.mapStatus(cancel(resources.context, instance.pending)) catch |err| switch (err) {
+            error.State => {},
+            else => return err,
+        };
         instance.pending = 0;
         instance.pending_operation = 0;
-        if (instance.resources) |resources| {
-            if (resources.cancel_request) |cancel| {
-                host_mod.mapStatus(cancel(resources.context, req)) catch |err| switch (err) {
-                    error.State => {},
-                    else => recordCloseError(&first_err, err),
-                };
-            } else recordCloseError(&first_err, error.Unavailable);
-        } else recordCloseError(&first_err, error.State);
     }
     if (instance.page != 0) {
         if (instance.pages) |pages| {
-            if (pages.remove) |remove| {
-                host_mod.mapStatus(remove(pages.context, instance.page)) catch |err| switch (err) {
-                    error.State => {},
-                    else => recordCloseError(&first_err, err),
-                };
-            } else recordCloseError(&first_err, error.Unavailable);
+            const remove = pages.remove orelse return error.Unavailable;
+            host_mod.mapStatus(remove(pages.context, instance.page)) catch |err| switch (err) {
+                error.State => {},
+                else => return err,
+            };
         } else if (instance.panel) |*panel| {
-            panel.close() catch |err| recordCloseError(&first_err, err);
+            try panel.close();
         }
     }
     instance.page = 0;
@@ -4081,7 +4052,6 @@ fn close(instance: *Instance) host_mod.Error!void {
     instance.subscriptions = @splat(0);
     instance.resources = null;
     instance.loaded = false;
-    if (first_err) |err| return err;
 }
 
 fn open(instance: *Instance) host_mod.Error!void {
@@ -4203,7 +4173,6 @@ fn deactivate(user: ?*anyopaque) callconv(.c) void {
 
 fn destroy(user: ?*anyopaque) callconv(.c) void {
     const instance: *Instance = @ptrCast(@alignCast(user orelse return));
-    defer allocator.destroy(instance);
     close(instance) catch |err| {
         diag.status("companion-destroy-failed", @intFromError(err));
         return;
@@ -4211,6 +4180,7 @@ fn destroy(user: ?*anyopaque) callconv(.c) void {
     // The private session worker is joined by close. The pinned host keeps
     // the DLL alive through the remaining finite SDK tasks and callbacks.
     diag.event("companion-destroy");
+    allocator.destroy(instance);
 }
 
 export fn PulsePluginSdkPreview() callconv(.c) u32 {
