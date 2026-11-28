@@ -314,8 +314,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $vcs = @(Get-ChildItem zig-out -Recurse -Filter pulse_vcs_panel.dll)
           if ($vcs.Count -ne 1) { throw "Expected one locked VCS candidate DLL" }
-          & ./zig-out/abi-loader.exe $vcs[0].FullName locked
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:ABI_PROBE_LOG = Join-Path $PWD "zig-out/vcs-abi-lifecycle.log"
+          try {
+            & ./zig-out/abi-loader.exe $vcs[0].FullName locked
+            if ($LASTEXITCODE -ne 0) {
+              $code = $LASTEXITCODE
+              if (Test-Path $env:ABI_PROBE_LOG) { Get-Content $env:ABI_PROBE_LOG -Tail 100 }
+              throw "VCS ABI loader failed with exit code $code"
+            }
+          } finally {
+            Remove-Item Env:ABI_PROBE_LOG -ErrorAction SilentlyContinue
+          }
 
       - name: Exercise actual Companion DLL settings lifecycle against pinned C ABI
         if: runner.os == 'Windows' && (needs.scope.outputs.level == 'full' || needs.scope.outputs.level == 'companion-host')

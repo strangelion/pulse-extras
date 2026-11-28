@@ -382,6 +382,7 @@ static int exercise_locked(PulsePluginEntryV1Fn entry) {
     CHECK(entry(&host, &out) == PULSE_OK);
     CHECK(out.instance && out.activate && out.deactivate && out.destroy);
 
+    fprintf(stderr, "VCS ABI owner: entry returned, testing menu discovery\n");
     /* Menu discovery must not activate the panel or execute tools. */
     CHECK(state.menu_registered == 1 && state.menu && !state.panel_open && !state.navigation && !state.unexpected_tasks);
     PulseContextSelectionSnapshot selection = {0};
@@ -393,6 +394,7 @@ static int exercise_locked(PulsePluginEntryV1Fn entry) {
     state.menu(state.menu_user, state.menu_id, &selection);
     CHECK(state.panel_open && state.navigation && !state.unexpected_tasks);
     CHECK(state.settings_page && state.settings_request && state.settings_reply);
+    fprintf(stderr, "VCS ABI owner: settings completion\n");
     unsigned settings_updates = state.settings_updates;
     unsigned panel_updates = state.updates;
     PulseResourcesReply reply = {
@@ -416,6 +418,7 @@ static int exercise_locked(PulsePluginEntryV1Fn entry) {
     CHECK(state.panel_open && state.navigation && state.created == menu_created + 1);
     out.deactivate(out.instance);
     CHECK(!state.panel_open && !state.navigation && !state.settings_page && !state.settings_request);
+    fprintf(stderr, "VCS ABI owner: activation rollback\n");
     /* Roll back a partially activated panel/context; a retry must work. */
     state.fail_get = 1;
     CHECK(out.activate(out.instance) == PULSE_ERROR_PERMISSION);
@@ -434,6 +437,7 @@ static int exercise_locked(PulsePluginEntryV1Fn entry) {
     state.clicks[2](state.click_users[2], state.panel, sv(commands[2]));
     CHECK(state.updates > updates && !state.unexpected_tasks);
 
+    fprintf(stderr, "VCS ABI owner: close refusal and host-first unload\n");
     /* Explicit close refusal retains the binding; no reactivation until retry. */
     state.fail_close = 1;
     out.deactivate(out.instance);
@@ -479,7 +483,10 @@ int main(int argc, char **argv) {
     CHECK(argc == 2 || argc == 3);
     int locked_candidate = argc == 3;
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    /* Keep the last reached phase visible even if the DLL terminates the process. */
+    setvbuf(stderr, NULL, _IONBF, 0);
     for (int cycle = 0; cycle < 16; ++cycle) {
+        if (locked_candidate) fprintf(stderr, "VCS ABI cycle %d/16: load and basic lifecycle\n", cycle + 1);
         HMODULE lib = LoadLibraryExA(argv[1], NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
         CHECK(lib);
         PulsePluginSdkPreviewFn preview = (PulsePluginSdkPreviewFn)GetProcAddress(lib, "PulsePluginSdkPreview");
@@ -504,6 +511,7 @@ int main(int argc, char **argv) {
         out.deactivate(out.instance);
         out.destroy(out.instance);
         if (locked_candidate) {
+            fprintf(stderr, "VCS ABI cycle %d/16: 512 KiB owner lifecycle\n", cycle + 1);
             HANDLE owner = CreateThread(NULL, 512 * 1024, exercise_locked_on_host_stack,
                                         &entry, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
             CHECK(owner);
@@ -511,6 +519,8 @@ int main(int argc, char **argv) {
             DWORD result = 1;
             BOOL completed = wait == WAIT_OBJECT_0 && GetExitCodeThread(owner, &result);
             CHECK(CloseHandle(owner));
+            if (!completed || result != 0)
+                fprintf(stderr, "VCS ABI owner wait=0x%08lx exit=0x%08lx\n", (unsigned long)wait, (unsigned long)result);
             CHECK(completed && result == 0);
         }
         CHECK(FreeLibrary(lib));

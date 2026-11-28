@@ -375,7 +375,13 @@ const Stored = struct {
 
     fn decode(value: raw.PulseSettings, out: *Stored) !void {
         if (value.version > (1 << 53) - 1 or value.count > 1024 or (value.count != 0 and value.values == null)) return error.InvalidSettings;
-        out.* = .{ .version = value.version };
+        // Reset only live fields; the unused project array is not read.
+        // Avoid a whole Stored temporary on the host's small owner stack.
+        out.version = value.version;
+        out.locale = .auto;
+        out.tools = @splat(null);
+        out.client_paths = @splat(null);
+        out.count = 0;
         var seen: [4]bool = @splat(false);
         var seen_locale = false;
         var seen_clients: [clients.len]bool = @splat(false);
@@ -1207,6 +1213,9 @@ pub const Settings = struct {
         // A previous deactivate can have removed the page while a browser
         // worker or callback is still retained. Never overwrite that owner.
         if (self.page != 0 or self.pending != 0 or self.picker_request != 0 or self.browser != null or self.project_task != null or self.wake != null or self.route.busy()) try self.close();
+        // Each synchronous host call owns its own frame, even during reentry.
+        const content = std.heap.page_allocator.create(Content) catch return error.Initialization;
+        defer std.heap.page_allocator.destroy(content);
         const pages = (try self.host.queryOptional(raw.PulseSettingsPagesV1, raw.PULSE_SETTINGS_PAGES_INTERFACE_NAME, raw.PULSE_SETTINGS_PAGES_VERSION_1)) orelse return;
         const resources = (try self.host.queryOptional(raw.PulseResourcesV1, raw.PULSE_RESOURCES_INTERFACE_NAME, raw.PULSE_RESOURCES_VERSION_1)) orelse return;
         const create = pages.create orelse return error.Unavailable;
@@ -1229,7 +1238,6 @@ pub const Settings = struct {
         if (async_host.Dispatch.init(self.host)) |dispatch| {
             self.wake = async_host.Wake.init(dispatch, &onWake, self) catch null;
         } else |_| {}
-        var content: Content = undefined;
         var tree: ui.Tree = undefined;
         content.build(self, &tree);
         var page: u64 = 0;
@@ -1253,10 +1261,15 @@ pub const Settings = struct {
     fn render(self: *Settings) void {
         if (!self.active) return;
         const model = if (self.panel) |*value| value else return;
-        var content: Content = undefined;
+        self.render_ok = false;
+        const content = std.heap.page_allocator.create(Content) catch {
+            self.status = .render_failed;
+            diag.event("vcs-settings-render-allocation-failed");
+            return;
+        };
+        defer std.heap.page_allocator.destroy(content);
         var tree: ui.Tree = undefined;
         content.build(self, &tree);
-        self.render_ok = false;
         model.update(&tree) catch |err| {
             self.status = .render_failed;
             diag.status("vcs-settings-render", @intFromError(err));
@@ -1319,7 +1332,7 @@ pub const Settings = struct {
             return;
         }
         if (Stored.decode(reply.*.settings, &self.scratch)) |_| {
-            self.stored = self.scratch;
+            @memcpy(std.mem.asBytes(&self.stored), std.mem.asBytes(&self.scratch));
             self.clampPage();
             self.loaded = true;
             // An edit draft is bound to the version from which it was loaded.
