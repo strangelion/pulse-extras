@@ -358,7 +358,7 @@ def run_fixture(exe):
                            "discovery result did not show a notification")
         overlay, frame = rectangle(found), rectangle(panel.hwnd)
         assert abs(overlay.left + overlay.right - frame.left - frame.right) <= 2
-        Window(found).click("关闭提示")
+        Window(found).click("关闭")
         eventually(lambda: not panel.notice(), "notification did not dismiss")
         assert panel.contains("可配对 1 台"), "dismissal removed the discovery result"
         pair = panel.next_control("等待配对的附近设备", "ComboBox")
@@ -398,7 +398,7 @@ def run_fixture(exe):
         panel.click("连接")
         eventually(lambda: panel.notice() and "请输入可达的对端数字 IP 和端口" in text_at(panel.notice()),
                    "localized endpoint error did not show a notification")
-        Window(panel.notice()).click("关闭提示")
+        Window(panel.notice()).click("关闭")
         eventually(lambda: not panel.notice(), "error notification did not dismiss")
         panel.select_tab(3)
         assert panel.contains("请输入可达的对端数字 IP 和端口")

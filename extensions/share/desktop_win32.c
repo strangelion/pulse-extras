@@ -770,16 +770,16 @@ static BOOL draw_control(const DRAWITEMSTRUCT *item) {
         fg = blend(ink(), RGB(48, 68, 141), selected);
     } else if (item->CtlType == ODT_BUTTON) {
         int i = (int)item->CtlID - FIRST_CONTROL;
-        if (i < 0 || i >= count) return FALSE;
-        const Node *n = &nodes[i];
+        const Node *n = i >= 0 && i < count ? &nodes[i] : NULL;
+        if (!n && item->hwndItem != notice_close) return FALSE;
         BOOL disabled = (item->itemState & ODS_DISABLED) != 0;
         BOOL down = (item->itemState & ODS_SELECTED) != 0;
-        BOOL primary = n->appearance == 2 && !disabled;
-        FillRect(dc, &area, inside_card(i) && !in_task(i) ? card_brush : canvas_brush);
+        BOOL primary = n && n->appearance == 2 && !disabled;
+        FillRect(dc, &area, !n || (inside_card(i) && !in_task(i)) ? card_brush : canvas_brush);
         COLORREF idle = primary ? RGB(52, 72, 155) : card();
         COLORREF hovered = primary ? RGB(68, 90, 181) : RGB(232, 237, 248);
         COLORREF pressed = primary ? RGB(35, 49, 107) : RGB(214, 222, 239);
-        fill = disabled ? RGB(239, 241, 246) : down ? pressed : blend(idle, hovered, n->hover.value);
+        fill = disabled ? RGB(239, 241, 246) : down ? pressed : blend(idle, hovered, n ? n->hover.value : 0);
         if (down && motion_enabled) {
             area.top += scale(1);
             InflateRect(&area, -scale(1), 0);
@@ -907,6 +907,7 @@ static LRESULT CALLBACK notice_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         SetTextColor((HDC)w, ink());
         SetBkColor((HDC)w, card());
         return (LRESULT)card_brush;
+    case WM_DRAWITEM: return draw_control((const DRAWITEMSTRUCT *)l);
     case WM_COMMAND:
         if ((HWND)l == notice_close && HIWORD(w) == BN_CLICKED) dismiss_notice();
         return 0;
@@ -1096,7 +1097,8 @@ int share_desktop_create(void) {
         if (notice) {
             notice_text = CreateWindowExW(0, L"Static", NULL, WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
                 0, 0, 0, 0, notice, NULL, instance, NULL);
-            notice_close = CreateWindowExW(0, L"Button", L"关闭提示", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            notice_close = CreateWindowExW(0, L"Button", L"关闭",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | (contrast ? BS_PUSHBUTTON : BS_OWNERDRAW),
                 0, 0, 0, 0, notice, NULL, instance, NULL);
             if (!notice_text || !notice_close) {
                 DestroyWindow(notice);
