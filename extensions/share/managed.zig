@@ -789,7 +789,8 @@ fn runInner(request: *const Request, ctx: *const raw.PulseTaskContext, decisions
     if (!got_exit) return error.Wait;
     if (exit == 0) return;
     if (stop_at != null or cancelled(ctx)) {
-        if (output.child_cancelled and (pairingMode(request.mode) or request.mode == .discover)) return error.Cancelled;
+        if (output.child_cancelled and (pairingMode(request.mode) or request.mode == .discover or request.sync_clipboard or request.root_service))
+            return error.Cancelled;
         return error.CancelUncertain;
     }
     return error.ChildFailed;

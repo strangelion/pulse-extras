@@ -121,7 +121,9 @@ additional replay/interruption tests, and physical two-PC acceptance.
 mutual TLS proof of possession, CPace confirmation and explicit bilateral
 consent. The host consumes the code before showing consent, closes the listener,
 and saves only the authenticated certificate pin under a locally selected
-label. Both parties must approve before either attempts its exclusive write.
+label. Legacy lowercase ASCII labels retain their existing records. Other
+UTF-8 labels are stored in versioned records with a hash-derived filename.
+Both parties must approve before either attempts its exclusive write.
 Authenticated peer write status is a report, not proof of durable storage;
 interrupted or conflicting enrollment is reported as partial/uncertain without
 rollback or overwrite. The local display callback is private and nonblocking;
@@ -132,6 +134,16 @@ still apply. The test harness exercises live dynamic codes over loopback,
 bilateral approvals, both rejection directions, and an exclusive-write race.
 
 ## Native connection candidate (supersedes earlier disabled-entry status)
+
+The standalone Windows window displays the active pairing endpoint and code
+in a centered, owned window. Its copy action produces a single line in the
+form PSH1 ADDRESS:PORT CODE for LAN pairing, or PSH1-ROUTED ADDRESS:PORT CODE
+for an existing private overlay. Use brackets around IPv6 addresses. Paste
+fills the matching form, then the user starts pairing and confirms the peer.
+Copied pairing entries request exclusion from Windows clipboard history and
+sync. Share clipboard transfers skip items carrying that marker. Share clears
+its still-owned copy when the code becomes inactive.
+The SDK-host secrets behavior described below applies to the prior host UI.
 
 Managed `pair-host` and `pair-join` now use the verified fourth sibling and
 private `PAIRCODE` / `PAIRINPUT` pipe records. The host renders codes only in

@@ -3,6 +3,7 @@
 #define COBJMACROS
 #include <winsock2.h>
 #include <windows.h>
+#include <bcrypt.h>
 #include <iphlpapi.h>
 #include <windowsx.h>
 #include <commctrl.h>
@@ -26,7 +27,10 @@ typedef struct {
 
 static Node nodes[MAX_NODES];
 static int count, tab, scroll, content_height, dpi = 96;
-static HWND window, viewport;
+static HWND window, viewport, pair_popup;
+static HWND popup_address, popup_code, popup_copy, popup_copy_addr, popup_notice, popup_close;
+static DWORD copied_pair_sequence;
+static BOOL pair_popup_ready, copy_address_ready;
 static HFONT font, heading, caption, code_font;
 static HBRUSH canvas_brush, card_brush, drop_brush;
 static HDWP window_batch;
@@ -54,6 +58,8 @@ extern void share_desktop_changed(const char *);
 extern void share_desktop_drop(const char *, size_t, uint32_t, int);
 static void layout(void);
 static LRESULT CALLBACK tabs_proc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+static void popup_fonts(void);
+int share_desktop_clear_pair_clipboard(void);
 
 static int scale(int value) { return MulDiv(value, dpi, 96); }
 static COLORREF canvas(void) { return contrast ? GetSysColor(COLOR_WINDOW) : RGB(244, 246, 249); }
@@ -131,6 +137,7 @@ static void fonts(void) {
         0, 0, CLEARTYPE_QUALITY, 0, L"Consolas");
     for (int i = 0; i < count; i++)
         if (nodes[i].hwnd) SendMessageW(nodes[i].hwnd, WM_SETFONT, (WPARAM)node_font(&nodes[i]), TRUE);
+    popup_fonts();
     for (size_t i = 0; i < ARRAYSIZE(previous); i++) DeleteObject(previous[i]);
 }
 
@@ -233,6 +240,8 @@ void share_desktop_set(const char *key, const char *value, int length) {
     wide(value, length, text, ARRAYSIZE(text));
     BOOL relayout = FALSE, on = !wcscmp(text, L"true");
     if (!strcmp(key, "busy") && busy != on) { busy = on; relayout = TRUE; }
+    if (!strcmp(key, "pair-popup-ready") && pair_popup_ready != on) { pair_popup_ready = on; relayout = TRUE; }
+    if (!strcmp(key, "copy-address-ready") && copy_address_ready != on) { copy_address_ready = on; relayout = TRUE; }
     if (!strcmp(key, "confirm") && confirming != on) { confirming = on; relayout = TRUE; }
     for (size_t i = 0; i < ARRAYSIZE(sections); i++) {
         if (!strcmp(key, sections[i].key) && sections[i].visible != on) {
@@ -262,7 +271,7 @@ void share_desktop_set(const char *key, const char *value, int length) {
                 relayout = TRUE;
             }
         }
-        else if (n->kind == TEXT || n->kind == EDIT_FIELD) {
+        else if (n->kind == TEXT || n->kind == EDIT_FIELD || n->kind == BUTTON) {
             set_text(n->hwnd, text);
             if (relayout && !strcmp(n->id, "status-line")) ShowScrollBar(n->hwnd, SB_VERT, long_status);
         }
@@ -316,7 +325,9 @@ static void position(HWND hwnd, int x, int y, int width, int height, UINT visibi
 static BOOL omitted_from_layout(const Node *n) {
     for (size_t i = 0; i < ARRAYSIZE(sections); i++)
         if (!sections[i].visible && !strcmp(n->id, sections[i].id)) return TRUE;
-    return (!strcmp(n->id, "pair-code") && !showing_code) ||
+    return (!strcmp(n->id, "share-open-pair-popup") && !pair_popup_ready) ||
+        (!strcmp(n->id, "share-copy-address") && !copy_address_ready) ||
+        (!strcmp(n->id, "pair-code") && !showing_code) ||
         ((!strcmp(n->id, "byte-count") || n->kind == PROGRESS) && !has_bytes) ||
         (!strcmp(n->id, "share-cancel") && !busy) ||
         ((!strcmp(n->id, "share-approve") || !strcmp(n->id, "share-decline")) && !confirming);
@@ -386,7 +397,7 @@ static int place(int i, int x, int y, int width, BOOL visible) {
             !strcmp(n->id, "status-line") ? scale(long_status ? 51 : 24) :
             !strcmp(n->id, "source") ? scale(76) :
             !strcmp(n->id, "discovery-text") ? scale(43) :
-            !strcmp(n->id, "history-text") || strstr(n->id, "-inventory") ? scale(68) :
+            !strcmp(n->id, "history-text") || !strcmp(n->id, "diagnostic-text") || strstr(n->id, "-inventory") ? scale(68) :
             text_height(n->hwnd, width);
         break;
     case HEADING: height = scale(39); break;
@@ -696,6 +707,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         if (share_desktop_close()) DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
+        share_desktop_clear_pair_clipboard();
         KillTimer(hwnd, TIMER);
         PostQuitMessage(0);
         return 0;
@@ -746,11 +758,13 @@ void share_desktop_run(void) {
     layout();
     ShowWindow(window, SW_SHOWNORMAL);
     MSG msg;
-    while (GetMessageW(&msg, NULL, 0, 0) > 0)
-        if (!IsDialogMessageW(window, &msg)) {
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+        HWND target = pair_popup && (msg.hwnd == pair_popup || IsChild(pair_popup, msg.hwnd)) ? pair_popup : window;
+        if (!IsDialogMessageW(target, &msg)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+    }
     DeleteObject(font);
     DeleteObject(heading);
     DeleteObject(caption);
@@ -871,6 +885,14 @@ int share_desktop_preferences_write(const char *bytes, int length) {
     return ok;
 }
 
+uint64_t share_desktop_label_nonce(void) {
+    uint64_t random;
+    if (BCryptGenRandom(NULL, (PUCHAR)&random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0) return random;
+    FILETIME now;
+    GetSystemTimePreciseAsFileTime(&now);
+    return ((uint64_t)now.dwHighDateTime << 32 | now.dwLowDateTime) ^ GetCurrentProcessId();
+}
+
 int share_desktop_default_network(char *out, int capacity) {
     ULONG size = 15 * 1024;
     ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_INCLUDE_GATEWAYS;
@@ -914,4 +936,252 @@ int share_desktop_default_network(char *out, int capacity) {
     int result = best ? snprintf(out, capacity, "%u.%u.%u.%u", best[0], best[1], best[2], best[3]) : 0;
     HeapFree(heap, 0, list);
     return result > 0 && result < capacity ? result : 0;
+}
+
+
+int share_desktop_clear_pair_clipboard(void) {
+    if (!copied_pair_sequence) return 1;
+    if (!OpenClipboard(window)) return 0;
+    BOOL cleared = GetClipboardOwner() != window || GetClipboardSequenceNumber() != copied_pair_sequence ||
+        EmptyClipboard();
+    CloseClipboard();
+    if (cleared) copied_pair_sequence = 0;
+    return cleared;
+}
+
+int share_desktop_copy(const char *text, int length, int contains_code) {
+    wchar_t value[260];
+    wide(text, length, value, ARRAYSIZE(value));
+    int result = 0;
+    HGLOBAL data = NULL, marker = NULL;
+    if (!value[0]) goto done;
+    size_t bytes = (wcslen(value) + 1) * sizeof(wchar_t);
+    data = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!data) goto done;
+    void *lock = GlobalLock(data);
+    if (!lock) goto done;
+    memcpy(lock, value, bytes);
+    GlobalUnlock(data);
+    UINT format = 0;
+    if (contains_code) {
+        format = RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
+        if (!format || !(marker = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, 1))) goto done;
+    }
+    if (!OpenClipboard(window)) goto done;
+    if (EmptyClipboard()) {
+        BOOL admitted = !marker || SetClipboardData(format, marker);
+        if (admitted) {
+            marker = NULL;
+            if (SetClipboardData(CF_UNICODETEXT, data)) {
+                data = NULL;
+                copied_pair_sequence = contains_code ? GetClipboardSequenceNumber() : 0;
+                result = 1;
+            } else EmptyClipboard();
+        }
+    }
+    CloseClipboard();
+done:
+    if (data) {
+        void *remaining = GlobalLock(data);
+        if (remaining) {
+            SecureZeroMemory(remaining, GlobalSize(data));
+            GlobalUnlock(data);
+        }
+        GlobalFree(data);
+    }
+    if (marker) GlobalFree(marker);
+    SecureZeroMemory(value, sizeof(value));
+    return result;
+}
+
+int share_desktop_paste(char *out, int capacity) {
+    if (!OpenClipboard(window)) return -1;
+    HGLOBAL data = GetClipboardData(CF_UNICODETEXT);
+    int result = 0;
+    const wchar_t *value = data ? GlobalLock(data) : NULL;
+    if (value) {
+        size_t count = min(GlobalSize(data) / sizeof(wchar_t), (size_t)256);
+        const wchar_t *end = wmemchr(value, 0, count);
+        if (!end) result = -1;
+        else if (end > value) {
+            result = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, (int)(end - value),
+                out, capacity, NULL, NULL);
+            if (!result) result = -1;
+        }
+        GlobalUnlock(data);
+    }
+    CloseClipboard();
+    return result;
+}
+
+enum { POPUP_COPY = 1, POPUP_COPY_ADDRESS, POPUP_CLOSE };
+
+static void popup_fonts(void) {
+    if (!pair_popup) return;
+    SendMessageW(popup_code, WM_SETFONT, (WPARAM)code_font, TRUE);
+    HWND controls[] = {popup_address, popup_copy, popup_copy_addr, popup_notice, popup_close};
+    for (size_t i = 0; i < ARRAYSIZE(controls); i++)
+        SendMessageW(controls[i], WM_SETFONT, (WPARAM)font, TRUE);
+}
+
+static LRESULT CALLBACK popup_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
+    switch (msg) {
+    case WM_CLOSE:
+        ShowWindow(hwnd, SW_HIDE);
+        SetActiveWindow(window);
+        return 0;
+    case WM_COMMAND:
+        switch (LOWORD(w)) {
+        case POPUP_COPY: share_desktop_command("share-copy-pair"); return 0;
+        case POPUP_COPY_ADDRESS: share_desktop_command("share-copy-address"); return 0;
+        case POPUP_CLOSE: return SendMessageW(hwnd, WM_CLOSE, 0, 0);
+        default: return 0;
+        }
+    case WM_CTLCOLORSTATIC:
+        SetTextColor((HDC)w, ink());
+        SetBkColor((HDC)w, canvas());
+        return (LRESULT)canvas_brush;
+    case WM_NCDESTROY:
+        pair_popup = NULL;
+        break;
+    }
+    return DefWindowProcW(hwnd, msg, w, l);
+}
+
+static HWND popup_control(const wchar_t *kind, const wchar_t *caption, DWORD style, int id) {
+    return CreateWindowExW(0, kind, caption, WS_CHILD | WS_VISIBLE | style, 0, 0, 0, 0,
+        pair_popup, (HMENU)(INT_PTR)id, GetModuleHandleW(NULL), NULL);
+}
+
+static BOOL create_pair_popup(void) {
+    HINSTANCE module = GetModuleHandleW(NULL);
+    WNDCLASSW wc = { .lpfnWndProc = popup_proc, .hInstance = module,
+        .lpszClassName = L"PulseSharePairing", .hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512)),
+        .hbrBackground = canvas_brush };
+    if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return FALSE;
+    pair_popup = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_CONTROLPARENT, wc.lpszClassName, L"Pulse Share · 配对信息",
+        WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN, 0, 0, 0, 0, window, NULL, module, NULL);
+    if (!pair_popup) return FALSE;
+    popup_address = popup_control(L"Static", L"", SS_CENTER, 0);
+    popup_code = popup_control(L"Static", L"", SS_CENTER, 0);
+    popup_notice = popup_control(L"Static", L"", SS_CENTER, 0);
+    popup_copy = popup_control(L"Button", L"复制地址和连接码", WS_TABSTOP, POPUP_COPY);
+    popup_copy_addr = popup_control(L"Button", L"只复制地址", WS_TABSTOP, POPUP_COPY_ADDRESS);
+    popup_close = popup_control(L"Button", L"返回主窗口", WS_TABSTOP, POPUP_CLOSE);
+    if (!popup_address || !popup_code || !popup_notice || !popup_copy || !popup_copy_addr || !popup_close) {
+        DestroyWindow(pair_popup);
+        return FALSE;
+    }
+    popup_fonts();
+    return TRUE;
+}
+
+static void center_pair_popup(void) {
+    const int client_w = scale(432), client_h = scale(225);
+    RECT area = {0, 0, client_w, client_h}, parent;
+    AdjustWindowRectExForDpi(&area, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_TOOLWINDOW, dpi);
+    GetWindowRect(window, &parent);
+    int width = area.right - area.left, height = area.bottom - area.top;
+    int x = (parent.left + parent.right - width) / 2;
+    int y = (parent.top + parent.bottom - height) / 2;
+    MONITORINFO monitor = { .cbSize = sizeof(monitor) };
+    if (GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        x = max(monitor.rcWork.left, min(x, monitor.rcWork.right - width));
+        y = max(monitor.rcWork.top, min(y, monitor.rcWork.bottom - height));
+    }
+    const int margin = scale(18), gap = scale(8), full = client_w - 2 * margin;
+    SetWindowPos(pair_popup, HWND_TOP, x, y, width, height, SWP_NOACTIVATE);
+    MoveWindow(popup_address, margin, scale(20), full, scale(24), TRUE);
+    MoveWindow(popup_code, margin, scale(52), full, scale(40), TRUE);
+    MoveWindow(popup_notice, margin, scale(99), full, scale(44), TRUE);
+    MoveWindow(popup_copy, margin, scale(150), (full - gap) / 2, scale(34), TRUE);
+    MoveWindow(popup_copy_addr, margin + (full + gap) / 2, scale(150), (full - gap) / 2, scale(34), TRUE);
+    MoveWindow(popup_close, (client_w - scale(144)) / 2, scale(190), scale(144), scale(28), TRUE);
+}
+
+int share_desktop_pair_popup(const char *address, int address_len, const char *code, int code_len, int show) {
+    if (!pair_popup && (!show || !create_pair_popup())) return 0;
+    wchar_t number[16], endpoint[100], old_code[16];
+    wide(address, address_len, endpoint, ARRAYSIZE(endpoint));
+    wide(code, code_len, number, ARRAYSIZE(number));
+    GetWindowTextW(popup_code, old_code, ARRAYSIZE(old_code));
+    if (wcscmp(number, old_code)) set_text(popup_notice, L"将配对信息发给对方。两边都需核对指纹。");
+    set_text(popup_address, endpoint);
+    set_text(popup_code, number);
+    EnableWindow(popup_copy, TRUE);
+    EnableWindow(popup_copy_addr, TRUE);
+    if (show && !IsWindowVisible(pair_popup)) {
+        center_pair_popup();
+        ShowWindow(pair_popup, SW_SHOWNORMAL);
+        SetFocus(popup_copy);
+    }
+    SecureZeroMemory(number, sizeof(number));
+    SecureZeroMemory(old_code, sizeof(old_code));
+    return 1;
+}
+
+void share_desktop_pair_clear(int hide) {
+    if (!pair_popup) return;
+    set_text(popup_address, L"");
+    set_text(popup_code, L"");
+    set_text(popup_notice, L"等待新连接码");
+    EnableWindow(popup_copy, FALSE);
+    EnableWindow(popup_copy_addr, FALSE);
+    if (hide) ShowWindow(pair_popup, SW_HIDE);
+}
+
+void share_desktop_pair_copied(int contains_code) {
+    if (pair_popup) set_text(popup_notice, contains_code ?
+        L"已复制，可粘贴到聊天。连接码轮换后需重新复制。" : L"已复制此设备的配对地址。");
+}
+
+
+int share_desktop_stamp(char *out, int capacity) {
+    SYSTEMTIME local;
+    GetLocalTime(&local);
+    return snprintf(out, capacity, "%04u-%02u-%02u %02u:%02u:%02u",
+        local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute, local.wSecond);
+}
+
+int share_desktop_export_diagnostics(const char *bytes, int length) {
+    if (length <= 0 || length > 8192) return -1;
+    HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (FAILED(hr)) return -1;
+    IFileSaveDialog *dialog = NULL;
+    int result = -1;
+    hr = CoCreateInstance(&CLSID_FileSaveDialog, NULL, CLSCTX_INPROC_SERVER, &IID_IFileSaveDialog, (void **)&dialog);
+    if (SUCCEEDED(hr)) {
+        const COMDLG_FILTERSPEC types[] = {{L"诊断文本 (*.txt)", L"*.txt"}};
+        DWORD options = FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR | FOS_NOREADONLYRETURN;
+        hr = IFileSaveDialog_SetOptions(dialog, options);
+        if (SUCCEEDED(hr)) hr = IFileSaveDialog_SetFileTypes(dialog, ARRAYSIZE(types), types);
+        if (SUCCEEDED(hr)) hr = IFileSaveDialog_SetDefaultExtension(dialog, L"txt");
+        if (SUCCEEDED(hr)) hr = IFileSaveDialog_SetFileName(dialog, L"Pulse-Share-诊断.txt");
+        if (SUCCEEDED(hr)) hr = IFileSaveDialog_SetTitle(dialog, L"导出 Share 诊断");
+        if (SUCCEEDED(hr)) hr = IFileSaveDialog_Show(dialog, window);
+        if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) result = 0;
+        if (SUCCEEDED(hr)) {
+            IShellItem *item = NULL;
+            if (SUCCEEDED(IFileSaveDialog_GetResult(dialog, &item))) {
+                PWSTR path = NULL;
+                if (SUCCEEDED(IShellItem_GetDisplayName(item, SIGDN_FILESYSPATH, &path))) {
+                    HANDLE file = CreateFileW(path, GENERIC_WRITE | DELETE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+                    if (file != INVALID_HANDLE_VALUE) {
+                        DWORD written;
+                        if (WriteFile(file, bytes, (DWORD)length, &written, NULL) && written == (DWORD)length && FlushFileBuffers(file)) result = 1;
+                        else {
+                            FILE_DISPOSITION_INFO discard = { .DeleteFile = TRUE };
+                            SetFileInformationByHandle(file, FileDispositionInfo, &discard, sizeof(discard));
+                        }
+                        CloseHandle(file);
+                    }
+                    CoTaskMemFree(path);
+                }
+                IShellItem_Release(item);
+            }
+        }
+        IFileSaveDialog_Release(dialog);
+    }
+    CoUninitialize();
+    return result;
 }

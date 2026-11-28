@@ -545,7 +545,7 @@ pub fn build(b: *std.Build) void {
     desktop_root.addImport("share_config", share_config);
     desktop_root.addCSourceFile(.{ .file = b.path("extensions/share/desktop_win32.c"), .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" } });
     desktop_root.addWin32ResourceFile(.{ .file = b.path("extensions/share/desktop.rc"), .include_paths = &.{b.path("extensions/share")} });
-    for ([_][]const u8{ "user32", "gdi32", "comctl32", "shell32", "ole32", "uuid", "iphlpapi" }) |lib|
+    for ([_][]const u8{ "user32", "gdi32", "comctl32", "shell32", "ole32", "uuid", "iphlpapi", "bcrypt" }) |lib|
         desktop_root.linkSystemLibrary(lib, .{});
     const desktop = b.addExecutable(.{
         .name = "pulse-share-desktop",

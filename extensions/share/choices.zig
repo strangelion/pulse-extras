@@ -9,9 +9,10 @@ fn endpointKind(kind: Kind) bool {
     return kind == .endpoint or kind == .pair_endpoint;
 }
 const max_choices = 24;
+const max_peer_bytes = 48 * 4;
 
 pub const Choice = struct {
-    data: [128]u8 = @splat(0),
+    data: [max_peer_bytes]u8 = @splat(0),
     len: usize = 0,
 
     pub fn slice(self: *const Choice) []const u8 {
@@ -35,7 +36,7 @@ pub const List = struct {
     }
 
     fn add(self: *List, value: []const u8) void {
-        if (self.count == max_choices or value.len == 0 or value.len > 128) return;
+        if (self.count == max_choices or value.len == 0 or value.len > max_peer_bytes) return;
         for (self.values[0..self.count]) |*entry| {
             if (std.mem.eql(u8, entry.slice(), value)) return;
         }
@@ -51,11 +52,32 @@ fn hex(c: u8) bool {
     return std.ascii.isDigit(c) or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
 }
 
-fn label(value: []const u8) bool {
+fn legacyLabel(value: []const u8) bool {
     if (value.len == 0 or value.len > 48) return false;
     for (value) |c| {
         if (!((c >= 'a' and c <= 'z') or std.ascii.isDigit(c) or c == '-' or c == '_')) return false;
     }
+    return true;
+}
+
+pub fn validPeerName(value: []const u8) bool {
+    if (value.len == 0 or value.len > max_peer_bytes or value[0] == ' ' or value[value.len - 1] == ' ') return false;
+    const view = std.unicode.Utf8View.init(value) catch return false;
+    var letters = view.iterator();
+    var count: usize = 0;
+    while (letters.nextCodepoint()) |cp| {
+        count += 1;
+        if (count > 48 or cp < 32 or (cp >= 0x7f and cp <= 0x9f) or
+            (cp >= 0x2028 and cp <= 0x202e) or (cp >= 0x2066 and cp <= 0x2069) or cp == 0xfeff)
+            return false;
+        if (cp < 128 and std.mem.indexOfScalar(u8, "<>:\"/\\|?*", @intCast(cp)) != null) return false;
+    }
+    return true;
+}
+
+fn fingerprint(value: []const u8) bool {
+    if (value.len != 64) return false;
+    for (value) |c| if (!hex(c)) return false;
     return true;
 }
 
@@ -92,19 +114,19 @@ pub fn parse(kind: Kind, output: []const u8) List {
         .peer => "PEER ",
     };
     while (lines.next()) |line| {
+        if (kind == .peer and std.mem.startsWith(u8, line, "PEER2 ")) {
+            const rest = line["PEER2 ".len..];
+            const end = std.mem.indexOfScalar(u8, rest, ' ') orelse continue;
+            const name = rest[end + 1 ..];
+            if (fingerprint(rest[0..end]) and validPeerName(name)) result.add(name);
+            continue;
+        }
         if (!std.mem.startsWith(u8, line, prefix)) continue;
         const rest = line[prefix.len..];
         const end = std.mem.indexOfScalar(u8, rest, ' ') orelse rest.len;
         const token = rest[0..end];
         if (kind == .peer) {
-            if (!label(token) or end == rest.len) continue;
-            const fingerprint = rest[end + 1 ..];
-            if (fingerprint.len != 64) continue;
-            var valid = true;
-            for (fingerprint) |c| {
-                if (!hex(c)) valid = false;
-            }
-            if (!valid) continue;
+            if (!legacyLabel(token) or end == rest.len or !fingerprint(rest[end + 1 ..])) continue;
         } else {
             if (endpointKind(kind) and end != rest.len) continue;
             if (!address(token, kind)) continue;
@@ -141,4 +163,18 @@ test "bounded options never select beyond the represented rows" {
     var opts: Options = undefined;
     try std.testing.expectEqual(@as(usize, max_choices + 1), list.options(&opts).len);
     try std.testing.expect(list.selected(max_choices + 1) == null);
+}
+
+test "legacy and UTF-8 peers are distinct and keep complete labels" {
+    const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const peers = parse(.peer, "PEER laptop " ++ digest ++ "\n" ++
+        "PEER2 " ++ digest ++ " 客厅 电脑 💻\n" ++
+        "PEER2 " ++ digest ++ " 客厅 电脑 💻\n" ++
+        "PEER2 " ++ digest ++ " ../伪造\n" ++
+        "PEER2 bad 名称\n");
+    try std.testing.expectEqual(@as(usize, 2), peers.count);
+    try std.testing.expectEqualStrings("客厅 电脑 💻", peers.selected(2).?);
+    try std.testing.expect(validPeerName("Café PC"));
+    try std.testing.expect(!validPeerName("隐藏\u{202e}控制"));
+    try std.testing.expect(!validPeerName(" 换行\n"));
 }

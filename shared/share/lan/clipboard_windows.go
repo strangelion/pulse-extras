@@ -23,6 +23,8 @@ var clipGet=clipboardUser32.NewProc("GetClipboardData")
 var clipSet=clipboardUser32.NewProc("SetClipboardData")
 var clipEmpty=clipboardUser32.NewProc("EmptyClipboard")
 var clipSequence=clipboardUser32.NewProc("GetClipboardSequenceNumber")
+var clipRegisterFormat = clipboardUser32.NewProc("RegisterClipboardFormatW")
+var clipFormatAvailable = clipboardUser32.NewProc("IsClipboardFormatAvailable")
 var clipWindow=clipboardUser32.NewProc("CreateWindowExW")
 var clipDestroy=clipboardUser32.NewProc("DestroyWindow")
 var clipQuery=clipboardShell32.NewProc("DragQueryFileW")
@@ -59,6 +61,15 @@ func clipboardBytes(format uintptr,max uintptr)([]byte,error){
 func readLocalClipboard(kind string)(clipboardPayload,error){
 	var out clipboardPayload
 	err:=withClipboard(false,func()error{
+		// Respect the producer's opt-out while the clipboard remains locked.
+		exclusion, _ := syscall.UTF16PtrFromString("ExcludeClipboardContentFromMonitorProcessing")
+		format, _, _ := clipRegisterFormat.Call(uintptr(unsafe.Pointer(exclusion)))
+		if format != 0 {
+			excluded, _, _ := clipFormatAvailable.Call(format)
+			if excluded != 0 {
+				return errors.New("clipboard item is marked private")
+			}
+		}
 		switch kind{
 		case "text":
 			b,err:=clipboardBytes(cfUnicode,2*maxClipboardText+2);if err!=nil{return err};defer clear(b)

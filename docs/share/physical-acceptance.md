@@ -31,7 +31,7 @@ tree using the same script (no overwriting, deletion or clipboard access):
 | ID | Scenario | Expected |
 | --- | --- | --- |
 | H01 | Open Share directly and from Pulse with and without a selection | Same desktop UI, selection copied, no listener until explicit action |
-| H02 | Discover, select address, pair and verify trust | Results or empty state shown, host code stays visible, join input masked, both approvals required |
+| H02 | Discover, select address and pair using the copied host ticket | Results or empty state shown, host code stays visible, paste fills the form, both approvals required, a UTF-8 peer name survives reopening |
 | H03 | TCP and QUIC single file, both directions | Confirm offer, SHA-256 matches; no overwrite |
 | H04 | TCP and QUIC folder/multi-selection | Empty directories and Unicode filenames preserved |
 | H05 | Fixed 1/8/32 and adaptive channels | Correct bytes, bounded memory; no hang |
@@ -39,9 +39,9 @@ tree using the same script (no overwriting, deletion or clipboard access):
 | H07 | Reject offer, existing target, revoked peer | No undesired overwrite or new access |
 | H08 | Outbox: enqueue several, restart, run, discard and prune | Pending records preserved; uncertain records not replayed |
 | H09 | Manual text/image/file clipboard, folder/clipboard delivery | Explicit approval, correct content and valid local file references |
-| H10 | Automatic text and image sessions | New changes only; local edit stops overwrite; cancel stops sync |
+| H10 | Automatic text and image sessions | Switch shows waiting, on, stopping and off. New changes only. Local edit stops overwrite and the same switch stops sync |
 | H11 | Directory service: repeated listing, subtree download | Only selected root; read-only; stop releases listening port |
-| H12 | Preference save/reload; panel resize; task progress and prompts | Values retained, no stale selection, responsive UI |
+| H12 | Preference save/reload, resize, prompts and diagnostics export | Values retained, responsive UI. Known input errors show Chinese guidance, and the exported report contains no paths, addresses or codes |
 | H13 | Close Share with an active service, then restart | Helper processes, handles and sockets released; no automatic listener |
 | H14 | Repeated transfers (20), idle and active CPU/RSS | Record actual peak/idle values and sustained growth trend |
 | H15 | IPv6 or an existing private overlay, when available | Enter addresses and source restriction at pairing time, verify both fingerprints, then transfer using the routed actions |

@@ -186,4 +186,7 @@ test "share adapter rejects null ABI inputs" {
     std.testing.refAllDecls(@import("handoff.zig"));
     std.testing.refAllDecls(@import("presentation.zig"));
     std.testing.refAllDecls(@import("choices.zig"));
+    std.testing.refAllDecls(@import("pair_ticket.zig"));
+    std.testing.refAllDecls(@import("worker_messages.zig"));
+    std.testing.refAllDecls(@import("diagnostic_history.zig"));
 }

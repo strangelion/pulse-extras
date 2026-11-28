@@ -206,15 +206,15 @@ def check_layout(panel):
             item = rectangle(control)
             assert abs((item.left + item.right) // 2 - midpoint) <= margin, f"page {page} is off center"
     panel.select_tab(0)
-    assert not panel.has_button("开始自动发送剪贴板"), "send options should start collapsed"
+    assert not panel.has_button("开启自动发送剪贴板"), "send options should start collapsed"
     panel.click("更多发送方式")
-    assert panel.has_button("开始自动发送剪贴板") and panel.has_button("开启只读目录服务")
+    assert panel.has_button("开启自动发送剪贴板") and panel.has_button("开启只读目录服务")
     panel.click("更多发送方式")
-    assert not panel.has_button("开始自动发送剪贴板")
+    assert not panel.has_button("开启自动发送剪贴板")
     panel.select_tab(1)
-    assert not panel.has_button("开始自动接收剪贴板"), "receive options should start collapsed"
+    assert not panel.has_button("开启自动接收剪贴板"), "receive options should start collapsed"
     panel.click("更多接收方式")
-    assert panel.has_button("开始自动接收剪贴板") and panel.has_button("连接只读目录服务")
+    assert panel.has_button("开启自动接收剪贴板") and panel.has_button("连接只读目录服务")
     panel.click("更多接收方式")
     panel.select_tab(0)
     panel.resize(490, 650)
@@ -314,16 +314,37 @@ def run_fixture(exe):
         eventually(lambda: panel.contains("未发现设备"), "missing empty discovery result")
         assert message(pair, 0x0146) == 1, "stale discovery result"
         panel.type("本机网络地址", "192.0.2.10")
-        panel.type("已配对设备名称", "fixture")
+        alias = text_at(panel.next_control("配对名称", "Edit"))
+        assert alias and any(ord(letter) > 127 for letter in alias), "missing random Chinese label"
+        panel.type("配对名称", "客厅电脑")
         panel.click("开启连接码并允许发现")
         eventually(lambda: panel.contains("01234567"), "no inline pairing code")
+        popup = eventually(lambda: next((h for h in get_windows(desktop_windows, desktop)
+                                         if klass(h) == "PulseSharePairing" and visible(h)), None),
+                           "centered pairing window did not appear")
+        popup_rect = rectangle(popup)
+        owner_rect = rectangle(hwnd)
+        assert abs(popup_rect.left + popup_rect.right - owner_rect.left - owner_rect.right) < 12
+        assert abs(popup_rect.top + popup_rect.bottom - owner_rect.top - owner_rect.bottom) < 12
+        Window(popup).labelled("复制地址和连接码", "Button")
         time.sleep(0.6)
+        assert visible(popup), "pairing window disappeared while the code was active"
         assert panel.contains("01234567"), "pairing code flashed and disappeared"
         panel.resize(490, 550)
         assert panel.contains("01234567"), "pairing code lost after resize"
         panel.click("取消任务")
         eventually(lambda: panel.contains("已取消"), "pair cancellation never completed")
         assert not panel.contains("01234567"), "pairing code retained after cancel"
+        assert not visible(popup), "pairing popup stayed visible after cancellation"
+        panel.type("对端配对地址", "192.0.2.90:45844")
+        panel.type("对端的 8 位连接码", "01234567")
+        panel.click("连接")
+        eventually(lambda: panel.contains("请输入可达的对端数字 IP 和端口"), "helper endpoint error was not localized")
+        panel.select_tab(3)
+        assert panel.contains("请输入可达的对端数字 IP 和端口")
+        panel.labelled("导出诊断…", "Button")
+        panel.select_tab(2)
+        panel.type("对端配对地址", "192.0.2.15:45844")
         panel.type("对端的 8 位连接码", "01234567")
         panel.click("连接")
         eventually(lambda: panel.contains("Trust device"), "no confirmation after code entry")
@@ -349,11 +370,40 @@ def run_fixture(exe):
         eventually(lambda: panel.contains("COMPLETED routed pairing"), "routed pairing terminal state absent")
         panel.click("收起组网配对")
         assert not panel.contains("对端组网地址与端口"), "collapsed routed controls stayed visible"
+        panel.click("刷新已配对设备")
+        use_peer = eventually(lambda: panel.has_button("设为当前对端"), "UTF-8 peer list did not open")
+        assert use_peer
+        choice = panel.next_control("已配对设备名称", "Edit")
+        combos = [h for h in get_windows(children, get_parent(choice)) if klass(h) == "ComboBox" and visible(h)]
+        selected = next(h for h in combos if get_id(h) > get_id(choice))
+        assert message(selected, 0x0146) == 2
+        message(selected, 0x014E, 1)
+        panel.click("设为当前对端")
+        panel.select_tab(0)
+        assert panel.contains("当前对端 · 客厅电脑"), "UTF-8 peer was not retained as the selected device"
+        panel.click("手动输入对端地址")
+        panel.type("对端地址与端口", "192.0.2.14:45843")
+        panel.click("更多发送方式")
+        def run_service(name):
+            panel.click(f"开启{name}")
+            eventually(lambda: panel.has_button(f"待确认 · 停止{name}"), f"{name} had no confirmation state")
+            panel.click("确认请求")
+            eventually(lambda: panel.has_button(f"已开启 · 停止{name}"), f"{name} had no active state")
+            panel.click(f"已开启 · 停止{name}")
+            eventually(lambda: panel.has_button(f"开启{name}"), f"{name} did not return to off")
+
+        run_service("自动发送剪贴板")
+        run_service("只读目录服务")
+        panel.select_tab(1)
+        panel.click("更多接收方式")
+        run_service("自动接收剪贴板")
+        panel.select_tab(0)
+        panel.click("选设备")
         panel.click("开启连接码并允许发现")
         eventually(lambda: panel.contains("01234567"), "pair task could not be restarted")
         checked(post(hwnd, 0x0010, 0, 0))
         assert wait(process.process, 12000) == 0, "window did not drain active worker"
-        print("Share desktop: handoff, discovery, address selection, persistent code, LAN and routed approval, responsive layout, scrolling, icon and close passed")
+        print("Share desktop: handoff, discovery, address selection, persistent code, LAN and routed approval, UTF-8 peers, diagnostics, service toggles, layout, scrolling, icon and close passed")
     finally:
         if process.process:
             if wait(process.process, 0) != 0:

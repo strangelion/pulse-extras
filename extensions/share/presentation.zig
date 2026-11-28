@@ -59,6 +59,12 @@ pub fn button(label: []const u8, command: []const u8, kind: []const u8, enabled:
     return n;
 }
 
+pub fn action(label: []const u8, command: []const u8, caption_state: []const u8, enabled: []const u8) ui.Node {
+    var node = button(label, command, "standard", enabled);
+    node.binding = .{ .present = 1, .value = abi.view(caption_state) };
+    return node;
+}
+
 pub fn select(id: []const u8, state: []const u8, label: []const u8, options: []const abi.StringView) ui.Node {
     var n = ui.node(ui.NodeKind.select);
     n.id = abi.view(id);

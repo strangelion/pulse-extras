@@ -6,11 +6,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -111,57 +109,4 @@ func loadStoredIdentity(root string) (identity, error) {
 		return identity{}, errors.New("stored identity expired; initialize a new private store and pair again")
 	}
 	return identity{tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, sha256.Sum256(der)}, nil
-}
-
-// Local labels, not network-controlled names. Lowercase ASCII avoids Windows
-// case aliases and constrains all trust record paths to this directory.
-func peerFile(root, name string) (string, error) {
-	if len(name) < 1 || len(name) > 48 { return "", errors.New("invalid device label") }
-	for _, c := range name {
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
-			return "", errors.New("device label must use lowercase ASCII letters, digits, hyphen or underscore")
-		}
-	}
-	return filepath.Join(root, "peer-"+name+".pin"), nil
-}
-
-func addPeer(root, name string, pin [32]byte) error {
-	path, err := peerFile(root, name)
-	if err != nil { return err }
-	return createStoreFile(path, []byte(fmt.Sprintf("%x\n", pin)))
-}
-
-func loadPeer(root, name string) ([32]byte, error) {
-	path, err := peerFile(root, name)
-	if err != nil { return [32]byte{}, err }
-	data, err := readStoreFile(path, 65)
-	if err != nil { return [32]byte{}, err }
-	if len(data) != 65 || data[64] != '\n' { return [32]byte{}, errors.New("invalid peer record") }
-	return parsePin(string(data[:64]))
-}
-
-func revokePeer(root, name string) error {
-	path, err := peerFile(root, name)
-	if err != nil { return err }
-	if _, err = loadPeer(root, name); err != nil { return err }
-	return os.Remove(path)
-}
-
-func listPeers(root string) error {
-	dir, err := os.Open(root)
-	if err != nil { return err }
-	defer dir.Close()
-	// Bounded directory inventory, no recursion.
-	entries, err := dir.ReadDir(1025)
-	if err != nil && err != io.EOF { return err }
-	if len(entries) > 1024 { return errors.New("store has too many entries") }
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasPrefix(name, "peer-") || !strings.HasSuffix(name, ".pin") { continue }
-		label := strings.TrimSuffix(strings.TrimPrefix(name, "peer-"), ".pin")
-		pin, err := loadPeer(root, label)
-		if err != nil { return fmt.Errorf("invalid peer record: %w", err) }
-		fmt.Printf("PEER %s %x\n", label, pin)
-	}
-	return nil
 }

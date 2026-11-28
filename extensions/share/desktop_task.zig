@@ -11,6 +11,13 @@ pub const Snapshot = struct {
     len: usize = 0,
     done: u64 = 0,
     total: u64 = 0,
+    endpoint: [96]u8 = undefined,
+    endpoint_len: usize = 0,
+    clipboard_sync_active: bool = false,
+
+    pub fn listeningAddress(self: *const Snapshot) []const u8 {
+        return self.endpoint[0..self.endpoint_len];
+    }
 
     pub fn message(self: *const Snapshot) []const u8 {
         return self.text[0..self.len];
@@ -88,6 +95,14 @@ pub const Task = struct {
         self.snapshot.len = message.len;
         self.snapshot.done = value.*.completed_bytes;
         self.snapshot.total = value.*.total_bytes;
+        if (std.mem.eql(u8, message, "CLIPBOARD SYNC active; cancel to stop")) self.snapshot.clipboard_sync_active = true;
+        if (std.mem.startsWith(u8, message, "LISTEN ")) {
+            const address = message["LISTEN ".len..];
+            if (address.len <= self.snapshot.endpoint.len) {
+                @memcpy(self.snapshot.endpoint[0..address.len], address);
+                self.snapshot.endpoint_len = address.len;
+            }
+        }
         return abi.ok;
     }
 

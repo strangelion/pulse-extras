@@ -38,6 +38,30 @@ int main(int argc, char **argv) {
         puts("LOCAL 192.0.2.10  \"Fixture\"");
         return 0;
     }
+    if (!strcmp(argv[3], "peer-list")) {
+        puts("PEER2 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef 客厅电脑");
+        return 0;
+    }
+    if ((!strcmp(argv[3], "send") || !strcmp(argv[3], "receive")) && option(argc, argv, "--sync-clipboard")) {
+        char line[64];
+        puts("OFFER fixture clipboard until cancelled? Enter yes:");
+        if (!fgets(line, sizeof(line), stdin) || strncmp(line, "yes", 3)) return 11;
+        puts("CLIPBOARD SYNC active; cancel to stop");
+        puts("Fixture sync progress");
+        if (WaitForSingleObject(cancel, 10000) != WAIT_OBJECT_0) return 12;
+        puts("Pulse Share: context canceled");
+        return 1;
+    }
+    if (!strcmp(argv[3], "send") && option(argc, argv, "--root-service")) {
+        char line[64];
+        puts("OFFER fixture directory until cancelled? Enter yes:");
+        if (!fgets(line, sizeof(line), stdin) || strncmp(line, "yes", 3)) return 13;
+        puts("LISTEN 192.0.2.10:45843");
+        puts("Fixture directory progress");
+        if (WaitForSingleObject(cancel, 10000) != WAIT_OBJECT_0) return 14;
+        puts("Pulse Share: context canceled");
+        return 1;
+    }
     int routed = option(argc, argv, "--routed") != NULL;
     if (routed && (!matches(argc, argv, "--bind", "100.64.1.10") ||
         !matches(argc, argv, "--name", "overlay-test"))) return 7;
@@ -56,6 +80,10 @@ int main(int argc, char **argv) {
         puts("PAIRINPUT");
         if (!fgets(line, sizeof(line), stdin) || strncmp(line, "01234567", 8)) return 4;
         SecureZeroMemory(line, sizeof(line));
+        if (matches(argc, argv, "--peer", "192.0.2.90:45844")) {
+            puts("Pulse Share: peer must be a permitted numeric address and port");
+            return 1;
+        }
         puts("Trust device with fixture fingerprint 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
         if (!fgets(line, sizeof(line), stdin) || strncmp(line, "yes", 3)) return 5;
         puts(routed ? "COMPLETED routed pairing" : "COMPLETED pairing");

@@ -277,14 +277,18 @@ LAN and host lifecycle acceptance remain outstanding.
   separate folder/multiple-file receiver. Starting a managed receive creates
   the default private spool if missing. A custom path must already be private
   or be initialized explicitly. The task strip exposes the listening
-  address, progress and approval actions whenever they are relevant.
+  address, progress and approval actions whenever they are relevant. Use
+  **复制接收地址** to share the endpoint.
 - **设备** lists local addresses and shows a count and selectable addresses
   after discovery. Use the interface on the same LAN as the other device.
   A single usable interface or a uniquely preferred gateway interface is
   selected automatically when no address was saved. **更改本机网络** lets
-  you choose another interface. The nearby pairing and receiving lists are separate. Selecting an address
-  only fills a field. The active code stays in the task strip, and the other
-  device enters it in a masked field. Compare the displayed fingerprints and
+  you choose another interface. The nearby pairing and receiving lists are
+  separate. Selecting an address only fills a field. Pairing suggests an
+  editable device name, with support for Chinese and other UTF-8 names.
+  The centered pairing window shows the live address and connection code.
+  **复制地址和连接码** copies a single line the other device can fill using
+  **粘贴配对信息**. The code also works in the masked input. Compare the displayed fingerprints and
   approve the pairing on both devices. For an existing private overlay, open
   **已组网？手动配对**. Enter the local overlay IP and peer label. On the code
   host, specify the expected incoming source IP and optional port. On the
@@ -302,10 +306,16 @@ LAN and host lifecycle acceptance remain outstanding.
   Use a dedicated Windows user or VM for installed acceptance. A standalone
   launch with `--session-only` skips disk preference reads and writes.
 - **更多发送方式** and **更多接收方式** expose the clipboard and directory
-  operations from the appropriate page. Clipboard sync starts only on explicit
-  request and still requires approval. The outgoing queue is on **发送**.
-  **高级** holds protocol options, manual fingerprint management and recovery.
-  **记录** lists recent outcomes for the current window.
+  operations from the appropriate page. Switches show off, waiting for
+  approval, running and stopping. Use the same switch to stop an active
+  clipboard sync or read-only directory service. Starting these services
+  requires explicit action and the existing approval prompts. File receipt
+  requires confirmation. The outgoing queue is on **发送**.
+- **高级** holds protocol options, manual fingerprint management and recovery.
+  **记录** lists recent outcomes and a diagnostic summary in the current
+  window. **导出诊断…** saves a UTF-8 text report of recognized error classes,
+  timestamps and outcomes. The report uses fixed messages and excludes raw
+  worker output, paths, endpoint values, fingerprints, codes and clipboard data.
 
 One task runs at a time in each window. Windows-owned controls stay on the
 UI thread; the worker publishes a bounded snapshot. A window close cancels
