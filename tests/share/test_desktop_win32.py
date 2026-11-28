@@ -364,7 +364,7 @@ def run_fixture(exe):
         try:
             eventually(lambda: panel.contains("可配对 1 台"), "discovery result did not reach Devices")
         except AssertionError:
-            print([item for item in panel.messages() if item])
+            print(ascii([item for item in panel.messages() if item]))
             raise
         found = eventually(lambda: panel.notice() if panel.notice() and "可配对 1 台" in text_at(panel.notice()) else None,
                            "discovery result did not show a notification")

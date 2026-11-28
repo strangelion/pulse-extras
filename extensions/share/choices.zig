@@ -113,7 +113,10 @@ pub fn parse(kind: Kind, output: []const u8) List {
         .pair_endpoint => "PAIR_UNVERIFIED ",
         .peer => "PEER ",
     };
-    while (lines.next()) |line| {
+    while (lines.next()) |raw_line| {
+        // The managed helper inventory uses CRLF; strip only the framing CR.
+        const line = if (std.mem.endsWith(u8, raw_line, "\r")) raw_line[0 .. raw_line.len - 1] else raw_line;
+        if (std.mem.indexOfScalar(u8, line, '\r') != null) continue;
         if (kind == .peer and std.mem.startsWith(u8, line, "PEER2 ")) {
             const rest = line["PEER2 ".len..];
             const end = std.mem.indexOfScalar(u8, rest, ' ') orelse continue;
@@ -150,6 +153,29 @@ test "choices filter, deduplicate and retain an explicit empty selection" {
     const peers = parse(.peer, "PEER laptop 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\nPEER ../bad 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\nPEER wrong invalid\n");
     try std.testing.expectEqual(@as(usize, 1), peers.count);
     try std.testing.expectEqualStrings("laptop", peers.selected(1).?);
+}
+
+test "managed CRLF inventory accepts complete choices and rejects embedded CR" {
+    const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const inventory = "LOCAL 192.0.2.10  \"Fixture\"\r\n" ++
+        "UNVERIFIED 192.0.2.14:45843\r\n" ++
+        "PAIR_UNVERIFIED 192.0.2.15:45844\r\n" ++
+        "PAIR_UNVERIFIED 192.0.2.\r16:45844\r\n" ++
+        "PEER laptop " ++ digest ++ "\r\n" ++
+        "PEER2 " ++ digest ++ " 客厅电脑\r\n";
+    const locals = parse(.local, inventory);
+    try std.testing.expectEqual(@as(usize, 1), locals.count);
+    try std.testing.expectEqualStrings("192.0.2.10", locals.selected(1).?);
+    const endpoints = parse(.endpoint, inventory);
+    try std.testing.expectEqual(@as(usize, 1), endpoints.count);
+    try std.testing.expectEqualStrings("192.0.2.14:45843", endpoints.selected(1).?);
+    const pairing = parse(.pair_endpoint, inventory);
+    try std.testing.expectEqual(@as(usize, 1), pairing.count);
+    try std.testing.expectEqualStrings("192.0.2.15:45844", pairing.selected(1).?);
+    const peers = parse(.peer, inventory);
+    try std.testing.expectEqual(@as(usize, 2), peers.count);
+    try std.testing.expectEqualStrings("laptop", peers.selected(1).?);
+    try std.testing.expectEqualStrings("客厅电脑", peers.selected(2).?);
 }
 
 test "bounded options never select beyond the represented rows" {
