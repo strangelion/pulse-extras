@@ -66,27 +66,39 @@ static int equals(PulseStringView value, const char *text) {
 
 static const char *const commands[] = { "vcs.refresh", "vcs.cancel", "vcs.check" };
 
+/* Card/grid wrappers are presentation only. Validate the entire bounded tree,
+ * including nested actions, so a locked view cannot hide an executable action. */
+static int inspect_locked_node(const PulseUiModelNode *node, unsigned depth,
+    unsigned *remaining, unsigned *locked, unsigned *check) {
+    if (!node || depth > 32 || !*remaining || node->size != sizeof(*node)) return 0;
+    --*remaining;
+    if (equals(node->id, "vcs.approval")) {
+        if (!node->text.present ||
+            !(equals(node->text.value, "Execution locked: production approval unavailable") ||
+              equals(node->text.value, "执行已锁定：尚未提供生产授权"))) return 0;
+        ++*locked;
+    }
+    if (node->command.present) {
+        if (!equals(node->command.value, "vcs.check")) return 0;
+        ++*check;
+    }
+    if (node->children.present) {
+        if (node->children.count > *remaining || (node->children.count && !node->children.data)) return 0;
+        for (uint32_t i = 0; i < node->children.count; ++i)
+            if (!inspect_locked_node(&node->children.data[i], depth + 1, remaining, locked, check)) return 0;
+    }
+    return 1;
+}
+
 static int tree_valid(const PulseUiModelTree *tree) {
     if (!tree || tree->size != sizeof(*tree) || !tree->root ||
         tree->command_count != 3 || !tree->commands)
         return 0;
     for (unsigned i = 0; i < 3; ++i)
         if (!equals(tree->commands[i], commands[i])) return 0;
-    const PulseUiModelNode *root = tree->root;
-    if (!root->children.present || !root->children.data) return 0;
-    int locked = 0, check = 0;
-    for (uint32_t i = 0; i < root->children.count; ++i) {
-        const PulseUiModelNode *node = &root->children.data[i];
-        if (equals(node->id, "vcs.approval") && node->text.present &&
-            (equals(node->text.value, "Execution locked: production approval unavailable") ||
-             equals(node->text.value, "执行已锁定：尚未提供生产授权")))
-            locked = 1;
-        if (node->command.present) {
-            if (!equals(node->command.value, "vcs.check")) return 0;
-            check = 1;
-        }
-    }
-    return locked && check;
+    unsigned remaining = 512, locked = 0, check = 0;
+    return inspect_locked_node(tree->root, 0, &remaining, &locked, &check) &&
+        locked == 1 && check == 1;
 }
 
 static PulseStatus PULSE_CALL panel_create(void *context, PulseStringView title,

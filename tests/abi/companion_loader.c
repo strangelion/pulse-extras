@@ -1027,15 +1027,51 @@ static int bundled_session(PulsePluginEntryV1Fn entry) {
     DeleteCriticalSection(&f.dispatch_lock);
     return 0;
 }
+typedef struct {
+    PulsePluginEntryV1Fn entry;
+    int bundled;
+} OwnerRun;
+
+static DWORD WINAPI companion_owner(LPVOID user) {
+    const OwnerRun *run = user;
+    PulsePluginEntryV1Fn entry = run->entry;
+    if (run->bundled)
+        return (DWORD)(picker_compat_session(entry, 1) != 0 ||
+            picker_compat_session(entry, 0) != 0 || bundled_session(entry) != 0);
+    return (DWORD)(cycle(entry, 0) != 0 || cycle(entry, 1) != 0 ||
+        partial(entry) != 0 || automatic(entry) != 0);
+}
+
+static int run_on_owner(PulsePluginEntryV1Fn entry, int bundled) {
+    OwnerRun run = {entry, bundled};
+    HANDLE owner = CreateThread(NULL, 512 * 1024, companion_owner, &run,
+        STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    CHECK(owner);
+    DWORD wait = WaitForSingleObject(owner, 180000), result = 1;
+    /* A timeout must end the entire fixture, not return a borrowed pointer
+       or unload a DLL while its owner thread is still executing. */
+    if (wait != WAIT_OBJECT_0) {
+        fprintf(stderr, "Companion owner wait failed: 0x%08lx\n", (unsigned long)wait);
+        ExitProcess(1);
+    }
+    BOOL completed = GetExitCodeThread(owner, &result);
+    CHECK(CloseHandle(owner));
+    if (!completed || result != 0)
+        fprintf(stderr, "Companion 512 KiB owner exit=0x%08lx\n", (unsigned long)result);
+    CHECK(completed && result == 0);
+    return 0;
+}
+
 int main(int argc, char **argv) {
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     CHECK(argc == 2 || (argc == 3 && !strcmp(argv[2], "--bundled")));
     if (argc == 3) {
         HMODULE lib = LoadLibraryExA(argv[1], NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
         CHECK(lib);
         PulsePluginEntryV1Fn entry = (PulsePluginEntryV1Fn)GetProcAddress(lib, "PulsePluginEntryV1");
-        CHECK(entry && picker_compat_session(entry, 1) == 0 && picker_compat_session(entry, 0) == 0 && bundled_session(entry) == 0);
+        CHECK(entry && run_on_owner(entry, 1) == 0);
         CHECK(FreeLibrary(lib));
-        puts("Bundled Companion ABI: actual first-frame, stop, restart, deactivate verified");
+        puts("Bundled Companion ABI: actual first-frame, stop, restart, deactivate verified on a 512 KiB owner thread");
         return 0;
     }
     for (unsigned i = 0; i < 8; ++i) {
@@ -1044,9 +1080,9 @@ int main(int argc, char **argv) {
         PulsePluginSdkPreviewFn preview = (PulsePluginSdkPreviewFn)GetProcAddress(lib, "PulsePluginSdkPreview");
         PulsePluginEntryV1Fn entry = (PulsePluginEntryV1Fn)GetProcAddress(lib, "PulsePluginEntryV1");
         CHECK(preview && entry && preview() == PULSE_SDK_PREVIEW);
-        CHECK(cycle(entry, 0) == 0 && cycle(entry, 1) == 0 && partial(entry) == 0 && automatic(entry) == 0);
+        CHECK(run_on_owner(entry, 0) == 0);
         CHECK(FreeLibrary(lib));
     }
-    puts("Companion C ABI: 16 complete lifecycle scenarios, 8 partial activations and 8 automatic polling scenarios passed");
+    puts("Companion C ABI: 16 complete lifecycle scenarios, 8 partial activations and 8 automatic polling scenarios passed on 512 KiB owner threads");
     return 0;
 }

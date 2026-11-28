@@ -74,6 +74,21 @@
 - Distinguish C ABI fixture coverage, headless helper tests, and real-host UI
   acceptance. Do not describe one as proof of another.
 
+## Stack and allocation budget (all products)
+
+- Host SDK callbacks share the host's thread stack: design for the project's
+  512 KiB owner-thread fixture, not a guaranteed SDK stack size.
+- Keep ordinary fixed frames at or below 16 KiB; review above 16 KiB, require
+  specific justification above 64 KiB, and do not introduce owner callbacks
+  above 128 KiB. Include nested calls, reentry, compiler temporaries and recursion.
+- Allocate large snapshots, UI models and buffers at stable owned addresses;
+  use in-place initialization, bounded allocation, explicit failure and cleanup.
+  Prefer bounded iterative traversal over input-dependent recursion.
+- Review the native stack inventory in CI (including shared code linked into
+  DLLs), preserve the small-stack lifecycle gates, and do not raise the stack
+  reservation or accept new large-frame baselines simply to make CI green.
+  Worker and standalone budgets are separate; see docs/shared-runtime.md.
+
 ## Required checks
 
 Use the repository's pinned Zig version and the applicable CI scope. For

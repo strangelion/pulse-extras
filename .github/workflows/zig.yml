@@ -288,6 +288,17 @@ jobs:
       - name: Build production extensions
         if: needs.scope.outputs.level != 'companion' && needs.scope.outputs.level != 'share'
         run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseSafe --summary all
+      - name: Inspect existing native stack frames
+        if: runner.os == 'Windows' && needs.scope.outputs.level != 'companion'
+        run: python scripts/stack_audit.py zig-out/bin --output zig-out/stack-audit.json --baseline scripts/stack-baseline.json
+      - name: Preserve native stack inventory
+        if: always() && runner.os == 'Windows' && needs.scope.outputs.level != 'companion'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-stack-inventory
+          path: zig-out/stack-audit.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Verify forge Windows ABI constants and layouts
         if: runner.os == 'Windows' && (needs.scope.outputs.level == 'vcs' || needs.scope.outputs.level == 'full')
         shell: pwsh
@@ -542,6 +553,8 @@ jobs:
           if ($dll.Count -ne 1) { throw "Expected one bundled Companion DLL" }
           Copy-Item zig-out/bin/pulse_companion_runtime.dll $dll[0].DirectoryName
           Copy-Item zig-out/bin/pulse-pet.exe $dll[0].DirectoryName
+          python scripts/stack_audit.py $dll[0].DirectoryName --output zig-out/companion-stack-audit.json --baseline scripts/stack-baseline.json --profile bundled
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           zig cc -std=c11 -Wall -Wextra -Werror -target x86_64-windows-gnu -I.sdk-cache/include tests/abi/companion_loader.c -o zig-out/companion-bundled-loader.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./zig-out/companion-bundled-loader.exe $dll[0].FullName --bundled
@@ -572,6 +585,14 @@ jobs:
           & ./zig-out/bin/pulse-pet.exe --check-package "$PWD/zig-out/import-fixtures/hoodie-cat" hoodie-cat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Preserve bundled Companion stack inventory
+        if: always() && matrix.lane == 'desktop'
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-stack-inventory
+          path: zig-out/companion-stack-audit.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Preserve failed mixed-codec fixture diagnostics
         if: failure() && matrix.lane == 'desktop'
         uses: actions/upload-artifact@v4

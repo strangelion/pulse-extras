@@ -596,3 +596,25 @@ Acceptance gates:
 
 No shared DLL, central allocator or mandatory new dependency is introduced
 by this plan. Do not expand Companion stage C to implement it.
+
+## Native stack budget and ownership
+
+Host callbacks use a borrowed stack; 512 KiB is our regression fixture budget,
+not a promise about Pulse. Prefer fixed frames <=16 KiB, review >16 KiB,
+justify >64 KiB, and reject new owner callback frames >128 KiB. Consider the
+whole nested call chain, recursion, reentry, copies and compiler temporaries.
+Large UI trees, snapshots, catalogs and buffers should have bounded owned heap
+storage with explicit allocation-failure behavior and timely release. Use
+iterative bounded queues/stacks for input-driven traversal. Workers and standalone
+processes own separate stack budgets; document them instead of inflating the host
+fixture. Do not move all small values to the heap or add an unbounded pool.
+
+The PE x64 stack audit in the existing regression inspects static unwind
+allocations in native Zig/C images (including linked shared modules), reports
+large frames by RVA and export name where available, and gates oversized export
+frames. Dynamic allocations, leaf functions, cumulative call chains and Go's
+growable stacks are not certified by unwind data. The initial report is the
+measurement for a reviewed per-image baseline; subsequent reviewed baselines
+must never be increased merely to pass CI. Existing C ABI tests retain the
+512 KiB VCS and Companion owner-thread limits. Real-host and allocation-failure
+coverage remain necessary, especially for deep trees, large batches and reentry.
