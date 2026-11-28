@@ -874,7 +874,7 @@ pub const Binding = struct {
         try self.navigation.refreshCurrent();
         try self.invalidateNavigation();
         if (self.navigation.pending or self.resolution.task.occupied() or self.controller.query.task.occupied() or self.controller.queued != null) return error.State;
-        const current = self.controller.current;
+        const current = &self.controller.current;
         if (current.phase != .ready or current.snapshot == null or current.stale) return error.State;
         const workspace = current.workspace orelse return error.State;
         return workspace.root;
@@ -889,7 +889,7 @@ pub const Binding = struct {
         var needed: u32 = 0;
         try host_mod.mapStatus(get(model.table.context, model.id, abi.view(panel.state_executable), &bytes, bytes.len, &needed));
         if (needed >= bytes.len) return error.Argument;
-        const snapshot = self.controller.current.snapshot orelse return error.State;
+        const snapshot = if (self.controller.current.snapshot) |*value| value else return error.State;
         if (!snapshot.previewHas(kind)) return error.Permission;
         const index = contract.Snapshot.previewIndex(kind) orelse return error.Argument;
         const executable = if (needed == 0)

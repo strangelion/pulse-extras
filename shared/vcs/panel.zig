@@ -478,7 +478,7 @@ pub const Content = struct {
             summary[s_len] = self.makeText("vcs.root", loc(lang, "Workspace: ", "工作区："), workspace.root.slice(), "caption");
             s_len += 1;
         }
-        if (view.snapshot) |snapshot| {
+        if (view.snapshot) |*snapshot| {
             if (view.metadata_only) {
                 if (snapshot.reference.slice().len != 0) {
                     summary[s_len] = self.makeText("vcs.reference", loc(lang, "HEAD branch: ", "HEAD 分支："), snapshot.reference.slice(), null);
@@ -528,7 +528,7 @@ pub const Content = struct {
         }
         self.pushSection(self.makeGroup("vcs.summary.card", loc(lang, "Workspace Status", "仓库状态"), summary[0..s_len]));
 
-        if (view.snapshot) |snapshot| {
+        if (view.snapshot) |*snapshot| {
             if (!view.metadata_only) {
                 if (!view.approval_required and snapshot.files.available) self.addFilesSection(lang, view, &snapshot.files);
                 if (view.detail_supported and !view.approval_required and !view.stale and view.phase == .ready) {
@@ -549,7 +549,7 @@ pub const Content = struct {
         tree.root = &self.root;
     }
 
-    fn addFilesSection(self: *Content, lang: Language, view: *const View, files: *const contract.FileList) void {
+    noinline fn addFilesSection(self: *Content, lang: Language, view: *const View, files: *const contract.FileList) void {
         var items: [16]ui.Node = undefined;
         var count: usize = 0;
         const filter = view.file_filter.slice();
@@ -636,7 +636,7 @@ pub const Content = struct {
         self.pushSection(self.makeGroup("vcs.files.card", loc(lang, "Changed Files", "变更文件"), items[0..count]));
     }
 
-    fn addDetailsSection(self: *Content, lang: Language, view: *const View, kind: identity.Kind) void {
+    noinline fn addDetailsSection(self: *Content, lang: Language, view: *const View, kind: identity.Kind) void {
         var items: [28]ui.Node = undefined;
         var count: usize = 0;
         items[count] = self.makeText("vcs.detail.heading", "", loc(lang, "Local read-only details", "本地只读详情"), "caption");
@@ -774,7 +774,7 @@ pub const Content = struct {
         self.pushSection(self.makeGroup("vcs.detail.card", loc(lang, "History & Diff", "历史与差异"), items[0..count]));
     }
 
-    fn addLocalSetupSection(self: *Content, lang: Language, view: *const View) void {
+    noinline fn addLocalSetupSection(self: *Content, lang: Language, view: *const View) void {
         var items: [24]ui.Node = undefined;
         var count: usize = 0;
         if (view.setup_issue) |issue| {
@@ -821,7 +821,7 @@ pub const Content = struct {
                 items[count] = self.makeGrid("vcs.review.actions", 2, 6, btns[0..b_len]);
                 count += 1;
             } else if (!view.stale) {
-                const snapshot = view.snapshot.?;
+                const snapshot = if (view.snapshot) |*value| value else unreachable;
                 items[count] = makeInput(state_executable, loc(lang, "Trusted executable (optional absolute path)", "受信任工具（可选绝对路径）"), "git.exe / jj.exe / svn.exe / hg.exe");
                 count += 1;
                 items[count] = self.makeText("vcs.setup-help", "", loc(lang, "Leave empty for configured, previously saved, or detected tool path, in that order.", "留空依次使用已配置、曾授权或检测到的工具路径。"), "caption");
